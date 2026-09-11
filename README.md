@@ -61,8 +61,9 @@ node tools/install-slot/server.mjs   # open http://localhost:4191/
    community play link (auto-downloaded and verified against the published SHA-256);
 3. Click Install to write and verify, then power-cycle and boot from the meta-pass menu.
 
-Design and tradeoffs: `docs/assets/meta-pass-design.md` §6.1. The unpacking logic has a
-standalone test: `node tools/install-slot/test-extract.mjs`.
+Full setup/usage/troubleshooting guide: `tools/install-slot/README.md`; design and
+tradeoffs: `docs/assets/meta-pass-design.md` §6.1. The unpacking logic has a standalone
+test: `node tools/install-slot/test-extract.mjs`.
 
 Un-adapted firmware still works: it simply returns to the launcher on every reboot, and
 never needs reflashing — select it again from the menu.

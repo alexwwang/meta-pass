@@ -53,7 +53,8 @@ node tools/install-slot/server.mjs   # 打开 http://localhost:4191/
    或粘贴社区玩法链接（自动下载、按社区公布的 SHA-256 校验）；
 3. 点 Install 写入并校验，断电重启后在 meta-pass 菜单引导。
 
-设计与权衡见 `docs/assets/meta-pass-design.zh_CN.md` §6.1。解包逻辑有独立测试：
+完整架设/使用/排障指南见 `tools/install-slot/README.zh_CN.md`;设计与权衡见
+`docs/assets/meta-pass-design.zh_CN.md` §6.1。解包逻辑有独立测试:
 `node tools/install-slot/test-extract.mjs`。
 
 ## 构建与烧录
