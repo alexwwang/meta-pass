@@ -10,7 +10,7 @@
 
 - 收录文档规范、commit 风格、PR 约定和人机协作边界。
 - 每条规则应写清触发条件、必须做什么、禁止做什么、验证方法和例外条件。
-- 项目基线的功能和产品事实进入对应设计文档；仅 fork 私有业务内容不回合上游（见 [doc-conventions.zh_CN.md](doc-conventions.zh_CN.md)）。
+- 项目基线的功能和产品事实进入对应设计文档；项目专属内容放根 README 或 `docs/assets/`（见 [doc-conventions.zh_CN.md](doc-conventions.zh_CN.md)）。
 - 可以由 lint、测试或脚本强制的要求，应同时落实到自动化检查，不能只靠 agent 阅读文字。
 - 新增规约时在本文件更新索引。
 

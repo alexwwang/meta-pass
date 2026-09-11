@@ -85,7 +85,6 @@ publisher 的契约是纯观察：命令不重启、不刷机、不改设置。�
 
 ## 相关文档
 
-- `docs/development/release/publish-to-community.md` — 需要这张截图的发布工作流。
-- `docs/reference/shinku-chen/post-release-follow-up.zh_CN.md` — 同一发布流程的收尾侧视角。
+- [上游仓库的 `docs/development/release/publish-to-community.zh_CN.md`](https://github.com/FoloToy/ai-passport/blob/main/docs/development/release/publish-to-community.zh_CN.md) — 需要这张截图的发布工作流。
 - `main/fap_screenshot.c` — 上述提交落地的实现。
 - `docs/CHANGELOG.zh_CN.md` — 描述已交付协议的 Unreleased 条目。

@@ -6,7 +6,7 @@
 
 This directory contains human/AI collaboration, documentation, commit, and pull-request rules.
 
-Rules must state their trigger, required action, prohibited action, validation method, and exceptions. Product facts belong in the corresponding design document; fork-private business content does not return upstream. Automatable rules must also be enforced by tools or CI.
+Rules must state their trigger, required action, prohibited action, validation method, and exceptions. Product facts belong in the corresponding design document; project-specific content lives in the root README or `docs/assets/`. Automatable rules must also be enforced by tools or CI.
 
 ## Documents
 

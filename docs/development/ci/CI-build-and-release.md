@@ -58,7 +58,3 @@ Write the release notes in English (and a Simplified Chinese version where the
 project is bilingual) and link them from the GitHub/GitLab release. Keep them
 consistent with `docs/CHANGELOG.md` for user-visible behavior.
 
-## Related documents
-
-- Firmware publishing to the community: [publish-to-community.md](../release/publish-to-community.md)
-- Post-release follow-up: [project-completion.md](../release/project-completion.md)

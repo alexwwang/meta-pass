@@ -13,7 +13,7 @@ docs/                  product, contribution, development, and design documents
 components/bsp/        stable board APIs and hardware implementation
 main/                  LVGL menu and independent demo pages
 assets/                reusable fonts, images, music, and sound effects
-skills/                reusable AI-agent skills
+skills/                reusable AI-agent skills (upstream only; not carried in this project)
 tests/                 host-runnable logic tests
 sdkconfig.defaults     reproducible ESP32-C3 defaults
 ```
@@ -30,6 +30,6 @@ The root `README.md` path is intentionally available to a fork owner. Upstream's
 
 Use `docs/assets/` for architecture notes, product design, and images that supplement a fork's README. Upstream keeps that directory empty except for `.gitkeep`; fork-private content must not be proposed back to upstream.
 
-Documentation and experience follow the same split. Fork-specific product customization (architecture notes, product design, fork-only assets) stays in the fork under `docs/assets/` and is not proposed back upstream. General, upstream-benefiting documentation or experience improvements — durable facts, reusable interfaces, build or release-flow improvements that help any AI Passport user — are submitted back upstream as a pull request. The `plays/` application archive and the post-release experience notes belong upstream and are proposed back as pull requests. Use the `experience-pr` and `plays-archive` skills for post-release work; see `docs/development/release/project-completion.md`.
+Documentation and experience follow the same split. Fork-specific product customization (architecture notes, product design, fork-only assets) stays in the fork under `docs/assets/` and is not proposed back upstream. General, upstream-benefiting documentation or experience improvements — durable facts, reusable interfaces, build or release-flow improvements that help any AI Passport user — are submitted back upstream as a pull request. The `plays/` application archive and the post-release experience notes belong upstream; see `docs/development/release/` in the [upstream repository](https://github.com/FoloToy/ai-passport/tree/main/docs/development) for that workflow.
 
 All fork documentation follows the repository language rule: English at the default `.md` path and Simplified Chinese at `.zh_CN.md`, with reciprocal switches.

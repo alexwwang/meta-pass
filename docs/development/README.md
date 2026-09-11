@@ -23,8 +23,3 @@ This directory contains AI Passport engineering rules and reusable workflows, gr
 - [CI-build-and-release.md](ci/CI-build-and-release.md): tagged firmware builds and releases.
 - [CI-sync-main.md](ci/CI-sync-main.md): upstream synchronization for forks.
 
-## Release
-
-- [publish-to-community.md](release/publish-to-community.md): publishing firmware to the AI Passport community market.
-- [project-completion.md](release/project-completion.md): project completion flow — a menu of optional closing actions.
-- [file-issues.md](release/file-issues.md): filing a suggestion as an upstream GitHub issue.

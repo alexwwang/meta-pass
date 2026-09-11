@@ -21,7 +21,7 @@ docs/
 components/bsp/               板级支持包：显示、按键、音频、电池、I2C（稳定 API 与 bsp_pins.h 硬件事实）
 main/                         设备固件应用：LVGL 菜单 + 独立 demo_*.c 硬件验证页（新 demo 需实现 demo.h 声明的 enter/exit/key 接口）
 assets/                       预置资源：fonts/ images/ music/（各含 README.md）
-skills/                       可复用技能目录（每个 skill 独立子目录）
+skills/                       可复用技能目录（仅上游；本项目不携带）
 tests/                        轻量级逻辑测试（无硬件可运行）
 sdkconfig.defaults            ESP32-C3、USB console、Flash、LVGL 默认配置
 ```
@@ -65,5 +65,5 @@ fork 后，`main` 分支**只允许增加/修改根目录的 `README.md` 和 `do
 文档与经验遵循同样的分流原则。fork 专属产品定制（架构说明、产品设计、fork 专属素材）留在
 fork，放在 `docs/assets/` 下，不提交回上游。通用、上游也受益的文档或经验改进——持续的硬件事实、
 可复用的接口、能帮助任何 AI Passport 用户的构建或发布流程改进——作为 PR 提交回上游。
-`plays/` 应用档案与发布后的经验沉淀属于上游，作为 PR 提案回上游。发布后的工作请用
-`experience-pr` 与 `plays-archive` skill，见 `docs/development/release/project-completion.md`。
+`plays/` 应用档案与发布后的经验沉淀属于上游，作为 PR 提案回上游。该流程见
+[上游仓库的 `docs/development/release/`](https://github.com/FoloToy/ai-passport/tree/main/docs/development)。

@@ -108,7 +108,6 @@ a tight-packed full-screen RGB565 image before answering at all.
 
 ## Related documents
 
-- `docs/development/release/publish-to-community.md` — the publishing workflow that needs this screenshot.
-- `docs/reference/shinku-chen/post-release-follow-up.md` — the release-side view of the same flow.
+- [`docs/development/release/publish-to-community.md` in the upstream repo](https://github.com/FoloToy/ai-passport/blob/main/docs/development/release/publish-to-community.md) — the publishing workflow that needs this screenshot.
 - `main/fap_screenshot.c` — the implementation the commits above landed.
 - `docs/CHANGELOG.md` — the Unreleased entry describing the shipped protocol.

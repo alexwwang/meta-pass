@@ -19,18 +19,18 @@ These rules apply equally to human contributors and AI agents. Documentation is 
 
 - Every task starts with root `AGENTS.md` only.
 - Follow its routing table and read only documents and source relevant to the change.
-- Use `docs/README.md` for the overview and `docs/README.md` for discovery.
+- Use the root `README.md` for the project overview and `docs/README.md` for document discovery.
 - Update the authoritative source of a changed fact and documents that directly reference it; do not create a second source of truth.
 
 ## Responsibilities
 
-- Upstream baseline documents cover AI Passport hardware, BSP behavior, baseline demos, engineering constraints, and acceptance methods.
+- Baseline documents (inherited from the upstream AI Passport project) cover hardware, BSP behavior, engineering constraints, and acceptance methods; keep them accurate against this repository's real tools.
 - Shared contribution and engineering documents cover code style, testing, commits, CI, and AI workflows grounded in this repository's real tools.
-- Fork-only product requirements, business logic, or assets stay in the fork's root README or `docs/assets/`.
+- meta-pass product requirements, business logic, and assets live in the root README or `docs/assets/`.
 
 ## Placement
 
-- Keep the tracked repository root limited to tool-discovery files (`AGENTS.md`, `CLAUDE.md` and their translations), an optional fork README pair, license/build manifests, and ESP-IDF configuration.
+- Keep the tracked repository root limited to tool-discovery files (`AGENTS.md`, `CLAUDE.md` and their translations), the project README pair, license/build manifests, and ESP-IDF configuration.
 - Put project documentation and history in `docs/`, grouped by contribution, development, hardware, and software responsibility.
 - Put GitHub-recognized community files, templates, issue forms, and workflows in `.github/`.
 - Put reusable binary/source assets in `assets/`, project skills in `skills/`, and automation in `tools/`.
