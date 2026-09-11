@@ -7,6 +7,7 @@
 //   3. Full 合并镜像(分区表 + 前缀)能定位 factory 应用。
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { extractAppImage, espImageLength, isFullImage } from "./extract-app-image.js";
 import {
   NAME_MAX, BLOB_OFFSET, MAX_APP_IMAGE_SIZE,
@@ -178,6 +179,56 @@ function hexToBytes(hex) {
   const bigImg = buildSized(MAX_APP_IMAGE_SIZE + 0x10);
   assert.throws(() => extractAppImage(bigImg), /max app image size/, "0x1FF010 must be rejected");
   console.log("PASS 7: app image limit tightened to 0x1FF000 (blob sector reserved)");
+}
+
+// ===== 8. install-slot.html i18n 字典:en/zh 键集合一致,页面引用的键全部存在 =====
+{
+  const html = readFileSync(new URL("./install-slot.html", import.meta.url), "utf8");
+  const scriptMatch = html.match(/<script type="module">([\s\S]*?)<\/script>/);
+  assert.ok(scriptMatch, "module script not found in install-slot.html");
+  const script = scriptMatch[1];
+
+  // 提取 const I18N = { ... };(平衡花括号扫描,字典为纯数据可安全 eval)
+  const start = script.indexOf("const I18N = {");
+  assert.ok(start >= 0, "I18N dictionary not found");
+  let depth = 0, end = -1;
+  for (let i = script.indexOf("{", start); i < script.length; i++) {
+    const ch = script[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") { depth--; if (depth === 0) { end = i; break; } }
+    else if (ch === '"' || ch === "'") { // 跳过字符串字面量,避免括号误判
+      const q = ch;
+      for (i++; i < script.length && script[i] !== q; i++) if (script[i] === "\\") i++;
+    }
+  }
+  assert.ok(end > start, "I18N dictionary braces unbalanced");
+  const I18N = eval("(" + script.slice(script.indexOf("{", start), end + 1) + ")");
+
+  const enKeys = Object.keys(I18N.en).sort();
+  const zhKeys = Object.keys(I18N.zh).sort();
+  assert.deepEqual(zhKeys, enKeys, "zh key set must equal en key set");
+  for (const lang of ["en", "zh"]) {
+    for (const [k, v] of Object.entries(I18N[lang])) {
+      assert.ok(typeof v === "string" && v.length > 0, `${lang}.${k} must be a non-empty string`);
+    }
+  }
+
+  // HTML 中 data-i18n / data-i18n-ph 引用的键必须在字典中
+  const htmlPart = html.slice(0, html.indexOf("<script"));
+  const htmlKeys = new Set();
+  for (const m of htmlPart.matchAll(/data-i18n(?:-ph)?="([^"]+)"/g)) htmlKeys.add(m[1]);
+  for (const k of htmlKeys) {
+    assert.ok(k in I18N.en, `data-i18n key "${k}" missing from en dictionary`);
+  }
+
+  // JS 中 t("key") 引用的键必须在字典中
+  const tKeys = new Set();
+  for (const m of script.matchAll(/\bt\("([^"]+)"/g)) tKeys.add(m[1]);
+  for (const k of tKeys) {
+    assert.ok(k in I18N.en, `t() key "${k}" missing from en dictionary`);
+  }
+
+  console.log(`PASS 8: i18n dictionaries consistent (${enKeys.length} keys; ${htmlKeys.size} data-i18n + ${tKeys.size} t() refs all present)`);
 }
 
 console.log("All tests passed.");
