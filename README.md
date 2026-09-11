@@ -65,12 +65,12 @@ No custom bootloader changes.
 
 ### 1. Flash meta-pass (once)
 
-Download `FoloToy-AI-Passport-full.bin` from Releases, or build it yourself (see
+Download `meta-pass_v0.1.bin` from Releases, or build it yourself (see
 "Development"). Then:
 
 ```bash
 python -m esptool --chip esp32c3 -p <port> -b 460800 \
-    write-flash 0x0 FoloToy-AI-Passport-full.bin
+    write-flash 0x0 meta-pass_v0.1.bin
 ```
 
 The image ends at `0x312000` and never touches `cardid` (flashing tools only erase/write
@@ -139,7 +139,7 @@ source <esp-idf-v5.5.3>/export.sh   # ESP-IDF v5.5.3 required
 ./tools/validate.sh --static        # repo checks + host tests
 ./tools/validate.sh --firmware      # firmware build + protected-layout verification
                                     # (isolated /tmp build, artifact copied back to
-                                    #  build/FoloToy-AI-Passport-full.bin)
+                                    #  build/meta-pass_v<version>.bin)
 node tools/install-slot/test-extract.mjs   # installer unpacking / name-blob tests
 ```
 

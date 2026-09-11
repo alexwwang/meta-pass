@@ -12,7 +12,7 @@
 
 - ESP32-C3、8 MB Flash、ESP-IDF 5.5.3。
 - 从 `0x0` 开始的合并 ESP 镜像，固定产物为
-  `build/FoloToy-AI-Passport-full.bin`。
+  `build/meta-pass_v<版本>.bin`。
 - 位于 `0x10000` 的主应用镜像，不得超过 `0x300000` 字节。
 - `cardid`：data/NVS，地址 `0x356000`，大小 `0x4000`。
 - 有效的分区表 MD5，且所有分区不得与受保护的 `cardid` 区域重叠。
@@ -33,7 +33,7 @@
 偏移，解析分区表并检查 MD5、受保护的 `cardid` 范围和 3 MB 应用上限，
 同时拒绝单机身份数据入包。CI 执行同一门禁。该命令失败时不得发布。
 
-只上传 `build/FoloToy-AI-Passport-full.bin`。名称相近的应用单镜像
+只上传 `build/meta-pass_v<版本>.bin`。名称相近的应用单镜像
 `build/FoloToy-AI-Passport.bin` 不包含经完整验证的布局。
 
 ## 开发烧录安全

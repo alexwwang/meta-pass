@@ -56,11 +56,11 @@ bootloader 改动。
 
 ### 1. 烧录 meta-pass(只做一次)
 
-从 Releases 下载 `FoloToy-AI-Passport-full.bin`,或自行构建(见下文「开发」)。然后:
+从 Releases 下载 `meta-pass_v0.1.bin`,或自行构建(见下文「开发」)。然后:
 
 ```bash
 python -m esptool --chip esp32c3 -p <串口> -b 460800 \
-    write-flash 0x0 FoloToy-AI-Passport-full.bin
+    write-flash 0x0 meta-pass_v0.1.bin
 ```
 
 只会烧到 `0x312000` 为止,不触碰 `cardid`(刷机工具默认只擦写覆盖区域;**不要**
@@ -124,7 +124,7 @@ Install → 断电重启。完整指南:[tools/install-slot/README.zh_CN.md](too
 source <esp-idf-v5.5.3>/export.sh   # 必须 ESP-IDF v5.5.3
 ./tools/validate.sh --static        # 仓库检查 + host tests
 ./tools/validate.sh --firmware      # 固件构建 + 受保护布局校验(在 /tmp 隔离构建,
-                                    # 产物拷回 build/FoloToy-AI-Passport-full.bin)
+                                    # 产物拷回 build/meta-pass_v<版本>.bin)
 node tools/install-slot/test-extract.mjs   # 安装页解包/名字 blob 测试
 ```
 

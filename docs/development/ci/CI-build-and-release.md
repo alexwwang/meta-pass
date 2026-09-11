@@ -6,13 +6,13 @@
 
 `.github/workflows/build-firmware.yml` builds and publishes firmware for tags and supports manual dispatch. Ordinary branch pushes do not trigger it. Keep this page synchronized with the workflow.
 
-The build job restores ccache, runs `./tools/validate.sh --firmware` with ESP-IDF 5.5.3 for ESP32-C3, verifies the bootloader at `0x0`, partition table at `0x8000`, application at `0x10000`, 8 MB Flash arguments, and the protected Flash layout, then uploads `FoloToy-AI-Passport-full.bin`. A separate least-privilege release job publishes that artifact only for a tag.
+The build job restores ccache, runs `./tools/validate.sh --firmware` with ESP-IDF 5.5.3 for ESP32-C3, verifies the bootloader at `0x0`, partition table at `0x8000`, application at `0x10000`, 8 MB Flash arguments, and the protected Flash layout, then uploads `meta-pass_v<version>.bin` (version from `git describe`). A separate least-privilege release job publishes that artifact only for a tag.
 
 All Actions are pinned to full commit SHAs. The build job has `contents: read`; only the tag release job receives `contents: write`.
 
 ## Browser flashing
 
-Open `https://ai-passport.folotoy.cn/tools/web-flasher/`, connect the USB JTAG/serial device, select the release's merged `FoloToy-AI-Passport-full.bin`, choose a baud rate such as 460800, and write it from `0x0`. The browser performs local writing and verification; it does not upload the firmware file.
+Open `https://ai-passport.folotoy.cn/tools/web-flasher/`, connect the USB JTAG/serial device, select the release's merged `meta-pass_v*.bin`, choose a baud rate such as 460800, and write it from `0x0`. The browser performs local writing and verification; it does not upload the firmware file.
 
 For board and flashing details, see [the hardware development guide](../../hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md).
 
@@ -50,7 +50,7 @@ things:
   changes compared with the previous one. Keep it user-facing, not a commit log.
 - **How to build**: how to produce and verify the merged firmware
   (`./tools/validate.sh --firmware` or `idf.py build`), and the artifact file to
-  flash (`FoloToy-AI-Passport-full.bin` flashed from `0x0`).
+  flash (`meta-pass_v<version>.bin` flashed from `0x0`).
 - **How to use**: how to flash the build (the browser flasher above) and the key
   interactions or hardware requirements of the release.
 
