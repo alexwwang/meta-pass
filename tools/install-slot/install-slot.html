@@ -142,7 +142,7 @@ function fmtBytes(n) {
   return n + " B";
 }
 
-// Uint8Array → binary string(write_flash 入参);分块转换避免栈溢出
+// Uint8Array → binary string(writeFlash 入参);分块转换避免栈溢出
 function u8ToBinaryString(u8) {
   const CHUNK = 0x8000;
   const parts = [];
@@ -348,7 +348,7 @@ $("btn-install").addEventListener("click", async () => {
       image = await prepareCommunityImage();
     }
     log(`Writing ${image.length} bytes to slot ${slot} at ${hex(address)}…`);
-    await loader.write_flash({
+    await loader.writeFlash({
       fileArray: [{ data: u8ToBinaryString(image.data), address }],
       flashSize: "keep",
       flashMode: "keep",
@@ -363,7 +363,7 @@ $("btn-install").addEventListener("click", async () => {
       if (!blob) throw new Error(`Display name "${dispName}" failed blob packing.`);
       const blobAddr = address + BLOB_OFFSET;
       log(`Writing display name blob (${blob.length} bytes) at ${hex(blobAddr)}…`);
-      await loader.write_flash({
+      await loader.writeFlash({
         fileArray: [{ data: u8ToBinaryString(blob), address: blobAddr }],
         flashSize: "keep",
         flashMode: "keep",
