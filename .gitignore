@@ -4,3 +4,7 @@ sdkconfig.old
 managed_components/
 .vscode/
 .idea/
+
+# Python bytecode
+__pycache__/
+*.pyc

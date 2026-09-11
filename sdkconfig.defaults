@@ -28,15 +28,12 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=24
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
+# --- OTA 槽位(meta-pass 多固件启动) ---
+# 分区表含 otadata + ota_0/ota_1(见 partitions.csv)。
+# 启用应用回滚:新烧入的子固件首启处于"待验证"态,未自验证前任何重启(崩溃/断电/看门狗)
+# 都会让 bootloader 自动回退 factory(meta-pass)。第三方子固件无需配合即天然防变砖;
+# 已适配子固件调用 esp_ota_mark_app_valid_cancel_rollback() 后跨重启常驻。
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
-# --- Bluetooth LE / NimBLE ---
-# ESP32-C3 仅支持 BLE；示例只启用单连接 peripheral 所需的最小 host 配置。
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
-CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# --- Bluetooth LE ---
+# meta-pass 启动器不使用 BLE,整块移除以节省 Flash/RAM;子固件在各自分支自行配置。

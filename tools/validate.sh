@@ -24,10 +24,27 @@ run_static_checks() {
     "${actionlint_bin}" -color .github/workflows/*.yml
 
     test_dir="$(mktemp -d /tmp/ai-passport-host-tests.XXXXXX)"
+    # 纯逻辑 host tests:新增测试源时在此登记编译/运行(meta-pass 的 meta_* 模块)。
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_ui_pixel_math.c main/ui_pixel_math.c \
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_image.c main/meta_image.c \
+        -o "${test_dir}/test_meta_image"
+    "${test_dir}/test_meta_image"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_slots.c main/meta_slots.c \
+        -o "${test_dir}/test_meta_slots"
+    "${test_dir}/test_meta_slots"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_name.c main/meta_name.c \
+        -o "${test_dir}/test_meta_name"
+    "${test_dir}/test_meta_name"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_import.c main/meta_import.c \
+        -o "${test_dir}/test_meta_import"
+    "${test_dir}/test_meta_import"
     python3 tests/test_verify_firmware.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"

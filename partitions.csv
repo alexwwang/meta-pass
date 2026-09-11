@@ -1,5 +1,13 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
+# factory/cardid 与上游基线逐字节一致(verify_firmware.py 强制);新增分区只用空隙与 cardid 之后的空闲区。
+# 布局理由与约束见 docs/assets/meta-pass-design.md §3。
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 factory,  app,  factory, 0x10000,  0x300000,
+# otadata 放在 factory 尾部与 cardid 之间的空隙;全 0xFF(未写入)= bootloader 引导 factory。
+otadata,  data, ota,     0x310000, 0x2000,
 cardid,   data, nvs,     0x356000, 0x4000,
+# app 分区需 64KB 对齐,故槽位从 0x360000 起(cardid 结束 0x35A000 未对齐)。
+# 每个槽位 2MB,存放子固件应用单镜像;尾部 0x760000-0x800000(640KB)留作备用。
+ota_0,    app,  ota_0,   0x360000, 0x200000,
+ota_1,    app,  ota_1,   0x560000, 0x200000,
