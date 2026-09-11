@@ -21,6 +21,8 @@ const STATIC_FILES = new Map([
   ["/vendor/esptool-js.js", { file: "vendor/esptool-js.js", type: "text/javascript; charset=utf-8" }],
   ["/vendor/pako.js", { file: "vendor/pako.js", type: "text/javascript; charset=utf-8" }],
   ["/vendor/atob-lite.js", { file: "vendor/atob-lite.js", type: "text/javascript; charset=utf-8" }],
+  ["/vendor/esp32c3.js", { file: "vendor/esp32c3.js", type: "text/javascript; charset=utf-8" }],
+  ["/vendor/stub_flasher_32c3.js", { file: "vendor/stub_flasher_32c3.js", type: "text/javascript; charset=utf-8" }],
 ]);
 
 function sendJson(res, status, obj) {
