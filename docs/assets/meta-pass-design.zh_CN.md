@@ -193,3 +193,4 @@ Radar 主功能依赖 BLE，模拟器检测到 BLE 即暂停（模拟器无 BLE 
 | 2026-09-11 | 支持社区链接 + full 镜像 JS 解包 | 仅接受 app 单镜像 | 社区只发 full 镜像；解包为确定性算法；社区自带 firmwareSha256 可闭环 |
 | 2026-09-11 | 放弃 BLE 导入通道 | BLE GATT 分块传输 | 速率慢（2MB 需数分钟）、需自建协议、入口须 HTTPS 托管、模拟器不可验证 |
 | 2026-09-11 | 显示名存槽位尾部 4KB blob | NVS 存储；内置 play 名单 | USB 安装页在 ROM 下载模式只能写裸 flash，写不了 NVS 结构；内置名单随市场新增即过时 |
+| 2026-09-11 | esptool-js 本地化 vendor | jsdelivr CDN 动态 import | CDN 慢/不可达时顶层 await 卡死整页（真机首测即踩）；本地 3 文件 81KB 零外链；同时修复 name-blob.js 未入静态白名单导致页面模块整体加载失败的 bug |

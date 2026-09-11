@@ -12,10 +12,15 @@ import { fileURLToPath } from "node:url";
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
 const DIR = path.dirname(fileURLToPath(import.meta.url));
-const HTML = fs.readFileSync(path.join(DIR, "install-slot.html"), "utf8");
+// 页面与静态模块均按请求现读,不在启动时缓存(页面迭代期免重启)
 // 页面以 type=module 引入的同目录 ES 模块;白名单按需登记
 const STATIC_FILES = new Map([
   ["/extract-app-image.js", { file: "extract-app-image.js", type: "text/javascript; charset=utf-8" }],
+  ["/name-blob.js", { file: "name-blob.js", type: "text/javascript; charset=utf-8" }],
+  // 本地化的 esptool-js 及其依赖(jsdelivr +esm 构建,国内 CDN 不可达时页面整体卡死)
+  ["/vendor/esptool-js.js", { file: "vendor/esptool-js.js", type: "text/javascript; charset=utf-8" }],
+  ["/vendor/pako.js", { file: "vendor/pako.js", type: "text/javascript; charset=utf-8" }],
+  ["/vendor/atob-lite.js", { file: "vendor/atob-lite.js", type: "text/javascript; charset=utf-8" }],
 ]);
 
 function sendJson(res, status, obj) {
@@ -83,7 +88,8 @@ const server = http.createServer((req, res) => {
   // GET / → 安装页
   if (pathname === "/" || pathname === "/install-slot.html") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    res.end(HTML);
+    // 每请求现读:页面迭代期免重启
+    fs.createReadStream(path.join(DIR, "install-slot.html")).pipe(res);
     return;
   }
 

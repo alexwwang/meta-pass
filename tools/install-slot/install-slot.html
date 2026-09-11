@@ -157,15 +157,18 @@ async function sha256Hex(buf) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// ===== esptool-js(CDN ESM,加载失败时给出可读错误)=====
+// ===== esptool-js(本地 vendor 加载;不阻塞页面其余功能)=====
 let ESPLoader = null;
 let Transport = null;
-try {
-  ({ ESPLoader, Transport } = await import("https://cdn.jsdelivr.net/npm/esptool-js@0.5.6/+esm"));
-  log("esptool-js loaded.");
-} catch (err) {
-  log(`Failed to load esptool-js from CDN: ${err.message}`, "error");
-}
+import("./vendor/esptool-js.js")
+  .then((m) => {
+    ESPLoader = m.ESPLoader;
+    Transport = m.Transport;
+    log("esptool-js loaded (local vendor).");
+  })
+  .catch((err) => {
+    log(`Failed to load esptool-js (local vendor): ${err.message}`, "error");
+  });
 
 // ===== 运行状态 =====
 let transport = null;
@@ -189,7 +192,7 @@ function refreshInstallButton() {
 // ===== 1. 连接设备 =====
 $("btn-connect").addEventListener("click", async () => {
   if (!ESPLoader) {
-    log("esptool-js is not loaded (CDN unreachable?) — cannot connect.", "error");
+    log("esptool-js still loading (or failed to load) — wait a second and retry.", "error");
     return;
   }
   try {
@@ -239,7 +242,7 @@ $("file-input").addEventListener("change", async (ev) => {
 
 // ===== 3b. 社区玩法 =====
 function parsePlayId(input) {
-  const m = input.trim().match(/(\d+)$/); // 支持完整链接或纯数字 id
+  const m = input.trim().match(/(\d+)\/?$/); // 支持完整链接(可带结尾 /)或纯数字 id
   return m ? m[1] : null;
 }
 
