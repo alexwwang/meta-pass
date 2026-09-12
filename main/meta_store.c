@@ -14,7 +14,7 @@
 
 static const char *TAG = "meta_store";
 
-// 槽位与分区 subtype 的固定映射:ota_0/ota_1(见 partitions.csv)。
+// 槽位与分区 subtype 的固定映射:ota_0/ota_1/ota_2(见 partitions.csv)。
 const esp_partition_t *meta_store_slot_partition(int slot)
 {
     if (slot < 0 || slot >= META_SLOT_COUNT) return NULL;
@@ -100,12 +100,13 @@ static void scan_one(int slot, meta_slot_info_t *out)
         return;
     }
     // 显示名 blob:读槽位尾部 sector 前 64 字节(无 PSRAM,不整 sector 读入)。
-    // 解包成功则用真名替代 project_name;注册表 name 字段放不下(>META_NAME_LEN)时
-    // 回退 project_name,现有 meta_slot_core_name 行为不变。
+    // 偏移按分区大小动态计算(不同槽位大小不同)。解包成功则用真名替代
+    // project_name;注册表 name 字段放不下(>META_NAME_LEN)时回退 project_name。
     const char *name = desc.project_name;
     char disp[META_NAME_MAX + 1];
     uint8_t blob[64];
-    if (esp_partition_read(part, META_NAME_BLOB_OFFSET, blob, sizeof(blob)) == ESP_OK
+    const uint32_t blob_off = meta_name_blob_offset(part->size);
+    if (esp_partition_read(part, blob_off, blob, sizeof(blob)) == ESP_OK
             && meta_name_unpack(blob, sizeof(blob), disp, sizeof(disp))
             && strlen(disp) <= META_NAME_LEN) {
         name = disp;

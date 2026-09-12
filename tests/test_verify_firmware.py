@@ -26,8 +26,12 @@ def sample_table() -> bytes:
     entries = (
         (1, 2, 0x9000, 0x6000, "nvs"),
         (1, 1, 0xF000, 0x1000, "phy_init"),
-        (0, 0, 0x10000, 0x300000, "factory"),
+        (0, 0, 0x10000, 0x170000, "factory"),
+        (0, 0x10, 0x180000, 0x1D6000, "ota_0"),
         (1, 2, 0x356000, 0x4000, "cardid"),
+        (0, 0x11, 0x360000, 0x200000, "ota_1"),
+        (0, 0x12, 0x560000, 0x29E000, "ota_2"),
+        (1, 1, 0x7FE000, 0x2000, "otadata"),
     )
     raw = bytearray(b"\xff" * VERIFY.PARTITION_TABLE_SIZE)
     for index, (kind, subtype, offset, size, label) in enumerate(entries):
@@ -52,8 +56,14 @@ class PartitionParserTest(unittest.TestCase):
     def test_parses_protected_layout_and_md5(self) -> None:
         partitions, found_md5 = VERIFY.parse_partition_table(sample_table())
         self.assertTrue(found_md5)
-        self.assertEqual(partitions[-1].label, "cardid")
-        self.assertEqual(partitions[-1].offset, VERIFY.CARDID_OFFSET)
+        by_label = {p.label: p for p in partitions}
+        self.assertEqual(by_label["factory"].offset, 0x10000)
+        self.assertEqual(by_label["factory"].size, 0x170000)
+        self.assertEqual(by_label["cardid"].offset, VERIFY.CARDID_OFFSET)
+        self.assertEqual(by_label["cardid"].size, VERIFY.CARDID_SIZE)
+        self.assertEqual(by_label["ota_0"].offset, 0x180000)
+        self.assertEqual(by_label["ota_1"].offset, 0x360000)
+        self.assertEqual(by_label["ota_2"].offset, 0x560000)
 
     def test_rejects_bad_md5(self) -> None:
         raw = bytearray(sample_table())
@@ -64,7 +74,7 @@ class PartitionParserTest(unittest.TestCase):
 
 class ProtectedLayoutTest(unittest.TestCase):
     def test_layout_verification_accepts_current_partition_table(self) -> None:
-        merged = bytearray(b"\xff" * (0x10000 + 1))
+        merged = bytearray(b"\xff" * VERIFY.FLASH_SIZE)
         merged[
             VERIFY.PARTITION_TABLE_OFFSET :
             VERIFY.PARTITION_TABLE_OFFSET + VERIFY.PARTITION_TABLE_SIZE

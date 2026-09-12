@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { extractAppImage, espImageLength, isFullImage } from "./extract-app-image.js";
 import {
-  NAME_MAX, BLOB_OFFSET, MAX_APP_IMAGE_SIZE,
+  NAME_MAX, blobOffset, maxAppImageSize,
   packNameBlob, unpackNameBlob, sanitizeDisplayName,
 } from "./name-blob.js";
 
@@ -104,8 +104,8 @@ function hexToBytes(hex) {
 
 {
   assert.equal(NAME_MAX, 32);
-  assert.equal(BLOB_OFFSET, 0x1ff000);
-  assert.equal(MAX_APP_IMAGE_SIZE, 0x1ff000);
+  assert.equal(blobOffset(0x200000), 0x1ff000);
+  assert.equal(maxAppImageSize(0x200000), 0x1ff000);
   for (const { name, hex } of NAME_VECTORS) {
     const expected = hexToBytes(hex);
     const packed = packNameBlob(name);
@@ -157,9 +157,12 @@ function hexToBytes(hex) {
   console.log("PASS 6: sanitizeDisplayName strips non-printable and truncates to 32");
 }
 
-// 7. 应用镜像上限收紧到 0x1FF000(尾部 4KB 保留给 blob)
+// 7. 应用镜像上限按槽位分区大小动态计算(尾部 4KB 保留给 blob)
 {
-  // ESP 镜像总长恒为 16 的倍数:0x1FF000 是边界合法值,0x1FF010 是下一个超限值
+  // 以 ota_1 槽位(0x200000)为例:上限 = 0x1FF000
+  const slotSize = 0x200000;
+  const limit = maxAppImageSize(slotSize);
+  // ESP 镜像总长恒为 16 的倍数:limit 是边界合法值,limit+0x10 是下一个超限值
   const buildSized = (target) => {
     let s0 = target - 96;
     for (let it = 0; it < 32; it++) {
@@ -174,11 +177,14 @@ function hexToBytes(hex) {
     buf.set([0x00, 0x00, 0xc8, 0x3f, s0 & 0xff, (s0 >> 8) & 0xff, (s0 >> 16) & 0xff, (s0 >> 24) & 0xff], 40);
     return buf;
   };
-  const okImg = buildSized(MAX_APP_IMAGE_SIZE);
-  assert.equal(extractAppImage(okImg).length, MAX_APP_IMAGE_SIZE, "exactly 0x1FF000 must pass");
-  const bigImg = buildSized(MAX_APP_IMAGE_SIZE + 0x10);
-  assert.throws(() => extractAppImage(bigImg), /max app image size/, "0x1FF010 must be rejected");
-  console.log("PASS 7: app image limit tightened to 0x1FF000 (blob sector reserved)");
+  const okImg = buildSized(limit);
+  assert.equal(extractAppImage(okImg, limit).length, limit, "exactly at limit must pass");
+  const bigImg = buildSized(limit + 0x10);
+  assert.throws(() => extractAppImage(bigImg, limit), /max app image size/, "limit+0x10 must be rejected");
+  // 验证小槽位(ota_0=0x1D6000)上限更小
+  const ota0Limit = maxAppImageSize(0x1D6000);
+  assert.ok(ota0Limit < limit, "ota_0 limit must be smaller than ota_1");
+  console.log("PASS 7: app image limit dynamically computed per slot (blob sector reserved)");
 }
 
 // ===== 8. install-slot.html i18n 字典:en/zh 键集合一致,页面引用的键全部存在 =====

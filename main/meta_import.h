@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "meta_name.h"   // META_NAME_MAX_APP_SIZE:导入上限(尾部 4KB 保留给显示名 blob)
+#include "meta_name.h"   // meta_name_max_app_size():导入上限(尾部 4KB 保留给显示名 blob)
 
 #define MI_CODE_LEN        6   // 屏幕显示的一次性配对码位数(数字)
 #define MI_MAX_PAIR_FAILS  3   // 连续配对失败上限,达到后锁定为 ERROR(AUTH)
@@ -57,6 +57,6 @@ bool mi_code_gen(uint32_t random32, char out[MI_CODE_LEN + 1]);
 // 常量时间比较两个配对码;长度不是恰好 MI_CODE_LEN 直接判负。
 bool mi_code_equal(const char *a, const char *b);
 
-// Content-Length 策略:必须为正且不超过上限。调用方传 META_NAME_MAX_APP_SIZE
-// (槽位 0x200000 的尾部最后 4KB 保留给显示名 blob,应用镜像有效上限 0x1FF000)。
+// Content-Length 策略:必须为正且不超过上限。调用方传 meta_name_max_app_size(part_size)
+// (槽位尾部最后 4KB 保留给显示名 blob,应用镜像有效上限 = 分区大小 − 4KB)。
 bool mi_content_length_ok(int64_t declared, uint32_t slot_size);

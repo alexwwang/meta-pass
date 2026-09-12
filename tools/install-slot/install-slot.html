@@ -72,7 +72,7 @@
 </div>
 <main>
   <h1 data-i18n="title_page">meta-pass · USB Slot Installer</h1>
-  <p class="subtitle" data-i18n="subtitle">Write a child firmware into slot 0 / 1 over USB serial (Chrome + Web Serial).</p>
+  <p class="subtitle" data-i18n="subtitle">Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).</p>
 
   <p class="hint" data-i18n="hint">Hold <b>UP</b> while powering on to enter download mode, then plug in the USB cable.</p>
 
@@ -89,10 +89,10 @@
 
   <section>
     <h2 data-i18n="step_slot">2. Select slot</h2>
-    <label><input type="radio" name="slot" value="0" checked> <span data-i18n="slot_0">Slot 0</span> <code>0x360000</code></label>
-    <label><input type="radio" name="slot" value="1"> <span data-i18n="slot_1">Slot 1</span> <code>0x560000</code></label>
+    <label><input type="radio" name="slot" value="0" checked> <span data-i18n="slot_0">Slot 0</span> <code>0x180000</code></label>
+    <label><input type="radio" name="slot" value="1"> <span data-i18n="slot_1">Slot 1</span> <code>0x360000</code></label>
+    <label><input type="radio" name="slot" value="2"> <span data-i18n="slot_2">Slot 2</span> <code>0x560000</code></label>
   </section>
-
   <section>
     <h2 data-i18n="step_firmware">3. Firmware source</h2>
     <div class="tabs">
@@ -130,9 +130,14 @@
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, hex } from "./extract-app-image.js";
-import { packNameBlob, sanitizeDisplayName, BLOB_OFFSET } from "./name-blob.js";
+import { packNameBlob, sanitizeDisplayName, blobOffset, maxAppImageSize } from "./name-blob.js";
 
-const SLOT_OFFSETS = [0x360000, 0x560000];
+// 3-Slot 分区表(与 partitions.csv 一致):[offset, size]
+const SLOTS = [
+  { offset: 0x180000, size: 0x1D6000 },  // ota_0 (cardid-before)
+  { offset: 0x360000, size: 0x200000 },  // ota_1
+  { offset: 0x560000, size: 0x29E000 },  // ota_2 (dual-use)
+];
 
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
@@ -144,7 +149,7 @@ const I18N = {
   en: {
     // 静态文案
     title_page: "meta-pass · USB Slot Installer",
-    subtitle: "Write a child firmware into slot 0 / 1 over USB serial (Chrome + Web Serial).",
+    subtitle: "Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).",
     hint: "Hold <b>UP</b> while powering on to enter download mode, then plug in the USB cable.",
     step_connect: "1. Connect",
     btn_connect: "Connect",
@@ -152,6 +157,7 @@ const I18N = {
     step_slot: "2. Select slot",
     slot_0: "Slot 0",
     slot_1: "Slot 1",
+    slot_2: "Slot 2",
     step_firmware: "3. Firmware source",
     tab_local: "Local file",
     tab_community: "Community play",
@@ -210,7 +216,7 @@ const I18N = {
   zh: {
     // 静态文案
     title_page: "meta-pass · USB 槽位烧录器",
-    subtitle: "通过 USB 串口(Chrome + Web Serial)将子固件写入 slot 0 / 1。",
+    subtitle: "通过 USB 串口(Chrome + Web Serial)将子固件写入 slot 0 / 1 / 2。",
     hint: "上电时按住 <b>UP</b> 键进入 ROM download mode,然后插入 USB 线。",
     step_connect: "1. 连接设备",
     btn_connect: "连接",
@@ -218,6 +224,7 @@ const I18N = {
     step_slot: "2. 选择 slot",
     slot_0: "Slot 0",
     slot_1: "Slot 1",
+    slot_2: "Slot 2",
     step_firmware: "3. 固件来源",
     tab_local: "本地文件",
     tab_community: "社区玩法",
@@ -526,13 +533,18 @@ $("btn-install").addEventListener("click", async () => {
   setProgress(0);
   try {
     const slot = Number(document.querySelector('input[name="slot"]:checked').value);
-    const address = SLOT_OFFSETS[slot];
+    const s = SLOTS[slot];
+    const address = s.offset;
+    const slotLimit = maxAppImageSize(s.size);
     let image;
     if (activeTab === "local") {
       if (!localImage) throw new Error(t("err_choose_file_first"));
       image = localImage;
     } else {
       image = await prepareCommunityImage();
+    }
+    if (image.length > slotLimit) {
+      throw new Error(`App image is ${image.length} bytes — exceeds slot ${slot} limit of ${slotLimit} bytes (${Math.floor(slotLimit / 1024)} KB).`);
     }
     log(t("msg_writing_slot", { size: image.length, slot, addr: hex(address) }));
     await loader.writeFlash({
@@ -543,12 +555,12 @@ $("btn-install").addEventListener("click", async () => {
       compress: true,
       reportProgress: (_i, written, total) => setProgress((written / total) * 100),
     });
-    // 显示名 blob:应用段写完后单独写槽位尾部 sector(与 app 区不重叠,互不破坏)
+    // 显示名 blob:应用段写完后单独写槽位尾部 sector(偏移按分区大小动态计算)
     const dispName = sanitizeDisplayName($("disp-name").value);
     if (dispName) {
       const blob = packNameBlob(dispName);
       if (!blob) throw new Error(t("err_blob_pack", { name: dispName }));
-      const blobAddr = address + BLOB_OFFSET;
+      const blobAddr = address + blobOffset(s.size);
       log(t("msg_writing_blob", { size: blob.length, addr: hex(blobAddr) }));
       await loader.writeFlash({
         fileArray: [{ data: u8ToBinaryString(blob), address: blobAddr }],

@@ -21,20 +21,21 @@ meta-pass 是 AI Passport 的**多固件启动器**：作为 factory 应用常�
 
 ## 3. Flash 布局
 
-基线契约（`tools/verify_firmware.py` 强制）逐字节保留：`factory@0x10000/3MB`、
-`cardid@0x356000/0x4000`。新增分区只使用空隙与 cardid 之后的空闲区：
+3-Slot 架构（feat/shrink）：factory 缩至 1.44MB，cardid 前空隙复用为 ota_0，otadata 移至 Flash 尾部。
+受保护的 `cardid@0x356000/0x4000` 不变，由 `tools/verify_firmware.py` 强制：
 
 | 分区 | 类型 | 偏移 | 大小 | 说明 |
 | --- | --- | --- | --- | --- |
 | nvs | data/nvs | 0x9000 | 0x6000 | 不变（子固件共享此 NVS 命名空间） |
 | phy_init | data/phy | 0xf000 | 0x1000 | 不变 |
-| factory | app/factory | 0x10000 | 0x300000 | **不变**，meta-pass 本体 |
-| otadata | data/ota | 0x310000 | 0x2000 | 新增；全 0xFF = 引导 factory |
+| factory | app/factory | 0x10000 | **0x170000** | 从 3MB 缩至 1.44MB；meta-pass 启动器，目标 < 1.43MB |
+| ota_0 | app/ota_0 | **0x180000** | **0x1D6000** (1.84MB) | 新增；复用 cardid 前空隙 |
 | cardid | data/nvs | 0x356000 | 0x4000 | **不变**，受保护身份区 |
-| ota_0 | app/ota_0 | 0x360000 | 0x200000 | 新增槽位 0（app 分区需 64KB 对齐，0x35A000 未对齐故从 0x360000 起） |
-| ota_1 | app/ota_1 | 0x560000 | 0x200000 | 新增槽位 1；尾部余 0x760000–0x800000（640KB）备用 |
+| ota_1 | app/ota_1 | 0x360000 | 0x200000 (2MB) | 不变（app 分区需 64KB 对齐，0x35A000 未对齐故从 0x360000 起） |
+| ota_2 | app/ota_2 | **0x560000** | **0x29E000** (2.61MB) | 新增；子固件槽位或录音存储双用（见 §6.3） |
+| otadata | data/ota | **0x7FE000** | 0x2000 | 从 0x310000 移至 Flash 尾部；全 0xFF = 引导 factory |
 
-约束：子固件单镜像 ≤ 2044KB（槽位尾部最后 4KB sector 保留给显示名 blob，见 §6.2）；
+约束：子固件单镜像 ≤ (分区大小 − 4KB)（槽位尾部最后 4KB sector 保留给显示名 blob，见 §6.2）；
 合并镜像中 cardid 区域必须全 0xFF；项目名保持
 `FoloToy-AI-Passport`（门禁硬编码镜像文件名）。
 
@@ -88,7 +89,7 @@ Wi-Fi/HTTP 在离开页面时完整停止并释放（对照 demo_wifi 的进入/
 1. 设备按住 **UP 键**开机/复位：UP = 0Ω 拉低 GPIO0（strapping 键）→ 进入 ROM 下载模式。
 2. 电脑 Chrome 打开 `tools/install-slot/` 页面（localhost 服务；Web Serial 要求安全上下文，
    设备端 `http://192.168.4.1` 无法满足，故页面只能在电脑端）。
-3. 页面用 esptool-js 经 USB Serial/JTAG 把子固件写入槽位偏移（`0x360000`/`0x560000`），
+3. 页面用 esptool-js 经 USB Serial/JTAG 把子固件写入槽位偏移（`0x180000`/`0x360000`/`0x560000`），
    写后自动校验；复位后 meta-pass 扫描即可引导。
 
 固件来源二选一：
@@ -100,25 +101,39 @@ Wi-Fi/HTTP 在离开页面时完整停止并释放（对照 demo_wifi 的进入/
   社区详情接口提供 `firmwareSha256`，页面下载后校验哈希——与 meta-pass 启动扫描时
   显示的哈希形成闭环比对。
 
-边界：只写两个槽位偏移，不触碰 factory/cardid/otadata；应用镜像 > 2MB 拒绝写入。
+边界：只写三个槽位偏移，不触碰 factory/cardid/otadata；应用镜像 > (槽位大小 − 4KB) 拒绝写入。
 未覆盖：BLE 通道（速率慢、需自建分块协议、入口需 HTTPS 托管，评估后放弃，见 §11）。
 
 ### 6.2 槽位显示名 blob
 
 固件真名（如 "Pocket Walkie"）只存在于商店元数据，镜像内的 `project_name` 普遍是编译模板
 默认值（社区固件全是 `FoloToy-AI-Passport`），扫描时无法得知真名。故在**安装时**把显示名
-写入槽位分区尾部最后 4KB sector（`slot_offset + 0x1FF000`）：
+写入槽位分区尾部最后 4KB sector。因各槽位分区大小不同（ota_0=0x1D6000, ota_1=0x200000,
+ota_2=0x29E000），blob 偏移按分区大小动态计算（`partition_size − 0x1000`）：
 
 - blob 格式：`magic "MNAM"`(4B) + `name_len`(1B，1–32，对齐槽位注册表字段) + 名字（可打印 ASCII) + XOR 校验(1B);
 - 启动器扫描：blob 校验通过 → 显示真名；否则回退 `project_name` 剥 `FoloToy-` 前缀的核心名；
 - 名字来源：USB 安装页 = 社区玩法英文标题 / 本地文件名；Wi-Fi 导入页 = 可选输入框；
-- 应用镜像上限随之收紧为 2044KB；删除槽位整区擦除，blob 一并消失。
+- 应用镜像上限随之收紧为 (分区大小 − 4KB)；删除槽位整区擦除，blob 一并消失。
+
+### 6.3 ota_2 双用存储
+
+ota_2 根据运行时状态承担两种角色：
+
+- **子固件槽位**：第三方固件镜像可写入 ota_2 并由启动器通过 `esp_ota_set_boot_partition()` 引导。
+- **录音存储**：录音子固件（运行于 ota_0 或 ota_1）可在 ota_2 上挂载 littlefs 存储音频文件。
+  子固件先对 ota_2 执行 `esp_image_verify()`：发现合法镜像则不触碰；为空/无效则擦除并挂载为
+  文件系统。
+
+分区类型仍为 `app`（subtype `ota_2`），bootloader 可正常选择为启动目标。littlefs 挂载忽略
+分区类型——`esp_littlefs_mount()` 按 label 定位分区，不关心 kind。此双用为运行时约定，
+非分区表强制执行。
 
 ## 7. 固件校验策略
 
 强制（任何子固件）：
 
-- 镜像头 magic `0xE9`、chip id = ESP32-C3、大小 ≤ 2044KB（槽位尾部保留显示名 blob）、segment 数量合法；
+- 镜像头 magic `0xE9`、chip id = ESP32-C3、大小 ≤ (槽位大小 − 4KB)（槽位尾部保留显示名 blob；各槽位大小不同：0x1D6000/0x200000/0x29E000）、segment 数量合法；
 - 计算全镜像 SHA-256 并在确认页显示（供与来源方公布的哈希人工比对）。
 
 可选徽章：固件包附带签名时验签显示「已签名」；不强制——市场上已有固件不能要求重新适配。
@@ -133,7 +148,7 @@ cardid。信任来源 = 用户判断 + 配对码物理持有 + 试运行隔离�
 保留 `ui_pixel` 主题（天空/草地/标题牌/吉祥物）与右上角电量（避开白云 `x≈188,y≈8`）。
 UI 文案英文。
 
-- **主列表页**：槽位 0/1 条目显示 空 / 显示名（安装时写入的真名，无则回退核心名）；UP/DOWN 选择，OK 单击进详情。
+- **主列表页**：槽位 0/1/2 条目显示 空 / 显示名（安装时写入的真名，无则回退核心名）；UP/DOWN 选择，OK 单击进详情。
 - **详情页**：Boot（未签名须警告页 LONG2 确认）、Delete（确认页 LONG2 确认）、返回。
 - **Import 页**：显示 SSID/密码/配对码/IP/倒计时；OK 长按退出并完整释放网络栈。
 - 全局：`OK LONG` = 返回上级；`OK LONG2` 在子固件中 = 退回启动器（启动器内同 LONG）。
@@ -155,7 +170,7 @@ UI 文案英文。
 ## 10. 验收标准
 
 - `./tools/validate.sh` 全绿（静态 + 固件门禁，含新 host tests）；
-- 分区表：factory/cardid 与基线逐字节一致，otadata/ota_0/ota_1 无重叠、cardid 全 0xFF；
+- 分区表：factory/cardid 与基线逐字节一致，ota_0/ota_1/ota_2/otadata 无重叠、cardid 全 0xFF；
 - 真机清单（交付时逐项确认）：导入 1 个固件并启动；断电重启自动回启动器；已适配固件
   常驻；删除后槽位为空；坏文件被拒绝；配对码错误被拒绝；反复进出 Import 无泄漏。
 
@@ -176,6 +191,28 @@ Radar（官方固件，标准 BSP）菜单内按键导航正常——证明 meta
 按键同样无响应（非 meta-pass 引入，疑其按键读取路径与模拟器 ADC 注入不兼容，真机待验）；
 Radar 主功能依赖 BLE，模拟器检测到 BLE 即暂停（模拟器无 BLE 支持）。
 
+### 10.2 三槽位瘦身验证（2026-09-12，Web 模拟器）
+
+`feat/shrink` 从全新 `sdkconfig.defaults` 重编（不复用陈旧 `sdkconfig`）
+**1,024,608 字节（1001 KB）**，对 1.44 MB（`0x170000`）factory 分区余量 32.0%。
+
+决定性验证点是**显示名 blob 动态偏移**（`分区大小 − 4KB`）：旧的固定 `0x1FF000`
+会把 ota_0 的 blob 放到 `0x37F000`，即落在 ota_1 分区内部。用合成 8MB 镜像预置三槽后
+上传模拟器，逐槽位读回结果：
+
+| 槽位 | 分区 | blob 偏移 | OCR 读回 |
+| --- | --- | --- | --- |
+| ota_0 | 0x180000 / 0x1D6000 | 0x355000 | `SLOT 0: Pocket Walkie` |
+| ota_1 | 0x360000 / 0x200000 | 0x55F000 | `SLOT 1: Passport Radar` |
+| ota_2 | 0x560000 / 0x29E000 | 0x7FD000 | `SLOT 2: Walkie Clone` |
+
+三个名字各自从本槽位尾部读回，只有按本槽位分区大小计算偏移才可能成立。
+`ota_0` 引导正常（`esp_ota_set_boot_partition` 指向新的 0x180000），断电后按回滚模型
+回到启动器且槽位状态保持，回滚机制未受布局变更影响。
+
+未覆盖：`ota_1`/`ota_2` 引导（与 ota_0 同代码路径，仅分区句柄不同）、删除流程、
+ota_2 录音存储双用的另一半（尚无录音子固件）。
+
 ## 11. 决策记录
 
 | 日期 | 决策 | 备选 | 理由 |
@@ -194,3 +231,8 @@ Radar 主功能依赖 BLE，模拟器检测到 BLE 即暂停（模拟器无 BLE 
 | 2026-09-11 | 放弃 BLE 导入通道 | BLE GATT 分块传输 | 速率慢（2MB 需数分钟）、需自建协议、入口须 HTTPS 托管、模拟器不可验证 |
 | 2026-09-11 | 显示名存槽位尾部 4KB blob | NVS 存储；内置 play 名单 | USB 安装页在 ROM 下载模式只能写裸 flash，写不了 NVS 结构；内置名单随市场新增即过时 |
 | 2026-09-11 | esptool-js 本地化 vendor | jsdelivr CDN 动态 import | CDN 慢/不可达时顶层 await 卡死整页（真机首测即踩）；本地 3 文件 81KB 零外链；同时修复 name-blob.js 未入静态白名单导致页面模块整体加载失败的 bug |
+| 2026-09-12 | 3-Slot 架构（feat/shrink） | 保持 2 槽 × 2MB | factory 缩至 1.44MB；cardid 前空隙复用为 ota_0；ota_2 扩至 2.61MB 支持双用存储 |
+| 2026-09-12 | blob 偏移按槽位分区大小动态计算 | 固定 0x1FF000 偏移 | 各槽位分区大小不同（0x1D6000/0x200000/0x29E000）；blob 偏移 = 分区大小 − 4KB |
+| 2026-09-12 | -Os 编译器优化 + WARN 日志 | 保持 -Og Debug | -Os 缩小约 20%；INFO 级日志字符串占约 50KB .rodata |
+| 2026-09-12 | 裁剪 LVGL examples/demos | 保持完整 LVGL | 默认构建编译 1800+ demo 单元（约 2MB）；启动器仅需 label/button/panel |
+| 2026-09-12 | ota_2 双用：固件槽位或录音存储 | 独立存储分区 | 运行时 esp_image_verify() 判断；littlefs 忽略分区类型；无分区表冲突 |

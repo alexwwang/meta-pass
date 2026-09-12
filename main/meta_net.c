@@ -95,7 +95,7 @@ static const char INDEX_HTML[] =
     "<p>1. Pairing code (shown on device screen):<br>"
     "<input id=c maxlength=6 size=8> <button onclick='pair()'>Pair</button> <b id=ps></b></p>"
     "<p>2. Slot: <select id=s><option value=0>Slot 0</option><option value=1>Slot 1</option>"
-    "</select></p>"
+    "<option value=2>Slot 2</option></select></p>"
     "<p>3. Firmware (.bin app image):<br><input type=file id=f></p>"
     "<p>4. Display name (optional, shown in the device menu):<br>"
     "<input type=text id=dispname name=dispname maxlength=32 size=24"
@@ -176,8 +176,9 @@ static esp_err_t h_upload(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "bad slot");
     }
-    // 上限收紧到 META_NAME_MAX_APP_SIZE:槽位尾部最后 4KB 保留给显示名 blob
-    if (!mi_content_length_ok(req->content_len, META_NAME_MAX_APP_SIZE)) {
+    // 上限收紧:槽位尾部最后 4KB 保留给显示名 blob(按分区大小动态计算)。
+    const uint32_t max_app = meta_name_max_app_size(part->size);
+    if (!mi_content_length_ok(req->content_len, max_app)) {
         mi_handle(&s_mi, MI_EV_ABORT);
         s_mi.last_error = MI_ERR_TOO_LARGE;
         set_status(MI_ERROR, -1, "Firmware too large for slot.");
@@ -281,19 +282,20 @@ static esp_err_t h_upload(httpd_req_t *req)
     meta_slot_set_valid(&s_slots[slot], disp[0] != '\0' ? disp : name, ver,
                         (uint32_t)req->content_len, sha_hex);
 
-    // 显示名 blob:擦除槽位尾部 4KB sector 后写入。擦/写失败仅记日志,
-    // 不影响导入成功状态(扫描时无 blob 则回退 project_name)。
+    // 显示名 blob:擦除槽位尾部 4KB sector 后写入(偏移按分区大小动态计算)。
+    // 擦/写失败仅记日志,不影响导入成功状态(扫描时无 blob 则回退 project_name)。
     if (disp[0] != '\0') {
         uint8_t blob[64];
         memset(blob, 0xFF, sizeof(blob));   // 未写字节保持擦除态
         const size_t blob_len = meta_name_pack(disp, blob, sizeof(blob));
         const size_t write_len = (blob_len + 3u) & ~(size_t)3u;   // esp_partition_write 4B 对齐
+        const uint32_t blob_off = meta_name_blob_offset(part->size);
         esp_err_t berr = (blob_len > 0) ? ESP_OK : ESP_ERR_INVALID_ARG;
         if (berr == ESP_OK) {
-            berr = esp_partition_erase_range(part, META_NAME_BLOB_OFFSET, META_NAME_BLOB_SECTOR);
+            berr = esp_partition_erase_range(part, blob_off, META_NAME_BLOB_SECTOR);
         }
         if (berr == ESP_OK) {
-            berr = esp_partition_write(part, META_NAME_BLOB_OFFSET, blob, write_len);
+            berr = esp_partition_write(part, blob_off, blob, write_len);
         }
         if (berr != ESP_OK) {
             ESP_LOGW(TAG, "槽位 %d 显示名 blob 写入失败: %s", slot, esp_err_to_name(berr));

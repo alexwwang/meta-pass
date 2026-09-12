@@ -9,7 +9,7 @@
 
 // 扫描全部槽位填充 out:全 0xFF → EMPTY;esp_image_verify(含校验和/哈希)失败 → INVALID;
 // 通过则读 esp_app_desc 的名称/版本、镜像长度,并流式计算全镜像 SHA-256 → VALID。
-// 每次启动执行一次;2 槽 × 2MB 的 flash 读取耗时在可接受范围(毫秒级×百次)。
+// 每次启动执行一次;3 槽的 flash 读取耗时在可接受范围(毫秒级×百次)。
 esp_err_t meta_store_scan(meta_slot_info_t out[META_SLOT_COUNT]);
 
 // 整槽擦除。slot 越界或分区不存在返回 ESP_ERR_INVALID_ARG。

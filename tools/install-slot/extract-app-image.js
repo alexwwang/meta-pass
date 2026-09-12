@@ -1,7 +1,7 @@
 // tools/install-slot/extract-app-image.js —— ESP 镜像解包纯函数(ES module,浏览器/Node 双端)。
 // install-slot.html 以 <script type="module"> import;test-extract.mjs 直接用 node 跑测试。
 // 常量与 main/meta_image.c 及分区表布局同一约定。
-import { MAX_APP_IMAGE_SIZE } from "./name-blob.js";
+import { maxAppImageSize } from "./name-blob.js";
 
 export const ESP_IMAGE_MAGIC = 0xE9;   // esp_image_header_t 魔数
 export const ESP_CHIP_ID_ESP32C3 = 5;  // chip_id 的 ESP32-C3 取值
@@ -101,7 +101,7 @@ function findFactoryPartition(buf) {
 
 // 统一入口:Full 镜像自动解包出应用镜像;应用单镜像直接校验。
 // 两条路都校验 magic/chip_id/尺寸,返回可写入槽位的字节。
-export function extractAppImage(buf) {
+export function extractAppImage(buf, maxSize) {
   let appStart = 0;
   let source = "app image";
   if (isFullImage(buf)) {
@@ -113,9 +113,10 @@ export function extractAppImage(buf) {
     source = `full image (factory app at ${hex(part.offset)})`;
   }
   const imgLen = espImageLength(buf, appStart);
-  // 上限收紧到 MAX_APP_IMAGE_SIZE(0x1FF000):槽位尾部最后 4KB 保留给显示名 blob
-  if (imgLen > MAX_APP_IMAGE_SIZE) {
-    throw new Error(`App image is ${imgLen} bytes — exceeds max app image size ${MAX_APP_IMAGE_SIZE} bytes (2044 KB; the last 4 KB of the 2 MB slot is reserved for the display name).`);
+  // 上限按槽位分区大小动态计算:slot 尾部最后 4KB 保留给显示名 blob
+  const limit = maxSize ?? maxAppImageSize(SLOT_CAPACITY);
+  if (imgLen > limit) {
+    throw new Error(`App image is ${imgLen} bytes — exceeds max app image size ${limit} bytes (the last 4 KB of the slot is reserved for the display name).`);
   }
   return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source };
 }

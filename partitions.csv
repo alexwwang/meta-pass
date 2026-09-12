@@ -1,13 +1,16 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
-# factory/cardid 与上游基线逐字节一致(verify_firmware.py 强制);新增分区只用空隙与 cardid 之后的空闲区。
+# 3-Slot 架构:factory 缩至 1.44MB,cardid 前空间利用为 ota_0,cardid 后放 ota_1/ota_2。
+# cardid@0x356000 不动(verify_firmware.py 强制保护);otadata 移至 flash 尾部。
 # 布局理由与约束见 docs/assets/meta-pass-design.md §3。
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
-factory,  app,  factory, 0x10000,  0x300000,
-# otadata 放在 factory 尾部与 cardid 之间的空隙;全 0xFF(未写入)= bootloader 引导 factory。
-otadata,  data, ota,     0x310000, 0x2000,
+factory,  app,  factory, 0x10000,  0x170000,
+# ota_0 占用 factory 尾到 cardid 之间的空间(cardid 前)。
+ota_0,    app,  ota_0,   0x180000, 0x1D6000,
 cardid,   data, nvs,     0x356000, 0x4000,
 # app 分区需 64KB 对齐,故槽位从 0x360000 起(cardid 结束 0x35A000 未对齐)。
-# 每个槽位 2MB,存放子固件应用单镜像;尾部 0x760000-0x800000(640KB)留作备用。
-ota_0,    app,  ota_0,   0x360000, 0x200000,
-ota_1,    app,  ota_1,   0x560000, 0x200000,
+ota_1,    app,  ota_1,   0x360000, 0x200000,
+# ota_2 兼作子固件槽或录音存储(双用):录音固件检查无合法镜像后挂载 littlefs。
+ota_2,    app,  ota_2,   0x560000, 0x29E000,
+# otadata 放 flash 尾部,紧贴 8MB 边界。
+otadata,  data, ota,     0x7FE000, 0x2000,

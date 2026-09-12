@@ -5,19 +5,23 @@
 # Changelog
 
 ## Unreleased
-- Added the meta-pass multi-firmware launcher (`feature/meta-pass` branch): the partition table keeps the baseline `factory`/`cardid` contract byte-identical while adding `otadata` and two 2 MB OTA slots (`ota_0@0x360000`, `ota_1@0x560000`); app rollback is enabled (un-adapted child firmware automatically falls back to the launcher on any reboot); firmware import over Wi-Fi SoftAP + web page (random password + on-screen one-time pairing code, streamed in 1024-byte chunks); mandatory image integrity checks (magic/chip-id/size/SHA-256 display, with `esp_ota_end()` as the authoritative re-check) and a warning page requiring an extra-long press before booting unsigned firmware; local management UI to list/boot/delete slot firmware; the button BSP gained a `BSP_BTN_LONG2` event (2x long-press); pure-logic modules (image validation, slot registry, import state machine) ship with host tests wired into the static gate. Design document: `docs/assets/meta-pass-design.md`.
+- Added the meta-pass multi-firmware launcher (`feature/meta-pass` branch): the partition table keeps the `factory`/`cardid` contract in place while adding `otadata` and three OTA slots of differing sizes (`ota_0@0x180000` / `0x1D6000`, `ota_1@0x360000` / `0x200000`, `ota_2@0x560000` / `0x29E000`); app rollback is enabled (un-adapted child firmware automatically falls back to the launcher on any reboot); firmware import over Wi-Fi SoftAP + web page (random password + on-screen one-time pairing code, streamed in 1024-byte chunks); mandatory image integrity checks (magic/chip-id/size/SHA-256 display, with `esp_ota_end()` as the authoritative re-check) and a warning page requiring an extra-long press before booting unsigned firmware; local management UI to list/boot/delete slot firmware; the button BSP gained a `BSP_BTN_LONG2` (2x long-press duration) event; pure-logic modules (image validation, slot registry, import state machine) ship with host tests wired into the static gate. Design: `docs/assets/meta-pass-design.md`.
 - Second import channel (USB serial, `tools/install-slot/`): Chrome + Web Serial +
   esptool-js write child firmware directly into a slot while the device is in ROM
   download mode (power on while holding UP); sources are a local `.bin` (Full Flash
   images are unpacked to their app image) or a community play link (verified against
   the published SHA-256). Design: `docs/assets/meta-pass-design.md` §6.1.
-- Slot display-name blob (§6.2): the real firmware name is written at install time into
-  the slot partition's last 4KB sector (`slot_offset+0x1FF000`; `magic "MNAM"` + length +
-  printable ASCII + XOR checksum, ≤32 bytes); the launcher scan prefers it and falls back
-  to the core name (`project_name` minus the `FoloToy-` prefix, new `meta_slot_core_name`);
-  the app image limit tightens to 2044KB. The USB install page auto-fills the community
-  play's English title / local file name; the Wi-Fi import page gained an optional name
-  field.
+- Slot display-name blob (§6.2): the real firmware name is written at install time
+  into the slot partition's last 4KB sector (`slot_offset + partition_size − 4KB`,
+  derived per slot because the three slot sizes now differ: `0x1D6000`/`0x200000`/
+  `0x29E000`; `magic "MNAM"` + length + printable ASCII + XOR checksum, ≤32 bytes);
+  the launcher scan prefers it and falls back to the core name (`project_name` minus
+  the `FoloToy-` prefix, new `meta_slot_core_name`). `ota_2` is a dual-use area
+  (bootable child slot, or littlefs recording storage when empty). The factory
+  app limit tightens to 1.44 MB (`0x170000`) with `ota_0` moved into the
+  cardid-before gap (`0x180000`). The USB install page auto-fills the community
+  play's English title / local file name; the Wi-Fi import page gained an optional
+  name field.
 
 - Added the supplied 80-byte CW2017 profile for the specified 520 mAh cell, including content/update-flag checks, verified writes, the required restart sequence, and bounded SOC-readiness polling.
 

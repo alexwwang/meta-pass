@@ -5,16 +5,18 @@
 # Changelog
 
 ## Unreleased
-- 新增 meta-pass 多固件启动器（`feature/meta-pass` 分支）：分区表在保留 `factory`/`cardid` 基线契约的前提下新增 `otadata` 与两个 2 MB OTA 槽位（`ota_0@0x360000`、`ota_1@0x560000`）；启用应用回滚（未适配子固件任何重启后自动回退启动器）；Wi-Fi SoftAP + 网页导入固件（随机密码 + 屏幕一次性配对码，1024 字节分块流式写入）；镜像强制完整性校验（magic/chip-id/大小/SHA-256 显示，`esp_ota_end()` 权威复核），未签名固件启动前警告并须超长按确认；本地管理界面支持查看/启动/删除槽位固件；BSP 按键新增 `BSP_BTN_LONG2`（2× 长按时长）事件；纯逻辑模块（镜像校验、槽位注册表、导入状态机）配 host tests 并接入静态门禁。设计文档见 `docs/assets/meta-pass-design.md`。
+- 新增 meta-pass 多固件启动器（`feature/meta-pass` 分支）：分区表在保留 `factory`/`cardid` 契约的前提下新增 `otadata` 与三个大小不等的 OTA 槽位（`ota_0@0x180000` / `0x1D6000`、`ota_1@0x360000` / `0x200000`、`ota_2@0x560000` / `0x29E000`）；启用应用回滚（未适配子固件任何重启后自动回退启动器）；Wi-Fi SoftAP + 网页导入固件（随机密码 + 屏幕一次性配对码，1024 字节分块流式写入）；镜像强制完整性校验（magic/chip-id/大小/SHA-256 显示，`esp_ota_end()` 权威复核），未签名固件启动前警告并须超长按确认；本地管理界面支持查看/启动/删除槽位固件；BSP 按键新增 `BSP_BTN_LONG2`（2× 长按时长）事件；纯逻辑模块（镜像校验、槽位注册表、导入状态机）配 host tests 并接入静态门禁。设计文档见 `docs/assets/meta-pass-design.zh_CN.md`。
 - 第二导入通道（USB 串口，`tools/install-slot/`）：Chrome + Web Serial + esptool-js 在
   ROM 下载模式（按住 UP 键开机）下把子固件直接写入槽位；本地 `.bin`（Full 镜像自动
   解包）或社区玩法链接（SHA-256 校验后写入）。设计见
   `docs/assets/meta-pass-design.zh_CN.md` §6.1。
 - 槽位显示名 blob（§6.2）：安装时把固件真名写入槽位分区尾部 4KB sector
-  （`slot_offset+0x1FF000`，`magic "MNAM"` + 长度 + 可打印 ASCII + XOR 校验，≤32 字节）；
-  启动器扫描优先显示真名，缺失回退 `project_name` 剥 `FoloToy-` 前缀的核心名
-  （新增 `meta_slot_core_name`）；应用镜像上限收紧为 2044KB。USB 安装页自动用
-  社区玩法英文标题/本地文件名，Wi-Fi 导入页新增可选名字输入框。
+  （`slot_offset + 分区大小 − 4KB`，按槽位动态推导，因三个槽位大小已不等：
+  `0x1D6000`/`0x200000`/`0x29E000`；`magic "MNAM"` + 长度 + 可打印 ASCII + XOR 校验，
+  ≤32 字节）；启动器扫描优先显示真名，缺失回退 `project_name` 剥 `FoloToy-` 前缀的核心名
+  （新增 `meta_slot_core_name`）。`ota_2` 为双用途区域（可启动子槽位，或空时作 littlefs
+  录音存储）。factory 应用镜像上限收紧为 1.44 MB（`0x170000`），`ota_0` 移入 cardid 之前
+  的空隙（`0x180000`）。USB 安装页自动用社区玩法英文标题/本地文件名，Wi-Fi 导入页新增可选名字输入框。
 
 - 加入厂家为优特利 520mAh 电芯生成的 80 字节 CW2017 profile，并实现内容与更新标志检查、写入后校验、规定的重启时序以及有上限的 SOC 就绪等待。
 

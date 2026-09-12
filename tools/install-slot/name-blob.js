@@ -9,8 +9,17 @@
 //   [5+len] checksum:对 [4..5+len) 全部字节做 XOR 折叠
 
 export const NAME_MAX = 32;
-export const BLOB_OFFSET = 0x1ff000;         // blob sector 距槽位起始偏移(最后 4KB)
-export const MAX_APP_IMAGE_SIZE = 0x1ff000;  // 应用镜像上限(为 blob 预留尾部 4KB)
+export const BLOB_SECTOR = 0x1000;         // blob sector 大小(4KB)
+
+// 按槽位分区大小计算 blob sector 距槽位起始的偏移(分区末尾 4KB)。
+export function blobOffset(partSize) {
+  return partSize - BLOB_SECTOR;
+}
+
+// 按槽位分区大小计算应用镜像字节上限(分区大小减去尾部 4KB blob sector)。
+export function maxAppImageSize(partSize) {
+  return partSize - BLOB_SECTOR;
+}
 
 const MAGIC = [0x4d, 0x4e, 0x41, 0x4d]; // "MNAM"
 

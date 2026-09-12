@@ -52,15 +52,18 @@ int main(void)
     assert(meta_image_check_header(hdr, sizeof(hdr)) == META_IMG_OK);
 
     // 尺寸策略:0 与超过上限都拒绝,边界值(恰好等于上限)允许。
-    // 上限为 META_NAME_MAX_APP_SIZE(0x1FF000):槽位尾部最后 4KB 保留给显示名 blob。
-    assert(meta_image_check_size(0, META_NAME_MAX_APP_SIZE) == META_IMG_ERR_BAD_SIZE);
-    assert(meta_image_check_size(META_NAME_MAX_APP_SIZE, META_NAME_MAX_APP_SIZE) == META_IMG_OK);
-    assert(meta_image_check_size(META_NAME_MAX_APP_SIZE + 1, META_NAME_MAX_APP_SIZE)
-           == META_IMG_ERR_TOO_LARGE);
-    // 旧的整槽容量 0x200000 现在超限(尾部 4KB 不再可用于应用镜像)
-    assert(meta_image_check_size(0x200000, META_NAME_MAX_APP_SIZE) == META_IMG_ERR_TOO_LARGE);
-    // 通用语义不变:调用方传入的上限即判定边界
-    assert(meta_image_check_size(0x200000, 0x200000) == META_IMG_OK);
+    // 上限按槽位分区大小动态计算:meta_name_max_app_size(part_size)。
+    // 用 0x200000(2MB)槽位示例,上限为 0x1FF000(尾部 4KB 保留给 blob)。
+    {
+        const uint32_t max = meta_name_max_app_size(0x200000);
+        assert(meta_image_check_size(0, max) == META_IMG_ERR_BAD_SIZE);
+        assert(meta_image_check_size(max, max) == META_IMG_OK);
+        assert(meta_image_check_size(max + 1, max) == META_IMG_ERR_TOO_LARGE);
+        // 旧的整槽容量 0x200000 现在超限(尾部 4KB 不再可用于应用镜像)
+        assert(meta_image_check_size(0x200000, max) == META_IMG_ERR_TOO_LARGE);
+        // 通用语义不变:调用方传入的上限即判定边界
+        assert(meta_image_check_size(0x200000, 0x200000) == META_IMG_OK);
+    }
 
     // 错误串不可为空(用于 UI 显示)
     assert(meta_image_err_str(META_IMG_OK) != 0);

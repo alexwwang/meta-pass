@@ -1,12 +1,12 @@
 // main/meta_slots.h —— 固件槽位注册表(纯逻辑,与 ESP-IDF 解耦)。
-// 槽位的物理位置由分区表固定(ota_0@0x360000、ota_1@0x560000,见 partitions.csv);
+// 槽位的物理位置由分区表固定(ota_0@0x180000、ota_1@0x360000、ota_2@0x560000,见 partitions.csv);
 // 本模块只管"每个槽位的状态与元数据",分区读写由 meta_store(ESP-IDF 侧)完成。
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#define META_SLOT_COUNT      2    // ota_0 / ota_1 两个槽位
+#define META_SLOT_COUNT      3    // ota_0 / ota_1 / ota_2 三个槽位
 #define META_NAME_LEN        32   // 对齐 esp_app_desc_t.project_name 定长
 #define META_VERSION_LEN     32   // 对齐 esp_app_desc_t.version 定长
 #define META_SHA256_HEX_LEN  64   // SHA-256 的十六进制字符数

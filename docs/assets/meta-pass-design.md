@@ -25,22 +25,41 @@ changes in v1.
 
 ## 3. Flash Layout
 
-The baseline contract (enforced by `tools/verify_firmware.py`) is preserved byte-for-byte:
-`factory@0x10000/3MB`, `cardid@0x356000/0x4000`. New partitions only use the gap after
-factory and free space after cardid:
+3-Slot architecture (feat/shrink): factory shrunk to 1.44MB; cardid-before gap
+is reused as ota_0; otadata moved to flash tail. The protected `cardid@0x356000/0x4000`
+is unchanged and enforced by `tools/verify_firmware.py`:
 
 | Partition | Type | Offset | Size | Notes |
 | --- | --- | --- | --- | --- |
 | nvs | data/nvs | 0x9000 | 0x6000 | unchanged (children share this NVS namespace) |
 | phy_init | data/phy | 0xf000 | 0x1000 | unchanged |
-| factory | app/factory | 0x10000 | 0x300000 | **unchanged**, meta-pass itself |
-| otadata | data/ota | 0x310000 | 0x2000 | new; all-0xFF means boot factory |
+| factory | app/factory | 0x10000 | **0x170000** | shrunk from 3MB; meta-pass launcher, target < 1.43MB |
+| ota_0 | app/ota_0 | **0x180000** | **0x1D6000** (1.84MB) | new; reuses cardid-before gap |
 | cardid | data/nvs | 0x356000 | 0x4000 | **unchanged**, protected identity region |
-| ota_0 | app/ota_0 | 0x360000 | 0x200000 | new slot 0 (app partitions need 64KB alignment; 0x35A000 is not aligned, so start at 0x360000) |
-| ota_1 | app/ota_1 | 0x560000 | 0x200000 | new slot 1; 0x760000–0x800000 (640KB) left spare |
+| ota_1 | app/ota_1 | 0x360000 | 0x200000 (2MB) | unchanged (app partitions need 64KB alignment; 0x35A000 is not aligned) |
+| ota_2 | app/ota_2 | **0x560000** | **0x29E000** (2.61MB) | new; dual-use as child firmware slot or audio storage (see §6.3) |
+| otadata | data/ota | **0x7FE000** | 0x2000 | moved from 0x310000 to flash tail; all-0xFF means boot factory |
 
-Constraints: child image ≤ 2044KB (the slot's last 4KB sector is reserved for the display-name blob, §6.2); cardid region in the merged image must be all 0xFF; the
+Constraints: child image ≤ (partition size − 4KB) (the slot's last 4KB sector is reserved
+for the display-name blob, §6.2); cardid region in the merged image must be all 0xFF; the
 project name stays `FoloToy-AI-Passport` (the gate hardcodes the image file name).
+
+### 6.3 ota_2 Dual-Use Storage
+
+ota_2 serves two roles depending on runtime state:
+
+- **Child firmware slot**: a third-party firmware image can be written to ota_2 and
+  booted by the launcher via `esp_ota_set_boot_partition()`.
+- **Audio storage**: a recording child firmware (running from ota_0 or ota_1) can mount
+  littlefs on ota_2 for audio file storage. The child first checks `esp_image_verify()`
+  on ota_2: if a valid image is found, the partition is not touched; if empty/invalid,
+  the child erases and mounts it as a filesystem.
+
+The partition type remains `app` (subtype `ota_2`), so the bootloader can still select
+it as a boot target. Littlefs mounting ignores partition type — `esp_littlefs_mount()`
+locates the partition by label regardless of kind. This dual-use is a runtime convention,
+not enforced by the partition table.
+
 
 ## 4. Boot and Rollback Model
 
@@ -109,8 +128,8 @@ built on the ROM bootloader:
    requires a secure context, which the device-side `http://192.168.4.1` cannot provide,
    so the page lives on the computer).
 3. The page uses esptool-js over USB Serial/JTAG to write the child firmware to a slot
-   offset (`0x360000`/`0x560000`), with automatic post-write verification; after a reset,
-   meta-pass scans and can boot it.
+   offset (`0x180000`/`0x360000`/`0x560000`), with automatic post-write verification;
+   after a reset, meta-pass scans and can boot it.
 
 Two firmware sources:
 
@@ -123,32 +142,33 @@ Two firmware sources:
   the page verifies the hash after download — closing the loop with the hash meta-pass
   shows during its boot scan.
 
-Boundaries: writes only the two slot offsets; never touches factory/cardid/otadata;
-app images > 2MB are rejected. Not covered: a BLE channel (slow, needs a custom chunking
-protocol, requires HTTPS-hosted entry, cannot be verified in the simulator — dropped,
-see §11).
+Boundaries: writes only the three slot offsets; never touches factory/cardid/otadata;
+app images larger than (slot_size − 4KB) are rejected. Not covered: a BLE channel (slow,
+needs a custom chunking protocol, requires HTTPS-hosted entry, cannot be verified in the
+simulator — dropped, see §11).
 
 ### 6.2 Slot Display-Name Blob
 
 A firmware's real name (e.g. "Pocket Walkie") exists only in the store metadata; the
 image's `project_name` is usually the build-template default (community firmware all say
 `FoloToy-AI-Passport`), so the real name cannot be recovered at scan time. The display
-name is therefore written **at install time** into the slot partition's last 4KB sector
-(`slot_offset + 0x1FF000`):
+name is therefore written **at install time** into the slot partition's last 4KB sector.
+Because slot sizes differ (ota_0=0x1D6000, ota_1=0x200000, ota_2=0x29E000), the blob
+offset is computed dynamically as `partition_size − 0x1000` rather than a fixed constant:
 
 - blob format: `magic "MNAM"` (4B) + `name_len` (1B, 1–32, aligned with the slot registry field) + name (printable ASCII) + XOR checksum (1B);
 - launcher scan: valid blob → show the real name; otherwise fall back to the core name
   (`project_name` minus the `FoloToy-` prefix);
 - name source: USB install page = community play's English title / local file name;
   Wi-Fi import page = optional text input;
-- the app image limit shrinks to 2044KB accordingly; deleting a slot erases the whole
-  partition including the blob.
+- the app image limit shrinks to (partition_size − 4KB) accordingly; deleting a slot
+  erases the whole partition including the blob.
 
 ## 7. Firmware Validation Policy
 
 Mandatory (every child):
 
-- Image header magic `0xE9`, chip id = ESP32-C3, size ≤ 2044KB (slot tail reserved for the display-name blob), sane segment count;
+- Image header magic `0xE9`, chip id = ESP32-C3, size ≤ (slot_size − 4KB) (slot tail reserved for the display-name blob; slot sizes vary: 0x1D6000/0x200000/0x29E000), sane segment count;
 - Compute the full-image SHA-256 and show it on the confirm page (manual comparison
   against the publisher's hash).
 
@@ -166,7 +186,7 @@ physical possession + trial-boot isolation. eFuse write protection / Secure Boot
 Keeps the `ui_pixel` theme (sky/grass/title board/mascot) and the top-right battery
 indicator (avoiding the cloud at `x≈188,y≈8`). UI text in English.
 
-- **Main list**: slot 0/1 rows show empty / the display name (real name written at install
+- **Main list**: slot 0/1/2 rows show empty / the display name (real name written at install
   time, core-name fallback otherwise); UP/DOWN to select, OK click for details.
 - **Detail page**: Boot (unsigned requires warning page LONG2 confirm), Delete (confirm
   page LONG2), back.
@@ -194,12 +214,14 @@ write, boot, rollback) go on the device-acceptance list.
 ## 10. Acceptance Criteria
 
 - `./tools/validate.sh` fully green (static + firmware gates, including new host tests);
-- Partition table: factory/cardid byte-identical to baseline; otadata/ota_0/ota_1
+- Partition table: factory/cardid byte-identical to baseline; ota_0/ota_1/ota_2/otadata
   non-overlapping; cardid all 0xFF;
-- Device checklist (verify item by item at delivery): import one firmware and boot it;
-  power-cycle auto-returns to launcher; adapted firmware persists; slot shows empty after
-  delete; corrupt file rejected; wrong pairing code rejected; repeated Import enter/exit
-  leaks nothing.
+- **feat/shrink**: factory binary size < 1.43MB (target); 3 OTA slots visible in launcher
+  list; blob offset dynamically computed per slot size;
+- Device checklist (verify item by item at delivery): import one firmware into each slot
+  and boot it; power-cycle auto-returns to launcher; adapted firmware persists; slot shows
+  empty after delete; corrupt file rejected; wrong pairing code rejected; repeated Import
+  enter/exit leaks nothing.
 
 ### 10.1 Simulator End-to-End Verification (2026-09-11, local esp-emu instance)
 
@@ -223,6 +245,30 @@ flashed standalone (not meta-pass's doing; presumably its button-reading path is
 incompatible with the simulator's ADC injection — verify on hardware); Radar's main
 feature needs BLE, and the simulator halts on BLE activity (no BLE support).
 
+### 10.2 3-Slot Shrink Verification (2026-09-12, Web emulator)
+`feat/shrink` built from a fresh `sdkconfig.defaults` at **1,024,608 bytes (1001 KB)**
+against the 1.44 MB (`0x170000`) factory partition — 32.0% headroom.
+
+The decisive check is the **dynamic display-name blob offset** (`part_size − 4 KB`),
+since the old fixed `0x1FF000` would put ota_0's blob at `0x37F000`, i.e. inside the
+ota_1 partition. A merged 8MB image was preloaded into the Web emulator carrying
+all three slots:
+
+| Slot | Partition | Blob offset | OCR result |
+| --- | --- | --- | --- |
+| ota_0 | 0x180000 / 0x1D6000 | 0x355000 | `SLOT 0: Pocket Walkie` |
+| ota_1 | 0x360000 / 0x200000 | 0x55F000 | `SLOT 1: Passport Radar` |
+| ota_2 | 0x560000 / 0x29E000 | 0x7FD000 | `SLOT 2: Walkie Clone` |
+
+All three names were read back from their own slot tails, which only holds if each
+offset is derived from that slot's own size. `ota_0` boots correctly
+(`esp_ota_set_boot_partition` → ota_0 at the new 0x180000), and a power cycle
+returns to the launcher with all slot states intact — the rollback model is unaffected.
+
+Not covered: booting `ota_1`/`ota_2` (identical code path to ota_0, only the partition
+handle differs), the delete flow, and ota_2's audio-storage half of the dual-use
+convention (no recording child firmware exists yet).
+
 ## 11. Decision Log
 
 | Date | Decision | Alternatives | Rationale |
@@ -241,3 +287,8 @@ feature needs BLE, and the simulator halts on BLE activity (no BLE support).
 | 2026-09-11 | Drop BLE import channel | BLE GATT chunked transfer | slow (minutes for 2MB), custom protocol needed, entry must be HTTPS-hosted, not verifiable in the simulator |
 | 2026-09-11 | Display name as a 4KB blob at slot tail | NVS storage; built-in play list | the USB page in ROM download mode can only write raw flash, not NVS structures; a built-in list goes stale with every new play |
 | 2026-09-11 | Vendor esptool-js locally | jsdelivr CDN dynamic import | a slow/unreachable CDN wedged the whole page behind a top-level await (hit on first real-device attempt); 3 local files, 81KB, zero external requests; also fixes name-blob.js missing from the static whitelist, which broke page module loading entirely |
+| 2026-09-12 | 3-Slot architecture (feat/shrink) | keep 2-slot x 2MB | factory shrunk to 1.44MB; cardid-before gap reused as ota_0; ota_2 enlarged to 2.61MB for dual-use storage |
+| 2026-09-12 | Dynamic blob offset per slot | fixed 0x1FF000 offset | slot sizes now differ (0x1D6000/0x200000/0x29E000); blob offset = partition_size − 4KB |
+| 2026-09-12 | -Os compiler optimization + WARN log | keep -Og Debug | -Os reduces binary ~20%; INFO log strings consume ~50KB .rodata |
+| 2026-09-12 | LVGL examples/demos trimmed | keep full LVGL | default build compiles 1800+ demo units (~2MB); launcher only needs label/button/panel |
+| 2026-09-12 | ota_2 dual-use: firmware slot or audio storage | separate storage partition | runtime check esp_image_verify(); littlefs ignores partition type; no partition-table conflict |

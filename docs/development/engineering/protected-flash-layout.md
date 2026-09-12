@@ -14,7 +14,7 @@ Derivative projects must preserve all of the following:
 - ESP32-C3, 8 MB Flash, ESP-IDF 5.5.3.
 - A merged ESP image starting at `0x0`, produced as
   `build/meta-pass_v<version>.bin`.
-- One main application image at `0x10000`, no larger than `0x300000` bytes.
+- One main application image at `0x10000`, no larger than `0x170000` bytes (1.44 MB).
 - `cardid`: data/NVS at `0x356000`, size `0x4000`.
 - A valid partition-table MD5 marker and no partition overlap with the
   protected `cardid` region.
@@ -34,7 +34,7 @@ Run:
 
 The check builds in an isolated directory, creates the merged image, verifies
 the bootloader/table/application offsets, parses the partition table, checks its
-MD5 and the protected `cardid` range, enforces the 3 MB application limit, and
+MD5 and the protected `cardid` range, enforces the 1.44 MB application limit, and
 rejects device-specific identity bytes. CI runs the same gate. Do not publish
 an artifact when this command fails.
 

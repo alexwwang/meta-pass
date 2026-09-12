@@ -36,7 +36,7 @@ typedef enum {
     PAGE_IMPORT,       // SoftAP 导入页
 } page_t;
 
-#define LIST_ITEMS   3                   // Slot 0 / Slot 1 / Import
+#define LIST_ITEMS   4                   // Slot 0 / Slot 1 / Slot 2 / Import
 #define DETAIL_ITEMS 3                   // Boot / Delete / Back
 #define IMPORT_TIMEOUT_MS (5 * 60 * 1000)  // 导入会话无操作自动关闭(设计文档 §6)
 
@@ -131,9 +131,10 @@ static void list_refresh(void)
 static void page_list_build(void)
 {
     s_scr = ui_pixel_screen_create("meta-pass");
-    add_row(s_scr, 0, 64, "");
-    add_row(s_scr, 1, 112, "");
-    add_row(s_scr, 2, 160, "IMPORT FIRMWARE");
+    add_row(s_scr, 0, 52, "");
+    add_row(s_scr, 1, 96, "");
+    add_row(s_scr, 2, 140, "");
+    add_row(s_scr, 3, 184, "IMPORT FIRMWARE");
     add_battery(s_scr);
     s_mascot = ui_pixel_mascot_create(s_scr, 101, 242);
     list_refresh();
@@ -387,5 +388,5 @@ void app_main(void)
         page_list_build();
         bsp_lvgl_unlock();
     }
-    ESP_LOGI(TAG, "就绪:slot0=%d slot1=%d", s_slots[0].state, s_slots[1].state);
+    ESP_LOGI(TAG, "就绪:slot0=%d slot1=%d slot2=%d", s_slots[0].state, s_slots[1].state, s_slots[2].state);
 }
