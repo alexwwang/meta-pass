@@ -3,29 +3,29 @@
 [简体中文](README.zh_CN.md) | English
 
 Zero-dependency Chrome page that writes child firmware directly into a
-meta-pass OTA slot over USB serial. Deployed via GitHub Pages for
-community use; `tools/install-slot/server.mjs` is retained for local
+meta-pass OTA slot over USB serial. Live at **https://meta-pass.pages.dev/**
+(Cloudflare Pages); `tools/install-slot/server.mjs` is retained for local
 development.
 
 ## Two deployment paths
 
-### A. Cloudflare Worker (recommended, already deployed)
+### A. Cloudflare Pages (recommended, already deployed)
 
-The page + API proxy are served together from one Cloudflare Worker:
+The page + API proxy are served together from Cloudflare Pages:
 
 ```
-https://meta-pass.springleeks.workers.dev/
+https://meta-pass.pages.dev/
 ```
 
-The Worker serves the install page at `/` and proxies `/api/plays`,
-`/api/play`, `/api/firmware` to `https://ai-passport.folotoy.cn` with
-CORS headers added. To redeploy:
+The Pages `_worker.js` (in this directory) serves the install page at `/`
+and proxies `/api/plays`, `/api/play`, `/api/firmware` to
+`https://ai-passport.folotoy.cn` with CORS headers added. To redeploy:
 
 ```bash
-wrangler deploy worker/index.mjs
+wrangler pages deploy
 ```
 
-(CI auto-deploys on push to `main` when `worker/**` or `install-slot/**` changes.)
+(CI auto-deploys on push to `main` when `install-slot/**` or `wrangler.toml` changes.)
 
 ### B. Local Node server (no deployment needed)
 
@@ -111,16 +111,14 @@ API proxy lives.
 ## Repo layout
 
 ```
-install-slot/                 # static assets (served by Worker at /)
+install-slot/                 # Cloudflare Pages root (pages_build_output_dir)
   install-slot.html           # the page
+  _worker.js                  # Pages worker: static serving + /api/* proxy
   extract-app-image.js        # image unpacker (ES module)
   name-blob.js                # name blob packer/unpacker (ES module)
   vendor/                     # bundled esptool-js + deps
 
-worker/
-  index.mjs                   # Cloudflare Worker (page + API proxy)
-
 tools/install-slot/           # original dev dir (server.mjs kept for local)
-  server.mjs                  # local Node HTTP proxy (alternative to Worker)
+  server.mjs                  # local Node HTTP proxy (alternative to Pages)
   …same files as above…
 ```

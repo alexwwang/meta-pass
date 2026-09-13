@@ -7,22 +7,23 @@
 
 ## 两种部署路径
 
-### A. Cloudflare Worker（推荐，已部署）
+### A. Cloudflare Pages（推荐，已部署）
 
-页面 + API 代理由同一个 Cloudflare Worker 提供：
+页面 + API 代理由 Cloudflare Pages 提供：
 
 ```
-https://meta-pass.springleeks.workers.dev/
+https://meta-pass.pages.dev/
 ```
 
-Worker 在 `/` 提供安装页面，将 `/api/plays`、`/api/play`、`/api/firmware`
-转发到 `https://ai-passport.folotoy.cn` 并补上 CORS 头。重新部署：
+本目录下的 `_worker.js` 在 `/` 提供安装页面，将 `/api/plays`、`/api/play`、
+`/api/firmware` 转发到 `https://ai-passport.folotoy.cn` 并补上 CORS 头。
+重新部署：
 
 ```bash
-wrangler deploy worker/index.mjs
+wrangler pages deploy
 ```
 
-（CI 在 `worker/**` 或 `install-slot/**` 变更时自动部署到 main。）
+（CI 在 `install-slot/**` 或 `wrangler.toml` 变更时自动部署。）
 
 ### B. 本地 Node 服务（无需部署）
 

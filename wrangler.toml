@@ -1,17 +1,13 @@
 name = "meta-pass"
-main = "worker/index.mjs"
 compatibility_date = "2024-01-01"
 
-# 静态文件:install-slot/ 下的页面 + vendor JS
-# 访问 / 会得到 install-slot.html, /vendor/* 会得到对应 JS 文件
-[assets]
-directory = "./install-slot"
-binding = "ASSETS"
+# Cloudflare Pages 配置:
+# install-slot/ 是静态资源目录, _worker.js 在里面处理 /api/* 反向代理
+# 部署后地址: https://meta-pass.pages.dev
+pages_build_output_dir = "./install-slot"
 
-# 部署后地址: https://meta-pass.<你的Cloudflare子域名>.workers.dev
-#
-# 注意:workers.dev 的 URL 格式为 <worker名>.<账号子域名>.workers.dev,
-# 例如 https://meta-pass.springleeks.workers.dev
+# 本地部署: wrangler pages deploy
+# CI 部署: 见 .github/workflows/workers.yml
 #
 # 如需自定义域名(如 install.example.com),在 Cloudflare Dashboard →
-# Workers → meta-pass → Settings → Triggers → Custom Domains 中添加。
+# Pages → meta-pass → Custom domains 中添加。
