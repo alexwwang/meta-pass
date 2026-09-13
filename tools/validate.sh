@@ -45,6 +45,13 @@ run_static_checks() {
         tests/test_meta_import.c main/meta_import.c \
         -o "${test_dir}/test_meta_import"
     "${test_dir}/test_meta_import"
+    # 上传链路集成测试:桩化 ESP-IDF(tests/esp_stubs),主机编译真实 meta_net.c
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_meta_net_upload.c \
+        main/meta_import.c main/meta_image.c main/meta_name.c main/meta_slots.c \
+        -ffunction-sections -Wl,-dead_strip \
+        -o "${test_dir}/test_meta_net_upload"
+    "${test_dir}/test_meta_net_upload"
     python3 tests/test_verify_firmware.py
     python3 tests/test_meta_net_contract.py
     rm -rf "${test_dir}"
