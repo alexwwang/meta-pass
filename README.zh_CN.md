@@ -27,6 +27,8 @@ meta-pass,之后就能随时往两个 2MB 槽位里装社区固件、在菜单�
 0x560000  ota_1(2MB)     ← 槽位 1(尾部 4KB = 显示名 blob)
 ```
 
+![FoloToy 玩法 #281](https://img.shields.io/badge/%E7%8E%A9%E6%8F%9C%E7%AD%94-281-informational)](https://ai-passport.folotoy.cn/plays/281)
+
 选槽 = 写 otadata + 重启,由标准 2nd-stage bootloader 完成切换,无任何自定义
 bootloader 改动。
 

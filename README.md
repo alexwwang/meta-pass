@@ -29,6 +29,8 @@ second half of the flash into two OTA slots for child firmware:
 0x560000  ota_1 (2MB)       ← slot 1 (last 4KB = display-name blob)
 ```
 
+![FoloToy plays #281](https://img.shields.io/badge/play-281-informational)](https://ai-passport.folotoy.cn/plays/281)
+
 Selecting a slot = write otadata + reboot; the stock 2nd-stage bootloader does the switch.
 No custom bootloader changes.
 
