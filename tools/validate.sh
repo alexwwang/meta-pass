@@ -46,10 +46,15 @@ run_static_checks() {
         -o "${test_dir}/test_meta_import"
     "${test_dir}/test_meta_import"
     # 上传链路集成测试:桩化 ESP-IDF(tests/esp_stubs),主机编译真实 meta_net.c
+    # 死代码剥离 flag 平台相关:macOS ld 用 -dead_strip,GNU ld 用 --gc-sections
+    local gc_flag="-Wl,--gc-sections"
+    if [ "$(uname)" = "Darwin" ]; then
+        gc_flag="-Wl,-dead_strip"
+    fi
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
         tests/test_meta_net_upload.c \
         main/meta_import.c main/meta_image.c main/meta_name.c main/meta_slots.c \
-        -ffunction-sections -Wl,-dead_strip \
+        -ffunction-sections -fdata-sections ${gc_flag} \
         -o "${test_dir}/test_meta_net_upload"
     "${test_dir}/test_meta_net_upload"
     python3 tests/test_verify_firmware.py
