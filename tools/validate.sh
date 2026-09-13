@@ -46,6 +46,7 @@ run_static_checks() {
         -o "${test_dir}/test_meta_import"
     "${test_dir}/test_meta_import"
     python3 tests/test_verify_firmware.py
+    python3 tests/test_meta_net_contract.py
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }
