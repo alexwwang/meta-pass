@@ -8,3 +8,4 @@ managed_components/
 # Python bytecode
 __pycache__/
 *.pyc
+.wrangler/
