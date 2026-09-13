@@ -34,12 +34,13 @@ async function proxy(upstreamPath) {
 
 export default {
   async fetch(req, env) {
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      return err(405, "method not allowed");
+    }
     const url = new URL(req.url);
     const path = url.pathname;
 
     // ── API 反向代理 ─────────────────────────────────────────────────
-    if (req.method !== "GET") return err(405, "method not allowed");
-
     if (path === "/api/plays") return proxy("/api/plays");
 
     if (path === "/api/play") {
