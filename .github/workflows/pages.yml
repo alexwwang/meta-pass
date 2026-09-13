@@ -24,10 +24,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-      - uses: actions/configure-pages@1d136c6d5715afc8d8b0de49dc8e5f5f9b4e1cf0 # v5.3.0
-      - uses: actions/upload-pages-artifact@56afc609cb1f7f3c6f08a9d1c9f7e4a7b8c6d5e4 # v3.0.1
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
+      - uses: actions/upload-pages-artifact@56afc609cb1f7f3c6f08a9d1c9f7e4a7b8c6d5e4
         with:
           path: install-slot
       - id: deployment
-        uses: actions/deploy-pages@d6db9016455ae43e6a993c5a79072ee036e4e0c1 # v4.0.0
+        uses: actions/deploy-pages@d6db9016455ae43e6a993c5a79072ee036e4e0c1
