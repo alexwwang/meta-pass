@@ -143,7 +143,42 @@ static esp_err_t h_session(httpd_req_t *req)
     return httpd_resp_sendstr(req, "paired");
 }
 
-// 上传:Content-Length 上限 → 首个分块预检 → 流式写槽位 → esp_ota_end 权威校验。
+// URL 查询值解码:ESP-IDF 的 httpd_query_key_value 不做 URL 解码
+// (esp_http_server.h 注明 "components are not URLdecoded"),而页面侧
+// dispname 经 encodeURIComponent 编码,必须在此解码(%XX 与 '+')。
+// 非法 % 序列原样保留;就地解码,返回解码后长度。
+static int url_hex_nib(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static void url_decode_inplace(char *s)
+{
+    size_t w = 0;
+    for (size_t r = 0; s[r] != '\0';) {
+        if (s[r] == '%') {
+            const int hi = url_hex_nib(s[r + 1]);   // s[r+1] 至少是 '\0',安全
+            const int lo = (hi >= 0) ? url_hex_nib(s[r + 2]) : -1;
+            if (hi >= 0 && lo >= 0) {
+                s[w++] = (char)((hi << 4) | lo);
+                r += 3;
+                continue;
+            }
+        }
+        if (s[r] == '+') {
+            s[w++] = ' ';
+            r++;
+            continue;
+        }
+        s[w++] = s[r++];
+    }
+    s[w] = '\0';
+}
+
+// 上传:Content-Length 上限 → 滚动头预检(凑齐 24B 即判)→ 流式写槽位 → esp_ota_end 权威校验。
 // 任何失败都 esp_ota_abort 并把槽位标记 INVALID(残留半成品不可启动)。
 static esp_err_t h_upload(httpd_req_t *req)
 {
@@ -163,6 +198,7 @@ static esp_err_t h_upload(httpd_req_t *req)
         // 显示名:URL 解码后剔除非可打印 ASCII,截断到 META_NAME_MAX;剔完为空则不写 blob
         char raw[160] = {0};
         if (httpd_query_key_value(arg, "dispname", raw, sizeof(raw)) == ESP_OK) {
+            url_decode_inplace(raw);
             size_t w = 0;
             for (size_t r = 0; raw[r] != '\0' && w < META_NAME_MAX; r++) {
                 const uint8_t b = (uint8_t)raw[r];
@@ -212,8 +248,13 @@ static esp_err_t h_upload(httpd_req_t *req)
     mbedtls_sha256_starts(&sha, 0);
 
     int remaining = req->content_len;
-    bool first = true;
     esp_err_t result = ESP_OK;
+    // 头预检按累计字节触发,不依赖首个分块尺寸:TCP 分片可能让首块不足 24B,
+    // 边收边写 flash,前 24B 滚动留存,凑齐即校验,不合法立即中止(已擦除,
+    // 至多白写 24B,abort 后无残留)。
+    uint8_t hdr[META_IMAGE_HEADER_LEN];
+    size_t  seen = 0;
+    bool    hdr_checked = false;
     while (remaining > 0) {
         const int want = remaining < RX_CHUNK ? remaining : RX_CHUNK;
         const int got = httpd_req_recv(req, (char *)buf, want);
@@ -221,15 +262,12 @@ static esp_err_t h_upload(httpd_req_t *req)
             result = ESP_FAIL;
             break;
         }
-        if (first) {      // 快速失败:头部不合法立刻中止,不浪费擦写
-            first = false;
-            const meta_img_err_t pre = meta_image_check_header(buf, (size_t)got);
-            if (pre != META_IMG_OK) {
-                ESP_LOGW(TAG, "镜像预检失败: %s", meta_image_err_str(pre));
-                result = ESP_ERR_INVALID_ARG;
-                break;
-            }
+        if (seen < META_IMAGE_HEADER_LEN) {
+            const size_t take = ((size_t)got < META_IMAGE_HEADER_LEN - seen)
+                              ? (size_t)got : META_IMAGE_HEADER_LEN - seen;
+            memcpy(hdr + seen, buf, take);
         }
+        seen += (size_t)got;
         err = esp_ota_write(ota, buf, (size_t)got);
         if (err != ESP_OK) {
             result = err;
@@ -239,6 +277,18 @@ static esp_err_t h_upload(httpd_req_t *req)
         remaining -= got;
         set_status(MI_RECEIVING, (req->content_len - remaining) * 100 / req->content_len,
                    "Receiving...");
+        if (!hdr_checked && seen >= META_IMAGE_HEADER_LEN) {
+            hdr_checked = true;
+            const meta_img_err_t pre = meta_image_check_header(hdr, sizeof(hdr));
+            if (pre != META_IMG_OK) {
+                ESP_LOGW(TAG, "镜像预检失败: %s", meta_image_err_str(pre));
+                result = ESP_ERR_INVALID_ARG;
+                break;
+            }
+        }
+    }
+    if (result == ESP_OK && !hdr_checked) {
+        result = ESP_ERR_INVALID_SIZE;   // 总长不足一个镜像头
     }
     free(buf);
 
