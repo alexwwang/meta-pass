@@ -1,0 +1,8 @@
+name = "metapass-install-proxy"
+main = "install-slot/proxy.mjs"
+compatibility_date = "2024-01-01"
+
+# 代理 target——部署时按实际账号修改
+# [[routes]]
+# pattern = "install-proxy.*"
+# zone_name = "your-domain.com"
