@@ -54,11 +54,14 @@ export default {
       if (!p.startsWith("/api/download/")) return err(403, "forbidden path");
       return proxy(p);
     }
-
     // ── 静态文件服务 ─────────────────────────────────────────────────
-    // 根路径 → install-slot.html;其他路径走 assets 目录
     if (path === "/" || path === "") {
-      return env.ASSETS.fetch(new Request(new URL("/install-slot.html", req.url), req));
+      // ASSETS 对 .html 文件会做规范化重定向(307),跟随获取最终内容
+      let resp = await env.ASSETS.fetch(new Request(new URL("/install-slot.html", req.url), req));
+      if (resp.status >= 300 && resp.status < 400) {
+        resp = await env.ASSETS.fetch(new Request(new URL(resp.headers.get("location"), req.url), req));
+      }
+      return resp;
     }
     return env.ASSETS.fetch(req);
   },
