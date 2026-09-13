@@ -9,19 +9,23 @@ development.
 
 ## Two deployment paths
 
-### A. GitHub Pages + Cloudflare Workers (recommended)
+### A. Cloudflare Worker (recommended, already deployed)
 
-1. Publish this page to GitHub Pages (see CI config in `.github/workflows/pages.yml`).
-2. Deploy the proxy worker to Cloudflare:
+The page + API proxy are served together from one Cloudflare Worker:
 
-   ```bash
-   wrangler deploy install-slot/proxy.mjs
-   ```
+```
+https://meta-pass.springleeks.workers.dev/
+```
 
-   Set `CF_API_TOKEN` and `CF_ACCOUNT_ID` in your environment (or GitHub Secrets
-   for the Actions workflow). The worker forwards `/api/play`, `/api/plays`,
-   `/api/firmware` to `https://ai-passport.folotoy.cn` with CORS headers added.
-3. Open https://<your-username>.github.io/meta-pass/install-slot/ in Chrome.
+The Worker serves the install page at `/` and proxies `/api/plays`,
+`/api/play`, `/api/firmware` to `https://ai-passport.folotoy.cn` with
+CORS headers added. To redeploy:
+
+```bash
+wrangler deploy worker/index.mjs
+```
+
+(CI auto-deploys on push to `main` when `worker/**` or `install-slot/**` changes.)
 
 ### B. Local Node server (no deployment needed)
 
@@ -107,14 +111,16 @@ API proxy lives.
 ## Repo layout
 
 ```
-install-slot/                 # GitHub Pages root
-  install-slot.html           # the page (served at /)
+install-slot/                 # static assets (served by Worker at /)
+  install-slot.html           # the page
   extract-app-image.js        # image unpacker (ES module)
   name-blob.js                # name blob packer/unpacker (ES module)
   vendor/                     # bundled esptool-js + deps
-  proxy.mjs                   # Cloudflare Worker (deploy separately)
+
+worker/
+  index.mjs                   # Cloudflare Worker (page + API proxy)
 
 tools/install-slot/           # original dev dir (server.mjs kept for local)
-  server.mjs                  # local Node HTTP proxy (alternative to proxy.mjs)
+  server.mjs                  # local Node HTTP proxy (alternative to Worker)
   …same files as above…
 ```

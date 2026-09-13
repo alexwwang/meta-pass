@@ -7,19 +7,22 @@
 
 ## 两种部署路径
 
-### A. GitHub Pages + Cloudflare Workers（推荐）
+### A. Cloudflare Worker（推荐，已部署）
 
-1. 将本页面发布到 GitHub Pages（见 `.github/workflows/pages.yml`）。
-2. 在 Cloudflare 部署代理 Worker：
+页面 + API 代理由同一个 Cloudflare Worker 提供：
 
-   ```bash
-   wrangler deploy install-slot/proxy.mjs
-   ```
+```
+https://meta-pass.springleeks.workers.dev/
+```
 
-   将 `CF_API_TOKEN` 和 `CF_ACCOUNT_ID` 配置为环境变量（或在 GitHub Secrets
-   里配，Actions 会自动注入）。Worker 将 `/api/play`、`/api/plays`、
-   `/api/firmware` 透明转发到 `https://ai-passport.folotoy.cn` 并补上 CORS 头。
-3. 用 Chrome 打开 https://<你的用户名>.github.io/meta-pass/install-slot/。
+Worker 在 `/` 提供安装页面，将 `/api/plays`、`/api/play`、`/api/firmware`
+转发到 `https://ai-passport.folotoy.cn` 并补上 CORS 头。重新部署：
+
+```bash
+wrangler deploy worker/index.mjs
+```
+
+（CI 在 `worker/**` 或 `install-slot/**` 变更时自动部署到 main。）
 
 ### B. 本地 Node 服务（无需部署）
 
