@@ -102,7 +102,7 @@ static const char INDEX_HTML[] =
     " placeholder='Display name (optional)'></p>"
     "<p><button onclick='up()'>Upload</button> <b id=st></b></p>"
     "<script>"
-    "function pair(){fetch('/api/session?code='+c.value).then(r=>{"
+    "function pair(){fetch('/api/session?code='+c.value,{method:'POST'}).then(r=>{"
     "ps.textContent=r.ok?'paired':'wrong code ('+r.status+')';});}"
     "function up(){var x=new XMLHttpRequest();x.open('POST','/api/upload?slot='+s.value"
     "+'&dispname='+encodeURIComponent(dispname.value));"
