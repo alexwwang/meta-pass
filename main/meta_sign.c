@@ -1,13 +1,12 @@
 // main/meta_sign.c —— 应用层签名徽章验签实现。
-// 依赖 mbedtls 做 RSA-PKCS1v1.5 验签;SHA-256 digest 由调用方流式计算后传入,
+// 依赖 mbedtls 做 ECDSA-P256 验签;SHA-256 digest 由调用方流式计算后传入,
 // 避免整包镜像入 RAM(ESP32-C3 无 PSRAM, SRAM ~400KB, 镜像可达 1.5MB)。
 #include "meta_sign.h"
 #include "meta_sign_pubkey.h"
 
 #include <string.h>
-#include "mbedtls/rsa.h"
 #include "mbedtls/pk.h"
-#include "mbedtls/x509.h"
+#include "mbedtls/md.h"
 
 // 检查 magic "MSIG"。
 static bool check_magic(const uint8_t *buf)
@@ -30,18 +29,18 @@ meta_sig_result_t meta_sign_verify(const uint8_t digest[32], uint32_t image_len,
     if (sig_len < META_SIG_TOTAL_LEN) return META_SIG_BAD_FORMAT;
     if (!check_magic(sig_sector)) return META_SIG_ABSENT;  // 不是 MSIG → 无签名
 
-    // payload_len 应为 RSA-2048 签名长度
+    // payload_len 应为 ECDSA-P256 DER 签名长度(64..72 字节)
     uint32_t payload_len = (uint32_t)sig_sector[4]
                          | ((uint32_t)sig_sector[5] << 8)
                          | ((uint32_t)sig_sector[6] << 16)
                          | ((uint32_t)sig_sector[7] << 24);
-    if (payload_len != META_SIG_RSA_LEN) return META_SIG_BAD_FORMAT;
+    if (payload_len == 0 || payload_len > META_SIG_SIG_LEN) return META_SIG_BAD_FORMAT;
+    // xor checksum: magic+payload_len+signature 的异或应等于紧随其后的 1 字节
+    uint32_t xor_off = META_SIG_HEADER_LEN + payload_len;
+    uint8_t calc = xor_checksum(sig_sector, xor_off);
+    if (calc != sig_sector[xor_off]) return META_SIG_BAD_CHECKSUM;
 
-    // xor checksum: 前 264 字节(magic+payload_len+signature)的异或应等于第 265 字节
-    uint8_t calc = xor_checksum(sig_sector, META_SIG_TOTAL_LEN - 1);
-    if (calc != sig_sector[META_SIG_TOTAL_LEN - 1]) return META_SIG_BAD_CHECKSUM;
-
-    // 解析公钥并用 RSA-PKCS1-v1.5 验签
+    // 解析公钥并用 ECDSA-P256 验签
     mbedtls_pk_context pk;
     mbedtls_pk_init(&pk);
     int ret = mbedtls_pk_parse_public_key(&pk, metapass_sign_pubkey_der,
@@ -51,12 +50,12 @@ meta_sig_result_t meta_sign_verify(const uint8_t digest[32], uint32_t image_len,
         return META_SIG_VERIFY_FAIL;
     }
 
-    // 验签:对 SHA-256 digest 做 RSA-PKCS1-v1.5 验签
+    // 验签:对 SHA-256 digest 做 ECDSA-P256 验签(DER 编码,payload_len 字节)
     ret = mbedtls_pk_verify(&pk,
                              MBEDTLS_MD_SHA256,
                              digest, 32,
                              sig_sector + META_SIG_HEADER_LEN,
-                             META_SIG_RSA_LEN);
+                             payload_len);
     mbedtls_pk_free(&pk);
     (void)image_len;  // 仅用于日志/调试,不参与验签
     return (ret == 0) ? META_SIG_OK : META_SIG_VERIFY_FAIL;

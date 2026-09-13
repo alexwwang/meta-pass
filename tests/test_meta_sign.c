@@ -15,19 +15,19 @@ static int failures = 0;
     else { printf("PASS: %s\n", msg); } \
 } while(0)
 
-// 构造一个有效的签名段(265B)。
+// 构造一个有效的签名段(可变长度,测试使用 65B payload)。
 static void make_valid_sig(uint8_t *buf, size_t len)
 {
     memset(buf, 0, len);
     buf[0] = 'M'; buf[1] = 'S'; buf[2] = 'I'; buf[3] = 'G';
-    // payload_len = 256 (LE)
-    buf[4] = 0; buf[5] = 1; buf[6] = 0; buf[7] = 0;
-    // 签名数据填 0xAB (256 bytes, [8..263])
-    for (int i = 8; i < 264; i++) buf[i] = 0xAB;
-    // xor checksum = 前 264 字节异或
+    // payload_len = 65 (LE)
+    buf[4] = 65; buf[5] = 0; buf[6] = 0; buf[7] = 0;
+    // 签名数据填 0xAB ([8..72])
+    for (int i = 8; i < 73; i++) buf[i] = 0xAB;
+    // xor checksum = 前 73 字节异或
     uint8_t xor = 0;
-    for (int i = 0; i < 264; i++) xor ^= buf[i];
-    buf[264] = xor;
+    for (int i = 0; i < 73; i++) xor ^= buf[i];
+    buf[73] = xor;
 }
 
 // 构造一个无签名的数据区(全 0xFF = 擦除状态)。
@@ -87,7 +87,7 @@ int main(void)
     {
         uint8_t sig[META_SIG_TOTAL_LEN];
         make_valid_sig(sig, sizeof(sig));
-        sig[264] ^= 0x01;  // 破坏 checksum
+        sig[73] ^= 0x01;  // 破坏 checksum
         meta_sig_result_t r = meta_sign_verify(digest, sizeof(image), sig, sizeof(sig));
         ASSERT(r == META_SIG_BAD_CHECKSUM, "bad xor checksum → META_SIG_BAD_CHECKSUM");
     }
@@ -138,9 +138,13 @@ int main(void)
             // image_len = 4096, sig at offset 4096
             uint32_t image_len = 4096;
             uint32_t sig_off = meta_sign_sector_offset(image_len);
-            if (sig_off + META_SIG_TOTAL_LEN <= (uint32_t)total) {
+            uint32_t sig_len = 8 + ((uint32_t)data[sig_off + 4]
+                | ((uint32_t)data[sig_off + 5] << 8)
+                | ((uint32_t)data[sig_off + 6] << 16)
+                | ((uint32_t)data[sig_off + 7] << 24)) + 1;
+            if (sig_off + sig_len <= (uint32_t)total) {
                 meta_sig_result_t r = meta_sign_verify(data, image_len,
-                                                        data + sig_off, META_SIG_TOTAL_LEN);
+                                                        data + sig_off, sig_len);
                 ASSERT(r == META_SIG_OK, "real signed file → META_SIG_OK");
             } else {
                 printf("SKIP: real signed file too short\n");

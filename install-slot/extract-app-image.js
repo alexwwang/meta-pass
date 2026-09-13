@@ -125,8 +125,8 @@ export function extractAppImage(buf, maxSize) {
   if (appStart + sigOff + 4 <= buf.length) {
     const magic = buf.subarray(appStart + sigOff, appStart + sigOff + 4);
     if (magic[0] === 0x4D && magic[1] === 0x53 && magic[2] === 0x49 && magic[3] === 0x47) {
-      // "MSIG" — 签名扇区存在,提取 265 字节(magic + payload_len + 256B sig + 1B xor)
-      signature = buf.slice(appStart + sigOff, appStart + sigOff + 265);
+      // "MSIG" — 签名扇区存在,提取最大 81 字节(magic + payload_len + ≤72B DER sig + xor)
+      signature = buf.slice(appStart + sigOff, appStart + sigOff + 81);
       signatureOffset = sigOff;
     }
   }

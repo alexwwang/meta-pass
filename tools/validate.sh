@@ -34,7 +34,7 @@ def arr(p):
 a = arr('main/metapass_hook.h')
 b = arr('main/meta_sign_pubkey.h')
 assert a == b, f"error: 公钥不一致(hook={len(a)}B, meta_sign={len(b)}B)——运行 tools/signing/gen-pubkey.py"
-assert len(a) == 294, f"error: 公钥长度异常 {len(a)}B"
+assert len(a) == 91, f"error: 公钥长度异常 {len(a)}B"
 print(f"公钥一致性: PASS ({len(a)} bytes)")
 PY
 

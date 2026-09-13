@@ -4,11 +4,11 @@
 // 签名段附加在 ESP app image 的 image_len 之后、name blob sector 之前。
 // 布局(OTA 分区内):
 //   [app image (image_len 字节)] [sig sector (4KB)] [name blob sector (4KB)]
-// 格式(265 字节,写入时 pad 到 4K):
+// 格式(可变长度,签名段最大 81 字节,写入时 pad 到 4K):
 //   [0..3]   magic "MSIG"
-//   [4..7]   payload_len (uint32 LE) = 固定 256(RSA-2048 签名)
-//   [8..263] RSA-2048-PKCS1v15 签名(对 image 的 SHA-256 digest 签)
-//   [264]    xor checksum(前 264 字节异或)
+//   [4..7]   payload_len (uint32 LE) = DER 签名长度(70..72 字节)
+//   [8..8+len)  ECDSA-P256 DER 签名(对 image 的 SHA-256 digest 签)
+//   [8+len] xor checksum(前 8+len 字节异或)
 //
 // esp_image_verify 只校验 image_len 范围,不读签名段,无冲突。
 // scan_one 在 esp_image_verify 通过后尝试验签。
@@ -24,8 +24,8 @@
 #define META_SIG_MAGIC       0x4D534947u   // "MSIG" (字节序为 'M','S','I','G')
 #define META_SIG_MAGIC_BYTES { 'M', 'S', 'I', 'G' }
 #define META_SIG_HEADER_LEN  8u             // magic(4) + payload_len(4)
-#define META_SIG_RSA_LEN     256u          // RSA-2048 签名长度
-#define META_SIG_TOTAL_LEN   (META_SIG_HEADER_LEN + META_SIG_RSA_LEN + 1u)  // 265
+#define META_SIG_SIG_LEN     72u            // ECDSA-P256 DER 签名最大长度
+#define META_SIG_TOTAL_LEN   (META_SIG_HEADER_LEN + META_SIG_SIG_LEN + 1u)  // 81
 #define META_SIG_SECTOR       4096u         // 签名段占用 1 个 4K sector
 #define META_NAME_BLOB_SECTOR 4096u         // 显示名 blob 占用 1 个 4K sector
 
@@ -48,7 +48,7 @@ typedef enum {
     META_SIG_BAD_MAGIC,        // 有数据但 magic 不是 MSIG(视为未签名)
     META_SIG_BAD_FORMAT,       // magic 对但 payload_len 不对
     META_SIG_BAD_CHECKSUM,     // xor 校验失败
-    META_SIG_VERIFY_FAIL,     // RSA 验签失败
+    META_SIG_VERIFY_FAIL,     // 验签失败
 } meta_sig_result_t;
 
 // 验签函数声明(实现见 meta_sign.c)。

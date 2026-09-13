@@ -139,16 +139,16 @@ ota_2 根据运行时状态承担两种角色：
 
 签名徽章（应用层签名，可逆——不动 eFuse，不开 Secure Boot v2）：
 
-子固件可在 `image_len` 之后附加 RSA-2048 签名徽章。签名使用编译期嵌入 meta-pass 的公钥
+子固件可在 `image_len` 之后附加 ECDSA-P256 签名徽章。签名使用编译期嵌入 meta-pass 的公钥
 （`main/meta_sign_pubkey.h`，由 `tools/signing/public.pem` 生成）验签。OTA 分区内布局：
 
 ```
 [app image (image_len 字节)] [签名 sector (4KB)] [显示名 blob sector (4KB)]
                               ↑
   esp_image_verify 只校验 image_len 范围；签名 sector 追加其后不影响。
-  签名 sector 格式（265 字节，pad 到 4K）：
-    [4B "MSIG"] [4B payload_len=256 LE] [256B RSA-2048 PKCS1v15 签名]
-    [1B xor 校验（前 264 字节异或）]
+  签名 sector 格式（可变长度，最大 81 字节，pad 到 4K）：
+    [4B "MSIG"] [4B payload_len LE] [70..72B ECDSA-P256 DER 签名]
+    [1B xor 校验（前 header+signature 字节异或）]
 ```
 
 `scan_one` 在 `esp_image_verify()` 通过后调用 `meta_sign_verify()` 尝试验签。验签通过的槽位

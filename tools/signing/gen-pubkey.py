@@ -26,7 +26,7 @@ MARK_END = "// MP_PUBKEY_END"
 def der_from_key(key: Path) -> bytes:
     # openssl → DER (SubjectPublicKeyInfo)
     pub = subprocess.run(
-        ["openssl", "rsa", "-in", str(key), "-pubout", "-outform", "DER"],
+        ["openssl", "pkey", "-in", str(key), "-pubout", "-outform", "DER"],
         check=True, capture_output=True,
     )
     return pub.stdout

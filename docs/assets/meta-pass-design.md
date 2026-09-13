@@ -176,7 +176,7 @@ Mandatory (every child):
 
 Signature badge (application-layer, reversible — no eFuse, no Secure Boot v2):
 
-A child firmware may carry an RSA-2048 signature badge appended after `image_len`. The
+A child firmware may carry an ECDSA-P256 signature badge appended after `image_len`. The
 signature is verified against a public key compiled into meta-pass
 (`main/meta_sign_pubkey.h`, generated from `tools/signing/public.pem`). Layout inside the
 OTA partition:
@@ -185,9 +185,9 @@ OTA partition:
 [app image (image_len bytes)] [sig sector (4KB)] [name blob sector (4KB)]
                               ↑
   esp_image_verify only checks image_len; the sig sector is safe to append.
-  Sig sector format (265 bytes, padded to 4K):
-    [4B "MSIG"] [4B payload_len=256 LE] [256B RSA-2048 PKCS1v15 signature]
-    [1B xor checksum of preceding 264 bytes]
+  Sig sector format (variable length, max 81 bytes, padded to 4K):
+    [4B "MSIG"] [4B payload_len LE] [70..72B ECDSA-P256 DER signature]
+    [1B xor checksum of preceding header+signature bytes]
 ```
 
 `scan_one` calls `meta_sign_verify()` after `esp_image_verify()` passes. A slot with a
