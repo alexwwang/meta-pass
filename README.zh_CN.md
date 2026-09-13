@@ -84,12 +84,11 @@ python -m esptool --chip esp32c3 -p <串口> -b 460800 \
 
 **方式 A：USB 串口安装页**（不需要设备开热点）：
 
-```bash
-node tools/install-slot/server.mjs   # 打开 http://localhost:4191/
-```
+用 Chrome 打开 **https://meta-pass.pages.dev/**（托管页面 + API 代理，零安装）——
+或本地运行 `node tools/install-slot/server.mjs` → http://localhost:4191/。
 
 设备按住 UP 键开机 → 页面 Connect → 选槽位 → 选本地文件或粘贴 plays 链接 →
-Install → 断电重启。完整指南：[tools/install-slot/README.zh_CN.md](tools/install-slot/README.zh_CN.md)。
+Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install-slot/README.zh_CN.md)。
 
 **方式 B：设备热点导入**（不需要电脑有 Chrome）：
 
@@ -127,7 +126,8 @@ Install → 断电重启。完整指南：[tools/install-slot/README.zh_CN.md](t
 | --- | --- |
 | `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、Wi-Fi 导入（`meta_net`）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_import`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
 | `components/bsp/` | 板级支持包（官方原样 + `BSP_BTN_LONG2` 事件） |
-| `tools/install-slot/` | USB 串口安装页（本地服务 + Web Serial 页面，零依赖） |
+| `install-slot/` | USB 串口安装页，线上地址 https://meta-pass.pages.dev/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
+| `tools/install-slot/` | 安装页本地开发副本（`server.mjs` 本地服务器，零依赖） |
 | `tools/validate.sh` | 统一门禁：静态检查 + host tests + 固件构建 + 受保护布局校验 |
 | `tests/` | host tests（C，纯逻辑模块，PC 上跑） |
 | `docs/assets/meta-pass-design.zh_CN.md` | 设计文档（含决策日志与验收清单） |

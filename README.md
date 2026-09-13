@@ -95,13 +95,13 @@ the covered region; **never** run `erase-flash` on an identity-written device).
 
 **Option A: USB serial install page** (no hotspot needed):
 
-```bash
-node tools/install-slot/server.mjs   # open http://localhost:4191/
-```
+Open **https://meta-pass.pages.dev/** in Chrome (hosted page + API proxy, zero
+setup) — or run locally with `node tools/install-slot/server.mjs` →
+http://localhost:4191/.
 
 Hold UP while powering on → Connect in the page → pick a slot → choose a local file
 or paste a plays link → Install → power-cycle. Full guide:
-[tools/install-slot/README.md](tools/install-slot/README.md).
+[install-slot/README.md](install-slot/README.md).
 
 **Option B: device hotspot import** (no Chrome required):
 
@@ -142,7 +142,8 @@ return, include `main/metapass_hook.h` and wire two calls:
 | --- | --- |
 | `main/` | Launcher UI (`main.c`), storage layer (`meta_store`), Wi-Fi import (`meta_net`), pure-logic modules (`meta_image`/`meta_slots`/`meta_import`/`meta_name`), child-firmware hook (`metapass_hook.h`) |
 | `components/bsp/` | Board support package (stock + `BSP_BTN_LONG2` event) |
-| `tools/install-slot/` | USB serial install page (local service + Web Serial page, zero dependencies) |
+| `install-slot/` | USB serial install page, live at https://meta-pass.pages.dev/ (Cloudflare Pages: static assets + `_worker.js` API proxy) |
+| `tools/install-slot/` | Local dev copy of the install page (`server.mjs` localhost server, zero dependencies) |
 | `tools/validate.sh` | Unified gate: static checks + host tests + firmware build + protected-layout verification |
 | `tests/` | Host tests (C, pure-logic modules, run on PC) |
 | `docs/assets/meta-pass-design.md` | Design document (decision log and acceptance checklist) |
