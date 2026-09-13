@@ -9,3 +9,4 @@ managed_components/
 __pycache__/
 *.pyc
 .wrangler/
+tools/signing/private.pem

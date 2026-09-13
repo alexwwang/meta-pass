@@ -208,8 +208,9 @@ const I18N = {
     err_choose_file_first: "Choose and validate a local .bin file first.",
     msg_writing_slot: "Writing {size} bytes to slot {slot} at {addr}…",
     err_blob_pack: "Display name \"{name}\" failed blob packing.",
+    msg_writing_sig: "Writing signature badge ({size} bytes) at {addr}…",
+    msg_sig_written: "Signature badge written.",
     msg_writing_blob: "Writing display name blob ({size} bytes) at {addr}…",
-    msg_blob_written: "Display name written: {name}",
     msg_install_done: "Done. Power-cycle the device, then select the slot in meta-pass.",
     msg_install_failed: "Install failed: {err}",
   },
@@ -275,6 +276,8 @@ const I18N = {
     err_choose_file_first: "请先选择并校验一个本地 .bin 文件。",
     msg_writing_slot: "正在向 slot {slot} 写入 {size} 字节(地址 {addr})…",
     err_blob_pack: "Display name \"{name}\" blob 打包失败。",
+    msg_writing_sig: "正在写入签名徽章({size} 字节,地址 {addr})…",
+    msg_sig_written: "签名徽章已写入。",
     msg_writing_blob: "正在写入 Display name blob({size} 字节,地址 {addr})…",
     msg_blob_written: "Display name 已写入:{name}",
     msg_install_done: "完成。请重新上电,然后在 meta-pass 中选择对应 slot。",
@@ -555,6 +558,19 @@ $("btn-install").addEventListener("click", async () => {
       compress: true,
       reportProgress: (_i, written, total) => setProgress((written / total) * 100),
     });
+    // 签名徽章:image_len 之后的 4K 对齐 sector,单独写入(与 blob 同理)。
+    if (image.signature && image.signature.length > 0) {
+      const sigAddr = address + image.signatureOffset;
+      log(t("msg_writing_sig", { size: image.signature.length, addr: hex(sigAddr) }));
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(image.signature), address: sigAddr }],
+        flashSize: "keep",
+        flashMode: "keep",
+        flashFreq: "keep",
+        compress: true,
+      });
+      log(t("msg_sig_written"), "ok");
+    }
     // 显示名 blob:应用段写完后单独写槽位尾部 sector(偏移按分区大小动态计算)
     const dispName = sanitizeDisplayName($("disp-name").value);
     if (dispName) {

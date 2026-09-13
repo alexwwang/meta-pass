@@ -19,6 +19,7 @@
 
 #include "meta_image.h"
 #include "meta_name.h"
+#include "meta_sign.h"
 #include "meta_store.h"
 
 static const char *TAG = "meta_net";
@@ -212,8 +213,10 @@ static esp_err_t h_upload(httpd_req_t *req)
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "bad slot");
     }
-    // 上限收紧:槽位尾部最后 4KB 保留给显示名 blob(按分区大小动态计算)。
-    const uint32_t max_app = meta_name_max_app_size(part->size);
+    // 上限收紧:槽位尾部最后 8KB 保留给签名扇区和显示名 blob(按分区大小动态计算)。
+    // Wi-Fi 上传只接受纯 app image(OTA API 天然只吃 image_len 以内的数据);
+    // 签名扇区通过 USB 安装器写入(签名扇区在 image_len 之外,OTA 写入器会拒绝)。
+    const uint32_t max_app = meta_sign_app_limit(part->size);
     if (!mi_content_length_ok(req->content_len, max_app)) {
         mi_handle(&s_mi, MI_EV_ABORT);
         s_mi.last_error = MI_ERR_TOO_LARGE;

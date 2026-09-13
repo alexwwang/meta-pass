@@ -11,7 +11,7 @@
 
 #include "meta_image.h"
 #include "meta_name.h"
-
+#include "meta_sign.h"
 static const char *TAG = "meta_store";
 
 // 槽位与分区 subtype 的固定映射:ota_0/ota_1/ota_2(见 partitions.csv)。
@@ -25,7 +25,7 @@ const esp_partition_t *meta_store_slot_partition(int slot)
 
 // 流式计算分区前 len 字节的 SHA-256(4KB 分块读,不整包入 RAM;无 PSRAM 约束)。
 static esp_err_t slot_sha256(const esp_partition_t *part, uint32_t len,
-                             char out_hex[META_SHA256_HEX_LEN + 1])
+                             uint8_t out_digest[32], char out_hex[META_SHA256_HEX_LEN + 1])
 {
     uint8_t *buf = malloc(4096);
     if (!buf) return ESP_ERR_NO_MEM;
@@ -45,11 +45,10 @@ static esp_err_t slot_sha256(const esp_partition_t *part, uint32_t len,
         mbedtls_sha256_free(&sha);
         return err;
     }
-    uint8_t digest[32];
-    mbedtls_sha256_finish(&sha, digest);
+    mbedtls_sha256_finish(&sha, out_digest);
     mbedtls_sha256_free(&sha);
     for (int i = 0; i < 32; i++) {
-        snprintf(out_hex + i * 2, 3, "%02x", digest[i]);
+        snprintf(out_hex + i * 2, 3, "%02x", out_digest[i]);
     }
     out_hex[META_SHA256_HEX_LEN] = '\0';
     return ESP_OK;
@@ -94,8 +93,9 @@ static void scan_one(int slot, meta_slot_info_t *out)
         meta_slot_mark_invalid(out);
         return;
     }
+    uint8_t sha_digest[32];
     char sha_hex[META_SHA256_HEX_LEN + 1];
-    if (slot_sha256(part, meta.image_len, sha_hex) != ESP_OK) {
+    if (slot_sha256(part, meta.image_len, sha_digest, sha_hex) != ESP_OK) {
         meta_slot_mark_invalid(out);
         return;
     }
@@ -114,6 +114,21 @@ static void scan_one(int slot, meta_slot_info_t *out)
     if (!meta_slot_set_valid(out, name, desc.version, meta.image_len, sha_hex)) {
         meta_slot_mark_invalid(out);
         return;
+    }
+    // 签名徽章:签名 sector 独占一个 4K(从 sig_off 到 sig_off+4K),不得与 blob sector 重叠。
+    // 无签名段 = 合法的未签名固件;有签名段且验签通过 = 签名固件。
+    const uint32_t sig_off = meta_sign_sector_offset(meta.image_len);
+    const uint32_t blob_off2 = meta_name_blob_offset(part->size);
+    if (sig_off + META_SIG_SECTOR <= blob_off2) {
+        uint8_t sig_buf[META_SIG_TOTAL_LEN];
+        if (esp_partition_read(part, sig_off, sig_buf, sizeof(sig_buf)) == ESP_OK) {
+            // 复用上面已算的 SHA-256 digest(不重复计算,不整包入 RAM)。
+            meta_sig_result_t sr = meta_sign_verify(sha_digest, meta.image_len,
+                                                    sig_buf, sizeof(sig_buf));
+            out->signed_fw = (sr == META_SIG_OK);
+            ESP_LOGI(TAG, "槽位 %d 签名: %s (%d)", slot,
+                     out->signed_fw ? "SIGNED" : "unsigned", sr);
+        }
     }
     ESP_LOGI(TAG, "槽位 %d: %s %s (%lu B)", slot, out->name, out->version,
              (unsigned long)out->size);

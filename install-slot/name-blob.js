@@ -10,15 +10,16 @@
 
 export const NAME_MAX = 32;
 export const BLOB_SECTOR = 0x1000;         // blob sector 大小(4KB)
+export const SIG_SECTOR = 0x1000;          // 签名徽章 sector 大小(4KB)
 
 // 按槽位分区大小计算 blob sector 距槽位起始的偏移(分区末尾 4KB)。
 export function blobOffset(partSize) {
   return partSize - BLOB_SECTOR;
 }
 
-// 按槽位分区大小计算应用镜像字节上限(分区大小减去尾部 4KB blob sector)。
+// 按槽位分区大小计算应用镜像字节上限(分区大小减去签名 sector 和尾部 blob sector)。
 export function maxAppImageSize(partSize) {
-  return partSize - BLOB_SECTOR;
+  return partSize - SIG_SECTOR - BLOB_SECTOR;
 }
 
 const MAGIC = [0x4d, 0x4e, 0x41, 0x4d]; // "MNAM"

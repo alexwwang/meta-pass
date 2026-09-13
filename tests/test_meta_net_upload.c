@@ -404,36 +404,35 @@ static void test_content_length_limits(void)
     h_upload(&req0);
     CHECK(strcmp(req0.resp_status, "413 Payload Too Large") == 0);
 
-    // slot0 上限 = 0x1D6000 - 4096 = 0x1D5000;上限+1 → 413
+    // slot0 上限 = 0x1D6000 - 8192 = 0x1D4000;上限+1 → 413
     setup(); force_paired();
     httpd_req_t req1 = make_upload_req(0, NULL, payload, sizeof(payload));
-    req1.content_len = 0x1D5001;
+    req1.content_len = 0x1D4001;
     h_upload(&req1);
     CHECK(strcmp(req1.resp_status, "413 Payload Too Large") == 0);
 
     // slot0 content_len = 上限 → 接受(非 413;会因数据不足而 400,但证明没被尺寸拒绝)
     setup(); force_paired();
     httpd_req_t req2 = make_upload_req(0, NULL, payload, sizeof(payload));
-    req2.content_len = 0x1D5000;
+    req2.content_len = 0x1D4000;
     h_upload(&req2);
     CHECK(strcmp(req2.resp_status, "413 Payload Too Large") != 0);
 
-    // slot2 上限 = 0x29E000 - 4096 = 0x29D000,与 slot0 不同
-    // slot2 接受 0x1D5001(超过 slot0 上限但不超过 slot2 上限)
+    // slot2 上限 = 0x29E000 - 8192 = 0x29C000,与 slot0 不同
+    // slot2 接受 0x1D4001(超过 slot0 上限但不超过 slot2 上限)
     setup(); force_paired();
     httpd_req_t req3 = make_upload_req(2, NULL, payload, sizeof(payload));
-    req3.content_len = 0x1D5001;
+    req3.content_len = 0x1D4001;
     h_upload(&req3);
     CHECK(strcmp(req3.resp_status, "413 Payload Too Large") != 0);
 
-    // slot2 content_len = 0x29D001 → 413
+    // slot2 content_len = 0x29C001 → 413
     setup(); force_paired();
     httpd_req_t req4 = make_upload_req(2, NULL, payload, sizeof(payload));
-    req4.content_len = 0x29D001;
+    req4.content_len = 0x29C001;
     h_upload(&req4);
     CHECK(strcmp(req4.resp_status, "413 Payload Too Large") == 0);
 }
-
 // f. 首块 magic 错 → 400 'upload broken',abort=1, 槽位 INVALID
 // 滚动头预检:边收边写,凑齐 24B 才校验。坏头至多白写一个头的量(<=24B)。
 static void test_bad_magic(void)

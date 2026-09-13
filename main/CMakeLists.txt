@@ -7,6 +7,7 @@ idf_component_register(
          "meta_slots.c"
          "meta_import.c"
          "meta_store.c"
+         "meta_sign.c"
          "meta_net.c"
     INCLUDE_DIRS "."
     # 相比基线:去掉 bt(启动器不用 BLE),新增 esp_http_server(导入页)、

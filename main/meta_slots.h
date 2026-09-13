@@ -19,6 +19,7 @@ typedef enum {
 
 typedef struct {
     meta_slot_state_t state;
+    bool     signed_fw;                      // true = 通过 meta-pass 签名验签
     char     name[META_NAME_LEN + 1];            // 以 '\0' 结尾;EMPTY 时为空串
     char     version[META_VERSION_LEN + 1];
     uint32_t size;                               // 镜像字节数;EMPTY 时为 0

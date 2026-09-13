@@ -159,7 +159,8 @@ static void page_detail_build(int slot)
     char text[220];
     if (s->state == META_SLOT_VALID) {
         snprintf(text, sizeof(text),
-                 "name: %.16s\nver:  %.16s\nsize: %lu KB\nsha: %.16s...",
+                 "%s%.16s\nver:  %.16s\nsize: %lu KB\nsha: %.16s...",
+                 s->signed_fw ? "SIGNED\n" : "",
                  s->name, s->version, (unsigned long)(s->size / 1024), s->sha256_hex);
     } else {
         snprintf(text, sizeof(text), "%s", s->state == META_SLOT_EMPTY
@@ -304,7 +305,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 rows_refresh(DETAIL_ITEMS, s_sel);
             } else if (btn == BSP_BTN_OK) {
                 if (s_sel == 0 && meta_slot_bootable(s)) {          // BOOT
-                    goto_page(PAGE_CONFIRM_BOOT);
+                    // 签名固件直接启动;未签名固件走 LONG2 确认页
+                    if (s->signed_fw) {
+                        if (meta_store_boot_slot(s_detail_slot) == ESP_OK)
+                            esp_restart();
+                        goto_page(PAGE_DETAIL);
+                    } else {
+                        goto_page(PAGE_CONFIRM_BOOT);
+                    }
                 } else if (s_sel == 1 && s->state != META_SLOT_EMPTY) { // DELETE
                     goto_page(PAGE_CONFIRM_DEL);
                 } else if (s_sel == 2) {                            // BACK

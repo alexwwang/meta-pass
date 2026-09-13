@@ -22,6 +22,21 @@ run_static_checks() {
         actionlint_bin="$(./tools/install-actionlint.sh)"
     fi
     "${actionlint_bin}" -color .github/workflows/*.yml
+    # 公钥一致性:hook(子固件验签用)与 meta_sign_pubkey.h(启动器验签用)
+    # 必须由同一私钥生成,字节级一致,否则子固件签名永远验不过。
+    python3 - <<'PY'
+import re, sys
+def arr(p):
+    t = open(p).read()
+    m = re.search(r'unsigned char \w+\[\] = \{(.*?)\};', t, re.S)
+    if not m: sys.exit(f"error: {p} 缺少公钥数组")
+    return bytes(int(x,16) for x in re.findall(r'0x[0-9a-f]{2}', m.group(1)))
+a = arr('main/metapass_hook.h')
+b = arr('main/meta_sign_pubkey.h')
+assert a == b, f"error: 公钥不一致(hook={len(a)}B, meta_sign={len(b)}B)——运行 tools/signing/gen-pubkey.py"
+assert len(a) == 294, f"error: 公钥长度异常 {len(a)}B"
+print(f"公钥一致性: PASS ({len(a)} bytes)")
+PY
 
     test_dir="$(mktemp -d /tmp/ai-passport-host-tests.XXXXXX)"
     # 纯逻辑 host tests:新增测试源时在此登记编译/运行(meta-pass 的 meta_* 模块)。
@@ -57,6 +72,11 @@ run_static_checks() {
         -ffunction-sections -fdata-sections ${gc_flag} \
         -o "${test_dir}/test_meta_net_upload"
     "${test_dir}/test_meta_net_upload"
+    # 签名段格式解析测试(stub 化 RSA 验签,只测格式)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_meta_sign.c tests/esp_stubs/meta_sign_stub.c \
+        -o "${test_dir}/test_meta_sign"
+    "${test_dir}/test_meta_sign"
     python3 tests/test_verify_firmware.py
     python3 tests/test_meta_net_contract.py
     rm -rf "${test_dir}"

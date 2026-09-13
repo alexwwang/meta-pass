@@ -113,10 +113,22 @@ export function extractAppImage(buf, maxSize) {
     source = `full image (factory app at ${hex(part.offset)})`;
   }
   const imgLen = espImageLength(buf, appStart);
-  // 上限按槽位分区大小动态计算:slot 尾部最后 4KB 保留给显示名 blob
+  // 上限按槽位分区大小动态计算:slot 尾部最后 8KB 保留给签名 sector 和显示名 blob
   const limit = maxSize ?? maxAppImageSize(SLOT_CAPACITY);
   if (imgLen > limit) {
-    throw new Error(`App image is ${imgLen} bytes — exceeds max app image size ${limit} bytes (the last 4 KB of the slot is reserved for the display name).`);
+    throw new Error(`App image is ${imgLen} bytes — exceeds max app image size ${limit} bytes (the last 8 KB of the slot is reserved for the signature badge and display name).`);
   }
-  return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source };
+  // 签名徽章:检测 image_len 之后的 4K 对齐 sector 是否含 MSIG magic。
+  // 签名扇区在 image_len 之外,需单独写入(安装器第三次 writeFlash)。
+  let signature = null, signatureOffset = 0;
+  const sigOff = Math.ceil(imgLen / 4096) * 4096;
+  if (appStart + sigOff + 4 <= buf.length) {
+    const magic = buf.subarray(appStart + sigOff, appStart + sigOff + 4);
+    if (magic[0] === 0x4D && magic[1] === 0x53 && magic[2] === 0x49 && magic[3] === 0x47) {
+      // "MSIG" — 签名扇区存在,提取 265 字节(magic + payload_len + 256B sig + 1B xor)
+      signature = buf.slice(appStart + sigOff, appStart + sigOff + 265);
+      signatureOffset = sigOff;
+    }
+  }
+  return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, signature, signatureOffset };
 }

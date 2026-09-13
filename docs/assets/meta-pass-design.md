@@ -168,18 +168,43 @@ offset is computed dynamically as `partition_size − 0x1000` rather than a fixe
 
 Mandatory (every child):
 
-- Image header magic `0xE9`, chip id = ESP32-C3, size ≤ (slot_size − 4KB) (slot tail reserved for the display-name blob; slot sizes vary: 0x1D6000/0x200000/0x29E000), sane segment count;
+- Image header magic `0xE9`, chip id = ESP32-C3, size ≤ (slot_size − 8KB) (slot tail
+  reserves 4KB for the signature badge sector + 4KB for the display-name blob; slot sizes
+  vary: 0x1D6000/0x200000/0x29E000), sane segment count;
 - Compute the full-image SHA-256 and show it on the confirm page (manual comparison
   against the publisher's hash).
 
-Optional badge: if the package carries a signature, verify it and show "Signed"; not
-mandatory — existing market firmware cannot be forced to re-adapt. Unsigned firmware shows
-a warning page requiring a **LONG2** confirm before boot.
+Signature badge (application-layer, reversible — no eFuse, no Secure Boot v2):
+
+A child firmware may carry an RSA-2048 signature badge appended after `image_len`. The
+signature is verified against a public key compiled into meta-pass
+(`main/meta_sign_pubkey.h`, generated from `tools/signing/public.pem`). Layout inside the
+OTA partition:
+
+```
+[app image (image_len bytes)] [sig sector (4KB)] [name blob sector (4KB)]
+                              ↑
+  esp_image_verify only checks image_len; the sig sector is safe to append.
+  Sig sector format (265 bytes, padded to 4K):
+    [4B "MSIG"] [4B payload_len=256 LE] [256B RSA-2048 PKCS1v15 signature]
+    [1B xor checksum of preceding 264 bytes]
+```
+
+`scan_one` calls `meta_sign_verify()` after `esp_image_verify()` passes. A slot with a
+valid signature shows "SIGNED" on the detail page and boots directly on OK click (no
+warning page). A slot without a signature badge (erased 0xFF or no MSIG magic) is treated
+as unsigned — the unsigned-firmware warning page with LONG2 confirm still applies.
+
+Signing a child firmware: `tools/signing/sign-firmware.sh <app.bin>` appends the sig
+sector using `tools/signing/private.pem` (gitignored). The private key never enters the
+repository.
 
 Honest boundary: once booted, an unsigned child has full flash access; software cannot
-stop a malicious child from erasing cardid. Trust comes from user judgment + pairing-code
-physical possession + trial-boot isolation. eFuse write protection / Secure Boot v2
-(irreversible) is deferred for separate evaluation.
+stop a malicious child from erasing cardid. The signature badge proves firmware origin
+(signed by the meta-pass key holder) but does not enforce boot-time blocking at the
+hardware level. Trust comes from user judgment + pairing-code physical possession +
+trial-boot isolation. eFuse write protection / Secure Boot v2 (irreversible) is deferred
+for separate evaluation.
 
 ## 8. Local Management UI
 
