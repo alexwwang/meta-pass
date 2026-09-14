@@ -57,10 +57,12 @@ int main(int argc, char **argv)
             return 1;
         }
         CFRelease(existing);
+        // SecItemDelete 默认只删第一条匹配:同标签的旧公钥/私钥会残留,
+        // 导致签名查到旧私钥、与发布的公钥不匹配。必须显式 kSecMatchLimitAll。
         CFMutableDictionaryRef del = base_query(tag);
+        CFDictionarySetValue(del, kSecMatchLimit, kSecMatchLimitAll);
         SecItemDelete(del);
         CFRelease(del);
-        fprintf(stderr, "note: old key deleted\n");
     }
     CFRelease(query);
 
@@ -76,6 +78,22 @@ int main(int argc, char **argv)
     CFDictionarySetValue(attrs, kSecAttrApplicationTag, tag);
     CFStringRef label = CFSTR("meta-pass firmware signing");
     CFDictionarySetValue(attrs, kSecAttrLabel, label);
+    // kSecAttrApplicationLabel 默认是公钥哈希二进制值,Keychain 授权框会把它渲染成
+    // 占位符 "<key>";显式设为可读名称。该属性生成后不可改(SecItemUpdate 报
+    // errSecNoSuchAttr),必须在创建时指定。
+    CFDataRef app_label = CFDataCreate(NULL, (const UInt8 *)"meta-pass firmware signing",
+                                       (CFIndex)strlen("meta-pass firmware signing"));
+    CFDictionarySetValue(attrs, kSecAttrApplicationLabel, app_label);
+    CFRelease(app_label);
+
+    // 自定义 ACL: 授权对话框显示的密钥名来自 SecAccess descriptor,
+    // 而不是 kSecAttrLabel(SO 65750292 实证)。不设则系统默认描述符,
+    // 对话框渲染成占位符 "<key>"。空 trusted list: 任何应用首次使用都需用户确认。
+    SecAccessRef access = NULL;
+    if (SecAccessCreate(CFSTR("meta-pass firmware signing"), NULL, &access) == errSecSuccess) {
+        CFDictionarySetValue(attrs, kSecAttrAccess, access);
+        CFRelease(access);
+    }
 
     CFErrorRef err = NULL;
     SecKeyRef priv = SecKeyCreateRandomKey(attrs, &err);
@@ -90,7 +108,6 @@ int main(int argc, char **argv)
         CFRelease(err);
         return 1;
     }
-
     SecKeyRef pub = SecKeyCopyPublicKey(priv);
     CFRelease(priv);
     if (!pub) {
