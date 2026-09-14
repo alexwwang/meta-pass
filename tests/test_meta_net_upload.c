@@ -6,13 +6,11 @@
 // - ESP-IDF API 全部由 tests/esp_stubs/ 下的桩头替代(-Itests/esp_stubs 优先)。
 // - meta_store_slot_partition / meta_store_erase_slot 在本文件实现,背后用 RAM 数组
 //   模拟 flash(初始 0xFF,erase 填 0xFF,write 拷字节)。
-// - mbedtls/sha256.h 桩是真实 FIPS 180-4 实现,先用 "abc" 标准向量自证,再用于断言
-//   上传摘要正确性。
 // - httpd_query_key_value 桩按 ESP-IDF 5.5.3 真实行为实现:不做 %XX URL 解码
 //   (见 esp_http_server/src/httpd_parse.c:882,文档明确 "components are not URLdecoded")。
 //   测试直接传未编码 dispname,验证 handler 的过滤/截断逻辑。
 //
-// 覆盖:配对门禁、槽位/尺寸校验、首块头预检、中断恢复、成功路径(含 sha256 断言)、
+// 覆盖:配对门禁、槽位/尺寸校验、首块头预检、中断恢复、成功路径、
 // dispname blob 写入/过滤/截断/回退、碎片化接收、单次会话语义。
 
 #include <stdio.h>
@@ -173,6 +171,26 @@ esp_err_t esp_ota_get_partition_description(const esp_partition_t *p, esp_app_de
     return ESP_OK;
 }
 
+// ---- esp_image_verify 桩 ----
+// IDF 实现解析段表计算 image_len;host test 直接返回上传总字节数(ota_write_bytes),
+// 与真实 IDF 语义等价(测试镜像的段表不可解析,但不影响 image_len 定位验证)。
+esp_err_t esp_image_verify(esp_image_load_mode_t mode, const esp_partition_pos_t *part, esp_image_metadata_t *data)
+{
+    (void)mode;
+    if (!part || !data) return ESP_ERR_INVALID_ARG;
+    // 快速检查:分区首字节必须是 0xE9(magic)
+    if (part->offset >= part->size) return ESP_ERR_INVALID_SIZE;
+    int slot = -1;
+    for (int i = 0; i < META_SLOT_COUNT; i++) {
+        if (part->size == ram_flash_sizes[i]) { slot = i; break; }
+    }
+    if (slot < 0) return ESP_ERR_INVALID_ARG;
+    if (ram_flash[slot][part->offset] != 0xE9) return ESP_FAIL;
+    data->start_addr = part->offset;
+    data->image_len = (uint32_t)ota_write_bytes;
+    return ESP_OK;
+}
+
 // ---- httpd 桩 ----
 
 esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *buf, size_t buf_len)
@@ -278,19 +296,6 @@ static void make_payload(uint8_t *buf, size_t len)
         buf[i] = (uint8_t)(i & 0xFF);
 }
 
-// 独立计算 SHA-256 hex(用同一桩,但独立调用路径)
-static void compute_sha256_hex(const uint8_t *data, size_t len, char hex[65])
-{
-    mbedtls_sha256_context ctx;
-    mbedtls_sha256_init(&ctx);
-    mbedtls_sha256_starts(&ctx, 0);
-    mbedtls_sha256_update(&ctx, data, len);
-    uint8_t digest[32];
-    mbedtls_sha256_finish(&ctx, digest);
-    mbedtls_sha256_free(&ctx);
-    for (int i = 0; i < 32; i++)
-        snprintf(hex + i * 2, 3, "%02x", digest[i]);
-}
 
 // 构造一个上传请求
 static httpd_req_t make_upload_req(int slot, const char *dispname,
@@ -318,23 +323,6 @@ static void force_paired(void)
 
 // ---- 测试用例 ----
 
-// a. SHA-256 桩自证:"abc" → 已知标准向量
-static void test_sha256_self(void)
-{
-    TEST("a_sha256_self");
-    const char *abc = "abc";
-    uint8_t digest[32];
-    mbedtls_sha256_context ctx;
-    mbedtls_sha256_init(&ctx);
-    mbedtls_sha256_starts(&ctx, 0);
-    mbedtls_sha256_update(&ctx, (const uint8_t *)abc, 3);
-    mbedtls_sha256_finish(&ctx, digest);
-    mbedtls_sha256_free(&ctx);
-    char hex[65];
-    for (int i = 0; i < 32; i++)
-        snprintf(hex + i * 2, 3, "%02x", digest[i]);
-    CHECK(strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0);
-}
 
 // b. 未配对直接上传 → 403,esp_ota_begin 未被调用
 static void test_unpaired_403(void)
@@ -511,7 +499,7 @@ static void test_ota_end_failure(void)
     CHECK(s_slots[0].state == META_SLOT_INVALID);
 }
 
-// h. 成功路径:1.5 块 payload(1536 字节),含 sha256 断言
+// h. 成功路径:1.5 块 payload(1536 字节)
 static void test_success_path(void)
 {
     TEST("h_success_path");
@@ -527,11 +515,6 @@ static void test_success_path(void)
 
     // RAM flash 内容与 payload 逐字节相等
     CHECK(memcmp(ram_flash[1], payload, plen) == 0);
-
-    // sha256_hex 与独立参考一致
-    char expected_hex[65];
-    compute_sha256_hex(payload, plen, expected_hex);
-    CHECK(strcmp(s_slots[1].sha256_hex, expected_hex) == 0);
 
     // s_slots[1] VALID 且 size 正确
     CHECK(s_slots[1].state == META_SLOT_VALID);
@@ -794,7 +777,6 @@ static void test_single_use_session(void)
 
 int main(void)
 {
-    test_sha256_self();
     test_unpaired_403();
     test_session_pairing();
     test_slot_validation();

@@ -11,11 +11,11 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
-#include "esp_partition.h"
+#include "esp_image_format.h"   // esp_image_verify / esp_image_metadata_t
 #include "esp_random.h"
 #include "esp_wifi.h"
-#include "mbedtls/sha256.h"
 #include "nvs_flash.h"
+#include "mbedtls/sha256.h"
 
 #include "meta_image.h"
 #include "meta_name.h"
@@ -246,14 +246,10 @@ static esp_err_t h_upload(httpd_req_t *req)
         return httpd_resp_sendstr(req, "no mem");
     }
 
-    mbedtls_sha256_context sha;
-    mbedtls_sha256_init(&sha);
-    mbedtls_sha256_starts(&sha, 0);
-
     int remaining = req->content_len;
     esp_err_t result = ESP_OK;
     // 头预检按累计字节触发,不依赖首个分块尺寸:TCP 分片可能让首块不足 24B,
-    // 边收边写 flash,前 24B 滚动留存,凑齐即校验,不合法立即中止(已擦除,
+    // 边收边写 flash,前 24B 滚动留存,凑齐即校验,不合法即中止(已擦除,
     // 至多白写 24B,abort 后无残留)。
     uint8_t hdr[META_IMAGE_HEADER_LEN];
     size_t  seen = 0;
@@ -276,7 +272,6 @@ static esp_err_t h_upload(httpd_req_t *req)
             result = err;
             break;
         }
-        mbedtls_sha256_update(&sha, buf, (size_t)got);
         remaining -= got;
         set_status(MI_RECEIVING, (req->content_len - remaining) * 100 / req->content_len,
                    "Receiving...");
@@ -297,7 +292,6 @@ static esp_err_t h_upload(httpd_req_t *req)
 
     if (result != ESP_OK) {
         esp_ota_abort(ota);
-        mbedtls_sha256_free(&sha);
         meta_slot_mark_invalid(&s_slots[slot]);
         mi_handle(&s_mi, MI_EV_ABORT);
         set_status(MI_ERROR, -1, "Upload broken. Slot invalidated.");
@@ -309,7 +303,6 @@ static esp_err_t h_upload(httpd_req_t *req)
     set_status(MI_VERIFYING, 100, "Verifying...");
 
     if (esp_ota_end(ota) != ESP_OK) {   // 权威校验:segment/校验和/尾部哈希
-        mbedtls_sha256_free(&sha);
         meta_store_erase_slot(slot);
         meta_slot_mark_invalid(&s_slots[slot]);
         mi_handle(&s_mi, MI_EV_VERIFY_FAIL);
@@ -318,15 +311,45 @@ static esp_err_t h_upload(httpd_req_t *req)
         return httpd_resp_sendstr(req, "verify failed");
     }
 
-    // 元数据:esp_app_desc 的名称/版本 + 流式 SHA-256(与上传方文件可人工比对)。
-    // 注意: digest 是对 content_len 字节流式计算;签名镜像时 content_len > image_len,
-    // digest 仅覆盖 image 部分(不含 tail sector),与 scan_one 中的 slot_sha256 语义一致。
+    // 权威获取 image_len:与 scan_one 一致,用 esp_image_verify 解析段表。
+    // 不从 header[20:24] 读取(该偏移不是 image_len 字段,会得到错误值)。
+    esp_image_metadata_t meta = {0};
+    const esp_partition_pos_t pos = { .offset = part->address, .size = part->size };
+    if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) != ESP_OK) {
+        meta_store_erase_slot(slot);
+        meta_slot_mark_invalid(&s_slots[slot]);
+        mi_handle(&s_mi, MI_EV_VERIFY_FAIL);
+        set_status(MI_ERROR, -1, "Image verify failed. Slot erased.");
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "verify failed");
+    }
+    const uint32_t image_len = meta.image_len;
+
+    // 回读 flash 计算 SHA-256(与 scan_one 的 slot_sha256 语义一致)。
+    // 流式计算:4KB 分块,避免整包入 RAM。
     uint8_t digest[32];
+    char sha_hex[META_SHA256_HEX_LEN + 1];
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    mbedtls_sha256_starts(&sha, 0);
+    uint8_t sha_buf[4096];
+    for (uint32_t off = 0; off < image_len; off += sizeof(sha_buf)) {
+        size_t chunk = (image_len - off < sizeof(sha_buf)) ? (image_len - off) : sizeof(sha_buf);
+        if (esp_partition_read(part, off, sha_buf, chunk) != ESP_OK) {
+            mbedtls_sha256_free(&sha);
+            meta_store_erase_slot(slot);
+            meta_slot_mark_invalid(&s_slots[slot]);
+            mi_handle(&s_mi, MI_EV_VERIFY_FAIL);
+            set_status(MI_ERROR, -1, "Flash read failed. Slot erased.");
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "read failed");
+        }
+        mbedtls_sha256_update(&sha, sha_buf, chunk);
+    }
     mbedtls_sha256_finish(&sha, digest);
     mbedtls_sha256_free(&sha);
-    char sha_hex[META_SHA256_HEX_LEN + 1];
     for (int i = 0; i < 32; i++) snprintf(sha_hex + i * 2, 3, "%02x", digest[i]);
-
+    sha_hex[META_SHA256_HEX_LEN] = '\0';
     esp_app_desc_t desc;
     const char *name = "unknown";
     const char *ver = "?";
@@ -335,20 +358,7 @@ static esp_err_t h_upload(httpd_req_t *req)
         ver = desc.version;
     }
     meta_slot_set_valid(&s_slots[slot], disp[0] != '\0' ? disp : name, ver,
-                        (uint32_t)req->content_len, sha_hex);
-    // 权威获取真实 image_len:读取分区镜像头
-    // 注意:需要验证镜像头有效性,避免无效数据导致错误的 image_len
-    uint8_t img_hdr[META_IMAGE_HEADER_LEN];
-    uint32_t image_len = (uint32_t)req->content_len;  // fallback
-    if (esp_partition_read(part, 0, img_hdr, sizeof(img_hdr)) == ESP_OK) {
-        // 检查镜像头 magic(Esp Image Header magic = 0xE9)
-        if (img_hdr[0] == 0xE9) {
-            image_len = (uint32_t)img_hdr[20] | ((uint32_t)img_hdr[21] << 8) | ((uint32_t)img_hdr[22] << 16) | ((uint32_t)img_hdr[23] << 24);
-            if (image_len == 0 || image_len > req->content_len) {
-                image_len = (uint32_t)req->content_len;  // 无效值则 fallback
-            }
-        }
-    }
+                        image_len, sha_hex);
 
     // metadata sector 紧跟 image_len 后 4K 对齐。ESP flash 只能按 sector 擦除，
     // 因此擦整个 4KB sector 后再写 40B MNAM 窗口。
@@ -359,9 +369,9 @@ static esp_err_t h_upload(httpd_req_t *req)
         static uint8_t tail_sector[META_SIG_SECTOR];
         bool already_signed = false;
         if (esp_partition_read(part, tail_off, tail_sector, sizeof(tail_sector)) == ESP_OK) {
-            // 完整验签:格式探测 + pubkey 校验，确保同尺寸无签名重传不会误判
-            already_signed = (meta_sign_verify(digest, image_len,
-                                               tail_sector, META_SIG_SECTOR) == META_SIG_OK);
+            // 轻量格式探测:仅查 MSIG magic + XOR checksum,不做 ECDSA 验签。
+            // 完整验签(digest + pubkey)由 scan_one 在启动时执行。
+            already_signed = meta_sign_detect_sector(tail_sector, sizeof(tail_sector));
         }
         if (!already_signed && disp[0] != '\0') {
             esp_err_t berr = esp_partition_erase_range(part, tail_off, META_SIG_SECTOR);
