@@ -136,6 +136,12 @@ return, include `main/metapass_hook.h` and wire two calls:
 2. Route the OK key's LONG2 event to `metapass_return_to_launcher()`. Note the LONG
    event fires first at 1.5 s; give LONG a harmless in-app action (e.g. page back).
 
+Signed badge (optional): `tools/signing/sign-firmware.sh <app.bin> [private.pem]
+[--egg-text "..."]` appends an ECDSA-P256 badge (+ optional easter-egg text) after the
+image; meta-pass then shows SIGNED on the detail page and boots without the warning page.
+The signing key is held by the meta-pass publisher — third-party developers submit
+binaries for signing rather than self-signing.
+
 ## Repository layout
 
 | Path | Content |
