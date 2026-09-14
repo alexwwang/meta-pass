@@ -6,6 +6,7 @@ idf_component_register(
          "meta_name.c"
          "meta_slots.c"
          "meta_import.c"
+         "meta_seq.c"
          "meta_store.c"
          "meta_sign.c"
          "meta_net.c"

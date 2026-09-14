@@ -1,6 +1,7 @@
 // main/meta_store.c —— 实现见头文件注释。
 #include "meta_store.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_app_desc.h"
@@ -154,4 +155,23 @@ esp_err_t meta_store_boot_slot(int slot)
 esp_err_t meta_store_mark_factory_valid(void)
 {
     return esp_ota_mark_app_valid_cancel_rollback();
+}
+
+meta_egg_result_t meta_store_read_egg(int slot, uint32_t image_len, char *out, size_t out_cap)
+{
+    if (!out || out_cap < 2) return META_EGG_BAD_FORMAT;
+    const esp_partition_t *part = meta_store_slot_partition(slot);
+    if (!part) return META_EGG_BAD_FORMAT;
+    const uint32_t tail_off = meta_sign_sector_offset(image_len);
+    if (tail_off + META_SIG_SECTOR > part->size) return META_EGG_ABSENT;
+
+    // 整 sector 入 RAM 再解析:malloc 而不是 static,避免常驻 4KB BSS(此路径极少触发)。
+    uint8_t *sector = malloc(META_SIG_SECTOR);
+    if (!sector) return META_EGG_BAD_FORMAT;
+    meta_egg_result_t r = META_EGG_BAD_FORMAT;
+    if (esp_partition_read(part, tail_off, sector, META_SIG_SECTOR) == ESP_OK) {
+        r = meta_egg_parse(sector, META_SIG_SECTOR, out, out_cap);
+    }
+    free(sector);
+    return r;
 }

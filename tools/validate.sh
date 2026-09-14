@@ -60,6 +60,10 @@ PY
         tests/test_meta_import.c main/meta_import.c \
         -o "${test_dir}/test_meta_import"
     "${test_dir}/test_meta_import"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_seq.c main/meta_seq.c \
+        -o "${test_dir}/test_meta_seq"
+    "${test_dir}/test_meta_seq"
     # 上传链路集成测试:桩化 ESP-IDF(tests/esp_stubs),主机编译真实 meta_net.c
     # 死代码剥离 flag 平台相关:macOS ld 用 -dead_strip,GNU ld 用 --gc-sections
     local gc_flag="-Wl,--gc-sections"

@@ -3,10 +3,11 @@
 // 设计文档(单一权威来源):docs/assets/meta-pass-design.md
 //
 // 按键语义(全局统一):
-//   上/下 短按   列表/详情页=移动选中项
-//   确定  短按   列表=进入;详情=执行选中动作;确认页=取消
+//   上/下 短按   列表/详情页=移动选中项;彩蛋页=滚动文本
+//   确定  短按   列表=进入;详情=执行选中动作;确认页=取消;彩蛋页=退出
 //   确定  长按   返回上一级(LONG,1.5s)
 //   确定  超长按 确认页=确认危险操作(LONG2,3s;会先触发一次 LONG,确认页忽略之)
+//   隐藏序列 详情页快速连按 UP UP DOWN DOWN OK-LONG(相邻间隔 <0.5s)→ 彩蛋页
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +22,7 @@
 
 #include "lvgl.h"
 #include "meta_net.h"
+#include "meta_seq.h"
 #include "meta_slots.h"
 #include "meta_store.h"
 #include "ui_pixel.h"
@@ -34,6 +36,7 @@ typedef enum {
     PAGE_CONFIRM_BOOT, // 未签名固件启动警告
     PAGE_CONFIRM_DEL,  // 删除确认
     PAGE_IMPORT,       // SoftAP 导入页
+    PAGE_EGG,          // 彩蛋页:隐藏序列进入,滚动查看 MAEG 文本
 } page_t;
 
 #define LIST_ITEMS   4                   // Slot 0 / Slot 1 / Slot 2 / Import
@@ -52,7 +55,9 @@ static lv_obj_t *s_scr;              // 当前页 screen;同一时间只有一�
 static lv_obj_t *s_rows[LIST_ITEMS]; // 可选中行面板(数量按页面上限分配)
 static lv_obj_t *s_info;             // 详情/导入页的多行文本
 static lv_obj_t *s_status_line;      // 导入页状态行
+static lv_obj_t *s_egg_panel;        // 彩蛋页可滚动面板(teardown 时随屏销毁)
 static lv_obj_t *s_mascot;
+static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN OK-LONG 的匹配状态
 
 // ---------- 公共小部件 ----------
 
@@ -100,6 +105,7 @@ static void page_teardown(void)
         s_scr = NULL;
         s_info = NULL;
         s_status_line = NULL;
+        s_egg_panel = NULL;
         s_mascot = NULL;
         for (int i = 0; i < LIST_ITEMS; i++) s_rows[i] = NULL;
     }
@@ -172,6 +178,39 @@ static void page_detail_build(int slot)
     add_row(s_scr, 1, 224, "DELETE");
     add_row(s_scr, 2, 268, "BACK");
     rows_refresh(DETAIL_ITEMS, s_sel);
+    lv_screen_load(s_scr);
+}
+
+// ---------- 页面:彩蛋(详情页隐藏序列 UP UP DOWN DOWN OK-LONG 进入) ----------
+
+static void page_egg_build(void)
+{
+    s_scr = ui_pixel_screen_create("EGG");
+    // 可滚动面板:文本最长 3919B,远超一屏;UP/DOWN 按行滚动,OK 短按返回。
+    s_egg_panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 180, UI_PAPER);
+    lv_obj_set_scroll_dir(s_egg_panel, LV_DIR_VER);
+
+    // 惰性读取+完整解析;static 缓冲 + set_text_static,避免 LVGL 堆内再复制 4KB。
+    static char egg_buf[META_EGG_TEXT_LEN + 1];
+    const meta_slot_info_t *s = &s_slots[s_detail_slot];
+    const char *text;
+    if (s->state != META_SLOT_VALID) {
+        text = "No egg.";
+    } else {
+        const meta_egg_result_t r = meta_store_read_egg(s_detail_slot, s->size,
+                                                        egg_buf, sizeof(egg_buf));
+        text = (r == META_EGG_OK)     ? egg_buf
+             : (r == META_EGG_ABSENT) ? "No egg."
+                                      : "Egg data corrupted.";
+    }
+
+    lv_obj_t *lbl = lv_label_create(s_egg_panel);
+    lv_obj_set_width(lbl, 196);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text_static(lbl, text);
+    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
     lv_screen_load(s_scr);
 }
 
@@ -266,6 +305,7 @@ static void goto_page(page_t page)
     case PAGE_CONFIRM_BOOT: page_confirm_build(true);    break;
     case PAGE_CONFIRM_DEL:  page_confirm_build(false);   break;
     case PAGE_IMPORT:   page_import_build();             break;
+    case PAGE_EGG:      page_egg_build();                break;
     }
 }
 
@@ -298,6 +338,25 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
     case PAGE_DETAIL: {
         const meta_slot_info_t *s = &s_slots[s_detail_slot];
+
+        // 隐藏彩蛋序列: UP UP DOWN DOWN OK-LONG,相邻两键间隔 <0.5s(meta_seq)。
+        // 只认 CLICK/LONG 语义事件;PRESS/DOUBLE 不参与也不打断。
+        if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG || ev == BSP_BTN_LONG2) {
+            meta_seq_key_t k;
+            bool recognized = true;
+            if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_UP;
+            else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_DOWN;
+            else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) k = META_SEQ_KEY_OK_LONG;
+            else recognized = false;   // OK 单击/超长按等:用户意图明确改变,打断序列
+            if (!recognized) {
+                meta_seq_reset(&s_egg_seq);
+            } else if (meta_seq_feed(&s_egg_seq, k,
+                                     (uint32_t)(esp_timer_get_time() / 1000))) {
+                goto_page(PAGE_EGG);   // 命中:吞掉这个 LONG,不再触发"返回列表"
+                break;
+            }
+        }
+
         if (ev == BSP_BTN_CLICK) {
             if (btn == BSP_BTN_UP)   s_sel = (s_sel + DETAIL_ITEMS - 1) % DETAIL_ITEMS;
             if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % DETAIL_ITEMS;
@@ -345,6 +404,16 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             meta_store_erase_slot(s_detail_slot);
             meta_slot_clear(&s_slots[s_detail_slot]);
             goto_page(PAGE_LIST);
+        }
+        break;
+
+    case PAGE_EGG:
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            goto_page(PAGE_DETAIL);   // 短按退出;LONG/LONG2 有意忽略(进入序列的末键就是 LONG)
+        } else if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK
+                   && s_egg_panel) {
+            const int step = lv_font_get_line_height(&lv_font_montserrat_14) * 4;
+            lv_obj_scroll_by(s_egg_panel, 0, btn == BSP_BTN_UP ? step : -step, LV_ANIM_OFF);
         }
         break;
 

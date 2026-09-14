@@ -214,6 +214,11 @@ as absent.
   [1B xor checksum at fixed offset 3927, over all 3927 preceding bytes incl. padding]
 ```
 
+On device, the egg text of a slot is viewable from its detail page via a hidden key
+sequence: fast `UP UP DOWN DOWN OK-LONG` (inter-key gap <0.5s) opens the egg page;
+`UP/DOWN` scroll the text, `OK` click returns. Slots without a valid MAEG field show
+"No egg."; corrupted fields show "Egg data corrupted.".
+
 Signing a child firmware: `tools/signing/sign-firmware.sh <app.bin> [private.pem]
 [--egg-text "..."]` appends the sig sector using `tools/signing/private.pem` (gitignored).
 The private key never enters the repository.

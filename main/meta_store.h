@@ -2,6 +2,7 @@
 // 纯逻辑(状态/元数据校验)在 meta_slots/meta_image;本文件只做分区 IO 与权威校验。
 #pragma once
 
+#include "meta_sign.h"
 #include "meta_slots.h"
 
 #include "esp_err.h"
@@ -25,3 +26,8 @@ const esp_partition_t *meta_store_slot_partition(int slot);
 // 让 factory(启动器自身)成为永久有效的回滚目标:首启后标记当前 factory 镜像有效。
 // 幂等;非待验证状态时返回 ESP_ERR_INVALID_STATE,属正常情况,调用方按日志处理即可。
 esp_err_t meta_store_mark_factory_valid(void);
+
+// 惰性读取槽位彩蛋文本:定位 tail sector 并解析 MAEG(meta_sign.h)。
+// image_len 取槽位注册表的 size 字段;装下最长文本需 out_cap >= META_EGG_TEXT_LEN+1。
+// 调用方需 #include "meta_sign.h" 以获得 meta_egg_result_t。
+meta_egg_result_t meta_store_read_egg(int slot, uint32_t image_len, char *out, size_t out_cap);
