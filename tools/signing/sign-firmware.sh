@@ -79,9 +79,31 @@ with open(bin_path, 'rb') as f:
 with open(sig_path, 'rb') as f:
     signature = f.read()
 
-image_len = struct.unpack('<I', image[20:24])[0] if image[0] == 0xE9 else len(image)
+def compute_esp_image_len(image):
+    """Mirror esp_image_verify(): header + segments + checksum pad + appended hash."""
+    if not image or image[0] != 0xE9:
+        return len(image)
+    seg_count = image[1]
+    hdr_len = 24  # esp_image_header_t (IDF 5.x extended)
+    offset = hdr_len
+    for i in range(seg_count):
+        if offset + 8 > len(image):
+            raise SystemExit(f"error: truncated image header at segment {i}")
+        seg_len = struct.unpack('<I', image[offset+4:offset+8])[0]
+        offset += 8 + seg_len
+    # checksum: 1 byte at current offset, then pad to 16-byte boundary
+    unpadded = offset
+    length = (unpadded + 1 + 15) & ~15
+    offset = unpadded + (length - unpadded)
+    # appended hash (32 bytes) if hash_appended flag is set
+    hash_appended = image[16]  # offset 0x10
+    if hash_appended:
+        offset += 32
+    return offset
+
+image_len = compute_esp_image_len(image)
 sig_off = (image_len + 4095) // 4096 * 4096
-pad_len = sig_off - image_len
+pad_len = sig_off - len(image)
 
 assert 64 <= len(signature) <= 72, f"unexpected DER sig length: {len(signature)}"
 
