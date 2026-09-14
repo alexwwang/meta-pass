@@ -219,9 +219,12 @@ sequence: fast `UP UP DOWN DOWN OK-LONG` (inter-key gap <0.5s) opens the egg pag
 `UP/DOWN` scroll the text, `OK` click returns. Slots without a valid MAEG field show
 "No egg."; corrupted fields show "Egg data corrupted.".
 
-Signing a child firmware: `tools/signing/sign-firmware.sh <app.bin> [private.pem]
-[--egg-text "..."]` appends the sig sector using `tools/signing/private.pem` (gitignored).
-The private key never enters the repository.
+Signing a child firmware: `tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]`
+appends the tail metadata sector. The ECDSA-P256 private key lives in the macOS Keychain
+(tag `com.folotoy.meta-pass.signing`, created by `tools/signing/bin/keychain-keygen`);
+the script signs via `bin/keychain-sign` and never touches key material on disk. The
+public key is published at `tools/signing/public.pem` and embedded into
+`main/meta_sign_pubkey.h` + `main/metapass_hook.h` by `tools/signing/gen-pubkey.py`.
 
 Honest boundary: once booted, an unsigned child has full flash access; software cannot
 stop a malicious child from erasing cardid. The signature badge proves firmware origin

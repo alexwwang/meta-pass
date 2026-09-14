@@ -176,8 +176,11 @@ magic）视为未签名——仍走未签名固件警告页 + LONG2 确认。
 进入彩蛋页;`UP/DOWN` 滚动文本,`OK` 短按返回。无有效 MAEG 字段的槽位显示 "No egg.";
 字段损坏显示 "Egg data corrupted."。
 
-子固件签名：`tools/signing/sign-firmware.sh <app.bin> [private.pem] [--egg-text "..."]`
-用 `tools/signing/private.pem`（gitignore）追加签名 sector。私钥不入仓库。
+子固件签名：`tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]` 追加尾部
+metadata sector。ECDSA-P256 私钥托管在 macOS Keychain（标签 `com.folotoy.meta-pass.signing`，
+由 `tools/signing/bin/keychain-keygen` 生成），脚本经 `bin/keychain-sign` 签名，
+私钥永不落盘成文件。公钥发布在 `tools/signing/public.pem`，并由
+`tools/signing/gen-pubkey.py` 注入 `main/meta_sign_pubkey.h` 与 `main/metapass_hook.h`。
 诚实边界：未签名子固件一旦启动即拥有完整 Flash 权限，软件层面无法阻止恶意固件擦除
 cardid。签名徽章证明固件来源（由 meta-pass 密钥持有者签名），但不在硬件层面强制阻断启动。
 信任来源 = 用户判断 + 配对码物理持有 + 试运行隔离。eFuse 写保护/Secure Boot v2

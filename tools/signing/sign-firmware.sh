@@ -4,23 +4,32 @@
 #   --egg-text: 可选,写入尾部 metadata sector 中部 MAEG 彩蛋文本(最长 3919 字节 ASCII)
 #
 # 签名段格式见 main/meta_sign.h:
-#   [4B "MSIG"] [4B payload_len LE] [ECDSA-P256 DER 签名(70..72B)] [1B xor]
+#   [4B "MSIG"] [4B payload_len LE] [ECDSA-P256 DER 签名(64..72B)] [1B xor]
 #   写入 image_len 之后(pad 到单一 4K tail sector 对齐)
 #   尾部 sector 布局: MSIG@0、MAEG@128..4055(定长 3928B,0xFF padding)、MNAM@4056;彩蛋不覆盖 MSIG/MNAM,也不进入签名 digest。
 #
-# 签名流程: 先对 app.bin 计算 SHA-256,再用 Python cryptography 对 digest 做
-# RFC 6979 确定性 ECDSA-P256 签名(同一消息+密钥 → 同一签名)。
+# 签名流程: python 计算 app.bin 的 SHA-256 digest,调用 bin/keychain-sign
+# 用 macOS Keychain 中的私钥(标签 com.folotoy.meta-pass.signing)签名,再组装 sector。
+# 私钥不出 Keychain;首次使用会弹一次 Keychain 授权框。
+# 注意: Keychain 签名使用随机 nonce,同一镜像两次签名字节不同(验签不受影响)。
 # 验签在设备侧 meta_sign.c 做。此脚本不修改 image_len 以内的任何字节。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SIGNER="$SCRIPT_DIR/bin/keychain-sign"
+
+# 签名工具缺失时自动编译(cc + Security 框架,macOS 自带)。
+if [ ! -x "$SIGNER" ]; then
+    mkdir -p "$SCRIPT_DIR/bin"
+    cc -O2 -Wall -Wextra -framework Security -framework CoreFoundation \
+        "$SCRIPT_DIR/keychain_sign.c" -o "$SIGNER"
+fi
 
 usage() {
-    echo "usage: $0 <app.bin> [private.pem] [--egg-text TEXT]" >&2
+    echo "usage: $0 <app.bin> [--egg-text TEXT]" >&2
 }
 
 BIN=""
-KEY=""
 EGG_TEXT=""
 
 while [ "$#" -gt 0 ]; do
@@ -38,8 +47,6 @@ while [ "$#" -gt 0 ]; do
         *)
             if [ -z "$BIN" ]; then
                 BIN="$1"
-            elif [ -z "$KEY" ]; then
-                KEY="$1"
             else
                 echo "error: unexpected argument: $1" >&2
                 usage
@@ -51,41 +58,30 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$BIN" ]; then usage; exit 2; fi
-if [ -z "$KEY" ]; then KEY="$SCRIPT_DIR/private.pem"; fi
-
 if [ ! -f "$BIN" ]; then echo "error: $BIN not found"; exit 1; fi
-if [ ! -f "$KEY" ]; then echo "error: private key $KEY not found"; exit 1; fi
 
-python3 - "$BIN" "$KEY" "$EGG_TEXT" <<'PYEOF'
-import hashlib
+DIGEST="$(mktemp -t metapass-digest)"
+SIG="$(mktemp -t metapass-sig)"
+trap 'rm -f "$DIGEST" "$SIG"' EXIT
+
+python3 -c 'import hashlib,sys; sys.stdout.buffer.write(hashlib.sha256(open(sys.argv[1],"rb").read()).digest())' \
+    "$BIN" > "$DIGEST"
+"$SIGNER" "$DIGEST" > "$SIG"
+
+python3 - "$BIN" "$SIG" "$EGG_TEXT" <<'PYEOF'
 import struct
 import sys
 
-bin_path, key_path, egg_text = sys.argv[1], sys.argv[2], sys.argv[3]
-
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.asymmetric.utils import Prehashed
+bin_path, sig_path, egg_text = sys.argv[1], sys.argv[2], sys.argv[3]
 
 with open(bin_path, 'rb') as f:
     image = f.read()
+with open(sig_path, 'rb') as f:
+    signature = f.read()
 
 image_len = len(image)
 sig_off = (image_len + 4095) // 4096 * 4096
 pad_len = sig_off - image_len
-
-with open(key_path, 'rb') as f:
-    private_key = serialization.load_pem_private_key(f.read(), password=None)
-
-assert isinstance(private_key, ec.EllipticCurvePrivateKey), \
-    f"expected EC key, got {type(private_key).__name__}"
-
-digest = hashlib.sha256(image).digest()
-# 对预计算 SHA-256 digest 签名；cryptography 使用 RFC 6979 deterministic nonce。
-signature = private_key.sign(
-    digest,
-    ec.ECDSA(Prehashed(hashes.SHA256()), deterministic_signing=True),
-)
 
 assert 64 <= len(signature) <= 72, f"unexpected DER sig length: {len(signature)}"
 

@@ -120,9 +120,10 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 2. 把 OK 键的 LONG2 事件接到 `metapass_return_to_launcher()`。注意 LONG 事件
    在 1.5 秒先触发，给 LONG 分配一个无害动作（如返回上级页面）。
 
-签名徽章（可选）:`tools/signing/sign-firmware.sh <app.bin> [private.pem]
-[--egg-text "..."]` 在镜像后追加 ECDSA-P256 徽章（可附带彩蛋文本）;meta-pass
-详情页显示 SIGNED 并跳过警告页直接启动。签名私钥由 meta-pass 发布方持有——
+签名徽章（可选）:`tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]` 在镜像后
+追加 ECDSA-P256 徽章（可附带彩蛋文本）;meta-pass 详情页显示 SIGNED 并跳过警告页
+直接启动。私钥托管在 macOS Keychain（首次用 `tools/signing/bin/keychain-keygen` 生成，
+同时发布 `tools/signing/public.pem`)；签名私钥由 meta-pass 发布方持有——
 第三方开发者提交二进制给发布方签名，不能自签。
 
 ## 目录结构
