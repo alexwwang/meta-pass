@@ -112,6 +112,15 @@ esp_err_t esp_partition_write(const esp_partition_t *p, size_t off, const void *
     return ESP_OK;
 }
 
+esp_err_t esp_partition_read(const esp_partition_t *p, size_t off, void *dest, size_t size)
+{
+    int slot = partition_to_slot(p);
+    if (slot < 0) return ESP_ERR_INVALID_ARG;
+    if (off + size > ram_flash_sizes[slot]) return ESP_ERR_INVALID_SIZE;
+    memcpy(dest, ram_flash[slot] + off, size);
+    return ESP_OK;
+}
+
 // ---- esp_ota 桩 ----
 
 esp_err_t esp_ota_begin(const esp_partition_t *p, size_t image_size, esp_ota_handle_t *out)

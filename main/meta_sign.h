@@ -75,6 +75,10 @@ typedef enum {
 meta_sig_result_t meta_sign_verify(const uint8_t digest[32], uint32_t image_len,
                                     const uint8_t *sig_sector, size_t sig_len);
 
+// 轻量格式探测:仅校验 MSIG magic + xor checksum，不验 pubkey。
+// 用于判断上传镜像的尾部分区是否已包含合法签名(签名镜像不允许覆盖)。
+bool meta_sign_detect_sector(const uint8_t *sig_sector, size_t sig_len);
+
 // 彩蛋结果。
 typedef enum {
     META_EGG_OK = 0,       // 彩蛋段存在且格式/校验有效

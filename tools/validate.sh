@@ -70,9 +70,9 @@ PY
     if [ "$(uname)" = "Darwin" ]; then
         gc_flag="-Wl,-dead_strip"
     fi
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain -DHOST_TEST \
         tests/test_meta_net_upload.c \
-        main/meta_import.c main/meta_image.c main/meta_name.c main/meta_slots.c \
+        main/meta_import.c main/meta_image.c main/meta_name.c main/meta_slots.c main/meta_sign.c \
         -ffunction-sections -fdata-sections ${gc_flag} \
         -o "${test_dir}/test_meta_net_upload"
     "${test_dir}/test_meta_net_upload"

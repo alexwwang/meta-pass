@@ -116,14 +116,14 @@ LONG2 (extra-long OK) confirmation.
 
 ## Button map
 
-| Page | UP/DOWN | OK click | OK LONG2 (3 s) |
+| Page | UP/DOWN | OK click | OK LONG (3 s) |
 | --- | --- | --- | --- |
 | Main list | select slot | open details / import page | — |
 | Slot detail | BOOT/DELETE/BACK | confirm | DELETE needs LONG2 against accidents |
 | Unsigned warning | — | cancel | confirm boot |
 | Import page | — | — | exit import, back to list |
 
-Inside an adapted child firmware: OK LONG2 = return to launcher (wired by the child,
+Inside an adapted child firmware: OK LONG = return to launcher (wired by the child,
 see below).
 
 ## Adapting a child firmware (optional)

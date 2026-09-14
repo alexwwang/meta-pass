@@ -45,7 +45,7 @@ bootloader 改动。
   - **设备热点 + 网页导入**：设备开 SoftAP 显示配对码，手机/电脑连上后网页上传。
 - **完整性校验**：magic、chip id、尺寸、segment 结构逐层校验，`esp_ota_end()` 权威
   复核；SHA-256 在详情页可见，可与商店公布值对照。
-- **未签名警告**：未签名固件启动前需超长按 OK（LONG2）确认；恶意固件仍有完整 Flash
+- **未签名警告**：未签名固件启动前需长按 OK（LONG2）确认；恶意固件仍有完整 Flash
   读写能力（无 eFuse 强制签名），所以只装你信任来源的固件。
 - **永不困在子固件里**：未适配的子固件一律按"试运行"处理——任何重启（含断电）都
   自动回启动器；适配过的固件可以长期驻留，并提供 LONG2 返回启动器。
@@ -62,7 +62,7 @@ bootloader 改动。
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="未签名固件警告：需超长按 OK 确认才能启动"
+       alt="未签名固件警告：需长按 OK 确认才能启动"
        width="800">
 </p>
 
@@ -97,19 +97,19 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 
 ### 3. 启动
 
-主列表 UP/DOWN 选槽位，OK 进详情，BOOT 确认。未签名固件需 LONG2（超长按 OK）
+主列表 UP/DOWN 选槽位，OK 进详情，BOOT 确认。未签名固件需 LONG2（长按 OK）
 确认。
 
 ## 按键操作
 
-| 页面 | UP/DOWN | OK 单击 | OK LONG2（3 秒） |
+| 页面 | UP/DOWN | OK 单击 | OK LONG（3 秒） |
 | --- | --- | --- | --- |
 | 主列表 | 选择槽位 | 进入详情 / 进导入页 | — |
 | 槽位详情 | 选 BOOT/DELETE/BACK | 确认 | 删除需 LONG2 防误删 |
 | 未签名警告 | — | 取消 | 确认启动 |
 | 导入页 | — | — | 退出导入、回主列表 |
 
-适配过的子固件内：OK LONG2 = 返回启动器（子固件自行挂接，见下节）。
+适配过的子固件内：OK LONG = 返回启动器（子固件自行挂接，见下节）。
 
 ## 子固件适配（可选）
 

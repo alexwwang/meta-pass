@@ -319,6 +319,8 @@ static esp_err_t h_upload(httpd_req_t *req)
     }
 
     // 元数据:esp_app_desc 的名称/版本 + 流式 SHA-256(与上传方文件可人工比对)。
+    // 注意: digest 是对 content_len 字节流式计算;签名镜像时 content_len > image_len,
+    // digest 仅覆盖 image 部分(不含 tail sector),与 scan_one 中的 slot_sha256 语义一致。
     uint8_t digest[32];
     mbedtls_sha256_finish(&sha, digest);
     mbedtls_sha256_free(&sha);
@@ -334,27 +336,58 @@ static esp_err_t h_upload(httpd_req_t *req)
     }
     meta_slot_set_valid(&s_slots[slot], disp[0] != '\0' ? disp : name, ver,
                         (uint32_t)req->content_len, sha_hex);
-
-    // metadata sector 紧跟 image_len 后 4K 对齐。ESP flash 只能按 sector 擦除,
-    // 因此擦整个 4KB sector 后再写 40B MNAM 窗口;disp 为空也擦,避免旧 name/签名残留。
-    const uint32_t tail_off = meta_sign_sector_offset((uint32_t)req->content_len);
-    if (tail_off + META_SIG_SECTOR <= part->size) {
-        esp_err_t berr = esp_partition_erase_range(part, tail_off, META_SIG_SECTOR);
-        if (berr == ESP_OK && disp[0] != '\0') {
-            uint8_t window[META_NAME_BLOB_RESERVE];
-            memset(window, 0xFF, sizeof(window));   // 前部安全边界保持擦除态
-            const size_t blob_len = meta_name_pack_tail(disp, window, sizeof(window));
-            if (blob_len == 0) {
-                berr = ESP_ERR_INVALID_ARG;
-            } else {
-                berr = esp_partition_write(part, tail_off + META_NAME_BLOB_OFF,
-                                           window, sizeof(window));
+    // 权威获取真实 image_len:读取分区镜像头
+    // 注意:需要验证镜像头有效性,避免无效数据导致错误的 image_len
+    uint8_t img_hdr[META_IMAGE_HEADER_LEN];
+    uint32_t image_len = (uint32_t)req->content_len;  // fallback
+    if (esp_partition_read(part, 0, img_hdr, sizeof(img_hdr)) == ESP_OK) {
+        // 检查镜像头 magic(Esp Image Header magic = 0xE9)
+        if (img_hdr[0] == 0xE9) {
+            image_len = (uint32_t)img_hdr[20] | ((uint32_t)img_hdr[21] << 8) | ((uint32_t)img_hdr[22] << 16) | ((uint32_t)img_hdr[23] << 24);
+            if (image_len == 0 || image_len > req->content_len) {
+                image_len = (uint32_t)req->content_len;  // 无效值则 fallback
             }
         }
-        if (berr != ESP_OK) {
-            ESP_LOGW(TAG, "槽位 %d metadata sector 写入失败: %s", slot, esp_err_to_name(berr));
-        } else if (disp[0] != '\0') {
-            ESP_LOGI(TAG, "槽位 %d 显示名: %s", slot, disp);
+    }
+
+    // metadata sector 紧跟 image_len 后 4K 对齐。ESP flash 只能按 sector 擦除，
+    // 因此擦整个 4KB sector 后再写 40B MNAM 窗口。
+    // 签名镜像(content_len > image_len)已由 OTA 写入完整 tail sector，探测签名后保留。
+    // 未签名镜像:擦除旧 sector 后写 dispname(MNAM)，若无 dispname 也擦(避免残留)。
+    const uint32_t tail_off = meta_sign_sector_offset(image_len);
+    if (tail_off + META_SIG_SECTOR <= part->size) {
+        static uint8_t tail_sector[META_SIG_SECTOR];
+        bool already_signed = false;
+        if (esp_partition_read(part, tail_off, tail_sector, sizeof(tail_sector)) == ESP_OK) {
+            // 完整验签:格式探测 + pubkey 校验，确保同尺寸无签名重传不会误判
+            already_signed = (meta_sign_verify(digest, image_len,
+                                               tail_sector, META_SIG_SECTOR) == META_SIG_OK);
+        }
+        if (!already_signed && disp[0] != '\0') {
+            esp_err_t berr = esp_partition_erase_range(part, tail_off, META_SIG_SECTOR);
+            if (berr == ESP_OK) {
+                uint8_t window[META_NAME_BLOB_RESERVE];
+                memset(window, 0xFF, sizeof(window));
+                const size_t blob_len = meta_name_pack_tail(disp, window, sizeof(window));
+                if (blob_len == 0) {
+                    berr = ESP_ERR_INVALID_ARG;
+                } else {
+                    berr = esp_partition_write(part, tail_off + META_NAME_BLOB_OFF,
+                                               window, sizeof(window));
+                }
+            }
+            if (berr != ESP_OK) {
+                ESP_LOGW(TAG, "槽位 %d metadata sector 写入失败: %s", slot, esp_err_to_name(berr));
+            } else {
+                ESP_LOGI(TAG, "槽位 %d 显示名: %s", slot, disp);
+            }
+        } else if (already_signed) {
+            if (disp[0] != '\0') {
+                ESP_LOGW(TAG, "槽位 %d 镜像已签名,无法更新 dispname(签名保护)", slot);
+            }
+        } else {
+            // 未签名且无 dispname:仍擦除 sector 避免旧 name/签名残留
+            esp_partition_erase_range(part, tail_off, META_SIG_SECTOR);
         }
     }
 

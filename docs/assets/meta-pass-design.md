@@ -79,18 +79,16 @@ not enforced by the partition table.
 
 Children are separately built derivatives of this repository. Adapt for full experience:
 
-1. Include `main/metapass_hook.h`; on `BSP_BTN_LONG2` (OK key, 2x long-press) call
+1. Include `main/metapass_hook.h`; on `BSP_BTN_LONG` (OK key, long-press 1.5s) call
    `metapass_return_to_launcher()` (set boot partition to factory and restart).
 2. Call `esp_ota_mark_app_valid_cancel_rollback()` after self-check to stay persistent.
 3. When using the shared NVS, prefix your namespaces to avoid clashing with other
    firmware.
 
-Button model (hardware ruling): the three buttons share one ADC divider node on GPIO0, so
-combos collapse to the dominant single button (UP+anything=UP; DOWN+OK reads ~212mV, inside
-the DOWN window) — **combos are unusable**; the power key is hardware power control and not
-readable by firmware. Therefore the return mechanism uses **two-tier long-press**: `LONG`
-(default duration) = in-app back, `LONG2` (2x default) = return to launcher. The BSP gains
-a `BSP_BTN_LONG2` event, backward compatible (`LONG` semantics unchanged).
+Button model: the OK key has a single long-press threshold (~1.5s). In meta-pass:
+`LONG` = back to previous page; in confirmation pages: `LONG` = confirm dangerous action.
+The power key is hardware power control and not readable by firmware. To switch child
+firmware, power-cycle the device (press power key to shut down, then power on again).
 
 ## 6. Import Channel and Protocol
 
@@ -196,8 +194,7 @@ compiled into meta-pass (`main/meta_sign_pubkey.h`, generated from
 
 `scan_one` calls `meta_sign_verify()` after `esp_image_verify()` passes. A slot with a
 valid signature shows "SIGNED" on the detail page and boots directly on OK click (no
-warning page). A slot without a signature badge (erased 0xFF or no MSIG magic) is treated
-as unsigned — the unsigned-firmware warning page with LONG2 confirm still applies.
+as unsigned — the unsigned-firmware warning page with LONG confirm still applies.
 
 ### 7.1 Optional Easter Egg Metadata
 

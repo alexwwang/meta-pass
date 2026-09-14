@@ -4,10 +4,8 @@
 //
 // 按键语义(全局统一):
 //   上/下 短按   列表/详情页=移动选中项;彩蛋页=滚动文本
-//   确定  短按   列表=进入;详情=执行选中动作;确认页=取消;彩蛋页=退出
 //   确定  长按   返回上一级(LONG,1.5s)
-//   确定  超长按 确认页=确认危险操作(LONG2,3s;会先触发一次 LONG,确认页忽略之)
-//   隐藏序列 详情页快速连按 UP UP DOWN DOWN OK-LONG(相邻间隔 <0.5s)→ 彩蛋页
+//   注意:切换子固件靠 Power 关机重启,meta-pass 不干预子固件的按键行为
 #include <stdio.h>
 #include <string.h>
 
@@ -152,8 +150,8 @@ static void page_list_build(void)
 static void page_detail_build(int slot)
 {
     s_detail_slot = slot;
+    meta_seq_reset(&s_egg_seq);   // 每次进入详情页重置彩蛋序列,避免残留干扰
     s_scr = ui_pixel_screen_create("SLOT");
-
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 118, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
@@ -168,17 +166,17 @@ static void page_detail_build(int slot)
                  "%s%.16s\nver:  %.16s\nsize: %lu KB\nsha: %.16s...",
                  s->signed_fw ? "SIGNED\n" : "",
                  s->name, s->version, (unsigned long)(s->size / 1024), s->sha256_hex);
-    } else {
-        snprintf(text, sizeof(text), "%s", s->state == META_SLOT_EMPTY
-                 ? "(empty)\nImport firmware first." : "(invalid)\nDelete it and re-import.");
-    }
-    lv_label_set_text(s_info, text);
-
-    add_row(s_scr, 0, 180, "BOOT");
-    add_row(s_scr, 1, 224, "DELETE");
-    add_row(s_scr, 2, 268, "BACK");
-    rows_refresh(DETAIL_ITEMS, s_sel);
-    lv_screen_load(s_scr);
+     } else {
+         snprintf(text, sizeof(text), "%s", s->state == META_SLOT_EMPTY
+                  ? "(empty)\nImport firmware first." : "(invalid)\nDelete it and re-import.");
+     }
+     lv_label_set_text(s_info, text);
+ 
+     add_row(s_scr, 0, 180, "BOOT");
+     add_row(s_scr, 1, 224, "DELETE");
+     add_row(s_scr, 2, 268, "BACK");
+     rows_refresh(DETAIL_ITEMS, s_sel);
+     lv_screen_load(s_scr);
 }
 
 // ---------- 页面:彩蛋(详情页隐藏序列 UP UP DOWN DOWN OK-LONG 进入) ----------
@@ -214,7 +212,7 @@ static void page_egg_build(void)
     lv_screen_load(s_scr);
 }
 
-// ---------- 页面:二次确认(危险操作统一 LONG2 确认) ----------
+// ---------- 页面:二次确认(危险操作统一长按确认) ----------
 
 static void page_confirm_build(bool boot)
 {
@@ -227,8 +225,8 @@ static void page_confirm_build(bool boot)
     lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
     // 未签名固件无法验明来源;签名徽章本期未启用,所有第三方固件一律走本警告。
     lv_label_set_text(lbl, boot
-        ? "Unsigned firmware!\nOnly boot if you trust\nthe source.\n\nOK LONG2 = boot\nOK click = cancel"
-        : "Erase this slot?\nThis cannot be undone.\n\nOK LONG2 = delete\nOK click = cancel");
+        ? "Unsigned firmware!\nOnly boot if you trust\nthe source.\n\nOK LONG = boot\nOK click = cancel"
+        : "Erase this slot?\nThis cannot be undone.\n\nOK LONG = delete\nOK click = cancel");
     ui_pixel_mascot_create(s_scr, 101, 242);
     lv_screen_load(s_scr);
 }
@@ -341,7 +339,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
         // 隐藏彩蛋序列: UP UP DOWN DOWN OK-LONG,相邻两键间隔 <0.5s(meta_seq)。
         // 只认 CLICK/LONG 语义事件;PRESS/DOUBLE 不参与也不打断。
-        if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG || ev == BSP_BTN_LONG2) {
+        if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) {
             meta_seq_key_t k;
             bool recognized = true;
             if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_UP;
@@ -364,7 +362,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 rows_refresh(DETAIL_ITEMS, s_sel);
             } else if (btn == BSP_BTN_OK) {
                 if (s_sel == 0 && meta_slot_bootable(s)) {          // BOOT
-                    // 签名固件直接启动;未签名固件走 LONG2 确认页
+                    // 签名固件直接启动;未签名固件走长按确认页
                     if (s->signed_fw) {
                         if (meta_store_boot_slot(s_detail_slot) == ESP_OK)
                             esp_restart();
@@ -378,7 +376,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                     goto_page(PAGE_LIST);
                 }
             }
-        } else if (btn == BSP_BTN_OK && (ev == BSP_BTN_LONG || ev == BSP_BTN_LONG2)) {
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             goto_page(PAGE_LIST);
         }
         break;
@@ -387,20 +385,19 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_CONFIRM_BOOT:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {   // 取消
             goto_page(PAGE_DETAIL);
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG2) {
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             // 确认启动:设置启动分区并重启,不返回。
             if (meta_store_boot_slot(s_detail_slot) == ESP_OK) {
                 esp_restart();
             }
             goto_page(PAGE_DETAIL);   // 设置失败(如分区损坏)则回详情页
         }
-        // LONG 在本页被有意忽略:LONG2 触发前会先到来一次 LONG,不能让它误触发"返回"。
         break;
 
     case PAGE_CONFIRM_DEL:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {   // 取消
             goto_page(PAGE_DETAIL);
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG2) {
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             meta_store_erase_slot(s_detail_slot);
             meta_slot_clear(&s_slots[s_detail_slot]);
             goto_page(PAGE_LIST);
@@ -409,7 +406,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
     case PAGE_EGG:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            goto_page(PAGE_DETAIL);   // 短按退出;LONG/LONG2 有意忽略(进入序列的末键就是 LONG)
+            goto_page(PAGE_DETAIL);   // 短按退出;LONG 有意忽略(进入序列的末键就是 LONG)
         } else if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK
                    && s_egg_panel) {
             const int step = lv_font_get_line_height(&lv_font_montserrat_14) * 4;
@@ -418,7 +415,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
 
     case PAGE_IMPORT:
-        if (btn == BSP_BTN_OK && (ev == BSP_BTN_LONG || ev == BSP_BTN_LONG2)) {
+        if (btn == BSP_BTN_OK && (ev == BSP_BTN_LONG)) {
             goto_page(PAGE_LIST);   // teardown 中 meta_net_stop()
         }
         break;

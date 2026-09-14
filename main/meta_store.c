@@ -119,12 +119,24 @@ static void scan_one(int slot, meta_slot_info_t *out)
     }
 
     // 填充有效槽信息。
-    // 注意: esp_app_get_description() 返回的是正在运行的 meta-pass 自身 desc,
-    // 不是槽位子固件的——版本字段仅为占位(沿用既有行为)。
-    const esp_app_desc_t *desc = esp_app_get_description();
-    meta_slot_set_valid(out, out->name, desc ? desc->version : "", image_len, sha_hex);
-    ESP_LOGI(TAG, "槽位 %d: %s %s (%lu B)", slot, out->name, out->version,
-             (unsigned long)out->size);
+    // 优先读槽位分区自身的 esp_app_desc（子固件自己的 project_name + version）；
+    // 若读取失败则回退到启动器自身 desc（保持向后兼容）。
+    esp_app_desc_t child_desc = {0};
+    const esp_app_desc_t *desc = NULL;
+    if (esp_ota_get_partition_description(part, &child_desc) == ESP_OK) {
+        desc = &child_desc;
+    }
+    // out->name 已有 MNAM blob 读取结果；为空时用 core_name(desc->project_name)
+    // 剥去 FoloToy- 前缀以适配小屏显示。
+    if (out->name[0] == '\0' && desc && desc->project_name[0] != '\0') {
+        meta_slot_info_t tmp_slot = {0};
+        strncpy(tmp_slot.name, desc->project_name, sizeof(tmp_slot.name) - 1);
+        meta_slot_set_valid(out, meta_slot_core_name(&tmp_slot), desc->version,
+                            image_len, sha_hex);
+    } else {
+        meta_slot_set_valid(out, out->name, desc ? desc->version : "",
+                            image_len, sha_hex);
+    }
 }
 
 esp_err_t meta_store_scan(meta_slot_info_t out[META_SLOT_COUNT])
