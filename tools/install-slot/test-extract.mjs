@@ -10,8 +10,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { extractAppImage, espImageLength, isFullImage } from "./extract-app-image.js";
 import {
-  NAME_MAX, blobOffset, maxAppImageSize,
-  packNameBlob, unpackNameBlob, sanitizeDisplayName,
+  NAME_MAX, NAME_OFFSET, NAME_RESERVE,
+  tailSectorOffset, blobOffset, maxAppImageSize,
+  packNameBlob, unpackNameBlob, packNameBlobTail, unpackNameBlobTail,
+  sanitizeDisplayName,
 } from "./name-blob.js";
 
 // 构造合法 ESP 应用镜像:24B 头 + 16B 扩展头 + 2 个 segment + 填充 + 1B 校验和 + 32B hash
@@ -76,6 +78,25 @@ function buildAppImage() {
   console.log("PASS 3: full flash image -> factory app located at 0x10000, length =", img.length);
 }
 
+// 3b. 签名镜像:必须提取完整 4KB tail sector;未签名镜像 tailSector=null 但仍返回 offset
+{
+  const app = buildAppImage();
+  const tailOff = tailSectorOffset(app.length);
+  const signed = new Uint8Array(tailOff + 4096).fill(0xff);
+  signed.set(app, 0);
+  signed.set([0x4d, 0x53, 0x49, 0x47], tailOff); // "MSIG"
+  const img = extractAppImage(signed);
+  assert.equal(img.length, app.length, "signed image app length mismatch");
+  assert.equal(img.tailSectorOffset, tailOff, "tail sector offset mismatch");
+  assert.ok(img.tailSector, "signed image must carry full tail sector");
+  assert.equal(img.tailSector.length, 4096, "tail sector must be exactly 4KB");
+
+  const plain = extractAppImage(app);
+  assert.equal(plain.tailSector, null, "unsigned image must not invent a tail sector");
+  assert.equal(plain.tailSectorOffset, tailOff, "unsigned image still reports tail offset");
+  console.log("PASS 3b: signed image keeps full 4KB tail sector; unsigned image reports offset only");
+}
+
 // ===== 4. 显示名 blob(name-blob.js,与 tests/test_meta_name.c 双向锁定)=====
 
 // 期望字节序列与 C 侧 host test 逐字节一致(手工按格式算出,双向锁定)
@@ -104,7 +125,11 @@ function hexToBytes(hex) {
 
 {
   assert.equal(NAME_MAX, 32);
-  assert.equal(blobOffset(0x200000), 0x1ff000);
+  assert.equal(NAME_OFFSET, 4056);
+  assert.equal(NAME_RESERVE, 40);
+  assert.equal(tailSectorOffset(256), 4096);
+  assert.equal(blobOffset(256), 4096 + 4056);
+  assert.equal(blobOffset(0x1ff000), 0x1ff000 + 4056);
   assert.equal(maxAppImageSize(0x200000), 0x1ff000);
   for (const { name, hex } of NAME_VECTORS) {
     const expected = hexToBytes(hex);
@@ -112,12 +137,23 @@ function hexToBytes(hex) {
     assert.ok(packed, `pack "${name}" must succeed`);
     assert.deepEqual([...packed], [...expected], `blob bytes for "${name}" must match C-side vector`);
     assert.equal(unpackNameBlob(packed), name, `roundtrip "${name}"`);
-    // 尾部填充 0xFF(擦除态)不影响解包(固件侧只读前 64B)
-    const padded = new Uint8Array(64).fill(0xff);
-    padded.set(packed, 0);
-    assert.equal(unpackNameBlob(padded), name, `unpack from padded sector prefix "${name}"`);
+
+    const tail = packNameBlobTail(name);
+    assert.ok(tail, `pack tail "${name}" must succeed`);
+    assert.equal(tail.length, 40);
+    assert.deepEqual([...tail.subarray(40 - packed.length)], [...packed], `tail blob for "${name}" must be right-aligned`);
+    assert.ok(tail.subarray(0, 40 - packed.length).every((b) => b === 0xff), `tail prefix for "${name}" must stay erased`);
+    assert.equal(unpackNameBlobTail(tail), name, `tail roundtrip "${name}"`);
+
+    const sector = new Uint8Array(4096).fill(0xff);
+    sector.set(tail, NAME_OFFSET);
+    assert.equal(unpackNameBlobTail(sector), name, `sector tail roundtrip "${name}"`);
+
+    const forward = new Uint8Array(40).fill(0xff);
+    forward.set(packed, 0);
+    assert.equal(unpackNameBlobTail(forward), null, `forward-placed blob for "${name}" must be rejected`);
   }
-  console.log("PASS 4: blob vectors match C-side bytes (Pocket Walkie / Radar / 32-char boundary)");
+  console.log("PASS 4: blob vectors match C-side bytes; MNAM tail window is right-aligned");
 }
 
 // 5. 坏 blob 一律视为无 blob

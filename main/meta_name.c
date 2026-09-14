@@ -84,3 +84,38 @@ bool meta_name_unpack(const uint8_t *buf, size_t len, char *out, size_t out_cap)
     out[got_len] = '\0';
     return true;
 }
+
+size_t meta_name_pack_tail(const char *name, uint8_t *window, size_t cap)
+{
+    if (!window || cap < META_NAME_BLOB_RESERVE) return 0;
+    uint8_t blob[META_NAME_BLOB_MAX];
+    const size_t blob_len = meta_name_pack(name, blob, sizeof(blob));
+    if (blob_len == 0) return 0;
+    const size_t start = META_NAME_BLOB_RESERVE - blob_len;
+    memcpy(window + start, blob, blob_len);
+    return blob_len;
+}
+
+bool meta_name_unpack_tail(const uint8_t *window, size_t len, char *out, size_t out_cap)
+{
+    if (!window || !out) return false;
+    if (out_cap < META_NAME_MAX + 1) return false;
+    if (len < META_NAME_BLOB_RESERVE) {
+        out[0] = '\0';
+        return false;
+    }
+
+    // 右对齐:blob_len = 6 + name_len,start = 40 - blob_len,checksum 必须落在窗口末尾。
+    const size_t min_start = META_NAME_BLOB_RESERVE - META_NAME_BLOB_MAX;       // 2
+    const size_t max_start = META_NAME_BLOB_RESERVE - (META_NAME_BLOB_HEADER + 1); // 33
+    for (size_t start = min_start; start <= max_start; start++) {
+        const uint8_t got_len = window[start + 4];
+        if (got_len == 0 || got_len > META_NAME_MAX) continue;
+        if (start + META_NAME_BLOB_HEADER + got_len != META_NAME_BLOB_RESERVE) continue;
+        if (meta_name_unpack(window + start, META_NAME_BLOB_RESERVE - start, out, out_cap)) {
+            return true;
+        }
+    }
+    out[0] = '\0';
+    return false;
+}

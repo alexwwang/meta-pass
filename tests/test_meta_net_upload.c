@@ -96,6 +96,8 @@ esp_err_t esp_partition_erase_range(const esp_partition_t *p, size_t off, size_t
 {
     int slot = partition_to_slot(p);
     if (slot < 0) return ESP_ERR_INVALID_ARG;
+    // 与真实 ESP flash 一致:erase_range 必须按 4KB sector 对齐。
+    if ((off % 4096u) != 0 || (size % 4096u) != 0) return ESP_ERR_INVALID_ARG;
     if (off + size > ram_flash_sizes[slot]) return ESP_ERR_INVALID_SIZE;
     memset(ram_flash[slot] + off, 0xFF, size);
     return ESP_OK;
@@ -396,7 +398,6 @@ static void test_content_length_limits(void)
     TEST("e_content_length_limits");
     uint8_t payload[24];
     make_valid_header(payload);
-
     // content_len=0 → 413
     setup(); force_paired();
     httpd_req_t req0 = make_upload_req(0, NULL, payload, sizeof(payload));
@@ -404,32 +405,32 @@ static void test_content_length_limits(void)
     h_upload(&req0);
     CHECK(strcmp(req0.resp_status, "413 Payload Too Large") == 0);
 
-    // slot0 上限 = 0x1D6000 - 8192 = 0x1D4000;上限+1 → 413
+    // slot0 上限 = 0x1D6000 - 4096 = 0x1D5000;上限+1 → 413
     setup(); force_paired();
     httpd_req_t req1 = make_upload_req(0, NULL, payload, sizeof(payload));
-    req1.content_len = 0x1D4001;
+    req1.content_len = 0x1D5001;
     h_upload(&req1);
     CHECK(strcmp(req1.resp_status, "413 Payload Too Large") == 0);
 
     // slot0 content_len = 上限 → 接受(非 413;会因数据不足而 400,但证明没被尺寸拒绝)
     setup(); force_paired();
     httpd_req_t req2 = make_upload_req(0, NULL, payload, sizeof(payload));
-    req2.content_len = 0x1D4000;
+    req2.content_len = 0x1D5000;
     h_upload(&req2);
     CHECK(strcmp(req2.resp_status, "413 Payload Too Large") != 0);
 
-    // slot2 上限 = 0x29E000 - 8192 = 0x29C000,与 slot0 不同
-    // slot2 接受 0x1D4001(超过 slot0 上限但不超过 slot2 上限)
+    // slot2 上限 = 0x29E000 - 4096 = 0x29D000,与 slot0 不同
+    // slot2 接受 0x1D5001(超过 slot0 上限但不超过 slot2 上限)
     setup(); force_paired();
     httpd_req_t req3 = make_upload_req(2, NULL, payload, sizeof(payload));
-    req3.content_len = 0x1D4001;
+    req3.content_len = 0x1D5001;
     h_upload(&req3);
     CHECK(strcmp(req3.resp_status, "413 Payload Too Large") != 0);
 
-    // slot2 content_len = 0x29C001 → 413
+    // slot2 content_len = 0x29D001 → 413
     setup(); force_paired();
     httpd_req_t req4 = make_upload_req(2, NULL, payload, sizeof(payload));
-    req4.content_len = 0x29C001;
+    req4.content_len = 0x29D001;
     h_upload(&req4);
     CHECK(strcmp(req4.resp_status, "413 Payload Too Large") == 0);
 }
@@ -543,10 +544,11 @@ static void test_dispname_blob(void)
     CHECK(strcmp(req.resp_body, "ok") == 0);
     CHECK(strcmp(s_slots[0].name, "LEO RADIO") == 0);
 
-    // 验证 blob 在正确位置且 meta_name_unpack 可解出原名
-    const uint32_t blob_off = 0x1D6000 - 4096;
+    // 验证 MNAM 在 image_len 后 4K 对齐的 metadata sector 末尾 40B,且右对齐可解
+    const uint32_t blob_off = meta_sign_sector_offset((uint32_t)plen) + META_NAME_BLOB_OFF;
     char unpacked[META_NAME_MAX + 1];
-    CHECK(meta_name_unpack(ram_flash[0] + blob_off, 64, unpacked, sizeof(unpacked)));
+    CHECK(meta_name_unpack_tail(ram_flash[0] + blob_off, META_NAME_BLOB_RESERVE,
+                                unpacked, sizeof(unpacked)));
     CHECK(strcmp(unpacked, "LEO RADIO") == 0);
 }
 
@@ -614,10 +616,10 @@ static void test_no_dispname_fallback(void)
     CHECK(strcmp(s_slots[0].name, "TestFirmware") == 0);
     CHECK(strcmp(s_slots[0].version, "1.0.0") == 0);
 
-    // blob 区保持 0xFF(未写 dispname)
-    const uint32_t blob_off = 0x1D6000 - 4096;
+    // 未写 dispname 时也要擦掉 metadata sector,避免旧 name/签名残留
+    const uint32_t blob_off = meta_sign_sector_offset((uint32_t)plen) + META_NAME_BLOB_OFF;
     bool all_ff = true;
-    for (int i = 0; i < 64; i++) {
+    for (uint32_t i = 0; i < META_NAME_BLOB_RESERVE; i++) {
         if (ram_flash[0][blob_off + i] != 0xFF) { all_ff = false; break; }
     }
     CHECK(all_ff);
@@ -643,9 +645,10 @@ static void test_dispname_url_decode(void)
     CHECK(strcmp(req.resp_body, "ok") == 0);
     CHECK(strcmp(s_slots[0].name, "LEO RADIO") == 0);
 
-    const uint32_t blob_off = 0x1D6000 - 4096;
+    const uint32_t blob_off = meta_sign_sector_offset((uint32_t)plen) + META_NAME_BLOB_OFF;
     char unpacked[META_NAME_MAX + 1];
-    CHECK(meta_name_unpack(ram_flash[0] + blob_off, 64, unpacked, sizeof(unpacked)));
+    CHECK(meta_name_unpack_tail(ram_flash[0] + blob_off, META_NAME_BLOB_RESERVE,
+                                unpacked, sizeof(unpacked)));
     CHECK(strcmp(unpacked, "LEO RADIO") == 0);
 }
 
@@ -693,10 +696,10 @@ static void test_dispname_utf8_filtered(void)
     // dispname 为空 → 回退 esp_app_desc project_name
     CHECK(strcmp(s_slots[0].name, "unknown") == 0);
 
-    // blob 区保持 0xFF(未写 dispname)
-    const uint32_t blob_off = 0x1D6000 - 4096;
+    // 过滤后 dispname 为空:metadata sector 仍被擦除,避免旧 name/签名残留
+    const uint32_t blob_off = meta_sign_sector_offset((uint32_t)plen) + META_NAME_BLOB_OFF;
     bool all_ff = true;
-    for (int i = 0; i < 64; i++) {
+    for (uint32_t i = 0; i < META_NAME_BLOB_RESERVE; i++) {
         if (ram_flash[0][blob_off + i] != 0xFF) { all_ff = false; break; }
     }
     CHECK(all_ff);

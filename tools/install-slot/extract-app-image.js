@@ -113,10 +113,23 @@ export function extractAppImage(buf, maxSize) {
     source = `full image (factory app at ${hex(part.offset)})`;
   }
   const imgLen = espImageLength(buf, appStart);
-  // 上限按槽位分区大小动态计算:slot 尾部最后 4KB 保留给显示名 blob
+  // 上限按槽位分区大小动态计算:app 之后至少还要能放下一个 4KB metadata sector。
   const limit = maxSize ?? maxAppImageSize(SLOT_CAPACITY);
   if (imgLen > limit) {
-    throw new Error(`App image is ${imgLen} bytes — exceeds max app image size ${limit} bytes (the last 4 KB of the slot is reserved for the display name).`);
+    throw new Error(`App image is ${imgLen} bytes — exceeds max app image size ${limit} bytes (one 4 KB tail metadata sector must fit after the app).`);
   }
-  return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source };
+  // metadata sector:紧跟 image_len 后 4K 对齐。若含 MSIG magic,提取完整 4KB sector,
+  // 让安装页在同一次 writeFlash 中写入 MSIG/MAEG/MNAM,避免分次写导致 sector 被重复擦除。
+  const tailSectorOffset = Math.ceil(imgLen / 4096) * 4096;
+  let tailSector = null;
+  if (appStart + tailSectorOffset + 4 <= buf.length) {
+    const magic = buf.subarray(appStart + tailSectorOffset, appStart + tailSectorOffset + 4);
+    if (magic[0] === 0x4D && magic[1] === 0x53 && magic[2] === 0x49 && magic[3] === 0x47) {
+      if (appStart + tailSectorOffset + 4096 > buf.length) {
+        throw new Error("Truncated tail metadata sector: MSIG found but the full 4 KB sector is missing.");
+      }
+      tailSector = buf.slice(appStart + tailSectorOffset, appStart + tailSectorOffset + 4096);
+    }
+  }
+  return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, tailSector, tailSectorOffset };
 }

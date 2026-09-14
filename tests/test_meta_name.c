@@ -104,5 +104,27 @@ int main(void)
     memset(buf, 0xFF, sizeof(buf));
     assert(!meta_name_unpack(buf, sizeof(buf), out, sizeof(out)));
 
+    // ---- 40B MNAM 窗口:右对齐存放,checksum 必须在窗口最后一字节 ----
+    uint8_t window[META_NAME_BLOB_RESERVE];
+    memset(window, 0xFF, sizeof(window));
+    assert(meta_name_pack_tail("Radar", window, sizeof(window)) == sizeof(BLOB_RADAR));
+    assert(memcmp(window + sizeof(window) - sizeof(BLOB_RADAR),
+                  BLOB_RADAR, sizeof(BLOB_RADAR)) == 0);
+    for (size_t i = 0; i < sizeof(window) - sizeof(BLOB_RADAR); i++) {
+        assert(window[i] == 0xFF);   // 前部安全边界保持擦除态
+    }
+    assert(meta_name_unpack_tail(window, sizeof(window), out, sizeof(out)));
+    assert(strcmp(out, "Radar") == 0);
+
+    // 正向放在窗口开头不再是合法布局:checksum 不在窗口末尾,必须拒绝
+    memset(window, 0xFF, sizeof(window));
+    memcpy(window, BLOB_RADAR, sizeof(BLOB_RADAR));
+    assert(!meta_name_unpack_tail(window, sizeof(window), out, sizeof(out)));
+
+    // 全 0xFF / 短窗口都不是合法 MNAM
+    memset(window, 0xFF, sizeof(window));
+    assert(!meta_name_unpack_tail(window, sizeof(window), out, sizeof(out)));
+    assert(!meta_name_unpack_tail(window, sizeof(window) - 1, out, sizeof(out)));
+
     return 0;
 }

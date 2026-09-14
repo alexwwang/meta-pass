@@ -168,24 +168,28 @@ offset is computed dynamically as `partition_size − 0x1000` rather than a fixe
 
 Mandatory (every child):
 
-- Image header magic `0xE9`, chip id = ESP32-C3, size ≤ (slot_size − 8KB) (slot tail
-  reserves 4KB for the signature badge sector + 4KB for the display-name blob; slot sizes
-  vary: 0x1D6000/0x200000/0x29E000), sane segment count;
+- Image header magic `0xE9`, chip id = ESP32-C3, size ≤ (slot_size − 4KB) (a single 4KB
+  tail metadata sector after the image carries MSIG/MAEG/MNAM; slot sizes vary:
+  0x1D6000/0x200000/0x29E000), sane segment count;
 - Compute the full-image SHA-256 and show it on the confirm page (manual comparison
   against the publisher's hash).
 
 Signature badge (application-layer, reversible — no eFuse, no Secure Boot v2):
 
-A child firmware may carry an ECDSA-P256 signature badge appended after `image_len`. The
-signature is verified against a public key compiled into meta-pass
-(`main/meta_sign_pubkey.h`, generated from `tools/signing/public.pem`). Layout inside the
-OTA partition:
+A child firmware may carry an ECDSA-P256 signature badge in the partition tail metadata
+sector, immediately after `image_len`. The signature is verified against a public key
+compiled into meta-pass (`main/meta_sign_pubkey.h`, generated from
+`tools/signing/public.pem`). Layout inside the OTA partition:
 
 ```
-[app image (image_len bytes)] [sig sector (4KB)] [name blob sector (4KB)]
+[app image (image_len bytes)] [tail metadata sector (4KB)]
                               ↑
-  esp_image_verify only checks image_len; the sig sector is safe to append.
-  Sig sector format (variable length, max 81 bytes, padded to 4K):
+  esp_image_verify only checks image_len; the tail sector is safe to append.
+  Tail sector layout:
+    [0..127]       MSIG reserve
+    [128..4055]    MAEG easter egg window
+    [4056..4095]   MNAM display-name reserve
+  MSIG format (variable length, max 81 bytes):
     [4B "MSIG"] [4B payload_len LE] [70..72B ECDSA-P256 DER signature]
     [1B xor checksum of preceding header+signature bytes]
 ```
@@ -195,9 +199,24 @@ valid signature shows "SIGNED" on the detail page and boots directly on OK click
 warning page). A slot without a signature badge (erased 0xFF or no MSIG magic) is treated
 as unsigned — the unsigned-firmware warning page with LONG2 confirm still applies.
 
-Signing a child firmware: `tools/signing/sign-firmware.sh <app.bin>` appends the sig
-sector using `tools/signing/private.pem` (gitignored). The private key never enters the
-repository.
+### 7.1 Optional Easter Egg Metadata
+
+An optional `MAEG` text note occupies the middle of the same tail metadata sector, between
+MSIG and MNAM. The field is **fixed-length (3928 bytes)**: text shorter than 3919 bytes is
+0xFF-padded, so the MNAM window always sits at the sector's last 40 bytes regardless of egg
+length. It is metadata only: it is not part of the signed digest, not covered by
+ECDSA, and does not change trust semantics. Device code should treat missing/bad egg data
+as absent.
+
+```
+  tail metadata sector offset 128 (fixed 3928-byte field):
+  [4B "MAEG"] [4B payload_len LE] [3919B text area: printable ASCII + 0xFF padding]
+  [1B xor checksum at fixed offset 3927, over all 3927 preceding bytes incl. padding]
+```
+
+Signing a child firmware: `tools/signing/sign-firmware.sh <app.bin> [private.pem]
+[--egg-text "..."]` appends the sig sector using `tools/signing/private.pem` (gitignored).
+The private key never enters the repository.
 
 Honest boundary: once booted, an unsigned child has full flash access; software cannot
 stop a malicious child from erasing cardid. The signature badge proves firmware origin

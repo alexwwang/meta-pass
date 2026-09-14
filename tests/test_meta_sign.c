@@ -118,10 +118,10 @@ int main(void)
         ASSERT(off == 8192, "image_len=4097 → sig_offset=8192");
     }
 
-    // 10. app 上限: part_size=2MB → limit = 2MB - 4KB - 4KB
+    // 10. app 上限: part_size=2MB → limit = 2MB - 4KB
     {
         uint32_t limit = meta_sign_app_limit(0x200000);
-        ASSERT(limit == 0x200000 - 0x1000 - 0x1000, "2MB part → limit = 2MB - 8KB");
+        ASSERT(limit == 0x200000 - 0x1000, "2MB part → limit = 2MB - 4KB");
     }
 
     // 11. 端到端: 用 sign-firmware.sh 生成的真实签名段验证
@@ -153,6 +153,125 @@ int main(void)
         } else {
             printf("SKIP: /tmp/test-app-signed.bin not found\n");
         }
+    }
+
+    // 12. 彩蛋: 尾部窗口无 MAEG → ABSENT
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        char out[64];
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_ABSENT, "erased sector → META_EGG_ABSENT");
+    }
+
+    // 13. 彩蛋: 有效 MAEG 文本 → OK
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        const char text[] = "hidden!";
+        size_t text_len = strlen(text);
+        size_t egg_off = META_EGG_WINDOW_OFF;
+        sig[egg_off] = 'M'; sig[egg_off + 1] = 'A'; sig[egg_off + 2] = 'E'; sig[egg_off + 3] = 'G';
+        sig[egg_off + 4] = text_len;
+        sig[egg_off + 5] = 0; sig[egg_off + 6] = 0; sig[egg_off + 7] = 0;
+        memcpy(sig + egg_off + META_EGG_HEADER_LEN, text, text_len);
+        uint8_t xor = 0;
+        for (size_t i = 0; i < META_EGG_XOR_OFF; i++) xor ^= sig[egg_off + i];
+        sig[egg_off + META_EGG_XOR_OFF] = xor;
+        char out[64];
+        memset(out, 0, sizeof(out));
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_OK && strcmp(out, text) == 0, "valid egg → META_EGG_OK");
+    }
+
+    // 14. 彩蛋: payload_len 超上限 → BAD_FORMAT
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        size_t egg_off = META_EGG_WINDOW_OFF;
+        sig[egg_off] = 'M'; sig[egg_off + 1] = 'A'; sig[egg_off + 2] = 'E'; sig[egg_off + 3] = 'G';
+        uint32_t too_long = META_EGG_TEXT_LEN + 1;
+        sig[egg_off + 4] = (uint8_t)(too_long & 0xffu);
+        sig[egg_off + 5] = (uint8_t)((too_long >> 8) & 0xffu);
+        sig[egg_off + 6] = (uint8_t)((too_long >> 16) & 0xffu);
+        sig[egg_off + 7] = (uint8_t)((too_long >> 24) & 0xffu);
+        char out[64];
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_BAD_FORMAT, "too long egg → META_EGG_BAD_FORMAT");
+    }
+
+    // 15. 彩蛋: 非 ASCII → BAD_FORMAT
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        size_t egg_off = META_EGG_WINDOW_OFF;
+        sig[egg_off] = 'M'; sig[egg_off + 1] = 'A'; sig[egg_off + 2] = 'E'; sig[egg_off + 3] = 'G';
+        sig[egg_off + 4] = 2; sig[egg_off + 5] = 0; sig[egg_off + 6] = 0; sig[egg_off + 7] = 0;
+        sig[egg_off + META_EGG_HEADER_LEN] = 'x';
+        sig[egg_off + META_EGG_HEADER_LEN + 1] = 0x01;
+        uint8_t xor = 0;
+        for (size_t i = 0; i < META_EGG_XOR_OFF; i++) xor ^= sig[egg_off + i];
+        sig[egg_off + META_EGG_XOR_OFF] = xor;
+        char out[64];
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_BAD_FORMAT, "non-ascii egg → META_EGG_BAD_FORMAT");
+    }
+
+    // 16. 彩蛋: xor checksum 错误 → BAD_CHECKSUM
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        const char text[] = "boom";
+        size_t egg_off = META_EGG_WINDOW_OFF;
+        sig[egg_off] = 'M'; sig[egg_off + 1] = 'A'; sig[egg_off + 2] = 'E'; sig[egg_off + 3] = 'G';
+        sig[egg_off + 4] = strlen(text);
+        sig[egg_off + 5] = 0; sig[egg_off + 6] = 0; sig[egg_off + 7] = 0;
+        memcpy(sig + egg_off + META_EGG_HEADER_LEN, text, strlen(text));
+        uint8_t xor = 0;
+        for (size_t i = 0; i < META_EGG_XOR_OFF; i++) xor ^= sig[egg_off + i];
+        sig[egg_off + META_EGG_XOR_OFF] = xor ^ 0x01;
+        char out[64];
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_BAD_CHECKSUM, "bad egg checksum → META_EGG_BAD_CHECKSUM");
+    }
+
+    // 16b. 彩蛋: padding 区被篡改 → BAD_CHECKSUM(定长窗口,xor 覆盖整个 text 区)
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        const char text[] = "pad me";
+        size_t text_len = strlen(text);
+        size_t egg_off = META_EGG_WINDOW_OFF;
+        sig[egg_off] = 'M'; sig[egg_off + 1] = 'A'; sig[egg_off + 2] = 'E'; sig[egg_off + 3] = 'G';
+        sig[egg_off + 4] = text_len;
+        sig[egg_off + 5] = 0; sig[egg_off + 6] = 0; sig[egg_off + 7] = 0;
+        memcpy(sig + egg_off + META_EGG_HEADER_LEN, text, text_len);
+        uint8_t xor = 0;
+        for (size_t i = 0; i < META_EGG_XOR_OFF; i++) xor ^= sig[egg_off + i];
+        sig[egg_off + META_EGG_XOR_OFF] = xor;
+        // 篡改 text 区尾部的一个 padding 字节(不触碰文本本身)
+        sig[egg_off + META_EGG_HEADER_LEN + META_EGG_TEXT_LEN - 1] ^= 0x01;
+        char out[64];
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_BAD_CHECKSUM, "tampered egg padding → META_EGG_BAD_CHECKSUM");
+    }
+
+    // 17. 彩蛋: 输出缓冲区不足 → BAD_FORMAT
+    {
+        uint8_t sig[META_SIG_SECTOR];
+        make_erased(sig, sizeof(sig));
+        const char text[] = "hidden!";
+        size_t text_len = strlen(text);
+        size_t egg_off = META_EGG_WINDOW_OFF;
+        sig[egg_off] = 'M'; sig[egg_off + 1] = 'A'; sig[egg_off + 2] = 'E'; sig[egg_off + 3] = 'G';
+        sig[egg_off + 4] = text_len;
+        memcpy(sig + egg_off + META_EGG_HEADER_LEN, text, text_len);
+        uint8_t xor = 0;
+        for (size_t i = 0; i < META_EGG_XOR_OFF; i++) xor ^= sig[egg_off + i];
+        sig[egg_off + META_EGG_XOR_OFF] = xor;
+        char out[4];
+        meta_egg_result_t r = meta_egg_parse(sig, sizeof(sig), out, sizeof(out));
+        ASSERT(r == META_EGG_BAD_FORMAT, "small out buffer → META_EGG_BAD_FORMAT");
     }
 
     printf("\n%d failures\n", failures);

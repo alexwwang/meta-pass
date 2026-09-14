@@ -133,8 +133,8 @@ ota_2 根据运行时状态承担两种角色：
 
 强制（任何子固件）：
 
-- 镜像头 magic `0xE9`、chip id = ESP32-C3、大小 ≤ (槽位大小 − 8KB)（槽位尾部保留 4KB
-  签名 sector + 4KB 显示名 blob；各槽位大小不同：0x1D6000/0x200000/0x29E000）、segment 数量合法；
+- 镜像头 magic `0xE9`、chip id = ESP32-C3、大小 ≤ (槽位大小 − 4KB)（镜像之后紧跟单一
+  4KB 尾部 metadata sector,携带 MSIG/MAEG/MNAM；各槽位大小不同：0x1D6000/0x200000/0x29E000）、segment 数量合法；
 - 计算全镜像 SHA-256 并在确认页显示（供与来源方公布的哈希人工比对）。
 
 签名徽章（应用层签名，可逆——不动 eFuse，不开 Secure Boot v2）：
@@ -143,10 +143,14 @@ ota_2 根据运行时状态承担两种角色：
 （`main/meta_sign_pubkey.h`，由 `tools/signing/public.pem` 生成）验签。OTA 分区内布局：
 
 ```
-[app image (image_len 字节)] [签名 sector (4KB)] [显示名 blob sector (4KB)]
+[app image (image_len 字节)] [尾部 metadata sector (4KB)]
                               ↑
-  esp_image_verify 只校验 image_len 范围；签名 sector 追加其后不影响。
-  签名 sector 格式（可变长度，最大 81 字节，pad 到 4K）：
+  esp_image_verify 只校验 image_len 范围；尾部 sector 追加其后不影响。
+  尾部 sector 布局:
+    [0..127]       MSIG 预留区
+    [128..4055]    MAEG 彩蛋窗口
+    [4056..4095]   MNAM 显示名预留区
+  MSIG 格式（可变长度，最大 81 字节）:
     [4B "MSIG"] [4B payload_len LE] [70..72B ECDSA-P256 DER 签名]
     [1B xor 校验（前 header+signature 字节异或）]
 ```
@@ -155,9 +159,21 @@ ota_2 根据运行时状态承担两种角色：
 在详情页显示「SIGNED」，按 OK 直接启动（跳过警告页）。无签名徽章的槽位（全 0xFF 或无 MSIG
 magic）视为未签名——仍走未签名固件警告页 + LONG2 确认。
 
-子固件签名：`tools/signing/sign-firmware.sh <app.bin>` 用 `tools/signing/private.pem`
-（gitignore）追加签名 sector。私钥不入仓库。
+### 7.1 可选彩蛋元数据
 
+尾部 metadata sector 中部的固定窗口可以携带可选 `MAEG` 文本。字段**定长 3928 字节**：文本不足
+3919 字节时用 0xFF padding 填满，因此无论彩蛋多长，MNAM 窗口始终位于 sector 末尾 40
+字节。它只是元数据：不进入签名 digest，不被 ECDSA 覆盖，也不改变信任语义；设备侧遇到
+缺失或非法彩蛋数据应按不存在处理。
+
+```
+尾部 metadata sector offset 128（定长 3928 字节字段）:
+  [4B "MAEG"] [4B payload_len LE] [3919B 文本区: 可打印 ASCII + 0xFF padding]
+  [1B xor 校验,固定位于窗口内偏移 3927,覆盖前 3927 字节(含 padding)]
+```
+
+子固件签名：`tools/signing/sign-firmware.sh <app.bin> [private.pem] [--egg-text "..."]`
+用 `tools/signing/private.pem`（gitignore）追加签名 sector。私钥不入仓库。
 诚实边界：未签名子固件一旦启动即拥有完整 Flash 权限，软件层面无法阻止恶意固件擦除
 cardid。签名徽章证明固件来源（由 meta-pass 密钥持有者签名），但不在硬件层面强制阻断启动。
 信任来源 = 用户判断 + 配对码物理持有 + 试运行隔离。eFuse 写保护/Secure Boot v2

@@ -130,7 +130,7 @@
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, hex } from "./extract-app-image.js";
-import { packNameBlob, sanitizeDisplayName, blobOffset, maxAppImageSize } from "./name-blob.js";
+import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 
 // 3-Slot 分区表(与 partitions.csv 一致):[offset, size]
 const SLOTS = [
@@ -208,9 +208,9 @@ const I18N = {
     err_choose_file_first: "Choose and validate a local .bin file first.",
     msg_writing_slot: "Writing {size} bytes to slot {slot} at {addr}…",
     err_blob_pack: "Display name \"{name}\" failed blob packing.",
-    msg_writing_sig: "Writing signature badge ({size} bytes) at {addr}…",
+    msg_writing_tail: "Writing tail metadata sector ({size} bytes) at {addr}…",
     msg_sig_written: "Signature badge written.",
-    msg_writing_blob: "Writing display name blob ({size} bytes) at {addr}…",
+    msg_blob_written: "Display name written: {name}",
     msg_install_done: "Done. Power-cycle the device, then select the slot in meta-pass.",
     msg_install_failed: "Install failed: {err}",
   },
@@ -276,9 +276,8 @@ const I18N = {
     err_choose_file_first: "请先选择并校验一个本地 .bin 文件。",
     msg_writing_slot: "正在向 slot {slot} 写入 {size} 字节(地址 {addr})…",
     err_blob_pack: "Display name \"{name}\" blob 打包失败。",
-    msg_writing_sig: "正在写入签名徽章({size} 字节,地址 {addr})…",
+    msg_writing_tail: "正在写入尾部 metadata sector({size} 字节,地址 {addr})…",
     msg_sig_written: "签名徽章已写入。",
-    msg_writing_blob: "正在写入 Display name blob({size} 字节,地址 {addr})…",
     msg_blob_written: "Display name 已写入:{name}",
     msg_install_done: "完成。请重新上电,然后在 meta-pass 中选择对应 slot。",
     msg_install_failed: "烧录失败:{err}",
@@ -558,34 +557,32 @@ $("btn-install").addEventListener("click", async () => {
       compress: true,
       reportProgress: (_i, written, total) => setProgress((written / total) * 100),
     });
-    // 签名徽章:image_len 之后的 4K 对齐 sector,单独写入(与 blob 同理)。
-    if (image.signature && image.signature.length > 0) {
-      const sigAddr = address + image.signatureOffset;
-      log(t("msg_writing_sig", { size: image.signature.length, addr: hex(sigAddr) }));
-      await loader.writeFlash({
-        fileArray: [{ data: u8ToBinaryString(image.signature), address: sigAddr }],
-        flashSize: "keep",
-        flashMode: "keep",
-        flashFreq: "keep",
-        compress: true,
-      });
-      log(t("msg_sig_written"), "ok");
-    }
-    // 显示名 blob:应用段写完后单独写槽位尾部 sector(偏移按分区大小动态计算)
+    // metadata sector:MSIG/MAEG/MNAM 必须在同一个 4KB sector 内一次写入。
+    // 分次 writeFlash 会重复擦除同一 sector,把先写入的签名/彩蛋擦掉。
     const dispName = sanitizeDisplayName($("disp-name").value);
-    if (dispName) {
-      const blob = packNameBlob(dispName);
-      if (!blob) throw new Error(t("err_blob_pack", { name: dispName }));
-      const blobAddr = address + blobOffset(s.size);
-      log(t("msg_writing_blob", { size: blob.length, addr: hex(blobAddr) }));
+    let tail = null;
+    if (image.tailSector) {
+      tail = new Uint8Array(image.tailSector);
+    } else if (dispName) {
+      tail = new Uint8Array(4096).fill(0xff);
+    }
+    if (tail && dispName) {
+      const window = packNameBlobTail(dispName);
+      if (!window) throw new Error(t("err_blob_pack", { name: dispName }));
+      tail.set(window, 4056);   // MNAM 窗口右对齐,前部保持 0xFF
+    }
+    if (tail) {
+      const tailAddr = address + image.tailSectorOffset;
+      log(t("msg_writing_tail", { size: tail.length, addr: hex(tailAddr) }));
       await loader.writeFlash({
-        fileArray: [{ data: u8ToBinaryString(blob), address: blobAddr }],
+        fileArray: [{ data: u8ToBinaryString(tail), address: tailAddr }],
         flashSize: "keep",
         flashMode: "keep",
         flashFreq: "keep",
         compress: true,
       });
-      log(t("msg_blob_written", { name: dispName }), "ok");
+      if (image.tailSector) log(t("msg_sig_written"), "ok");
+      if (dispName) log(t("msg_blob_written", { name: dispName }), "ok");
     }
     setProgress(100);
     const msg = t("msg_install_done");

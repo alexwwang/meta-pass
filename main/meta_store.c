@@ -76,60 +76,52 @@ static void scan_one(int slot, meta_slot_info_t *out)
     if (erased) return;   // META_SLOT_EMPTY
 
     if (meta_image_check_header(hdr, sizeof(hdr)) != META_IMG_OK) {
-        ESP_LOGW(TAG, "槽位 %d 镜像头预检失败,标记 INVALID", slot);
         meta_slot_mark_invalid(out);
         return;
     }
-    // 权威校验:magic、segment 表、校验和、尾部 SHA-256 哈希全部由 IDF 复核。
     esp_image_metadata_t meta = {0};
     const esp_partition_pos_t pos = { .offset = part->address, .size = part->size };
     if (esp_image_verify(ESP_IMAGE_VERIFY, &pos, &meta) != ESP_OK) {
-        ESP_LOGW(TAG, "槽位 %d esp_image_verify 失败,标记 INVALID", slot);
         meta_slot_mark_invalid(out);
         return;
     }
-    esp_app_desc_t desc;
-    if (esp_ota_get_partition_description(part, &desc) != ESP_OK) {
+    const uint32_t image_len = meta.image_len;
+    uint32_t app_max = meta_name_max_app_size(part->size);
+    if (image_len > app_max) {
         meta_slot_mark_invalid(out);
         return;
     }
+
+    // 流式计算 SHA-256(避免把整个镜像载入 SRAM)。
     uint8_t sha_digest[32];
     char sha_hex[META_SHA256_HEX_LEN + 1];
-    if (slot_sha256(part, meta.image_len, sha_digest, sha_hex) != ESP_OK) {
+    if (slot_sha256(part, image_len, sha_digest, sha_hex) != ESP_OK) {
         meta_slot_mark_invalid(out);
         return;
     }
-    // 显示名 blob:读槽位尾部 sector 前 64 字节(无 PSRAM,不整 sector 读入)。
-    // 偏移按分区大小动态计算(不同槽位大小不同)。解包成功则用真名替代
-    // project_name;注册表 name 字段放不下(>META_NAME_LEN)时回退 project_name。
-    const char *name = desc.project_name;
-    char disp[META_NAME_MAX + 1];
-    uint8_t blob[64];
-    const uint32_t blob_off = meta_name_blob_offset(part->size);
-    if (esp_partition_read(part, blob_off, blob, sizeof(blob)) == ESP_OK
-            && meta_name_unpack(blob, sizeof(blob), disp, sizeof(disp))
-            && strlen(disp) <= META_NAME_LEN) {
-        name = disp;
-    }
-    if (!meta_slot_set_valid(out, name, desc.version, meta.image_len, sha_hex)) {
-        meta_slot_mark_invalid(out);
-        return;
-    }
-    // 签名徽章:签名 sector 独占一个 4K(从 sig_off 到 sig_off+4K),不得与 blob sector 重叠。
-    // 无签名段 = 合法的未签名固件;有签名段且验签通过 = 签名固件。
-    const uint32_t sig_off = meta_sign_sector_offset(meta.image_len);
-    const uint32_t blob_off2 = meta_name_blob_offset(part->size);
-    if (sig_off + META_SIG_SECTOR <= blob_off2) {
-        uint8_t sig_buf[META_SIG_TOTAL_LEN];
-        if (esp_partition_read(part, sig_off, sig_buf, sizeof(sig_buf)) == ESP_OK) {
-            // 复用上面已算的 SHA-256 digest(不重复计算,不整包入 RAM)。
-            meta_sig_result_t sr = meta_sign_verify(sha_digest, meta.image_len,
-                                                    sig_buf, sizeof(sig_buf));
+
+    // metadata sector:紧跟 image_len 后 4K 对齐;MSIG/MAEG/MNAM 同 sector。
+    // 注意:static 缓冲区避免 4KB 上栈;scan_one 只在启动扫描路径串行调用。
+    const uint32_t tail_off = meta_sign_sector_offset(image_len);
+    out->name[0] = '\0';
+    if (tail_off + META_SIG_SECTOR <= part->size) {
+        static uint8_t tail_sector[META_SIG_SECTOR];
+        if (esp_partition_read(part, tail_off, tail_sector, sizeof(tail_sector)) == ESP_OK) {
+            const meta_sig_result_t sr = meta_sign_verify(sha_digest, image_len,
+                                                          tail_sector, sizeof(tail_sector));
             out->signed_fw = (sr == META_SIG_OK);
+            meta_name_unpack_tail(tail_sector + META_NAME_BLOB_OFF, META_NAME_BLOB_LEN,
+                                  out->name, sizeof(out->name));
             ESP_LOGI(TAG, "槽位 %d 签名: %s (%d)", slot,
                      out->signed_fw ? "SIGNED" : "unsigned", sr);
         }
     }
+
+    // 填充有效槽信息。
+    // 注意: esp_app_get_description() 返回的是正在运行的 meta-pass 自身 desc,
+    // 不是槽位子固件的——版本字段仅为占位(沿用既有行为)。
+    const esp_app_desc_t *desc = esp_app_get_description();
+    meta_slot_set_valid(out, out->name, desc ? desc->version : "", image_len, sha_hex);
     ESP_LOGI(TAG, "槽位 %d: %s %s (%lu B)", slot, out->name, out->version,
              (unsigned long)out->size);
 }

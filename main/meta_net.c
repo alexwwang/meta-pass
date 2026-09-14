@@ -335,24 +335,25 @@ static esp_err_t h_upload(httpd_req_t *req)
     meta_slot_set_valid(&s_slots[slot], disp[0] != '\0' ? disp : name, ver,
                         (uint32_t)req->content_len, sha_hex);
 
-    // 显示名 blob:擦除槽位尾部 4KB sector 后写入(偏移按分区大小动态计算)。
-    // 擦/写失败仅记日志,不影响导入成功状态(扫描时无 blob 则回退 project_name)。
-    if (disp[0] != '\0') {
-        uint8_t blob[64];
-        memset(blob, 0xFF, sizeof(blob));   // 未写字节保持擦除态
-        const size_t blob_len = meta_name_pack(disp, blob, sizeof(blob));
-        const size_t write_len = (blob_len + 3u) & ~(size_t)3u;   // esp_partition_write 4B 对齐
-        const uint32_t blob_off = meta_name_blob_offset(part->size);
-        esp_err_t berr = (blob_len > 0) ? ESP_OK : ESP_ERR_INVALID_ARG;
-        if (berr == ESP_OK) {
-            berr = esp_partition_erase_range(part, blob_off, META_NAME_BLOB_SECTOR);
-        }
-        if (berr == ESP_OK) {
-            berr = esp_partition_write(part, blob_off, blob, write_len);
+    // metadata sector 紧跟 image_len 后 4K 对齐。ESP flash 只能按 sector 擦除,
+    // 因此擦整个 4KB sector 后再写 40B MNAM 窗口;disp 为空也擦,避免旧 name/签名残留。
+    const uint32_t tail_off = meta_sign_sector_offset((uint32_t)req->content_len);
+    if (tail_off + META_SIG_SECTOR <= part->size) {
+        esp_err_t berr = esp_partition_erase_range(part, tail_off, META_SIG_SECTOR);
+        if (berr == ESP_OK && disp[0] != '\0') {
+            uint8_t window[META_NAME_BLOB_RESERVE];
+            memset(window, 0xFF, sizeof(window));   // 前部安全边界保持擦除态
+            const size_t blob_len = meta_name_pack_tail(disp, window, sizeof(window));
+            if (blob_len == 0) {
+                berr = ESP_ERR_INVALID_ARG;
+            } else {
+                berr = esp_partition_write(part, tail_off + META_NAME_BLOB_OFF,
+                                           window, sizeof(window));
+            }
         }
         if (berr != ESP_OK) {
-            ESP_LOGW(TAG, "槽位 %d 显示名 blob 写入失败: %s", slot, esp_err_to_name(berr));
-        } else {
+            ESP_LOGW(TAG, "槽位 %d metadata sector 写入失败: %s", slot, esp_err_to_name(berr));
+        } else if (disp[0] != '\0') {
             ESP_LOGI(TAG, "槽位 %d 显示名: %s", slot, disp);
         }
     }
