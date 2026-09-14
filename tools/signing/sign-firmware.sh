@@ -79,7 +79,7 @@ with open(bin_path, 'rb') as f:
 with open(sig_path, 'rb') as f:
     signature = f.read()
 
-image_len = len(image)
+image_len = struct.unpack('<I', image[20:24])[0] if image[0] == 0xE9 else len(image)
 sig_off = (image_len + 4095) // 4096 * 4096
 pad_len = sig_off - image_len
 
