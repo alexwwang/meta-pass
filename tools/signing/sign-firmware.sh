@@ -96,7 +96,7 @@ def compute_esp_image_len(image):
     length = (unpadded + 1 + 15) & ~15
     offset = unpadded + (length - unpadded)
     # appended hash (32 bytes) if hash_appended flag is set
-    hash_appended = image[16]  # offset 0x10
+    hash_appended = image[23]  # hash_appended is at offset 23 in packed esp_image_header_t
     if hash_appended:
         offset += 32
     return offset
