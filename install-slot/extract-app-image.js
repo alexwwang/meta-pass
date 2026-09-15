@@ -26,7 +26,7 @@ function u32le(buf, off) {
 // 按给定扩展头长度走 segment 表,返回镜像精确总长度;结构不合法时抛错。
 function walkSegments(buf, start, extHdrLen) {
   const segCount = buf[start + 1];
-  const hashAppended = buf[start + 23] === 1;
+  const hashAppended = (buf[start + 23] & 1) === 1;
   let off = start + ESP_HEADER_LEN + extHdrLen;
   for (let i = 0; i < segCount; i++) {
     if (off + 8 > buf.length) {

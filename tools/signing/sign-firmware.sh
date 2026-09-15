@@ -8,8 +8,8 @@
 #   写入 image_len 之后(pad 到单一 4K tail sector 对齐)
 #   尾部 sector 布局: MSIG@0、MAEG@128..4055(定长 3928B,0xFF padding)、MNAM@4056;彩蛋不覆盖 MSIG/MNAM,也不进入签名 digest。
 #
-# 签名流程: python 计算 app.bin 的 SHA-256 digest,调用 bin/keychain-sign
-# 用 macOS Keychain 中的私钥(标签 com.folotoy.meta-pass.signing)签名,再组装 sector。
+# 签名流程: python 计算 app.bin 的 SHA-256 digest(覆盖 image_len 字节),
+# 调用 bin/keychain-sign 用 macOS Keychain 中的私钥(标签 com.folotoy.meta-pass.signing)签名。
 # 私钥不出 Keychain;首次使用会弹一次 Keychain 授权框。
 # 注意: Keychain 签名使用随机 nonce,同一镜像两次签名字节不同(验签不受影响)。
 # 验签在设备侧 meta_sign.c 做。此脚本不修改 image_len 以内的任何字节。
@@ -74,12 +74,38 @@ if [ -z "$VERSION" ]; then
     fi
 fi
 
-DIGEST="$(mktemp -t metapass-digest)"
 SIG="$(mktemp -t metapass-sig)"
-trap 'rm -f "$DIGEST" "$SIG"' EXIT
+trap 'rm -f "$SIG"' EXIT
 
-python3 -c 'import hashlib,sys; sys.stdout.buffer.write(hashlib.sha256(open(sys.argv[1],"rb").read()).digest())' \
-    "$BIN" > "$DIGEST"
+# 计算 image_len（与设备侧 esp_image_verify 语义一致：segments + checksum pad + appended hash）
+IMAGE_LEN=$(python3 -c '
+import struct, sys
+with open(sys.argv[1], "rb") as f:
+    image = f.read()
+if not image or image[0] != 0xE9:
+    print(len(image)); sys.exit()
+seg_count = image[1]
+offset = 24
+for i in range(seg_count):
+    seg_len = struct.unpack("<I", image[offset+4:offset+8])[0]
+    offset += 8 + seg_len
+unpadded = offset
+length = (unpadded + 1 + 15) & ~15
+offset = unpadded + (length - unpadded)
+if image[23] & 1:
+    offset += 32
+print(offset)
+' "$BIN")
+
+# 计算 SHA-256 digest（覆盖 image_len 字节，与设备侧 slot_sha256 一致）
+DIGEST="$(mktemp -t metapass-digest)"
+trap 'rm -f "$SIG" "$DIGEST"' EXIT
+python3 -c '
+import hashlib, sys
+with open(sys.argv[1], "rb") as f:
+    data = f.read(int(sys.argv[2]))
+sys.stdout.buffer.write(hashlib.sha256(data).digest())
+' "$BIN" "$IMAGE_LEN" > "$DIGEST"
 
 # 签名:只用 Keychain(私钥不出本机)。private.pem 是旧密钥对,与固件公钥不匹配,禁止 fallback。
 if [ ! -x "$SIGNER" ]; then
@@ -118,9 +144,9 @@ def compute_esp_image_len(image):
     unpadded = offset
     length = (unpadded + 1 + 15) & ~15
     offset = unpadded + (length - unpadded)
-    # appended hash (32 bytes) if hash_appended flag is set
-    hash_appended = image[23]  # hash_appended is at offset 23 in packed esp_image_header_t
-    if hash_appended:
+    # appended hash (32 bytes) if HASH_APPENDED flag is set at byte 23
+    # (IDF esp_image_header_t: 24-byte packed struct, hash_appended is last byte)
+    if image[23] & 1:
         offset += 32
     return offset
 

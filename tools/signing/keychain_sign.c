@@ -34,7 +34,6 @@ int main(int argc, char **argv)
     CFDictionarySetValue(query, kSecClass, kSecClassKey);
     CFDictionarySetValue(query, kSecAttrApplicationTag, tag);
     CFDictionarySetValue(query, kSecAttrKeyType, kSecAttrKeyTypeECSECPrimeRandom);
-    // 必须限定私钥:公私钥同标签存储,不限定可能匹配到公钥(不能签名)。
     CFDictionarySetValue(query, kSecAttrKeyClass, kSecAttrKeyClassPrivate);
     CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue);
     CFTypeRef item = NULL;
