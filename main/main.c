@@ -3,8 +3,9 @@
 // 设计文档(单一权威来源):docs/assets/meta-pass-design.md
 //
 // 按键语义(全局统一):
-//   上/下 短按   列表/详情页=移动选中项;彩蛋页=滚动文本
-//   确定  长按   返回上一级(LONG,1.5s)
+//   上/下 短按   列表/详情页=移动选中项;彩蛋页=滚动文本;未签名启动警告页=选择 BOOT/CANCEL
+//   确定  短按   进入/确认菜单项;未签名启动警告页=执行所选动作
+//   确定  长按   返回上一级(LONG,1.5s);例外:删除确认页 OK 长按=确认删除
 //   注意:切换子固件靠 Power 关机重启,meta-pass 不干预子固件的按键行为
 #include <stdio.h>
 #include <string.h>
@@ -212,21 +213,41 @@ static void page_egg_build(void)
     lv_screen_load(s_scr);
 }
 
-// ---------- 页面:二次确认(危险操作统一长按确认) ----------
+// ---------- 页面:二次确认 ----------
 
-static void page_confirm_build(bool boot)
+// 启动确认(未签名固件):警告文本 + BOOT/CANCEL 两个按钮行,UP/DOWN 选择,OK 短按确认。
+// 默认停在 CANCEL:不可信固件不允许"一路 OK"误启动,保持原有的刻意操作门槛。
+// OK LONG 沿用全局语义=返回详情页。
+static void page_confirm_boot_build(void)
 {
-    s_scr = ui_pixel_screen_create(boot ? "BOOT?" : "DELETE?");
+    s_scr = ui_pixel_screen_create("BOOT?");
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 100, UI_PAPER);
+    lv_obj_t *lbl = lv_label_create(panel);
+    lv_obj_set_width(lbl, 196);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
+    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
+    // 未签名固件无法验明来源;签名固件在详情页 OK 直接启动,不会进入本页。
+    lv_label_set_text(lbl, "Unsigned firmware!\nOnly boot if you trust\nthe source.");
+    add_row(s_scr, 0, 164, "BOOT");
+    add_row(s_scr, 1, 208, "CANCEL");
+    s_sel = 1;                    // 默认 CANCEL(安全侧)
+    rows_refresh(2, s_sel);
+    ui_pixel_mascot_create(s_scr, 101, 256);
+    lv_screen_load(s_scr);
+}
+
+// 删除确认:沿用 OK LONG 确认(防误删),OK 短按=取消。
+static void page_confirm_del_build(void)
+{
+    s_scr = ui_pixel_screen_create("DELETE?");
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 60, 216, 130, UI_PAPER);
     lv_obj_t *lbl = lv_label_create(panel);
     lv_obj_set_width(lbl, 196);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
     lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
-    // 未签名固件无法验明来源;签名徽章本期未启用,所有第三方固件一律走本警告。
-    lv_label_set_text(lbl, boot
-        ? "Unsigned firmware!\nOnly boot if you trust\nthe source.\n\nOK LONG = boot\nOK click = cancel"
-        : "Erase this slot?\nThis cannot be undone.\n\nOK LONG = delete\nOK click = cancel");
+    lv_label_set_text(lbl, "Erase this slot?\nThis cannot be undone.\n\nOK LONG = delete\nOK click = cancel");
     ui_pixel_mascot_create(s_scr, 101, 242);
     lv_screen_load(s_scr);
 }
@@ -300,8 +321,8 @@ static void goto_page(page_t page)
     switch (page) {
     case PAGE_LIST:     page_list_build();               break;
     case PAGE_DETAIL:   page_detail_build(s_detail_slot); break;
-    case PAGE_CONFIRM_BOOT: page_confirm_build(true);    break;
-    case PAGE_CONFIRM_DEL:  page_confirm_build(false);   break;
+    case PAGE_CONFIRM_BOOT: page_confirm_boot_build();   break;
+    case PAGE_CONFIRM_DEL:  page_confirm_del_build();    break;
     case PAGE_IMPORT:   page_import_build();             break;
     case PAGE_EGG:      page_egg_build();                break;
     }
@@ -345,7 +366,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_UP;
             else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_DOWN;
             else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) k = META_SEQ_KEY_OK_LONG;
-            else recognized = false;   // OK 单击/超长按等:用户意图明确改变,打断序列
+            else recognized = false;   // 其他按键组合:用户意图明确改变,打断序列
             if (!recognized) {
                 meta_seq_reset(&s_egg_seq);
             } else if (meta_seq_feed(&s_egg_seq, k,
@@ -362,7 +383,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 rows_refresh(DETAIL_ITEMS, s_sel);
             } else if (btn == BSP_BTN_OK) {
                 if (s_sel == 0 && meta_slot_bootable(s)) {          // BOOT
-                    // 签名固件直接启动;未签名固件走长按确认页
+                    // 签名固件直接启动;未签名固件走 BOOT/CANCEL 菜单确认页
                     if (s->signed_fw) {
                         if (meta_store_boot_slot(s_detail_slot) == ESP_OK)
                             esp_restart();
@@ -383,14 +404,20 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     }
 
     case PAGE_CONFIRM_BOOT:
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {   // 取消
-            goto_page(PAGE_DETAIL);
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            // 确认启动:设置启动分区并重启,不返回。
-            if (meta_store_boot_slot(s_detail_slot) == ESP_OK) {
-                esp_restart();
+        if (ev == BSP_BTN_CLICK) {
+            if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+                s_sel = (s_sel + 1) % 2;   // 两项菜单:UP/DOWN 均切换 BOOT/CANCEL
+                rows_refresh(2, s_sel);
+            } else if (btn == BSP_BTN_OK) {
+                if (s_sel == 0) {          // BOOT:设置启动分区并重启,不返回
+                    if (meta_store_boot_slot(s_detail_slot) == ESP_OK) {
+                        esp_restart();
+                    }
+                }
+                goto_page(PAGE_DETAIL);    // CANCEL 或设置失败(如分区损坏):回详情页
             }
-            goto_page(PAGE_DETAIL);   // 设置失败(如分区损坏)则回详情页
+        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            goto_page(PAGE_DETAIL);        // 全局语义:OK LONG=返回,即取消
         }
         break;
 

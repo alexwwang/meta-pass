@@ -53,12 +53,12 @@ switch. No custom bootloader changes.
 - **Integrity checks**: magic, chip id, size and segment structure, with
   `esp_ota_end()` as the authoritative recheck; the SHA-256 is shown on the detail
   page for comparison with the store's value.
-- **Unsigned-firmware warning**: booting unsigned firmware requires an extra-long OK
-  press (LONG2). Malicious firmware would still get full flash access (no eFuse
+- **Unsigned-firmware warning**: booting unsigned firmware shows a warning page with
+  BOOT / CANCEL buttons — UP/DOWN to choose, OK click to confirm (defaults to
+  CANCEL). Malicious firmware would still get full flash access (no eFuse
   enforced signing) — only install firmware from sources you trust.
-- **Never stuck in a child firmware**: un-adapted children are trial boots — any
   reboot (including power loss) returns to the launcher. Adapted firmware can
-  persist and wires LONG2 to return to the launcher.
+  persist and wires OK LONG to return to the launcher.
 - **Identity safety**: the `cardid` partition is avoided by every install/flash path;
   `verify_firmware.py` byte-checks the baseline layout in the gate.
 
@@ -72,7 +72,7 @@ switch. No custom bootloader changes.
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="Unsigned firmware warning: extra-long OK required to boot"
+       alt="Unsigned firmware warning: BOOT / CANCEL menu, OK click to confirm"
        width="800">
 </p>
 
@@ -111,16 +111,17 @@ slot, upload a `.bin`.
 
 ### 3. Boot
 
-UP/DOWN to pick a slot, OK for details, BOOT to confirm. Unsigned firmware asks for a
-LONG2 (extra-long OK) confirmation.
+UP/DOWN to pick a slot, OK for details, BOOT to confirm. Unsigned firmware shows a
+warning page: UP/DOWN to choose BOOT / CANCEL, OK click to confirm (defaults to CANCEL).
 
 ## Button map
 
-| Page | UP/DOWN | OK click | OK LONG (3 s) |
+| Page | UP/DOWN | OK click | OK LONG (1.5 s) |
 | --- | --- | --- | --- |
 | Main list | select slot | open details / import page | — |
-| Slot detail | BOOT/DELETE/BACK | confirm | DELETE needs LONG2 against accidents |
-| Unsigned warning | — | cancel | confirm boot |
+| Slot detail | BOOT/DELETE/BACK | confirm | back to list |
+| Unsigned warning | BOOT/CANCEL | confirm selection | cancel (back to detail) |
+| Delete confirm | — | cancel | confirm delete |
 | Import page | — | — | exit import, back to list |
 
 Inside an adapted child firmware: OK LONG = return to launcher (wired by the child,
@@ -128,13 +129,12 @@ see below).
 
 ## Adapting a child firmware (optional)
 
-Children work unmodified (trial-boot mode). To persist across reboots and get LONG2
+Children work unmodified (trial-boot mode). To persist across reboots and get OK LONG
 return, include `main/metapass_hook.h` and wire two calls:
 
 1. Call `metapass_mark_valid()` after self-check (otherwise the next reboot returns to
    the launcher);
-2. Route the OK key's LONG2 event to `metapass_return_to_launcher()`. Note the LONG
-   event fires first at 1.5 s; give LONG a harmless in-app action (e.g. page back).
+2. Route the OK key's LONG (1.5 s) event to `metapass_return_to_launcher()`.
 
 Signed badge (optional): `tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]`
 appends an ECDSA-P256 badge (+ optional easter-egg text) after the image; meta-pass then
@@ -148,7 +148,7 @@ publisher — third-party developers submit binaries for signing rather than sel
 | Path | Content |
 | --- | --- |
 | `main/` | Launcher UI (`main.c`), storage layer (`meta_store`), Wi-Fi import (`meta_net`), pure-logic modules (`meta_image`/`meta_slots`/`meta_import`/`meta_name`), child-firmware hook (`metapass_hook.h`) |
-| `components/bsp/` | Board support package (stock + `BSP_BTN_LONG2` event) |
+| `components/bsp/` | Board support package (stock + explicit `BSP_BTN_LONG` 1.5 s threshold) |
 | `install-slot/` | USB serial install page, live at https://meta-pass.pages.dev/ (Cloudflare Pages: static assets + `_worker.js` API proxy) |
 | `tools/install-slot/` | Local dev copy of the install page (`server.mjs` localhost server, zero dependencies) |
 | `tools/validate.sh` | Unified gate: static checks + host tests + firmware build + protected-layout verification |
@@ -175,7 +175,7 @@ are pure-logic modules with no ESP-IDF dependency.
 | --- | --- |
 | Build | Full `validate.sh` gate PASS; app 1,024,880 / 1,507,328 B (32% free); merged image 8 MB; `cardid` untouched |
 | Host tests | `meta_image`/`meta_slots`/`meta_import`/`meta_name` suites all pass; installer node tests 7/7; **new** `test_meta_net_contract.py` pins JS↔C HTTP route consistency; **new** `test_meta_net_upload.c` (21 cases) drives the full pair→upload→flash→verify→blob flow with real SHA-256, stubbing ESP-IDF — zero hardware required |
-| Simulator (passport-sim) | 3-slot list with real names via dynamic blob offsets (ota_0→0x355000, ota_1→0x55f000); navigation; detail metadata (`name: Pocket Walkie`, ver 1, 1262 KB, sha prefix); empty-slot BOOT no-op; unsigned warning page; LONG2 boot ota_0; hard-reset rollback to launcher; ota_1 Passport Radar boot + rollback; DELETE→LONG2 erase persists across reboot; IMPORT page (credentials/pair code/countdown); two observations judged non-firmware bugs (confirm-page residual rows = emulator canvas dirty-region artifact; import-page long-press exit needs longer hold = emulator timing model) |
+| Simulator (passport-sim) | 3-slot list with real names via dynamic blob offsets (ota_0→0x355000, ota_1→0x55f000); navigation; detail metadata (`name: Pocket Walkie`, ver 1, 1262 KB, sha prefix); empty-slot BOOT no-op; unsigned warning page; LONG2 boot ota_0; hard-reset rollback to launcher; ota_1 Passport Radar boot + rollback; DELETE→LONG2 erase persists across reboot; IMPORT page (credentials/pair code/countdown); two observations judged non-firmware bugs (confirm-page residual rows = emulator canvas dirty-region artifact; import-page long-press exit needs longer hold = emulator timing model) — *recorded 2026-09-13, before LONG2 removal and the BOOT/CANCEL boot menu; those two interactions need a re-run* |
 | GitHub Actions | Static checks (Linux/GCC), firmware gate (ESPIDF Docker) — both green |
 | CI artifact SHA-256 | `b86ca4fe…1b28e773` (canonical reference for marketplace publishing; local builds differ in embedded compile timestamp) |
 
@@ -192,7 +192,7 @@ This is an unofficial project, not affiliated with FoloToy.
 | Symptom | Fix |
 | --- | --- |
 | Serial picker is empty | Device is not in download mode (hold UP while powering on), or the USB cable is charge-only |
-| Child firmware ignores buttons / no LONG2 return | Un-adapted firmware has no return hook; power-cycle to return (rollback). By design |
+| Child firmware ignores buttons / no OK LONG return | Un-adapted firmware has no return hook; power-cycle to return (rollback). By design |
 | Rebooting a child lands back in the launcher | Un-adapted children are trial boots; persist requires `metapass_mark_valid()` in the child |
 | Slot shows "AI-Passport" instead of the play name | The firmware was installed without a display-name blob (merged image / old channel); reinstall via the USB page with a Display name |
 | Image rejected | Over the slot's limit (`partition_size − 4KB`, the last 4KB sector is reserved for the name blob), or not an ESP32-C3 image |

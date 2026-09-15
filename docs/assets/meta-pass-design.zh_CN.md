@@ -54,15 +54,15 @@ meta-pass 是 AI Passport 的**多固件启动器**：作为 factory 应用常�
 
 子固件是独立编译的本仓库衍生物，适配以获得完整体验：
 
-1. 包含 `main/metapass_hook.h`，在处理 `BSP_BTN_LONG2`（OK 键 2× 长按）时调用
+1. 包含 `main/metapass_hook.h`，在处理 `BSP_BTN_LONG`（OK 键长按 1.5 秒）时调用
    `metapass_return_to_launcher()`（设置启动分区为 factory 并重启）。
 2. 自检通过后调用 `esp_ota_mark_app_valid_cancel_rollback()` 以常驻。
 3. 继续使用共享 NVS 时自行加命名空间前缀，避免与其他固件冲突。
 
-按键模型（硬件裁决）：三键共用 GPIO0 单 ADC 分压节点，组合键会坍缩为优势单键
-（UP+任何=UP；DOWN+OK≈212mV 落在 DOWN 窗口），**组合键不可用**；电源键是硬件电源控制，
-固件不可读。因此返回机制采用**两级长按**：`LONG`（默认时长）= 应用内返回，`LONG2`
-（2× 默认时长）= 退回启动器。BSP 扩展 `BSP_BTN_LONG2` 事件，向后兼容（`LONG` 语义不变）。
+按键模型：OK 键只有一个长按阈值（约 1.5 秒）。在 meta-pass 内：`LONG` = 返回上级
+页面；删除确认页 `LONG` = 确认危险操作；未签名启动警告页是 BOOT / CANCEL 菜单
+（UP/DOWN 选择，OK 短按确认）。电源键是硬件电源控制，固件不可读；切换子固件靠
+断电重启（按电源键关机，再开机）。
 
 ## 6. 导入通道与协议
 
@@ -157,7 +157,7 @@ ota_2 根据运行时状态承担两种角色：
 
 `scan_one` 在 `esp_image_verify()` 通过后调用 `meta_sign_verify()` 尝试验签。验签通过的槽位
 在详情页显示「SIGNED」，按 OK 直接启动（跳过警告页）。无签名徽章的槽位（全 0xFF 或无 MSIG
-magic）视为未签名——仍走未签名固件警告页 + LONG2 确认。
+magic）视为未签名——走未签名固件警告页的 BOOT / CANCEL 选择。
 
 ### 7.1 可选彩蛋元数据
 
@@ -192,9 +192,10 @@ cardid。签名徽章证明固件来源（由 meta-pass 密钥持有者签名）
 UI 文案英文。
 
 - **主列表页**：槽位 0/1/2 条目显示 空 / 显示名（安装时写入的真名，无则回退核心名）；UP/DOWN 选择，OK 单击进详情。
-- **详情页**：Boot（未签名须警告页 LONG2 确认）、Delete（确认页 LONG2 确认）、返回。
+- **详情页**：Boot（未签名走警告页）、Delete（确认页 OK LONG 确认）、返回。
+- **未签名警告页**：警告文本 + BOOT / CANCEL 两行；UP/DOWN 选择，OK 短按确认；默认停在 CANCEL；OK 长按取消（回详情页）。
 - **Import 页**：显示 SSID/密码/配对码/IP/倒计时；OK 长按退出并完整释放网络栈。
-- 全局：`OK LONG` = 返回上级；`OK LONG2` 在子固件中 = 退回启动器（启动器内同 LONG）。
+- 全局：`OK LONG` = 返回上级；子固件内 `OK LONG` = 退回启动器。
 
 删除 = `esp_partition_erase_range` 整个槽位 + 清元数据；不影响 NVS 中子固件自存数据
 （子固件命名空间自理）。
@@ -279,3 +280,5 @@ ota_2 录音存储双用的另一半（尚无录音子固件）。
 | 2026-09-12 | -Os 编译器优化 + WARN 日志 | 保持 -Og Debug | -Os 缩小约 20%；INFO 级日志字符串占约 50KB .rodata |
 | 2026-09-12 | 裁剪 LVGL examples/demos | 保持完整 LVGL | 默认构建编译 1800+ demo 单元（约 2MB）；启动器仅需 label/button/panel |
 | 2026-09-12 | ota_2 双用：固件槽位或录音存储 | 独立存储分区 | 运行时 esp_image_verify() 判断；littlefs 忽略分区类型；无分区表冲突 |
+| 2026-09-14 | 移除 LONG2，只留一个 LONG 阈值（1.5 秒） | 保留 LONG/LONG2 两级 | LONG 在多数页面是"返回"，在警告页却是"确认启动"——同样按住时长语义相反，用户会混淆 |
+| 2026-09-14 | 未签名启动确认 = BOOT / CANCEL 菜单（UP/DOWN 选择，OK 短按确认，默认 CANCEL） | OK 长按确认 | 与主列表/详情页同一套"UP/DOWN 选择 + OK 短按确认"模型；LONG 全局保持"返回" |

@@ -62,14 +62,14 @@ node tools/install-slot/server.mjs
 5. **显示名**（可选，≤32 可打印 ASCII）：默认从玩法标题或文件名预填；
    写入槽位尾部 4KB 的 blob 区，之后在 meta-pass 菜单显示。
 6. **安装** → 等 `Done.` → **断电重启**设备，然后在 meta-pass 菜单选槽位。
-   未签名固件需超长按 OK（LONG2）确认才能启动。
+   未签名固件启动前走 BOOT / CANCEL 警告菜单（UP/DOWN 选择，OK 单击确认）。
 
 ## 注意事项
 
 - 单镜像体积上限为**分区大小 − 4KB**（槽位尾部最后 4KB sector 保留给显示
   名 blob）。三槽上限：slot 0 ≈ 1.88 MB、slot 1 = 2 MB、slot 2 ≈ 2.68 MB。
 - 未适配的子固件无法返回启动器，只能断电重启（回滚机制）。适配过的固件
-  可通过 `metapass_return_to_launcher()` 接 LONG2 返回启动器，见
+  可通过 `metapass_return_to_launcher()` 接 OK 长按返回启动器，见
   `docs/assets/meta-pass-design.zh_CN.md` §5。
 - 页面不触碰 `factory`、`cardid`、`otadata`，只写三个槽位偏移。
 

@@ -73,7 +73,8 @@ API proxy lives.
    the meta-pass menu.
 6. **Install** → wait for `Done.` → **power-cycle** the device (unplug/replug
    or power button), then select the slot in the meta-pass menu. Unsigned
-   firmware asks for an extra-long OK press (LONG2) before booting.
+   firmware goes through a BOOT / CANCEL warning menu (UP/DOWN to choose,
+   OK click to confirm) before booting.
 
 ## Notes
 
@@ -82,7 +83,7 @@ API proxy lives.
   slot 2 ≈ 2.68 MB.
 - Un-adapted child firmware has no way back to the launcher except a power
   cycle (rollback returns to meta-pass automatically). Adapted firmware wires
-  `metapass_return_to_launcher()` to LONG2 — see
+  `metapass_return_to_launcher()` to OK LONG — see
   `docs/assets/meta-pass-design.md` §5.
 - The page never touches `factory`, `cardid`, or `otadata` — only the three
   slot offsets.

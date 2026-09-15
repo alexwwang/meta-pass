@@ -194,7 +194,8 @@ compiled into meta-pass (`main/meta_sign_pubkey.h`, generated from
 
 `scan_one` calls `meta_sign_verify()` after `esp_image_verify()` passes. A slot with a
 valid signature shows "SIGNED" on the detail page and boots directly on OK click (no
-as unsigned — the unsigned-firmware warning page with LONG confirm still applies.
+warning page). A slot without a signature badge is treated as unsigned — it goes
+through the unsigned-firmware warning page with BOOT / CANCEL selection.
 
 ### 7.1 Optional Easter Egg Metadata
 
@@ -237,12 +238,13 @@ indicator (avoiding the cloud at `x≈188,y≈8`). UI text in English.
 
 - **Main list**: slot 0/1/2 rows show empty / the display name (real name written at install
   time, core-name fallback otherwise); UP/DOWN to select, OK click for details.
-- **Detail page**: Boot (unsigned requires warning page LONG2 confirm), Delete (confirm
-  page LONG2), back.
+- **Detail page**: Boot (unsigned firmware goes to the warning page), Delete (confirm
+  page, OK LONG to confirm), back.
+- **Unsigned warning page**: warning text + BOOT / CANCEL rows; UP/DOWN to select, OK
+  click to confirm; defaults to CANCEL; OK LONG cancels (back to detail).
 - **Import page**: shows SSID/password/pairing code/IP/countdown; OK LONG exits and fully
   releases the network stack.
-- Global: `OK LONG` = back; `OK LONG2` inside a child = return to launcher (inside the
-  launcher, same as LONG).
+- Global: `OK LONG` = back; inside a child firmware `OK LONG` = return to launcher.
 
 Delete = `esp_partition_erase_range` on the whole slot + clear metadata; it does not touch
 child-owned NVS data (children manage their own namespaces).
@@ -341,3 +343,5 @@ convention (no recording child firmware exists yet).
 | 2026-09-12 | -Os compiler optimization + WARN log | keep -Og Debug | -Os reduces binary ~20%; INFO log strings consume ~50KB .rodata |
 | 2026-09-12 | LVGL examples/demos trimmed | keep full LVGL | default build compiles 1800+ demo units (~2MB); launcher only needs label/button/panel |
 | 2026-09-12 | ota_2 dual-use: firmware slot or audio storage | separate storage partition | runtime check esp_image_verify(); littlefs ignores partition type; no partition-table conflict |
+| 2026-09-14 | Remove LONG2; one LONG threshold (1.5 s) | keep two-tier LONG/LONG2 | LONG meant "back" on most pages but "confirm boot" on the warning page — opposite semantics at the same hold duration confused users |
+| 2026-09-14 | Unsigned boot confirm = BOOT / CANCEL menu (UP/DOWN select, OK click confirm, default CANCEL) | OK LONG to confirm | same "UP/DOWN select + OK click confirm" model as the list and detail pages; keeps LONG = back everywhere |
