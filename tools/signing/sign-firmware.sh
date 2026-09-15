@@ -26,14 +26,20 @@ if [ ! -x "$SIGNER" ]; then
 fi
 
 usage() {
-    echo "usage: $0 <app.bin> [--egg-text TEXT]" >&2
+    echo "usage: $0 <app.bin> [--version VERSION] [--egg-text TEXT]" >&2
 }
 
 BIN=""
 EGG_TEXT=""
+VERSION=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --version)
+            if [ "$#" -lt 2 ]; then usage; exit 2; fi
+            VERSION="$2"
+            shift 2
+            ;;
         --egg-text)
             if [ "$#" -lt 2 ]; then usage; exit 2; fi
             EGG_TEXT="$2"
@@ -60,6 +66,14 @@ done
 if [ -z "$BIN" ]; then usage; exit 2; fi
 if [ ! -f "$BIN" ]; then echo "error: $BIN not found"; exit 1; fi
 
+# 版本检测: 优先 --version 参数,其次从输入文件所在 git 仓库的 describe 自动检测。
+if [ -z "$VERSION" ]; then
+    BIN_DIR="$(cd "$(dirname "$BIN")" && git rev-parse --show-toplevel 2>/dev/null || echo "")"
+    if [ -n "$BIN_DIR" ]; then
+        VERSION="$(git -c safe.directory='*' -C "$BIN_DIR" describe --tags --match 'v[0-9]*' 2>/dev/null || echo "")"
+    fi
+fi
+
 DIGEST="$(mktemp -t metapass-digest)"
 SIG="$(mktemp -t metapass-sig)"
 trap 'rm -f "$DIGEST" "$SIG"' EXIT
@@ -67,27 +81,21 @@ trap 'rm -f "$DIGEST" "$SIG"' EXIT
 python3 -c 'import hashlib,sys; sys.stdout.buffer.write(hashlib.sha256(open(sys.argv[1],"rb").read()).digest())' \
     "$BIN" > "$DIGEST"
 
-# 签名:优先 Keychain(私钥不出本机);Keychain 无密钥或超时时 fallback 到 private.pem。
-PEM_KEY="$SCRIPT_DIR/private.pem"
-if [ -x "$SIGNER" ]; then
-    if timeout 10 "$SIGNER" "$DIGEST" > "$SIG" 2>/dev/null; then
-        true  # Keychain signing succeeded
-    else
-        echo "  (Keychain signing unavailable; using private.pem via OpenSSL)" >&2
-        openssl dgst -sha256 -sign "$PEM_KEY" -out "$SIG" "$DIGEST"
-    fi
-elif [ -f "$PEM_KEY" ]; then
-    echo "  (No keychain-sign binary; using private.pem via OpenSSL)" >&2
-    openssl dgst -sha256 -sign "$PEM_KEY" -out "$SIG" "$DIGEST"
-else
-    echo "error: no signing key available (Keychain or $PEM_KEY)" >&2
+# 签名:只用 Keychain(私钥不出本机)。private.pem 是旧密钥对,与固件公钥不匹配,禁止 fallback。
+if [ ! -x "$SIGNER" ]; then
+    echo "error: keychain-sign not found at $SIGNER — run tools/signing/build-tools.sh" >&2
     exit 1
 fi
-python3 - "$BIN" "$SIG" "$EGG_TEXT" <<'PYEOF'
+"$SIGNER" "$DIGEST" > "$SIG"
+if [ ! -s "$SIG" ]; then
+    echo "error: keychain-sign produced no output — check Keychain access" >&2
+    exit 1
+fi
+python3 - "$BIN" "$SIG" "$EGG_TEXT" "$VERSION" <<'PYEOF'
 import struct
 import sys
 
-bin_path, sig_path, egg_text = sys.argv[1], sys.argv[2], sys.argv[3]
+bin_path, sig_path, egg_text, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 with open(bin_path, 'rb') as f:
     image = f.read()
@@ -156,7 +164,14 @@ if egg_text:
     egg_field[3927] = xor
     sector[128:4056] = egg_field
 
-out_path = bin_path.rsplit('.', 1)[0] + '-signed.bin'
+import os
+base_name = os.path.basename(bin_path).rsplit('.', 1)[0]
+out_dir = os.path.dirname(os.path.abspath(bin_path))
+if version:
+    out_name = f"{base_name}_{version}-signed.bin"
+else:
+    out_name = f"{base_name}-signed.bin"
+out_path = os.path.join(out_dir, out_name)
 with open(out_path, 'wb') as f:
     f.write(image)
     if pad_len > 0:
@@ -164,6 +179,8 @@ with open(out_path, 'wb') as f:
     f.write(bytes(sector))
 
 print(f"signed: {out_path}")
+if version:
+    print(f"  version:  {version}")
 print(f"  image_len: {image_len}")
 print(f"  sig_offset: {sig_off}")
 print(f"  sig_blob: {len(sig_blob)} bytes (payload_len={len(signature)})")
