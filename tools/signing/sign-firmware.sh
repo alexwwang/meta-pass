@@ -66,8 +66,23 @@ trap 'rm -f "$DIGEST" "$SIG"' EXIT
 
 python3 -c 'import hashlib,sys; sys.stdout.buffer.write(hashlib.sha256(open(sys.argv[1],"rb").read()).digest())' \
     "$BIN" > "$DIGEST"
-"$SIGNER" "$DIGEST" > "$SIG"
 
+# 签名:优先 Keychain(私钥不出本机);Keychain 无密钥或超时时 fallback 到 private.pem。
+PEM_KEY="$SCRIPT_DIR/private.pem"
+if [ -x "$SIGNER" ]; then
+    if timeout 10 "$SIGNER" "$DIGEST" > "$SIG" 2>/dev/null; then
+        true  # Keychain signing succeeded
+    else
+        echo "  (Keychain signing unavailable; using private.pem via OpenSSL)" >&2
+        openssl dgst -sha256 -sign "$PEM_KEY" -out "$SIG" "$DIGEST"
+    fi
+elif [ -f "$PEM_KEY" ]; then
+    echo "  (No keychain-sign binary; using private.pem via OpenSSL)" >&2
+    openssl dgst -sha256 -sign "$PEM_KEY" -out "$SIG" "$DIGEST"
+else
+    echo "error: no signing key available (Keychain or $PEM_KEY)" >&2
+    exit 1
+fi
 python3 - "$BIN" "$SIG" "$EGG_TEXT" <<'PYEOF'
 import struct
 import sys
