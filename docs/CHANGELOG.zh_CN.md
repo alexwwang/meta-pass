@@ -5,6 +5,11 @@
 # Changelog
 
 ## Unreleased
+- 新增 `tools/test-bootable-qemu.mjs`：无头 QEMU 引导验证——用 passport-sim 的 QEMU WASM 核心
+  实际引导构建产物，断言三件事：UART0 测试变体走完 bootloader→分区表→factory app→app_main
+  全链路；MPUP 升级容器被原样写 0x0 时确实无法引导（负例，与真机实测一致）；市场镜像
+  （USB-JTAG 配置）渲染出非黑 ST7789 帧缓冲（LVGL 显示层初始化）。从此市场镜像
+  `meta-pass-bootable_*.bin` 的可引导性有了自动化证据，不再依赖真机试刷。
 - 修复安装页连接失败后设备再也连不上的问题：连接任何一步失败都会释放串口（此前连接挂死/失败后端口保持打开，重试必报 "The port is already open"）；连接流程不可重入（`busy`/`connecting` 双闸）；半开连接不再污染已有连接（全部步骤成功后才提交到全局变量）；设备静默丢命令不再永久挂死流程（探针 15 秒超时 `withTimeout`）。移除无意义的 `changeBaud()` 断开/重连舞蹈——波特率对 C3 原生 USB 是虚设参数；替换掉错误的 16KB 读取块探针（stub 的 `handle_flash_read` 用 4KB 栈缓冲，块超限**静默 return 不报错**），改用官方同款提速方式：块大小维持 stub 上限 4KB，把在途窗口从 4KB 提到 64 块 × 4KB = 256KB，ACK 往返次数降 64 倍（对齐上游 `esptool.py`：官方就是 4KB 块/64 深窗口）。探针校验 bootloader 魔数与数据长度，异常即回退保守的 1KB/4KB 参数。
 - 保数据 launcher 升级（§7.2）：升级只写 bootloader + 分区表 + factory 应用 + 擦除态
   OTA 数据重置四项；NVS（存储数据:Wi-Fi 配置、应用内部状态）、`cardid` 与三个子固件槽位永不触碰。USB 安装页
