@@ -173,6 +173,11 @@ import {
   checkUpgradeBundle,
   comparePartitionTables,
   upgradeWritePlan,
+  migrationErasePlan,
+  isErasedTable,
+  isLegacyFactoryLayout,
+  slotHasData,
+  parsePartitionTable,
   PARTITION_TABLE_OFFSET,
   PARTITION_TABLE_READ_SIZE,
 } from "./launcher-upgrade.js";
@@ -303,6 +308,11 @@ const I18N = {
     msg_upgrade_failed: "Upgrade failed: {err}",
     msg_upgrade_loaded: "Upgrade bundle loaded: factory app {size}. Ready to upgrade.",
     err_upgrade_missing: "Upgrade folder is missing: {missing} — select the build/upgrade/ folder containing all 4 files.",
+    msg_upgrade_blank: "Blank device detected (erased partition table) — installing the launcher fresh.",
+    msg_upgrade_factory_detected: "Legacy factory layout detected (single-firmware device). Checking child-firmware slots before migration…",
+    err_upgrade_slot_has_data: "Slot {slot} contains data — refusing to migrate. Back it up (section 5) or install over it first, then upgrade again.",
+    msg_upgrade_migration: "No child-firmware data found. Wiping legacy residue in: {regions}.",
+    msg_upgrade_erased: "Wiped legacy residue at {addr} ({size}).",
   },
   zh: {
     // 静态文案
@@ -416,6 +426,11 @@ const I18N = {
     msg_upgrade_failed: "升级失败:{err}",
     msg_upgrade_loaded: "升级包已加载:factory 应用 {size}。可以开始升级。",
     err_upgrade_missing: "升级目录缺少:{missing} —— 请选择包含全部 4 个文件的 build/upgrade/ 目录。",
+    msg_upgrade_blank: "检测到空白设备(分区表为擦除态)—— 全新安装 launcher。",
+    msg_upgrade_factory_detected: "检测到原厂旧布局(单固件设备)。迁移前正在检查子固件槽位…",
+    err_upgrade_slot_has_data: "槽位 {slot} 中有数据 —— 已拒绝迁移。请先备份(第 5 节)或先覆盖安装该槽位,再重新升级。",
+    msg_upgrade_migration: "未发现子固件数据。正在清除残留区域:{regions}。",
+    msg_upgrade_erased: "已清除 {addr} 起的旧固件残留({size})。",
   },
 };
 
@@ -568,7 +583,7 @@ $("btn-upgrade").addEventListener("click", async () => {
   $("upgrade-status").textContent = "";
   setUpgradeProgress(0);
   try {
-    // 1) 读回设备分区表并逐字节比对:布局变了就拒绝原地升级(升级契约的安全前提)
+    // 1) 读回设备分区表并分类:meta-pass 布局 / 空白机 / 原厂旧布局 / 未知
     log(t("msg_upgrade_start"));
     let deviceTable;
     try {
@@ -577,13 +592,49 @@ $("btn-upgrade").addEventListener("click", async () => {
     } catch (err) {
       throw new Error(t("err_upgrade_read_table", { err: err.message }));
     }
-    const cmp = comparePartitionTables(deviceTable, upgradeBundle.get("partition-table.bin"));
-    if (!cmp.ok) {
+    const bundleTable = upgradeBundle.get("partition-table.bin");
+    const cmp = comparePartitionTables(deviceTable, bundleTable);
+    let eraseRegions = [];   // 写入前需清残留的区域(原厂机首次迁移)
+    if (cmp.ok) {
+      log(t("msg_upgrade_table_ok"), "ok");
+    } else if (isErasedTable(deviceTable)) {
+      // 空白机:没有旧布局可保护,直接安装
+      log(t("msg_upgrade_blank"), "ok");
+    } else if (isLegacyFactoryLayout(parsePartitionTable(deviceTable))) {
+      // 原厂旧布局机:迁移前必须确认没有任何有效子固件数据
+      log(t("msg_upgrade_factory_detected"));
+      for (let i = 0; i < SLOTS.length; i++) {
+        const head = await loader.readFlash(SLOTS[i].offset, 24);
+        if (slotHasData(head)) {
+          throw new Error(t("err_upgrade_slot_has_data", { slot: i }));
+        }
+      }
+      eraseRegions = migrationErasePlan();
+      log(t("msg_upgrade_migration", { regions: eraseRegions.map((r) => `0x${r.offset.toString(16)}+${fmtBytes(r.size)}`).join(", ") }));
+    } else {
       throw new Error(t("err_upgrade_table", { reason: cmp.reason }));
     }
-    log(t("msg_upgrade_table_ok"), "ok");
 
-    // 2) 按计划写入四项;NVS/cardid/三个子固件槽位全程不触碰
+    // 2) 原厂机迁移:清残留(写全 FF = 逐扇区先擦后写;cardid 已在计划中跳过)。
+    //    仅当设备上没有任何有效子固件数据时才会走到这里(上方已拦截)。
+    for (let i = 0; i < eraseRegions.length; i++) {
+      const r = eraseRegions[i];
+      const ff = new Uint8Array(Math.min(r.size, 0x10000)).fill(0xff);
+      let written = 0;
+      while (written < r.size) {
+        const chunk = Math.min(ff.length, r.size - written);
+        await loader.writeFlash({
+          fileArray: [{ data: u8ToBinaryString(ff.subarray(0, chunk)), address: r.offset + written }],
+          flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+          reportProgress: (_idx, w) =>
+            setUpgradeProgress(10 + ((i + (written + w) / r.size) / eraseRegions.length) * 30),
+        });
+        written += chunk;
+      }
+      log(t("msg_upgrade_erased", { addr: hex(r.offset), size: fmtBytes(r.size) }), "ok");
+    }
+
+    // 3) 按计划写入四项;NVS/cardid/三个子固件槽位全程不触碰(原厂机残留已单独清理)
     const steps = upgradeWritePlan();
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -596,7 +647,7 @@ $("btn-upgrade").addEventListener("click", async () => {
         flashFreq: "keep",
         compress: true,
         reportProgress: (_idx, written, total) =>
-          setUpgradeProgress(10 + ((i + written / total) / steps.length) * 90),
+          setUpgradeProgress(40 + ((i + written / total) / steps.length) * 60),
       });
     }
     setUpgradeProgress(100);

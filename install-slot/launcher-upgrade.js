@@ -95,6 +95,61 @@ export function parsePartitionTable(raw) {
   // 设备读回的表 marker 在 0xC00 之后本就读不到——比对按字节级进行,这里宽松返回
 }
 
+// 判断从设备读回的分区表扇区是否为全擦除态(空白机:全 0xFF)。
+export function isErasedTable(table) {
+  return table instanceof Uint8Array && table.length > 0 &&
+    table.every((b) => b === 0xff);
+}
+
+// 判断设备是否运行原厂旧布局(FoloToy 单固件:无 OTA 槽,有 recovery@0x700000)。
+// 识别依据:表内有 factory app 且没有任何 ota_* app 分区。不依赖具体地址,
+// 未来原厂改版仍能识别。devicePartitions: parsePartitionTable(设备表) 的结果。
+export function isLegacyFactoryLayout(devicePartitions) {
+  if (!Array.isArray(devicePartitions) || devicePartitions.length === 0) return false;
+  const hasFactory = devicePartitions.some(
+    (p) => p.type === 0 && p.subtype === 0,
+  );
+  const hasOta = devicePartitions.some(
+    (p) => p.type === 0 && p.subtype >= 0x10 && p.subtype <= 0x1f,
+  );
+  return hasFactory && !hasOta;
+}
+
+// 判断一块数据是否有"子固件头"的可能(非全 FF 即视为有数据)。
+// 只看头 24B:任何 ESP 镜像(0xE9)或遗留数据首块都必然非 FF。
+export function slotHasData(head24) {
+  return head24 instanceof Uint8Array && head24.length === 24 &&
+    head24.some((b) => b !== 0xff);
+}
+
+// 原厂机首次迁移的擦除计划:清除旧固件/旧数据在新布局槽位区域内的全部残留。
+// 目标:0x180000(ota_0 起点)→ 0x7FE000(otadata 起点),其中 cardid 保护区跳过。
+// 返回 [{ offset, size, why }] —— 页面据此调用 esptool eraseRegion;空数组表示无需擦除。
+export function migrationErasePlan() {
+  const CARDID = { offset: 0x356000, size: 0x4000 };
+  const START = 0x180000;
+  const END = 0x7fe000;
+  const plan = [];
+  // cardid 之前的整段
+  if (CARDID.offset > START) {
+    plan.push({
+      offset: START,
+      size: CARDID.offset - START,
+      why: "wipe legacy firmware residue inside ota_0 (before cardid)",
+    });
+  }
+  // cardid 之后的整段(otadata 起点前结束;otadata 由升级写入项重置)
+  const after = CARDID.offset + CARDID.size;
+  if (END > after) {
+    plan.push({
+      offset: after,
+      size: END - after,
+      why: "wipe legacy residue inside ota_1/ota_2 (after cardid)",
+    });
+  }
+  return plan;
+}
+
 // 升级前校验:设备上的分区表与升级包内的表必须逐字节一致(以升级包文件为基准)。
 // deviceTable: 从设备 0x8000 读回的 Uint8Array;bundleTable: 升级包内 partition-table.bin。
 // 一致性判定:升级包表长度 ≤ 设备读回长度,且升级包表的非 0xFF 前缀与设备对应区域完全一致。
