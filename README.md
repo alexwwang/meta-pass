@@ -150,15 +150,35 @@ publisher — third-party developers submit binaries for signing rather than sel
 | `main/` | Launcher UI (`main.c`), storage layer (`meta_store`), Wi-Fi import (`meta_net`), pure-logic modules (`meta_image`/`meta_slots`/`meta_import`/`meta_name`), child-firmware hook (`metapass_hook.h`) |
 | `components/bsp/` | Board support package (stock + explicit `BSP_BTN_LONG` 1.5 s threshold) |
 | `install-slot/` | USB serial install page, live at https://meta-pass.pages.dev/ (Cloudflare Pages: static assets + `_worker.js` API proxy) |
-| `tools/install-slot/` | Local dev copy of the install page (`server.mjs` localhost server, zero dependencies) |
+| `tools/install-slot/` | `server.mjs` localhost server (serves the canonical `install-slot/` page directly — single source, zero dependencies) |
 | `tools/validate.sh` | Unified gate: static checks + host tests + firmware build + protected-layout verification |
+| `tools/build-firmware.sh` | One-command local firmware build for beginners (finds ESP-IDF, builds, merges, verifies, prints flashing guide) |
 | `tests/` | Host tests (C, pure-logic modules, run on PC) |
 | `docs/assets/meta-pass-design.md` | Design document (decision log and acceptance checklist) |
 
 ## Development
 
+### Build the firmware locally (one command)
+
 ```bash
-source <esp-idf-v5.5.3>/export.sh   # ESP-IDF v5.5.3 required
+tools/build-firmware.sh
+```
+
+That's it. The script finds ESP-IDF v5.5.3 automatically (`~/esp/esp-idf-v5.5.3`,
+or pass `--idf-path <dir>`), builds, merges the 8 MB full image, verifies the
+protected layout, drops artifacts into `build/` (`meta-pass_v<version>.bin`,
+`FoloToy-AI-Passport.bin`) and prints install/flash instructions. If ESP-IDF is
+missing it prints step-by-step install commands. First-time install of ESP-IDF:
+
+```bash
+mkdir -p ~/esp
+git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3
+~/esp/esp-idf-v5.5.3/install.sh esp32c3
+```
+
+### Full validation gates
+
+```bash
 ./tools/validate.sh --static        # repo checks + host tests
 ./tools/validate.sh --firmware      # firmware build + protected-layout verification
                                     # (isolated /tmp build, artifact copied back to

@@ -102,7 +102,7 @@ install-slot/                 # GitHub Pages 根目录
   vendor/                     # 内联 esptool-js + 依赖
   proxy.mjs                   # Cloudflare Worker（单独部署）
 
-tools/install-slot/           # 原始开发目录（server.mjs 保留作本地备选）
-  server.mjs                  # 本地 Node HTTP 代理（proxy.mjs 的替代）
-  …同 install-slot/ 文件…
+tools/install-slot/           # 本地服务器与测试（直接服务上方规范目录）
+  server.mjs                  # 本地 Node HTTP 代理（直接服务 install-slot/,proxy.mjs 的替代）
+  test-extract.mjs            # 镜像解包 / 名字 blob / i18n 测试
 ```

@@ -3,6 +3,9 @@
 // 零外部依赖，仅使用 node 内置模块；默认端口 4191，可用 PORT 环境变量覆盖。
 // 页面：GET / 返回 install-slot.html；社区玩法 API 无 CORS 头，由本服务器代理转发。
 // SSRF 防护：只允许代理 ai-passport.folotoy.cn 的 /api/download/ 与 /api/plays 路径。
+//
+// 页面资源直接服务仓库规范目录 install-slot/(与 Cloudflare Pages 部署同源),
+// 本目录只保留 server.mjs 与测试,杜绝两份页面副本再次漂移(见 docs/BUGS.md BUG-03)。
 
 import http from "node:http";
 import fs from "node:fs";
@@ -12,6 +15,7 @@ import { fileURLToPath } from "node:url";
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
 const DIR = path.dirname(fileURLToPath(import.meta.url));
+const PAGE_DIR = path.resolve(DIR, "..", "..", "install-slot");
 // 页面与静态模块均按请求现读,不在启动时缓存(页面迭代期免重启)
 // 页面以 type=module 引入的同目录 ES 模块;白名单按需登记
 const STATIC_FILES = new Map([
@@ -87,11 +91,11 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // GET / → 安装页
+  // GET / → 安装页(规范目录 install-slot/)
   if (pathname === "/" || pathname === "/install-slot.html") {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     // 每请求现读:页面迭代期免重启
-    fs.createReadStream(path.join(DIR, "install-slot.html")).pipe(res);
+    fs.createReadStream(path.join(PAGE_DIR, "install-slot.html")).pipe(res);
     return;
   }
 
@@ -99,7 +103,7 @@ const server = http.createServer((req, res) => {
   const staticEntry = STATIC_FILES.get(pathname);
   if (staticEntry) {
     res.writeHead(200, { "content-type": staticEntry.type });
-    fs.createReadStream(path.join(DIR, staticEntry.file)).pipe(res);
+    fs.createReadStream(path.join(PAGE_DIR, staticEntry.file)).pipe(res);
     return;
   }
 

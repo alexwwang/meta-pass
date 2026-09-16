@@ -134,15 +134,35 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 | `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、Wi-Fi 导入（`meta_net`）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_import`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
 | `components/bsp/` | 板级支持包（官方原样 + 显式 `BSP_BTN_LONG` 1.5 秒阈值） |
 | `install-slot/` | USB 串口安装页，线上地址 https://meta-pass.pages.dev/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
-| `tools/install-slot/` | 安装页本地开发副本（`server.mjs` 本地服务器，零依赖） |
+| `tools/install-slot/` | `server.mjs` 本地服务器（直接服务规范的 `install-slot/` 页面——单一来源，零依赖） |
 | `tools/validate.sh` | 统一门禁：静态检查 + host tests + 固件构建 + 受保护布局校验 |
+| `tools/build-firmware.sh` | 一条命令的本地固件构建（自动找 ESP-IDF、编译、合并、校验、打印烧写指引，新手友好） |
 | `tests/` | host tests（C，纯逻辑模块，PC 上跑） |
 | `docs/assets/meta-pass-design.zh_CN.md` | 设计文档（含决策日志与验收清单） |
 
 ## 开发
 
+### 本地编译固件（一条命令）
+
 ```bash
-source <esp-idf-v5.5.3>/export.sh   # 必须 ESP-IDF v5.5.3
+tools/build-firmware.sh
+```
+
+就够了。脚本会自动寻找 ESP-IDF v5.5.3（默认找 `~/esp/esp-idf-v5.5.3`，
+也可用 `--idf-path <目录>` 指定），完成编译、合并 8MB 完整镜像、受保护
+布局校验，产物放入 `build/`（`meta-pass_v<版本>.bin`、
+`FoloToy-AI-Passport.bin`），并打印安装/烧写指引。找不到 ESP-IDF 时会
+给出逐行安装命令。首次安装 ESP-IDF：
+
+```bash
+mkdir -p ~/esp
+git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3
+~/esp/esp-idf-v5.5.3/install.sh esp32c3
+```
+
+### 完整验证门禁
+
+```bash
 ./tools/validate.sh --static        # 仓库检查 + host tests
 ./tools/validate.sh --firmware      # 固件构建 + 受保护布局校验（在 /tmp 隔离构建,
                                     # 产物拷回 build/meta-pass_v<版本>.bin）

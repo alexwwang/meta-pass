@@ -119,7 +119,7 @@ install-slot/                 # Cloudflare Pages root (pages_build_output_dir)
   name-blob.js                # name blob packer/unpacker (ES module)
   vendor/                     # bundled esptool-js + deps
 
-tools/install-slot/           # original dev dir (server.mjs kept for local)
-  server.mjs                  # local Node HTTP proxy (alternative to Pages)
-  …same files as above…
+tools/install-slot/           # local server + tests (serve the canonical dir above)
+  server.mjs                  # local Node HTTP proxy — serves install-slot/ directly
+  test-extract.mjs            # image unpacking / name-blob / i18n tests
 ```

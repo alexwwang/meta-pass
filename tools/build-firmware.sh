@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# tools/build-firmware.sh —— 一条命令完成 meta-pass 固件本地构建(面向不熟悉 ESP-IDF 的用户)。
+#
+# 做什么:
+#   1. 自动寻找 ESP-IDF v5.5.3(常用路径 / --idf-path 参数 / $IDF_PATH 环境变量),没有则给出安装指引;
+#   2. idf.py build 编译固件(含全部最新源码修复);
+#   3. idf.py merge-bin 合并出可直接烧写的 8MB 完整镜像;
+#   4. verify_firmware.py 校验受保护布局(应用大小 / 分区边界 / cardid 不被占用);
+#   5. 产物复制到 build/ 并打印烧写指引。
+#
+# 用法:
+#   tools/build-firmware.sh                  # 标准构建
+#   tools/build-firmware.sh --idf-path ~/esp/esp-idf-v5.5.3
+#   PORT=/dev/cu.usbserial-xxxx tools/build-firmware.sh   # 末尾直接给出该端口的烧写命令
+#
+# 前置(仅首次):
+#   安装 ESP-IDF v5.5.3 与其依赖:https://docs.espressif.com/projects/esp-idf/zh_CN/v5.5.3/esp32c3/get-started/
+#   例:mkdir -p ~/esp && git clone -b v5.5.3 --recursive \
+#        https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3 && ~/esp/esp-idf-v5.5.3/install.sh esp32c3
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+IDF_PATH_ARG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --idf-path)
+            [ $# -lt 2 ] && { echo "error: --idf-path needs a value" >&2; exit 2; }
+            IDF_PATH_ARG="$2"; shift 2 ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "error: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+fail()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# ---- 1. 寻找并激活 ESP-IDF v5.5.3 ---------------------------------------
+IDF_CANDIDATES=()
+if [ -n "$IDF_PATH_ARG" ]; then
+    IDF_CANDIDATES=("$IDF_PATH_ARG")
+elif [ -n "${IDF_PATH:-}" ]; then
+    IDF_CANDIDATES=("$IDF_PATH")
+else
+    IDF_CANDIDATES=("$HOME/esp/esp-idf-v5.5.3" "$HOME/.espressif/frameworks/esp-idf-v5.5.3" "/opt/esp-idf-v5.5.3")
+fi
+
+IDF_DIR=""
+for d in "${IDF_CANDIDATES[@]}"; do
+    [ -f "$d/export.sh" ] && IDF_DIR="$d" && break
+done
+if [ -z "$IDF_DIR" ]; then
+    if command -v idf.py >/dev/null 2>&1; then
+        info "检测到 PATH 中已有 idf.py,直接使用"
+    else
+        cat >&2 <<'EOF'
+error: 未找到 ESP-IDF v5.5.3。
+
+方式一:已安装但不在默认位置?指定路径重跑:
+    tools/build-firmware.sh --idf-path <你的 esp-idf-v5.5.3 目录>
+
+方式二:尚未安装?约 10 分钟:
+    mkdir -p ~/esp
+    git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3
+    ~/esp/esp-idf-v5.5.3/install.sh esp32c3
+    tools/build-firmware.sh          # 重新运行本脚本即可
+EOF
+        exit 1
+    fi
+else
+    info "激活 ESP-IDF: $IDF_DIR"
+    # shellcheck disable=SC1091
+    . "$IDF_DIR/export.sh" >/dev/null
+fi
+
+# ---- 2. 编译 -------------------------------------------------------------
+info "idf.py build(首次构建约 3~10 分钟,之后增量构建更快)"
+idf.py build || fail "编译失败——把上方完整报错贴给 AI 助手或搜索 esp-idf issue"
+
+# ---- 3. 合并完整镜像 -----------------------------------------------------
+info "合并 8MB 完整镜像(merge-bin)"
+idf.py merge-bin -o FoloToy-AI-Passport-full.bin >/dev/null \
+    || fail "merge-bin 失败(注意:输出路径必须是文件名,见 docs/BUGS.md 记录)"
+
+# ---- 4. 受保护布局校验 ---------------------------------------------------
+info "校验受保护固件布局(verify_firmware.py)"
+python3 tools/verify_firmware.py build/ || fail "布局校验未通过"
+
+# ---- 5. 汇总产物与烧写指引 -----------------------------------------------
+VERSION="$(git -c safe.directory='*' -C "$REPO_ROOT" describe --tags --match 'v[0-9]*' 2>/dev/null || echo v0.0.0-dev)"
+cp -f build/FoloToy-AI-Passport-full.bin "build/meta-pass_${VERSION}.bin"
+
+info "构建完成 ✓"
+cat <<EOF
+
+产物(build/ 下):
+  meta-pass_${VERSION}.bin          完整 8MB 镜像(blearner/全量烧写用)
+  FoloToy-AI-Passport.bin           app 分区镜像(OTA / 安装页导入用)
+  bootloader/partition_table        引导与分区表
+
+安装到设备(推荐,USB 安装页自动处理签名/显示名):
+  1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
+  2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
+  3. Connect → 选槽位 → 选择 build/meta-pass_${VERSION}.bin → Install
+
+命令行烧写(可选;PORT 换成你的串口,macOS 形如 /dev/cu.usbserial-xxxx):
+  idf.py -p PORT flash
+EOF
+
+if [ -n "${PORT:-}" ]; then
+    echo
+    info "检测到 \$PORT=$PORT,直接烧写:"
+    echo "  idf.py -p $PORT flash"
+fi

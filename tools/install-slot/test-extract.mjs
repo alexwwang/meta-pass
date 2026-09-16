@@ -5,16 +5,18 @@
 //   1. extractAppImage 输出长度正确;
 //   2. 坏 magic 抛错;
 //   3. Full 合并镜像(分区表 + 前缀)能定位 factory 应用。
+//
+// 被测模块直接从仓库规范目录 install-slot/ 导入(单一份实现,见 docs/BUGS.md BUG-03)。
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { extractAppImage, espImageLength, isFullImage } from "./extract-app-image.js";
+import { extractAppImage, espImageLength, isFullImage } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
   tailSectorOffset, blobOffset, maxAppImageSize,
   packNameBlob, unpackNameBlob, packNameBlobTail, unpackNameBlobTail,
   sanitizeDisplayName,
-} from "./name-blob.js";
+} from "../../install-slot/name-blob.js";
 
 // 构造合法 ESP 应用镜像:24B 头 + 16B 扩展头 + 2 个 segment + 填充 + 1B 校验和 + 32B hash
 function buildAppImage() {
@@ -225,7 +227,7 @@ function hexToBytes(hex) {
 
 // ===== 8. install-slot.html i18n 字典:en/zh 键集合一致,页面引用的键全部存在 =====
 {
-  const html = readFileSync(new URL("./install-slot.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../../install-slot/install-slot.html", import.meta.url), "utf8");
   const scriptMatch = html.match(/<script type="module">([\s\S]*?)<\/script>/);
   assert.ok(scriptMatch, "module script not found in install-slot.html");
   const script = scriptMatch[1];
