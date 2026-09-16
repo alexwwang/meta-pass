@@ -299,7 +299,7 @@ const I18N = {
     msg_connecting: "Connecting…",
     msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
-    msg_read_fast: "Fast flash reads enabled (4 KB blocks, 64-deep window).",
+    msg_read_fast: "Fast flash reads enabled (4 KB blocks, 256 KB in-flight window).",
     msg_read_slow: "Fast reads rejected by device ({err}) — using conservative 1 KB blocks (slower).",
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
@@ -433,7 +433,7 @@ const I18N = {
     msg_connecting: "连接中…",
     msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
-    msg_read_fast: "快速读取已启用(4KB 块 / 64 块在途窗口)。",
+    msg_read_fast: "快速读取已启用(4KB 块 / 256KB 在途窗口)。",
     msg_read_slow: "设备不支持快速读取({err})—— 回退 1KB 慢速模式。",
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
@@ -799,12 +799,13 @@ $("btn-connect").addEventListener("click", async () => {
     // 波特率对 C3 原生 USB 是虚设参数(真波特率只对外接 UART 桥板有意义),
     // changeBaud() 的断开/重连舞蹈只增加故障面 → 不做。读取提速走 readFlash
     // 的块/窗口命令参数,见下。
-    // 读取提速:readFlash(0xD0) 的块大小/流量窗口是命令参数。
-    // stub 侧 handle_flash_read() 用栈上 4KB 定长缓冲,block_size > 4096 时
-    // 静默 return(不报错!)→ 块大小绝不能超 4KB;esptool.py 官方即 4KB 块/64 窗。
-    // 提速靠放大在途窗口(64 个 4KB 块 = 256KB 在途):stub 连续吐 64 块才等
-    // 一次 ACK,往返次数降 64 倍。探针验证数据完整性,异常即回退出厂参数。
-    globalThis.__READFLASH_PARAMS__ = [4096, 64];
+    // 读取提速:readFlash(0xD0) 的块大小/在途窗口是命令参数,stub 侧两者都按
+    // 字节计数(handle_flash_read)。块大小有 4KB 硬上限(栈缓冲),超限静默
+    // return(不报错!);esptool.py 官方即 4KB 块。提速靠放大在途窗口到 256KB
+    // (64 块 × 4KB):窗口 > 单次读长时 stub 连续吐完整个请求才等一次 ACK,
+    // 往返次数降 64 倍;JS 端同步改为按窗口 ACK(esptool-js.js 同改),避免
+    // 突发期间的逐帧 ACK 堆积成垃圾命令。探针验证数据完整性,异常即回退出厂参数。
+    globalThis.__READFLASH_PARAMS__ = [4096, 0x40000];
     try {
       const probe = await withTimeout(newLoader.readFlash(0x0, 0x4000), 15000, "probe timeout");
       if (probe.length !== 0x4000) throw new Error(`short read ${probe.length}`);

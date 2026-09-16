@@ -145,12 +145,16 @@ app = (Path("build/FoloToy-AI-Passport.bin")).read_bytes()
 assert bl[0] == 0xE9, "bootloader magic"
 assert pt[:2] == b"\xAA\x50", "partition table magic"
 assert app[0] == 0xE9, "app magic"
-bootable = bytearray(0x10000 + len(app))
-bootable[0:len(bl)] = bl
-bootable[0x8000:0x8000+len(pt)] = pt
-bootable[0x10000:0x10000+len(app)] = app
+# 直接从合并镜像切头部(0x0 .. app 末尾),而不是重新拼三个文件:
+# 合并镜像在 0xF000 还带 phy_init(RF 校准数据),全新机首启即有 RF 参数;
+# 头部切法保证与合并镜像逐字节一致(verify_firmware.py 强校验这一点)。
+# NVS/ota_0-2/otadata 不在头部范围内,且 verify_upgrade_safety 已强制合并
+# 镜像中它们保持擦除态。
+full = (Path("build/FoloToy-AI-Passport-full.bin")).read_bytes()
+bootable = full[: 0x10000 + len(app)]
+assert bootable[0] == 0xE9 and bootable[0x8000:0x8000+2] == b"\xAA\x50", "head layout"
 (Path("build") / f"meta-pass-bootable_{version}.bin").write_bytes(bytes(bootable))
-print(f"Bootable market image: {len(bootable)} bytes (bootloader+table+app)")
+print(f"Bootable market image: {len(bootable)} bytes (bootloader+table+phy+app)")
 PYEOF
 cat > build/upgrade/flash-args.txt <<'EOF'
 # launcher 升级最小写入集:升级 meta-pass 不动用户数据。

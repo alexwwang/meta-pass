@@ -231,6 +231,37 @@ def verify_upgrade_container(upgrade_dir: Path, bundle: dict, merged: bytes) -> 
     print("Upgrade bundle: PASS (build/upgrade/ matches the merged image)")
 
 
+def verify_bootable_image(merged: bytes, build_dir: Path) -> None:
+    """Market single-file bootable image: bootloader + partition table + app laid
+    out at their flash offsets, everything else erased. Market tools flash it raw
+    at 0x0; the ROM boots the factory app directly. Must be byte-identical to the
+    head of the merged image — safe to assert because verify_upgrade_safety
+    guarantees every region after the app is erased (0xFF) in the merged image,
+    so head parity implies the erased-tail contract carries over."""
+    images = sorted(build_dir.glob("meta-pass-bootable_*.bin"))
+    if not images:
+        raise ValueError("bootable market image missing: build/meta-pass-bootable_*.bin")
+    if len(images) > 1:
+        raise ValueError(
+            "multiple bootable images in build/ — stale artifact? clean and rebuild"
+        )
+    bootable = images[0].read_bytes()
+    if bootable[0] != 0xE9:
+        raise ValueError(f"{images[0].name}: first byte is not the ESP image magic 0xE9")
+    if len(bootable) <= 0x10000:
+        raise ValueError(f"{images[0].name}: too small to carry a partition table + app")
+    if bootable[0x8000 : 0x8000 + 2] != b"\xAA\x50":
+        raise ValueError(f"{images[0].name}: no partition table magic at 0x8000")
+    if bootable[0x10000] != 0xE9:
+        raise ValueError(f"{images[0].name}: no app image at 0x10000")
+    if bootable != merged[: len(bootable)]:
+        raise ValueError(f"{images[0].name}: differs from the merged image head")
+    print(
+        f"Bootable market image: PASS ({images[0].name}, {len(bootable)} bytes, "
+        "boots factory when flashed raw at 0x0)"
+    )
+
+
 def main() -> int:
     build_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "build").resolve()
     merged_path = build_dir / "FoloToy-AI-Passport-full.bin"
@@ -265,6 +296,7 @@ def main() -> int:
         verify_protected_layout(merged, build_dir)
         verify_upgrade_safety(merged)
         verify_upgrade_bundle(merged, build_dir)
+        verify_bootable_image(merged, build_dir)
     except (OSError, UnicodeDecodeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
