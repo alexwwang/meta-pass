@@ -11,6 +11,8 @@ import {
   migrationErasePlan,
   slotHasData,
   PARTITION_TABLE_READ_SIZE,
+  packUpgradeContainer,
+  unpackUpgradeContainer,
 } from "../../install-slot/launcher-upgrade.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -162,5 +164,39 @@ junk[23] = 0x01;   // 尾部一个非 FF 字节也算有数据(保守)
 assert.equal(slotHasData(junk), true);
 assert.equal(slotHasData(new Uint8Array(12)), false, "wrong size treated as no-data");
 console.log("PASS 6: legacy-factory / blank classification; erase plan skips cardid & factory; slot-head detection");
+
+// ---- PASS 7: 单文件升级容器(MPUP)—— 打包/解包往返 + 逐段 SHA-256 门禁 ----
+{
+  const files = new Map();
+  for (const step of upgradeWritePlan()) {
+    files.set(step.name, new Uint8Array(readFileSync(join(HERE, "..", "..", "build", "upgrade", step.name))));
+  }
+  const packed = packUpgradeContainer(files);
+  // 容器头:魔数 + header_size + 段数
+  assert.equal(new TextDecoder().decode(packed.subarray(0, 6)), "MPUPV1");
+  const dv = new DataView(packed.buffer);
+  assert.equal(dv.getUint32(12, true), 4, "segment count = 4");
+  assert.equal(dv.getUint32(8, true), 16 + 4 * 72, "header size = 16 + 4*72");
+  // 往返:逐段与原始字节一致
+  const unpacked = unpackUpgradeContainer(packed);
+  for (const [name, data] of unpacked) {
+    const orig = files.get(name);
+    assert.ok(data.length === orig.length && data.every((b, i) => b === orig[i]), `${name} roundtrip`);
+  }
+  // 解包结果直接通过既有包完整性检查
+  assert.equal(checkUpgradeBundle(unpacked).ok, true);
+  // 篡改任一字节 → 对应段 sha256 门禁拒绝
+  const tampered = packed.slice();
+  tampered[tampered.length - 1] ^= 0xff;
+  assert.throws(() => unpackUpgradeContainer(tampered), /sha256 mismatch/);
+  // 坏魔数 / 过短文件 / 段数不符
+  const badMagic = packed.slice(); badMagic[0] = 0x58;
+  assert.throws(() => unpackUpgradeContainer(badMagic), /magic/);
+  assert.throws(() => unpackUpgradeContainer(packed.subarray(0, 100)), /header exceeds|too small/);
+  const badCount = packed.slice();
+  new DataView(badCount.buffer).setUint32(12, 3, true);
+  assert.throws(() => unpackUpgradeContainer(badCount), /segment count|header_size/);
+  console.log("PASS 7: MPUP single-file container — roundtrip byte-exact, per-segment sha256 gate, malformed rejected");
+}
 
 console.log("All launcher-upgrade tests passed.");

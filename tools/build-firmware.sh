@@ -91,6 +91,45 @@ cp -f build/bootloader/bootloader.bin          build/upgrade/bootloader.bin
 cp -f build/partition_table/partition-table.bin build/upgrade/partition-table.bin
 cp -f build/FoloToy-AI-Passport.bin             build/upgrade/FoloToy-AI-Passport.bin
 cp -f build/ota_data_initial.bin                build/upgrade/ota_data_initial.bin
+# 单文件升级容器(MPUP):市场分发要求升级产物是且仅是一个文件;
+# 四段镜像打包进一个 .bin,线刷页选这一个文件、按段表逐段写入各分区地址。
+python3 - <<'PYEOF'
+import sys
+sys.path.insert(0, "tools")
+from hashlib import sha256
+from pathlib import Path
+import struct
+
+U = Path("build/upgrade")
+PLAN = [
+    ("bootloader.bin", 0x0),
+    ("partition-table.bin", 0x8000),
+    ("FoloToy-AI-Passport.bin", 0x10000),
+    ("ota_data_initial.bin", 0x7FE000),
+]
+NAME_MAX, ENTRY = 32, 72
+header_size = 16 + len(PLAN) * ENTRY
+segs, body = [], bytearray()
+for name, offset in PLAN:
+    data = (U / name).read_bytes()
+    segs.append((name, offset, len(data), sha256(data).digest(), len(body)))
+    body += data
+out = bytearray(header_size + len(body))
+out[0:6] = b"MPUPV1"
+struct.pack_into("<II", out, 8, header_size, len(PLAN))
+for i, (name, offset, size, digest, body_off) in enumerate(segs):
+    at = 16 + i * ENTRY
+    nb = name.encode()
+    out[at:at+len(nb)] = nb
+    struct.pack_into("<II", out, at + 32, offset, size)
+    out[at+40:at+72] = digest
+    out[header_size+body_off:header_size+body_off+size] = (U / name).read_bytes()
+version = __import__("subprocess").run(
+    ["git", "-C", ".", "describe", "--tags", "--match", "v[0-9]*"],
+    capture_output=True, text=True).stdout.strip() or "v0.0.0-dev"
+(U / f"meta-pass-upgrade_{version}.bin").write_bytes(bytes(out))
+print(f"MPUP container: {len(out)} bytes ({len(PLAN)} segments)")
+PYEOF
 cat > build/upgrade/flash-args.txt <<'EOF'
 # launcher 升级最小写入集:升级 meta-pass 不动用户数据。
 #   NVS(0x9000, 存储数据:Wi-Fi 配置、应用内部状态)、cardid、ota_0/1/2(已装子固件)全部保留。
@@ -117,15 +156,14 @@ cat <<EOF
 产物(build/ 下):
   meta-pass_${VERSION}.bin          完整 8MB 镜像(出厂/全量烧写用;数据区为擦除态)
   FoloToy-AI-Passport.bin           app 分区镜像(OTA / 安装页导入用)
-  upgrade/                          launcher 升级包(推荐用于升级,见下)
-    FoloToy-AI-Passport.bin         factory app
-    partition-table.bin / bootloader.bin / ota_data_initial.bin
+  upgrade/meta-pass-upgrade_${VERSION}.bin  单文件升级容器(市场分发用,推荐)
+  upgrade/{4 个分段 bin + flash-args.txt}   命令行烧写用原始分段
 
 升级已装的 meta-pass(保留 NVS 存储数据与全部子固件,推荐):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
   2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
-  3. Connect → "Upgrade launcher" → 选择 upgrade/ 整个文件夹(含 4 个文件) → Upgrade
-  (页面会先读回设备分区表逐字节比对,不一致则拒绝升级)
+  3. Connect → "Upgrade launcher" → 选择 upgrade/meta-pass-upgrade_${VERSION}.bin(单文件) → Upgrade
+  (页面解析容器逐段校验 SHA-256,并先读回设备分区表逐字节比对,不一致则拒绝升级)
 
 安装到设备(首次烧录,USB 安装页自动处理签名/显示名):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"

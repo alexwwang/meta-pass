@@ -149,7 +149,7 @@
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
     <p class="subtitle" data-i18n="upgrade_desc">Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.</p>
-    <p><input type="file" id="upgrade-input" webkitdirectory directory multiple> <span data-i18n="upgrade_pick_dir">select the build/upgrade/ folder from the firmware build (contains 4 files)</span></p>
+    <p><input type="file" id="upgrade-input" accept=".bin,application/octet-stream"> <span data-i18n="upgrade_pick_dir">select the single-file upgrade container (meta-pass-upgrade_*.bin from the firmware build)</span></p>
     <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
     <span id="upgrade-status"></span>
     <div class="progress"><div id="upgrade-bar"></div></div>
@@ -189,19 +189,19 @@ import {
   checkRestoreFit, restoreOrder, isAllFF, probeOffsets, buildRawMirror, rawMirrorFileName,
   firmwareFileName, extraFileName, tailFileName, MANIFEST_NAME,
 } from "./slot-backup.js";
-import { deflate } from "./vendor/pako.js";
-import {
-  checkUpgradeBundle,
-  comparePartitionTables,
-  upgradeWritePlan,
-  migrationErasePlan,
-  isErasedTable,
-  isLegacyFactoryLayout,
-  slotHasData,
-  parsePartitionTable,
-  PARTITION_TABLE_OFFSET,
-  PARTITION_TABLE_READ_SIZE,
-} from "./launcher-upgrade.js";
+import { deflate } from "./vendor/pako.js";  import {
+    checkUpgradeBundle,
+    comparePartitionTables,
+    upgradeWritePlan,
+    migrationErasePlan,
+    isErasedTable,
+    isLegacyFactoryLayout,
+    slotHasData,
+    parsePartitionTable,
+    unpackUpgradeContainer,
+    PARTITION_TABLE_OFFSET,
+    PARTITION_TABLE_READ_SIZE,
+  } from "./launcher-upgrade.js";
 
 // 3-Slot 分区表(与 partitions.csv 一致):[offset, size]
 const SLOTS = [
@@ -360,7 +360,7 @@ const I18N = {
     msg_restore_failed: "Restore failed: {err}",
     step_upgrade: "7. Upgrade launcher (keep NVS data & child firmware)",
     upgrade_desc: "Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.",
-    upgrade_pick_dir: "select the build/upgrade/ folder from the firmware build (contains 4 files)",
+    upgrade_pick_dir: "select the single-file upgrade container (meta-pass-upgrade_*.bin from the firmware build)",
     btn_upgrade: "Upgrade launcher",
     msg_upgrade_busy: "Another operation is in progress.",
     msg_upgrade_start: "Upgrading launcher: reading the device partition table for comparison…",
@@ -370,8 +370,9 @@ const I18N = {
     msg_upgrade_writing: "Writing {name} ({size}) to 0x{addr}…",
     msg_upgrade_done: "Upgrade complete: launcher updated, NVS data and all child-firmware slots preserved. Power-cycle the device.",
     msg_upgrade_failed: "Upgrade failed: {err}",
-    msg_upgrade_loaded: "Upgrade bundle loaded: factory app {size}. Ready to upgrade.",
-    err_upgrade_missing: "Upgrade folder is missing: {missing} — select the build/upgrade/ folder containing all 4 files.",
+    msg_upgrade_loaded: "Upgrade container loaded: factory app {size}. Ready to upgrade.",
+    err_upgrade_missing: "Not an upgrade container: {missing}",
+    msg_upgrade_connect_first: "Connect the device first (section 1), then click Upgrade.",
     msg_upgrade_blank: "Blank device detected (erased partition table) — installing the launcher fresh.",
     msg_upgrade_factory_detected: "Legacy factory layout detected (single-firmware device). Checking child-firmware slots before migration…",
     err_upgrade_slot_has_data: "Slot {slot} contains data — refusing to migrate. Back it up (section 5) or install over it first, then upgrade again.",
@@ -481,7 +482,7 @@ const I18N = {
     msg_restore_failed: "恢复失败:{err}",
     step_upgrade: "7. 升级 launcher(保留 NVS 数据与子固件)",
     upgrade_desc: "升级启动器,保留 NVS 存储数据(Wi-Fi 配置、应用内部状态)与已安装的全部子固件。",
-    upgrade_pick_dir: "选择固件构建产物目录 build/upgrade/(包含 4 个文件)",
+    upgrade_pick_dir: "选择单文件升级容器(固件构建产物 meta-pass-upgrade_*.bin)",
     btn_upgrade: "升级 launcher",
     msg_upgrade_busy: "有操作正在进行中。",
     msg_upgrade_start: "升级 launcher:正在读回设备分区表进行比对…",
@@ -491,8 +492,9 @@ const I18N = {
     msg_upgrade_writing: "写入 {name}({size})到 0x{addr}…",
     msg_upgrade_done: "升级完成:launcher 已更新,NVS 存储数据与全部子固件槽位保留。请重新上电设备。",
     msg_upgrade_failed: "升级失败:{err}",
-    msg_upgrade_loaded: "升级包已加载:factory 应用 {size}。可以开始升级。",
-    err_upgrade_missing: "升级目录缺少:{missing} —— 请选择包含全部 4 个文件的 build/upgrade/ 目录。",
+    msg_upgrade_loaded: "升级容器已加载:factory 应用 {size}。可以开始升级。",
+    err_upgrade_missing: "不是升级容器文件:{missing}",
+    msg_upgrade_connect_first: "请先连接设备(第 1 步),再点击升级。",
     msg_upgrade_blank: "检测到空白设备(分区表为擦除态)—— 全新安装 launcher。",
     msg_upgrade_factory_detected: "检测到原厂旧布局(单固件设备)。迁移前正在检查子固件槽位…",
     err_upgrade_slot_has_data: "槽位 {slot} 中有数据 —— 已拒绝迁移。请先备份(第 5 节)或先覆盖安装该槽位,再重新升级。",
@@ -603,49 +605,56 @@ function refreshInstallButton() {
   $("btn-install").disabled = busy || !loader;
   $("btn-backup").disabled = busy || !loader;
   $("btn-restore").disabled = busy || !loader;
-  $("btn-upgrade").disabled = busy || !loader || !upgradeBundle;
+  $("btn-upgrade").disabled = busy || !loader || !upgradeLoaded;
 }
 
 // ===== 7. 升级 launcher(仅写 factory/分区表/bootloader/otadata;NVS 与子固件槽零接触)=====
 function setUpgradeProgress(pct) { $("upgrade-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`; }
 
-let upgradeBundle = null;   // Map<name, Uint8Array>,来自 build/upgrade/ 目录的 4 个文件
+let upgradeBundle = null;   // Map<name, Uint8Array>,由单文件 MPUP 容器解包而来
+let upgradeLoaded = false;  // 容器已就绪(与「未连设备」状态分开提示)
 
 $("upgrade-input").addEventListener("change", async (ev) => {
   upgradeBundle = null;
+  upgradeLoaded = false;
   $("upgrade-status").textContent = "";
   $("btn-upgrade").disabled = true;
-  // 升级包 = build/upgrade/ 目录(构建脚本生成,含全部 4 个文件);
-  // 用 webkitdirectory 目录选择一次拿全,按文件名收集(忽略目录里其它文件)。
-  const wanted = upgradeWritePlan().map((s) => s.name);
-  const files = new Map();
-  for (const f of ev.target.files) {
-    if (wanted.includes(f.name)) files.set(f.name, new Uint8Array(await f.arrayBuffer()));
-  }
-  const missing = wanted.filter((n) => !files.has(n));
-  if (missing.length > 0) {
-    $("upgrade-status").textContent = t("err_upgrade_missing", { missing: missing.join(", ") });
+  // 升级包 = 单文件 MPUP 容器(构建脚本生成,四段镜像 + 段表 + 逐段 SHA-256)。
+  // 页面选这一个文件,解包校验后仍按写入计划逐段写到各分区地址。
+  const file = ev.target.files[0];
+  if (!file) return;
+  try {
+    const raw = new Uint8Array(await file.arrayBuffer());
+    const files = unpackUpgradeContainer(raw);   // 魔数/段表/逐段 SHA-256 全部校验
+    const check = checkUpgradeBundle(files);
+    if (!check.ok) {
+      $("upgrade-status").textContent = t("msg_upgrade_failed", { err: check.reason });
+      $("upgrade-status").className = "error";
+      log(t("msg_upgrade_failed", { err: check.reason }), "error");
+      return;
+    }
+    upgradeBundle = files;
+    upgradeLoaded = true;
+    const app = files.get("FoloToy-AI-Passport.bin");
+    $("upgrade-status").textContent = t("msg_upgrade_loaded", { size: fmtBytes(app.length) });
+    $("upgrade-status").className = "ok";
+    log(t("msg_upgrade_loaded", { size: fmtBytes(app.length) }), "ok");
+  } catch (err) {
+    $("upgrade-status").textContent = t("err_upgrade_missing", { missing: err.message });
     $("upgrade-status").className = "error";
-    log(t("err_upgrade_missing", { missing: missing.join(", ") }), "error");
+    log(t("err_upgrade_missing", { missing: err.message }), "error");
     return;
   }
-  const check = checkUpgradeBundle(files);
-  if (!check.ok) {
-    $("upgrade-status").textContent = t("msg_upgrade_failed", { err: check.reason });
-    $("upgrade-status").className = "error";
-    log(t("msg_upgrade_failed", { err: check.reason }), "error");
-    return;
+  if (!loader) {
+    // 容器就绪但设备未连:按钮仍灰,但必须告诉用户为什么,而不是静默灰着
+    $("upgrade-status").textContent += " " + t("msg_upgrade_connect_first");
+    log(t("msg_upgrade_connect_first"), "warn");
   }
-  upgradeBundle = files;
-  const app = files.get("FoloToy-AI-Passport.bin");
-  $("upgrade-status").textContent = t("msg_upgrade_loaded", { size: fmtBytes(app.length) });
-  $("upgrade-status").className = "ok";
-  log(t("msg_upgrade_loaded", { size: fmtBytes(app.length) }), "ok");
   $("btn-upgrade").disabled = busy || !loader;
 });
 
 $("btn-upgrade").addEventListener("click", async () => {
-  if (busy || !loader || !upgradeBundle) return;
+  if (busy || !loader || !upgradeBundle || !upgradeLoaded) return;
   busy = true;
   refreshInstallButton();
   $("upgrade-status").textContent = "";

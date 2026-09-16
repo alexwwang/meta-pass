@@ -178,6 +178,56 @@ def verify_upgrade_bundle(merged: bytes, build_dir: Path) -> None:
             raise ValueError(f"upgrade bundle missing {name}")
         if path.read_bytes() != merged[offset : offset + path.stat().st_size]:
             raise ValueError(f"upgrade bundle {name} differs from the merged image")
+    verify_upgrade_container(upgrade_dir, bundle, merged)
+
+
+def verify_upgrade_container(upgrade_dir: Path, bundle: dict, merged: bytes) -> None:
+    """单文件升级容器(MPUP):段表/逐段 SHA-256/与主镜像同源。
+
+    容器是市场分发的唯一升级产物;四段 bin 仍保留供命令行 esptool 使用。
+    布局:魔数 "MPUPV1\0" + header_size(u32) + count(u32) + count×72B 段表
+    (name 32B + offset u32 + size u32 + sha256 32B)+ 各段数据紧随。
+    """
+    import hashlib
+    import struct
+
+    containers = sorted(upgrade_dir.glob("meta-pass-upgrade_*.bin"))
+    if not containers:
+        raise ValueError("upgrade container missing: build/upgrade/meta-pass-upgrade_*.bin")
+    if len(containers) > 1:
+        raise ValueError(
+            f"multiple upgrade containers in build/upgrade/ ({[c.name for c in containers]}) "
+            "— stale artifact? clean and rebuild"
+        )
+    raw = containers[0].read_bytes()
+    if len(raw) < 16 or raw[0:6] != b"MPUPV1\x00"[:6]:
+        raise ValueError(f"{containers[0].name}: bad MPUP magic")
+    header_size, count = struct.unpack_from("<II", raw, 8)
+    if count != len(bundle):
+        raise ValueError(f"{containers[0].name}: segment count {count} != {len(bundle)}")
+    if header_size != 16 + count * 72:
+        raise ValueError(f"{containers[0].name}: header_size {header_size} != 16 + {count}*72")
+    body_at = header_size
+    for i in range(count):
+        at = 16 + i * 72
+        name_field = raw[at : at + 32]
+        name = name_field.split(b"\x00", 1)[0].decode()
+        if name not in bundle.values():
+            raise ValueError(f"{containers[0].name}: unexpected segment {name}")
+        offset, size = struct.unpack_from("<II", raw, at + 32)
+        if offset != next(o for o, n in bundle.items() if n == name):
+            raise ValueError(f"{containers[0].name}: {name} offset mismatch")
+        data = raw[body_at : body_at + size]
+        if len(data) != size:
+            raise ValueError(f"{containers[0].name}: {name} data truncated")
+        if hashlib.sha256(data).digest() != raw[at + 40 : at + 72]:
+            raise ValueError(f"{containers[0].name}: {name} sha256 mismatch")
+        if data != merged[offset : offset + size]:
+            raise ValueError(f"{containers[0].name}: {name} differs from the merged image")
+        body_at += size
+    if body_at != len(raw):
+        raise ValueError(f"{containers[0].name}: trailing bytes")
+    print(f"Upgrade container: PASS ({containers[0].name}, {count} segments, per-segment sha256 + merged-image parity)")
     print("Upgrade bundle: PASS (build/upgrade/ matches the merged image)")
 
 

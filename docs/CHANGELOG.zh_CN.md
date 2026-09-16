@@ -12,6 +12,9 @@
   `flash-args.txt`）；`tools/verify_firmware.py` 强制合并镜像中 `nvs`/`ota_0-2`/`otadata`
   保持擦除态，使完整镜像永远不可能携带破坏用户数据的内容。核心逻辑在
   `install-slot/launcher-upgrade.js`，配 Node 测试并接入 `tools/validate.sh --static` 门禁。
+  升级以**单文件 MPUP 容器**分发（`build/upgrade/meta-pass-upgrade_<版本>.bin`:魔数 +
+  段表 + 逐段 SHA-256）——安装页只选这一个文件，解包校验后把四段镜像写到各分区地址；
+  `verify_firmware.py` 额外强制容器与完整镜像逐段同源。
 - USB 安装页新增槽位备份与恢复（`install-slot/`）：备份按槽位整分区读取，切分为
   `slot{N}_firmware.bin`（解析出的 ESP app 镜像）+ `slot{N}_tail.bin`（4KB MSIG/MAEG/MNAM
   元数据扇区）+ 可选 `slot{N}_extra.bin`（尾扇区之后的额外存储数据），逐文件计算 SHA-256,

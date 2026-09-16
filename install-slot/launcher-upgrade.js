@@ -122,6 +122,159 @@ export function slotHasData(head24) {
     head24.some((b) => b !== 0xff);
 }
 
+// ---- 单文件升级容器(MPUP: Meta-pass Upgrade Pack)----
+//
+// 市场分发要求升级产物是且仅是一个文件。容器把四段镜像(bootloader/分区表/
+// factory app/otadata 擦除态)打包为一个 .bin,页面选这一个文件、解析后仍按
+// 写入计划逐段写到各自的分区地址(多次写是地址问题,不是多个固件问题)。
+//
+// 容器布局(全部小端):
+//   [0..7]    魔数 "MPUPV1\0"
+//   [8..11]   header_size(u32,含魔数,即第一段数据的绝对偏移)
+//   [12..15]  段数(u32)
+//   随后每段 72B 段表项 × N:
+//     [0..31]  name(定长 32B,NUL 结尾 ASCII,不足补 0)
+//     [32..35] offset(u32,flash 绝对地址)
+//     [36..39] size(u32)
+//     [40..63] sha256(32B)
+//   [header_size..] 各段数据依次紧随(无对齐要求,原样字节)。
+
+export const MPUP_MAGIC = "MPUPV1";
+const MPUP_ENTRY_SIZE = 72;   // name 32B + offset 4B + size 4B + sha256 32B
+const NAME_MAX = 32;
+
+// 打包:files 为 Map<name, Uint8Array>,名称必须与 upgradeWritePlan() 一致;
+// 顺序按写入计划排列。返回 Uint8Array。解包后的数据与写入计划可逐字节往返。
+export function packUpgradeContainer(files) {
+  const plan = upgradeWritePlan();
+  const headerSize = 16 + plan.length * MPUP_ENTRY_SIZE;
+  const entries = [];
+  let bodySize = 0;
+  for (const step of plan) {
+    const data = files.get(step.name);
+    if (!(data instanceof Uint8Array) || data.length === 0) {
+      throw new Error(`pack: missing or empty ${step.name}`);
+    }
+    const nameBytes = new TextEncoder().encode(step.name);
+    if (nameBytes.length >= NAME_MAX) throw new Error(`pack: name too long ${step.name}`);
+    entries.push({ step, nameBytes, data, bodyOffset: bodySize });
+    bodySize += data.length;
+  }
+  const out = new Uint8Array(headerSize + bodySize);
+  const dv = new DataView(out.buffer);
+  // 魔数 + header_size + 段数
+  out.set(new TextEncoder().encode(MPUP_MAGIC), 0);
+  dv.setUint32(8, headerSize, true);
+  dv.setUint32(12, plan.length, true);
+  // 段表 + 数据
+  let entryAt = 16;
+  for (const e of entries) {
+    out.set(e.nameBytes, entryAt);   // 名字段定长 32B,NUL 结尾(后面自动为 0)
+    dv.setUint32(entryAt + 32, e.step.offset, true);
+    dv.setUint32(entryAt + 36, e.data.length, true);
+    out.set(sha256Sync(e.data), entryAt + 40);
+    out.set(e.data, headerSize + e.bodyOffset);
+    entryAt += MPUP_ENTRY_SIZE;
+  }
+  return out;
+}
+
+// 解包 + 完整校验:魔数/段数/段表与写入计划一致、每段 sha256 与段表声明一致、
+// 段数据无越界。返回 Map<name, Uint8Array>(可直接交给 checkUpgradeBundle/页面写入)。
+// 任何不一致抛 Error(message 以 "upgrade container: " 开头)。
+export function unpackUpgradeContainer(raw) {
+  const fail = (m) => { throw new Error(`upgrade container: ${m}`); };
+  if (!(raw instanceof Uint8Array) || raw.length < 16) fail("too small");
+  const magic = new TextDecoder().decode(raw.subarray(0, 6));
+  if (magic !== MPUP_MAGIC) fail(`bad magic "${magic}"`);
+  const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+  const headerSize = dv.getUint32(8, true);
+  const count = dv.getUint32(12, true);
+  if (headerSize !== 16 + count * MPUP_ENTRY_SIZE) fail(`header_size ${headerSize} != 16 + ${count}*72`);
+  if (headerSize > raw.length) fail("header exceeds file");
+  const plan = upgradeWritePlan();
+  if (count !== plan.length) fail(`segment count ${count} != write plan ${plan.length}`);
+  const dec = new TextDecoder();
+  const files = new Map();
+  let bodyAt = headerSize;
+  for (let i = 0; i < count; i++) {
+    const at = 16 + i * MPUP_ENTRY_SIZE;
+    const nameField = raw.subarray(at, at + NAME_MAX);
+    const nameLen = nameField.indexOf(0);
+    if (nameLen <= 0) fail(`segment ${i}: bad name field`);
+    const name = dec.decode(nameField.subarray(0, nameLen));
+    const expected = plan[i];
+    if (name !== expected.name) fail(`segment ${i}: "${name}" != plan "${expected.name}"`);
+    const offset = dv.getUint32(at + 32, true);
+    const size = dv.getUint32(at + 36, true);
+    if (offset !== expected.offset) fail(`segment ${i}: offset 0x${offset.toString(16)} != plan 0x${expected.offset.toString(16)}`);
+    if (bodyAt + size > raw.length) fail(`segment ${i}: data out of bounds`);
+    const data = raw.slice(bodyAt, bodyAt + size);
+    const digest = sha256Sync(data);
+    const declared = raw.subarray(at + 40, at + 72);
+    for (let k = 0; k < 32; k++) {
+      if (digest[k] !== declared[k]) fail(`segment ${name}: sha256 mismatch`);
+    }
+    files.set(name, data);
+    bodyAt += size;
+  }
+  if (bodyAt !== raw.length) fail(`trailing bytes: file ${raw.length}, segments end at ${bodyAt}`);
+  return files;
+}
+
+// ---- 同步 SHA-256(容器段校验用;标准算法,与 hashlib/openssl 互通)----
+// 页面与 Node 均可运行;不依赖 crypto.subtle(避免非安全上下文差异),纯同步。
+const SHA_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function sha256Sync(data) {
+  const l = data.length;
+  const bitLen = l * 8;
+  const padded = new Uint8Array((((l + 8) >> 6) + 1) << 6);
+  padded.set(data);
+  padded[l] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(padded.length - 4, bitLen >>> 0, false);
+  dv.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000), false);
+  const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
+  const w = new Uint32Array(64);
+  const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let block = 0; block < padded.length; block += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(block + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let [a, b, c, d, e, f, g, h] = H;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + SHA_K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0;
+      d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    const upd = [a, b, c, d, e, f, g, h];
+    for (let i = 0; i < 8; i++) H[i] = (H[i] + upd[i]) >>> 0;
+  }
+  const out = new Uint8Array(32);
+  const odv = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) odv.setUint32(i * 4, H[i], false);
+  return out;
+}
+
 // 原厂机首次迁移的擦除计划:清除旧固件/旧数据在新布局槽位区域内的全部残留。
 // 目标:0x180000(ota_0 起点)→ 0x7FE000(otadata 起点),其中 cardid 保护区跳过。
 // 返回 [{ offset, size, why }] —— 页面据此调用 esptool eraseRegion;空数组表示无需擦除。

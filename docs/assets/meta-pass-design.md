@@ -249,9 +249,13 @@ Binding rules:
   to keep `nvs`/`ota_0`/`ota_1`/`ota_2`/`otadata` fully erased (0xFF). A full
   image is for factory flashing only — esptool erases every sector it writes,
   so flashing it over an existing installation would destroy user data.
-- **Tooling**: `tools/build-firmware.sh` emits `build/upgrade/` (the four files
-  + `flash-args.txt`); the USB installer page offers "7. Upgrade launcher"
-  which implements the read-back gate and the minimal write set.
+- **Tooling**: `tools/build-firmware.sh` emits `build/upgrade/` — the **single-file
+  upgrade container** `meta-pass-upgrade_<version>.bin` (MPUP format: magic +
+  segment table + per-segment SHA-256; the one artifact distributed to the
+  market; the four raw segment bins stay for command-line esptool use) plus
+  `flash-args.txt`; the USB installer page offers "7. Upgrade launcher", which
+  unpacks the container and implements the read-back gate and the minimal
+  write set.
 
 ## 8. Local Management UI
 

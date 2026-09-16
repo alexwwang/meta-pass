@@ -184,12 +184,13 @@ The partition layout is stable, so launcher upgrades never need to touch user
 data. Two paths:
 
 - **USB installer page (recommended)** — section "7. Upgrade launcher": pick
-  the `build/upgrade/` folder produced by `tools/build-firmware.sh`. The page
-  reads back the device partition table and byte-compares it against the
-  bundle (a layout mismatch refuses the upgrade), then writes only the factory
-  app, partition table, bootloader, and the OTA-data reset (erased). NVS
-  (stored data: Wi-Fi config, per-app state), `cardid`, and all three
-  child-firmware slots stay untouched.
+  the **single-file upgrade container** `build/upgrade/meta-pass-upgrade_<version>.bin`
+  produced by `tools/build-firmware.sh` (this is the one file distributed to
+  the market). The page unpacks the container, verifies every segment's
+  SHA-256, reads back the device partition table and byte-compares it (a
+  layout mismatch refuses the upgrade), then writes the four segments to
+  their partition addresses. NVS (stored data: Wi-Fi config, per-app
+  state), `cardid`, and all three child-firmware slots stay untouched.
 - **Command line** — flash the four files listed in `build/upgrade/flash-args.txt`:
 
 ```bash

@@ -202,8 +202,10 @@ cardid。签名徽章证明固件来源（由 meta-pass 密钥持有者签名）
   `nvs`/`ota_0`/`ota_1`/`ota_2`/`otadata` 保持全擦除态(0xFF)。完整镜像仅用于
   出厂烧录——esptool 对每个写入扇区都会先擦除,把它直接刷到已有设备上会
   摧毁用户数据。
-- **工具链**:`tools/build-firmware.sh` 产出 `build/upgrade/`(四个文件 +
-  `flash-args.txt`);USB 安装页提供「7. 升级 launcher」,实现读回门禁与最小写入集。
+- **工具链**:`tools/build-firmware.sh` 产出 `build/upgrade/`——**单文件升级容器**
+  `meta-pass-upgrade_<版本>.bin`(MPUP 格式:魔数 + 段表 + 逐段 SHA-256,
+  市场分发的唯一升级产物;四段镜像仍保留供命令行 esptool 使用)+ `flash-args.txt`;
+  USB 安装页提供「7. 升级 launcher」,解包容器后实现读回门禁与最小写入集。
 
 ## 8. 本地管理界面
 

@@ -165,11 +165,11 @@ git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/e
 
 分区布局已稳定,launcher 升级永远不需要碰用户数据。两条路径:
 
-- **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择 `tools/build-firmware.sh`
-  生成的 `build/upgrade/` 目录。页面会读回设备分区表并与升级包逐字节比对
-  (布局不一致即拒绝升级),然后只写 factory 应用、分区表、bootloader 与
-  OTA 数据重置(擦除态)四项。NVS(存储数据:Wi-Fi 配置、应用内部状态)、
-  `cardid` 与三个子固件槽位全程不碰。
+- **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择**单文件升级容器**
+  `build/upgrade/meta-pass-upgrade_<版本>.bin`(`tools/build-firmware.sh` 生成,
+  亦是分发给市场的唯一升级产物)。页面解包容器、逐段校验 SHA-256,读回设备
+  分区表逐字节比对(不一致即拒绝升级),再把四段镜像写到各自的分区地址。
+  NVS(存储数据:Wi-Fi 配置、应用内部状态)、`cardid` 与三个子固件槽位全程不碰。
 - **命令行**——按 `build/upgrade/flash-args.txt` 烧写四个文件:
 
 ```bash
