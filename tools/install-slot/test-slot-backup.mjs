@@ -4,6 +4,9 @@
 //       恢复空间自检(自适应核心)、恢复顺序契约。
 import assert from "node:assert/strict";
 import {
+  probeOffsets,
+} from "../../install-slot/slot-backup.js";
+import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
   checkRestoreFit, restoreOrder, isAllFF,
   firmwareFileName, extraFileName, tailFileName,
@@ -104,5 +107,20 @@ function buildApp() {
   assert.deepEqual(fwOnly.map((f) => f.name), [firmwareFileName(1), tailFileName(1)]);
   console.log("PASS 6: restore order firmware -> extra -> tail");
 }
+
+// ---- PASS 7: probeOffsets(残留清理探针)----
+// 正常区域:8 个均匀偏移,升序去重,全部落在 [start, start+size-24]
+const offs = probeOffsets(0x180000, 0x1d5000);
+assert.equal(offs.length, 8);
+assert.ok(offs.every((o, i) => o >= 0x180000 && o <= 0x180000 + 0x1d5000 - 24));
+assert.ok(offs.every((o, i) => i === 0 || o > offs[i - 1]));
+// 小区域(<24B):返回 null → 调用方直接整区清理
+assert.equal(probeOffsets(0x1000, 16), null);
+// 零尺寸:空数组(无需清理)
+assert.deepEqual(probeOffsets(0x1000, 0), []);
+// 区域略大于 24B:至少 2 个探针
+const small = probeOffsets(0x1000, 4096);
+assert.ok(small.length >= 2);
+console.log("PASS 7: probeOffsets — uniform probes in range, null for tiny, [] for empty");
 
 console.log("All slot-backup tests passed.");

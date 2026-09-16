@@ -136,3 +136,19 @@ export function restoreOrder(files) {
   const rank = (name) => (name.endsWith("_firmware.bin") ? 0 : name.endsWith("_extra.bin") ? 1 : 2);
   return [...files].sort((a, b) => rank(a.name) - rank(b.name));
 }
+
+// ===== 残留清理(槽位级)=====
+
+// 均匀取探针偏移(每处读 24B 即可判断该处是否有非 FF 数据)。
+// 返回去重后的绝对偏移数组;size < 24 时返回 null(区域太小无法探针,
+// 调用方应直接整体清理——写 FF 的开销可忽略);size ≤ 0 返回 []。
+export function probeOffsets(start, size, count = 8) {
+  if (size <= 0) return [];
+  if (size < 24) return null;
+  const n = Math.max(2, Math.min(count, Math.floor(size / 4096) + 1));
+  const offs = [];
+  for (let i = 0; i < n; i++) {
+    offs.push(start + Math.floor((i * (size - 24)) / (n - 1)));
+  }
+  return [...new Set(offs)];
+}

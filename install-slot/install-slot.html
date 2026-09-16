@@ -165,7 +165,7 @@ import { extractAppImage, hex } from "./extract-app-image.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
-  checkRestoreFit, restoreOrder, isAllFF,
+  checkRestoreFit, restoreOrder, isAllFF, probeOffsets,
   firmwareFileName, extraFileName, tailFileName, MANIFEST_NAME,
 } from "./slot-backup.js";
 import { deflate } from "./vendor/pako.js";
@@ -191,6 +191,44 @@ const SLOTS = [
 
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
+
+// 槽位级残留清理:安装/恢复前把目标槽 tail 之后(或整个槽)的遗留数据清为 FF。
+// 场景:原厂机经市场轻量包迁移后,旧固件字节残留在新布局槽位内;writeFlash
+// 只擦写入的扇区,不清剩余区域。清理只碰目标槽,绝不影响其它槽/NVS/cardid。
+// probe 失败(任何一处非 FF)即整区写 FF;干净设备 8 次小读后零写开销。
+async function wipeSlotResidue(slot, fromOffset, toOffset, onProgress) {
+  // 探针区域:[fromOffset, toOffset) —— 相对整个槽位待清的部分
+  const size = toOffset - fromOffset;
+  const probes = probeOffsets(fromOffset, size);
+  if (probes === null) {
+    await wipeRange(fromOffset, size, onProgress);
+    return true;
+  }
+  if (probes.length === 0) return false;
+  for (const off of probes) {
+    const head = await loader.readFlash(off, 24);
+    if (head.some((b) => b !== 0xff)) {
+      await wipeRange(fromOffset, size, onProgress);
+      return true;
+    }
+  }
+  return false;   // 全 FF:无需清理
+}
+
+async function wipeRange(start, size, onProgress) {
+  const CHUNK = 0x10000;   // 64KB/块
+  const ff = new Uint8Array(CHUNK).fill(0xff);
+  let written = 0;
+  while (written < size) {
+    const n = Math.min(CHUNK, size - written);
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(ff.subarray(0, n)), address: start + written }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      reportProgress: (_i, w) => onProgress && onProgress((written + w) / size),
+    });
+    written += n;
+  }
+}
 
 // ===== i18n:字典 + t()/applyLang();localStorage 持久化 =====
 const LANG_KEY = "metapass-install-lang";
@@ -313,6 +351,7 @@ const I18N = {
     err_upgrade_slot_has_data: "Slot {slot} contains data — refusing to migrate. Back it up (section 5) or install over it first, then upgrade again.",
     msg_upgrade_migration: "No child-firmware data found. Wiping legacy residue in: {regions}.",
     msg_upgrade_erased: "Wiped legacy residue at {addr} ({size}).",
+    msg_residue_wiped: "Slot {slot}: wiped stale data after the image (from {addr}, {size}) — slot restored to a clean state.",
   },
   zh: {
     // 静态文案
@@ -431,6 +470,7 @@ const I18N = {
     err_upgrade_slot_has_data: "槽位 {slot} 中有数据 —— 已拒绝迁移。请先备份(第 5 节)或先覆盖安装该槽位,再重新升级。",
     msg_upgrade_migration: "未发现子固件数据。正在清除残留区域:{regions}。",
     msg_upgrade_erased: "已清除 {addr} 起的旧固件残留({size})。",
+    msg_residue_wiped: "槽位 {slot}:已清理镜像之后的遗留数据(自 {addr} 起,{size})—— 槽位已恢复干净态。",
   },
 };
 
@@ -1087,7 +1127,14 @@ $("btn-restore").addEventListener("click", async () => {
           throw new Error(t("err_restore_sha", { name: f.name, expected: f.sha256, got: digest }));
         }
       }
-      // 3) 按序写入:firmware → extra → tail(tail 最后,防扇区重擦)
+      // 3) 槽位级残留清理(装到哪个槽只清哪个槽;先于任何写入,避免恢复后的
+      //    extra 数据被后续写入的擦除影响,也把槽拉回与 manifest 一致的干净态)
+      const wiped = await wipeSlotResidue(
+        s, s.offset, s.offset + s.size,
+        (p) => setRestoreProgress(((done + p * 0.2) / jobs.length) * 100),
+      );
+      if (wiped) log(t("msg_residue_wiped", { slot: job.to, addr: hex(s.offset), size: fmtBytes(s.size) }));
+      // 4) 按序写入:firmware → extra → tail(tail 最后,防扇区重擦)
       const ordered = restoreOrder(files);
       for (let i = 0; i < ordered.length; i++) {
         const f = ordered[i];
@@ -1111,7 +1158,7 @@ $("btn-restore").addEventListener("click", async () => {
           flashFreq: "keep",
           compress: true,
           reportProgress: (_i, written, total) =>
-            setRestoreProgress(((done + (i + written / total) / ordered.length) / jobs.length) * 100),
+            setRestoreProgress(((done + 0.2 + (0.8 * (i + written / total)) / ordered.length) / jobs.length) * 100),
         });
       }
       restoredSlots.push(`${job.from}→${job.to}`);
@@ -1188,6 +1235,17 @@ $("btn-install").addEventListener("click", async () => {
     if (image.length > slotLimit) {
       throw new Error(`App image is ${image.length} bytes — exceeds slot ${slot} limit of ${slotLimit} bytes (${Math.floor(slotLimit / 1024)} KB).`);
     }
+    // 槽位级残留清理:装到哪个槽只清哪个槽(tail 之后的区域)。原厂机经市场
+    // 轻量包迁移后,旧固件字节会残留在新布局槽位内;安装即替换该槽,顺带
+    // 把它清回出厂态,避免残留混入后续备份的 extra 文件。干净设备零写开销。
+    const tailOffset = Math.ceil(image.length / 4096) * 4096 + 4096;
+    if (tailOffset < s.size) {
+      const wiped = await wipeSlotResidue(
+        s, address + tailOffset, s.offset + s.size,
+        (p) => setProgress(p * 15),   // 清理占进度前 15%
+      );
+      if (wiped) log(t("msg_residue_wiped", { slot, addr: hex(address + tailOffset), size: fmtBytes(s.size - tailOffset) }));
+    }
     log(t("msg_writing_slot", { size: image.length, slot, addr: hex(address) }));
     await loader.writeFlash({
       fileArray: [{ data: u8ToBinaryString(image.data), address }],
@@ -1195,7 +1253,7 @@ $("btn-install").addEventListener("click", async () => {
       flashMode: "keep",
       flashFreq: "keep",
       compress: true,
-      reportProgress: (_i, written, total) => setProgress((written / total) * 100),
+      reportProgress: (_i, written, total) => setProgress(15 + (written / total) * 80),
     });
     // metadata sector:MSIG/MAEG/MNAM 必须在同一个 4KB sector 内一次写入。
     // 分次 writeFlash 会重复擦除同一 sector,把先写入的签名/彩蛋擦掉。
