@@ -21,6 +21,7 @@ const PAGE_DIR = path.resolve(DIR, "..", "..", "install-slot");
 const STATIC_FILES = new Map([
   ["/extract-app-image.js", { file: "extract-app-image.js", type: "text/javascript; charset=utf-8" }],
   ["/name-blob.js", { file: "name-blob.js", type: "text/javascript; charset=utf-8" }],
+  ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   // 本地化的 esptool-js 及其依赖(jsdelivr +esm 构建,国内 CDN 不可达时页面整体卡死)
   ["/vendor/esptool-js.js", { file: "vendor/esptool-js.js", type: "text/javascript; charset=utf-8" }],
   ["/vendor/pako.js", { file: "vendor/pako.js", type: "text/javascript; charset=utf-8" }],

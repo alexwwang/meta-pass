@@ -100,14 +100,16 @@ API proxy lives.
 
 ## Development
 
-- `extract-app-image.js`, `name-blob.js`: pure ES modules shared by page and
-  Node tests.
+- `extract-app-image.js`, `name-blob.js`, `slot-backup.js`: pure ES modules
+  shared by page and Node tests.
 - `vendor/`: esptool-js 0.5.6 + deps (pako, atob-lite, ESP32-C3 target and
   stub flasher), localized from the jsDelivr `+esm` build with import paths
   rewritten — the page makes zero external requests except the API proxy.
 - Tests: `node tools/install-slot/test-extract.mjs` (image unpacking, name
   blob vectors byte-locked against `tests/test_meta_name.c`, size-limit
-  boundaries).
+  boundaries) and `node tools/install-slot/test-slot-backup.mjs` (backup
+  slicing / manifest roundtrip / restore fit check). Both run inside
+  `tools/validate.sh --static`.
 
 ## Repo layout
 
@@ -117,9 +119,11 @@ install-slot/                 # Cloudflare Pages root (pages_build_output_dir)
   _worker.js                  # Pages worker: static serving + /api/* proxy
   extract-app-image.js        # image unpacker (ES module)
   name-blob.js                # name blob packer/unpacker (ES module)
+  slot-backup.js              # slot backup/restore logic (ES module)
   vendor/                     # bundled esptool-js + deps
 
 tools/install-slot/           # local server + tests (serve the canonical dir above)
   server.mjs                  # local Node HTTP proxy — serves install-slot/ directly
   test-extract.mjs            # image unpacking / name-blob / i18n tests
+  test-slot-backup.mjs        # backup slicing / manifest / restore tests
 ```

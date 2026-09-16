@@ -5,6 +5,15 @@
 # Changelog
 
 ## Unreleased
+- USB 安装页新增槽位备份与恢复（`install-slot/`）：备份按槽位整分区读取，切分为
+  `slot{N}_firmware.bin`（解析出的 ESP app 镜像）+ `slot{N}_tail.bin`（4KB MSIG/MAEG/MNAM
+  元数据扇区）+ 可选 `slot{N}_extra.bin`（尾扇区之后的额外存储数据），逐文件计算 SHA-256,
+  连同 `manifest.json` 打包为带时间戳的 zip。恢复时用户把每个备份槽位映射到任意目标槽位，
+  按 manifest 长度做空间自检（自适应未来的槽位大小调整），写入前逐文件校验 SHA-256,再按
+  firmware → extra → tail 顺序写入（tail 最后写，防扇区重擦毁掉先写数据）。备份/恢复位于
+  独立章节（§5/§6），与安装流程互不干扰；核心逻辑沉淀在纯 ES 模块 `slot-backup.js`,
+  配 Node 测试并接入 `tools/validate.sh --static` 门禁。顺带修复 zip 读取器的
+  `DataView(TypedArray)` 兼容性问题（旧引擎只接受 ArrayBuffer）。
 - 签名验证链路加固（`feat/sign` 分支）：修复 BUG-01/02/04（未初始化电量标签、`HOST_TEST` 彩蛋魔数反转并新增 m1–m4 回归测试、`size_t` 日志改 `%zu`），安装页单一来源化（`server.mjs` 直接服务规范 `install-slot/`，关闭开发副本漂移，BUG-03），一键本地编译脚本（`tools/build-firmware.sh`），双语 bug 报告与根因知识库（`docs/BUGS.zh_CN.md`、`docs/assets/handoff-unsigned-rootcause.zh_CN.md`、`docs/assets/meta-pass-signing-design.zh_CN.md`、`docs/development/engineering/debugging-workflow.zh_CN.md`）。真机"未签名"症状的根因是线上部署的旧版安装页而非签名链；经修复页重刷后行为符合预期。
 - 新增 meta-pass 多固件启动器（`feature/meta-pass` 分支）：分区表在保留 `factory`/`cardid` 契约的前提下新增 `otadata` 与三个大小不等的 OTA 槽位（`ota_0@0x180000` / `0x1D6000`、`ota_1@0x360000` / `0x200000`、`ota_2@0x560000` / `0x29E000`）；启用应用回滚（未适配子固件任何重启后自动回退启动器）；Wi-Fi SoftAP + 网页导入固件（随机密码 + 屏幕一次性配对码，1024 字节分块流式写入）；镜像强制完整性校验（magic/chip-id/大小/SHA-256 显示，`esp_ota_end()` 权威复核），未签名固件启动前弹警告页走 BOOT / CANCEL 菜单确认；本地管理界面支持查看/启动/删除槽位固件；BSP 按键暴露显式 `BSP_BTN_LONG`（1.5 秒）阈值；纯逻辑模块（镜像校验、槽位注册表、导入状态机）配 host tests 并接入静态门禁。设计文档见 `docs/assets/meta-pass-design.zh_CN.md`。
 - 第二导入通道（USB 串口，`tools/install-slot/`）：Chrome + Web Serial + esptool-js 在

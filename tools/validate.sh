@@ -83,6 +83,18 @@ PY
     "${test_dir}/test_meta_sign"
     python3 tests/test_verify_firmware.py
     python3 tests/test_meta_net_contract.py
+    # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
+    local node_bin
+    node_bin="$(command -v node || true)"
+    if [[ -z "${node_bin}" && -x /usr/local/bin/node ]]; then
+        node_bin=/usr/local/bin/node
+    fi
+    if [[ -n "${node_bin}" ]]; then
+        "${node_bin}" tools/install-slot/test-extract.mjs
+        "${node_bin}" tools/install-slot/test-slot-backup.mjs
+    else
+        echo "WARN: node not found; skipping install-slot mjs tests" >&2
+    fi
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
 }

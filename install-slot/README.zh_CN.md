@@ -85,12 +85,14 @@ node tools/install-slot/server.mjs
 
 ## 开发
 
-- `extract-app-image.js`、`name-blob.js`：纯 ES 模块，页面与 Node 测试共享。
+- `extract-app-image.js`、`name-blob.js`、`slot-backup.js`：纯 ES 模块，页面与 Node 测试共享。
 - `vendor/`：esptool-js 0.5.6 + 依赖（pako、atob-lite、ESP32-C3 目标与
   stub flasher），从 jsDelivr `+esm` 构建本地化、import 路径重写——页面除了
   API 代理外**零外部网络请求**。
 - 测试：`node tools/install-slot/test-extract.mjs`（镜像解包、名字 blob
-  向量、与 C 侧 `tests/test_meta_name.c` 字节级锁定、尺寸边界）。
+  向量、与 C 侧 `tests/test_meta_name.c` 字节级锁定、尺寸边界）与
+  `node tools/install-slot/test-slot-backup.mjs`（备份切片 / manifest 往返 /
+  恢复空间自检）。两者均已接入 `tools/validate.sh --static` 门禁。
 
 ## 仓库布局
 
@@ -99,10 +101,12 @@ install-slot/                 # GitHub Pages 根目录
   install-slot.html           # 页面本体（根路径 /）
   extract-app-image.js        # 镜像解包器（ES module）
   name-blob.js                # blob 打包/解包（ES module）
+  slot-backup.js              # 槽位备份/恢复逻辑（ES module）
   vendor/                     # 内联 esptool-js + 依赖
   proxy.mjs                   # Cloudflare Worker（单独部署）
 
 tools/install-slot/           # 本地服务器与测试（直接服务上方规范目录）
   server.mjs                  # 本地 Node HTTP 代理（直接服务 install-slot/,proxy.mjs 的替代）
   test-extract.mjs            # 镜像解包 / 名字 blob / i18n 测试
+  test-slot-backup.mjs        # 备份切片 / manifest / 恢复测试
 ```
