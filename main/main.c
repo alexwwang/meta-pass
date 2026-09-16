@@ -3,7 +3,9 @@
 // 设计文档(单一权威来源):docs/assets/meta-pass-design.md
 //
 // 按键语义(全局统一):
-//   上/下 短按   列表/详情页=移动选中项;彩蛋页=滚动文本;未签名启动警告页=选择 BOOT/CANCEL
+//   上/下 短按   列表/详情页=移动选中项;启动确认页=切换 BOOT/CANCEL;彩蛋页=滚动文本;
+//   上/下 连按   详情页/启动确认页快速四连按 UP UP DOWN DOWN=进入彩蛋页(PRESS 判定,
+//                相邻两键间隔 <500ms,见 meta_seq.h)
 //   确定  短按   进入/确认菜单项;未签名启动警告页=执行所选动作
 //   确定  长按   返回上一级(LONG,1.5s);例外:删除确认页 OK 长按=确认删除
 //   注意:切换子固件靠 Power 关机重启,meta-pass 不干预子固件的按键行为
@@ -361,11 +363,15 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_DETAIL: {
         const meta_slot_info_t *s = &s_slots[s_detail_slot];
 
-        // 隐藏彩蛋序列: 快速连按 UP UP DOWN DOWN(四个 CLICK),相邻两键间隔 <0.5s(meta_seq)。
-        // 只认 UP/DOWN 的 CLICK 事件;LONG/PRESS/OK CLICK 不参与也不打断(LONG 保留"返回列表")。
-        // 命中时吞掉第 4 个 CLICK,跳转彩蛋页且不移动选中行
-        // (前 3 个 CLICK 仍会移动选中行,属可接受副作用)。
-        if (ev == BSP_BTN_CLICK &&
+        // 隐藏彩蛋序列: 快速连按 UP UP DOWN DOWN,相邻两键间隔 <0.5s(meta_seq)。
+        // 以 PRESS(按下瞬间)判定:每次物理按下必发、无延迟,快速连按可稳定凑齐四次。
+        // 不能用 CLICK:SINGLE_CLICK 要等抬起后再过 180ms 判窗,窗内再按会被 button
+        // 组件折叠成 DOUBLE/MULTIPLE_CLICK(iot_button.c PRESS_REPEAT_DOWN_CHECK),
+        // 即第 2..4 次连按不再发 CLICK——快速连按永远凑不齐四个 CLICK(历史 bug,
+        // 慢按则会被 PRESS 打断分支清进度,两条路都进不去)。LONG 仍打断序列。
+        // 命中时吞掉第 4 次按下直接进彩蛋页;其后的 CLICK(抬起)落在彩蛋页等效
+        // 一次滚动,属可接受副作用(与旧实现移动选中行同类)。
+        if (ev == BSP_BTN_PRESS &&
             (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
             const meta_seq_key_t k = (btn == BSP_BTN_UP) ? META_SEQ_KEY_UP
                                                          : META_SEQ_KEY_DOWN;
@@ -374,8 +380,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 goto_page(PAGE_EGG);   // 命中:吞掉第 4 个 CLICK,直接进彩蛋页
                 break;
             }
-        } else if (ev == BSP_BTN_LONG || ev == BSP_BTN_PRESS) {
-            meta_seq_reset(&s_egg_seq);   // 非快速 CLICK 输入:打断序列
+        } else if (ev == BSP_BTN_LONG) {
+            meta_seq_reset(&s_egg_seq);   // 长按(OK 长按=返回列表):打断序列
         }
 
         if (ev == BSP_BTN_CLICK) {
@@ -405,7 +411,19 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
     }
 
-    case PAGE_CONFIRM_BOOT:
+    case PAGE_CONFIRM_BOOT: {
+        // 隐藏彩蛋序列:与详情页一致,快速连按 UP UP DOWN DOWN(以 PRESS 判定,见上)。
+        // 命中后其后的 CLICK(抬起)会切换一次选中项,属可接受副作用。
+        if (ev == BSP_BTN_PRESS &&
+            (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
+            const meta_seq_key_t k = (btn == BSP_BTN_UP) ? META_SEQ_KEY_UP
+                                                         : META_SEQ_KEY_DOWN;
+            if (meta_seq_feed(&s_egg_seq, k,
+                              (uint32_t)(esp_timer_get_time() / 1000))) {
+                goto_page(PAGE_EGG);   // 命中:吞掉第 4 个 CLICK,直接进彩蛋页
+                break;
+            }
+        }
         if (ev == BSP_BTN_CLICK) {
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                 s_sel = (s_sel + 1) % 2;   // 两项菜单:UP/DOWN 均切换 BOOT/CANCEL
@@ -422,6 +440,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             goto_page(PAGE_DETAIL);        // 全局语义:OK LONG=返回,即取消
         }
         break;
+    }
 
     case PAGE_CONFIRM_DEL:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {   // 取消
@@ -435,7 +454,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
     case PAGE_EGG:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            goto_page(PAGE_DETAIL);   // 短按退出;LONG 有意忽略(进入序列的末键就是 LONG)
+            goto_page(PAGE_DETAIL);   // 短按退出;LONG 有意忽略(序列末键 PRESS 之后仍会有 CLICK 到达)
         } else if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK
                    && s_egg_panel) {
             const int step = lv_font_get_line_height(&lv_font_montserrat_14) * 4;
