@@ -188,7 +188,8 @@ data. Two paths:
   reads back the device partition table and byte-compares it against the
   bundle (a layout mismatch refuses the upgrade), then writes only the factory
   app, partition table, bootloader, and the OTA-data reset (erased). NVS
-  (Wi-Fi config), `cardid`, and all three child-firmware slots stay untouched.
+  (stored data: Wi-Fi config, per-app state), `cardid`, and all three
+  child-firmware slots stay untouched.
 - **Command line** — flash the four files listed in `build/upgrade/flash-args.txt`:
 
 ```bash

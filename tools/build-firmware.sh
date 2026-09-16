@@ -93,7 +93,7 @@ cp -f build/FoloToy-AI-Passport.bin             build/upgrade/FoloToy-AI-Passpor
 cp -f build/ota_data_initial.bin                build/upgrade/ota_data_initial.bin
 cat > build/upgrade/flash-args.txt <<'EOF'
 # launcher 升级最小写入集:升级 meta-pass 不动用户数据。
-#   NVS(0x9000, Wi-Fi 配置)、cardid、ota_0/1/2(已装子固件)全部保留。
+#   NVS(0x9000, 存储数据:Wi-Fi 配置、应用内部状态)、cardid、ota_0/1/2(已装子固件)全部保留。
 # esptool 命令:
 #   python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \
 #     0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
@@ -121,7 +121,7 @@ cat <<EOF
     FoloToy-AI-Passport.bin         factory app
     partition-table.bin / bootloader.bin / ota_data_initial.bin
 
-升级已装的 meta-pass(保留 Wi-Fi 配置与全部子固件,推荐):
+升级已装的 meta-pass(保留 NVS 存储数据与全部子固件,推荐):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
   2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
   3. Connect → "Upgrade launcher" → 选择 upgrade/ 整个文件夹(含 4 个文件) → Upgrade

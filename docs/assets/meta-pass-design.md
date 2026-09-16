@@ -239,7 +239,7 @@ Binding rules:
 - **Allowed write set** (the only regions an in-place upgrade may write):
   `bootloader@0x0`, `partition-table@0x8000`, factory app `@0x10000`, and
   `otadata@0x7FE000` written in its erased state (boot back to factory).
-- **Never written**: `nvs@0x9000` (Wi-Fi credentials), `cardid@0x356000`,
+- **Never written**: `nvs@0x9000` (stored data: Wi-Fi credentials, per-app state), `cardid@0x356000`,
   `ota_0/1/2` (installed child firmware). These survive every upgrade.
 - **Layout gate**: before writing, the installer reads back the device
   partition table (4 KB at `0x8000`) and byte-compares it with the upgrade

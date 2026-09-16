@@ -168,8 +168,8 @@ git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/e
 - **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择 `tools/build-firmware.sh`
   生成的 `build/upgrade/` 目录。页面会读回设备分区表并与升级包逐字节比对
   (布局不一致即拒绝升级),然后只写 factory 应用、分区表、bootloader 与
-  OTA 数据重置(擦除态)四项。NVS(Wi-Fi 配置)、`cardid` 与三个子固件槽位
-  全程不碰。
+  OTA 数据重置(擦除态)四项。NVS(存储数据:Wi-Fi 配置、应用内部状态)、
+  `cardid` 与三个子固件槽位全程不碰。
 - **命令行**——按 `build/upgrade/flash-args.txt` 烧写四个文件:
 
 ```bash

@@ -6,7 +6,7 @@
 
 ## Unreleased
 - 保数据 launcher 升级（§7.2）：升级只写 bootloader + 分区表 + factory 应用 + 擦除态
-  OTA 数据重置四项；NVS（Wi-Fi 配置）、`cardid` 与三个子固件槽位永不触碰。USB 安装页
+  OTA 数据重置四项；NVS（存储数据:Wi-Fi 配置、应用内部状态）、`cardid` 与三个子固件槽位永不触碰。USB 安装页
   新增「7. 升级 launcher」章节，写入前读回设备分区表并与升级包逐字节比对（布局不一致
   即拒绝升级）。`tools/build-firmware.sh` 新增产出 `build/upgrade/` 升级包（4 文件 +
   `flash-args.txt`）；`tools/verify_firmware.py` 强制合并镜像中 `nvs`/`ota_0-2`/`otadata`

@@ -147,8 +147,8 @@
   </section>
 
   <section>
-    <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep child firmware & Wi-Fi)</h2>
-    <p class="subtitle" data-i18n="upgrade_desc">Upgrades the launcher while keeping Wi-Fi settings and all installed child firmware.</p>
+    <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
+    <p class="subtitle" data-i18n="upgrade_desc">Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.</p>
     <p><input type="file" id="upgrade-input" webkitdirectory directory multiple> <span data-i18n="upgrade_pick_dir">select the build/upgrade/ folder from the firmware build (contains 4 files)</span></p>
     <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
     <span id="upgrade-status"></span>
@@ -358,8 +358,8 @@ const I18N = {
     msg_restore_raw_write: "Raw mirror: writing back from slot {slot} base address {addr} (no app/tail layout — size + SHA-256 verified only).",
     msg_restore_done: "Restore complete: {slots}. Power-cycle the device.",
     msg_restore_failed: "Restore failed: {err}",
-    step_upgrade: "7. Upgrade launcher (keep child firmware & Wi-Fi)",
-    upgrade_desc: "Upgrades the launcher while keeping Wi-Fi settings and all installed child firmware.",
+    step_upgrade: "7. Upgrade launcher (keep NVS data & child firmware)",
+    upgrade_desc: "Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.",
     upgrade_pick_dir: "select the build/upgrade/ folder from the firmware build (contains 4 files)",
     btn_upgrade: "Upgrade launcher",
     msg_upgrade_busy: "Another operation is in progress.",
@@ -368,7 +368,7 @@ const I18N = {
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to 0x{addr}…",
-    msg_upgrade_done: "Upgrade complete: launcher updated, Wi-Fi config and all child-firmware slots preserved. Power-cycle the device.",
+    msg_upgrade_done: "Upgrade complete: launcher updated, NVS data and all child-firmware slots preserved. Power-cycle the device.",
     msg_upgrade_failed: "Upgrade failed: {err}",
     msg_upgrade_loaded: "Upgrade bundle loaded: factory app {size}. Ready to upgrade.",
     err_upgrade_missing: "Upgrade folder is missing: {missing} — select the build/upgrade/ folder containing all 4 files.",
@@ -479,8 +479,8 @@ const I18N = {
     msg_restore_raw_write: "镜像兜底:从槽位 {slot} 起始地址 {addr} 原样写回(无固件/尾扇区布局 —— 仅做空间与 SHA-256 校验)。",
     msg_restore_done: "恢复完成:{slots}。请重新上电设备。",
     msg_restore_failed: "恢复失败:{err}",
-    step_upgrade: "7. 升级 launcher(保留子固件与 Wi-Fi 配置)",
-    upgrade_desc: "升级启动器,保留 Wi-Fi 配置与已安装的全部子固件。",
+    step_upgrade: "7. 升级 launcher(保留 NVS 数据与子固件)",
+    upgrade_desc: "升级启动器,保留 NVS 存储数据(Wi-Fi 配置、应用内部状态)与已安装的全部子固件。",
     upgrade_pick_dir: "选择固件构建产物目录 build/upgrade/(包含 4 个文件)",
     btn_upgrade: "升级 launcher",
     msg_upgrade_busy: "有操作正在进行中。",
@@ -489,7 +489,7 @@ const I18N = {
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 0x{addr}…",
-    msg_upgrade_done: "升级完成:launcher 已更新,Wi-Fi 配置与全部子固件槽位保留。请重新上电设备。",
+    msg_upgrade_done: "升级完成:launcher 已更新,NVS 存储数据与全部子固件槽位保留。请重新上电设备。",
     msg_upgrade_failed: "升级失败:{err}",
     msg_upgrade_loaded: "升级包已加载:factory 应用 {size}。可以开始升级。",
     err_upgrade_missing: "升级目录缺少:{missing} —— 请选择包含全部 4 个文件的 build/upgrade/ 目录。",

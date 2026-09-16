@@ -6,7 +6,7 @@
 //   0x10000    FoloToy-AI-Passport.bin (factory app)
 //   0x7FE000   ota_data_initial.bin    (8KB 擦除态,重置 OTA 选择,升级后回到 factory)
 // 其余分区一律不写,设备上的数据原样保留:
-//   nvs 0x9000(Wi-Fi 配置)、cardid 0x356000、ota_0/1/2(已装子固件)。
+//   nvs 0x9000(NVS 存储数据:Wi-Fi 配置、应用内部状态)、cardid 0x356000、ota_0/1/2(已装子固件)。
 //
 // 安全前提:升级前必须从设备读回分区表(0x8000, 0x1000 字节)与升级包内的
 // partition-table.bin 逐字节比对——不一致说明布局变了,必须拒绝升级(否则
