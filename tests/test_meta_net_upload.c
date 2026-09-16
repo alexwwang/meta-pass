@@ -718,6 +718,125 @@ static void test_dispname_invalid_percent(void)
     CHECK(strcmp(s_slots[0].name, "100%zz") == 0);
 }
 
+// ---- m. 彩蛋路径回归(BUG-02:HOST_TEST 变体 magic 判断反转) ----
+// 直接验证 meta_egg_parse() 对尾扇区的判定与 sign-firmware.sh 的 MAEG 布局一致;
+// 上传 handler 依赖它区分"已签名保留尾扇区"与"可擦除重写"。
+
+// 构造尾扇区:MSIG 格式合法(stub 只查 magic/payload_len/xor)、MAEG 有效、MNAM 留 0xFF
+static void make_signed_tail(uint8_t *sector, const char *egg_text)
+{
+    memset(sector, 0xFF, META_SIG_SECTOR);
+    // MSIG@0: magic + payload_len(70) + 70B 伪签名 + xor(与 sign-firmware.sh 一致,4B LE 长度)
+    const uint32_t sig_len = 70;
+    memcpy(sector, "MSIG", 4);
+    sector[4] = (uint8_t)(sig_len & 0xFF);
+    sector[5] = (uint8_t)((sig_len >> 8) & 0xFF);
+    sector[6] = (uint8_t)((sig_len >> 16) & 0xFF);
+    sector[7] = (uint8_t)((sig_len >> 24) & 0xFF);
+    memset(sector + 8, 0x5A, sig_len);
+    uint8_t x = 0;
+    for (uint32_t i = 0; i < 8 + sig_len; i++) x ^= sector[i];
+    sector[8 + sig_len] = x;
+    // MAEG@128: magic + payload_len + text(0xFF padding) + xor(窗口末字节)
+    if (egg_text) {
+        const size_t tlen = strlen(egg_text);
+        uint8_t *egg = sector + META_EGG_WINDOW_OFF;
+        memcpy(egg, "MAEG", 4);
+        egg[4] = (uint8_t)(tlen & 0xFF);
+        egg[5] = (uint8_t)((tlen >> 8) & 0xFF);
+        egg[6] = (uint8_t)((tlen >> 16) & 0xFF);
+        egg[7] = (uint8_t)((tlen >> 24) & 0xFF);
+        memcpy(egg + META_EGG_HEADER_LEN, egg_text, tlen);
+        uint8_t ex = 0;
+        for (uint32_t i = 0; i < META_EGG_XOR_OFF; i++) ex ^= egg[i];
+        egg[META_EGG_XOR_OFF] = ex;
+    }
+}
+
+// m1. 有效 MAEG → META_EGG_OK 且文本逐字还原(regression: 反转的 magic 判断会误报 ABSENT)
+static void test_egg_parse_valid(void)
+{
+    TEST("m1_egg_parse_valid");
+    setup();
+    uint8_t tail[META_SIG_SECTOR];
+    make_signed_tail(tail, "hello egg");
+
+    char out[META_EGG_TEXT_LEN + 1];
+    CHECK(meta_egg_parse(tail, sizeof(tail), out, sizeof(out)) == META_EGG_OK);
+    CHECK(strcmp(out, "hello egg") == 0);
+
+    // 与 sign-firmware.sh 布局互锁:MSIG/MNAM 不被彩蛋窗口覆盖
+    CHECK(memcmp(tail, "MSIG", 4) == 0);
+    CHECK(tail[META_NAME_BLOB_OFF] == 0xFF);
+}
+
+// m2. 擦除态尾扇区(0xFF) → META_EGG_ABSENT(regression: 反转版本会误报有彩蛋)
+static void test_egg_parse_absent(void)
+{
+    TEST("m2_egg_parse_absent");
+    setup();
+    uint8_t tail[META_SIG_SECTOR];
+    memset(tail, 0xFF, sizeof(tail));
+
+    char out[8];
+    CHECK(meta_egg_parse(tail, sizeof(tail), out, sizeof(out)) == META_EGG_ABSENT);
+}
+
+// m3. 上传已签名(含 MAEG)镜像带 dispname → 签名与彩蛋均保留,dispname 被拒
+// 对应 h_upload 的 already_signed 分支:meta_sign_detect_sector 依赖 meta_egg_parse 所在的验签模块。
+static void test_upload_signed_tail_preserved(void)
+{
+    TEST("m3_upload_signed_tail_preserved");
+    setup();
+    force_paired();
+    const size_t plen = 256;
+    uint8_t payload[plen];
+    make_payload(payload, plen);
+
+    // 预置尾扇区:image_len=256 → tail_off=4096
+    uint8_t tail[META_SIG_SECTOR];
+    make_signed_tail(tail, "secret egg");
+    memcpy(ram_flash[0] + META_SIG_SECTOR, tail, sizeof(tail));
+
+    httpd_req_t req = make_upload_req(0, "MyRadio", payload, plen);
+    h_upload(&req);
+    CHECK(strcmp(req.resp_body, "ok") == 0);
+
+    // 尾扇区必须保留原样(签名保护)
+    CHECK(memcmp(ram_flash[0] + META_SIG_SECTOR, tail, sizeof(tail)) == 0);
+    // 彩蛋仍可解析
+    char out[META_EGG_TEXT_LEN + 1];
+    CHECK(meta_egg_parse(ram_flash[0] + META_SIG_SECTOR, META_SIG_SECTOR, out, sizeof(out)) == META_EGG_OK);
+    CHECK(strcmp(out, "secret egg") == 0);
+    // flash 上的 MNAM 未动(签名保护),本会话注册表仍记录请求的 disp
+    CHECK(strcmp(s_slots[0].name, "MyRadio") == 0);
+}
+
+// m4. 上传未签名镜像带 dispname → 尾扇区被重建为 MNAM blob,MAEG 不应无故出现
+static void test_upload_unsigned_tail_rebuilt(void)
+{
+    TEST("m4_upload_unsigned_tail_rebuilt");
+    setup();
+    force_paired();
+    const size_t plen = 256;
+    uint8_t payload[plen];
+    make_payload(payload, plen);
+
+    httpd_req_t req = make_upload_req(0, "MyRadio", payload, plen);
+    h_upload(&req);
+    CHECK(strcmp(req.resp_body, "ok") == 0);
+
+    const uint32_t tail_off = meta_sign_sector_offset((uint32_t)plen);
+    // MNAM 窗口写入了右对齐 blob
+    char unpacked[META_NAME_MAX + 1];
+    CHECK(meta_name_unpack_tail(ram_flash[0] + tail_off + META_NAME_BLOB_OFF,
+                                META_NAME_BLOB_RESERVE, unpacked, sizeof(unpacked)));
+    CHECK(strcmp(unpacked, "MyRadio") == 0);
+    // 彩蛋窗口不应有残留
+    char out[8];
+    CHECK(meta_egg_parse(ram_flash[0] + tail_off, META_SIG_SECTOR, out, sizeof(out)) == META_EGG_ABSENT);
+}
+
 // l. 总上传量 < 24B(10 字节,magic 正确都不够)→ 400 'upload broken' + INVALID
 // ESP_ERR_INVALID_SIZE 路径,ota_end 不得被调用
 static void test_total_less_than_header(void)
@@ -794,6 +913,10 @@ int main(void)
     test_dispname_plus_decode();
     test_dispname_utf8_filtered();
     test_dispname_invalid_percent();
+    test_egg_parse_valid();
+    test_egg_parse_absent();
+    test_upload_signed_tail_preserved();
+    test_upload_unsigned_tail_rebuilt();
     test_fragmented_recv();
     test_total_less_than_header();
     test_single_use_session();

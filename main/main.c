@@ -65,6 +65,9 @@ static void add_battery(lv_obj_t *parent)
 {
     const int soc = bsp_battery_soc();
     char text[12];
+    // 读数 -1(不可用)时不画,避免用未初始化缓冲区显示垃圾并触发越界读。
+    if (soc < 0) return;
+    snprintf(text, sizeof(text), "%d%%", soc);
     lv_obj_t *lbl = ui_pixel_label(parent, text, &lv_font_montserrat_14, UI_PAPER);
     lv_obj_set_pos(lbl, 204, 30);
 }

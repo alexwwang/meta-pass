@@ -404,7 +404,7 @@ static esp_err_t h_upload(httpd_req_t *req)
     s_paired = false;   // 一次配对一次上传,上传完即失效
     mi_handle(&s_mi, MI_EV_VERIFY_OK);
     set_status(MI_DONE, 100, "Done. You can boot it from the device menu.");
-    ESP_LOGI(TAG, "槽位 %d 写入成功: %s %s (%d B)", slot, name, ver, req->content_len);
+    ESP_LOGI(TAG, "槽位 %d 写入成功: %s %s (%zu B)", slot, name, ver, req->content_len);
     return httpd_resp_sendstr(req, "ok");
 }
 

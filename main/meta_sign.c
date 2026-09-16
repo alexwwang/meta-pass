@@ -44,7 +44,7 @@ meta_egg_result_t meta_egg_parse(const uint8_t *tail_sector, size_t tail_sector_
     if ((uint32_t)(META_EGG_WINDOW_OFF + META_EGG_TOTAL_LEN) > META_NAME_BLOB_OFF) return META_EGG_BAD_FORMAT;
     const uint8_t *egg = tail_sector + META_EGG_WINDOW_OFF;
     static const unsigned char egg_magic[4] = META_EGG_MAGIC_BYTES;
-    if (!memcmp(egg, egg_magic, 4)) return META_EGG_ABSENT;
+    if (memcmp(egg, egg_magic, 4) != 0) return META_EGG_ABSENT;
     uint32_t payload_len = (uint32_t)egg[4] | ((uint32_t)egg[5] << 8) | ((uint32_t)egg[6] << 16) | ((uint32_t)egg[7] << 24);
     if (payload_len == 0 || payload_len > META_EGG_TEXT_LEN) return META_EGG_BAD_FORMAT;
     uint8_t calc = 0;
