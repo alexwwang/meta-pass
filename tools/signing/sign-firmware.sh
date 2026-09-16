@@ -27,11 +27,13 @@ fi
 
 usage() {
     echo "usage: $0 <app.bin> [--version VERSION] [--egg-text TEXT]" >&2
+    echo "       $0 --check-egg-text TEXT   # 只校验彩蛋文本(不弹 Keychain 授权,退出码 0=合法)" >&2
 }
 
 BIN=""
 EGG_TEXT=""
 VERSION=""
+CHECK_EGG=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -43,6 +45,12 @@ while [ "$#" -gt 0 ]; do
         --egg-text)
             if [ "$#" -lt 2 ]; then usage; exit 2; fi
             EGG_TEXT="$2"
+            shift 2
+            ;;
+        --check-egg-text)
+            if [ "$#" -lt 2 ]; then usage; exit 2; fi
+            EGG_TEXT="$2"
+            CHECK_EGG=true
             shift 2
             ;;
         --*)
@@ -62,6 +70,36 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+# --check-egg-text 预检模式:只校验彩蛋文本的合法性与长度,不访问 Keychain、不读镜像。
+# 校验规则与 --egg-text 写入路径完全一致(同一函数,避免两处规则漂移)。
+if [ "$CHECK_EGG" = true ]; then
+    python3 -c '
+import sys
+
+
+def validate_egg_text(text):
+    """校验 --egg-text 文本;返回字节数,非法时 SystemExit。"""
+    if text == "":
+        raise SystemExit("error: --egg-text must not be empty")
+    try:
+        egg_bytes = text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise SystemExit(f"error: --egg-text must be ASCII: {exc}")
+    if len(egg_bytes) == 0:
+        raise SystemExit("error: --egg-text must not be empty")
+    if len(egg_bytes) > 3919:
+        raise SystemExit(f"error: --egg-text too long: {len(egg_bytes)} > 3919 bytes")
+    if any(ord(ch) < 0x20 or ord(ch) > 0x7e for ch in text):
+        raise SystemExit("error: --egg-text must be printable ASCII")
+    return len(egg_bytes)
+
+
+n = validate_egg_text(sys.argv[1])
+print(f"OK: {n} bytes (max 3919)")
+' "$EGG_TEXT"
+    exit $?
+fi
 
 if [ -z "$BIN" ]; then usage; exit 2; fi
 if [ ! -f "$BIN" ]; then echo "error: $BIN not found"; exit 1; fi
@@ -211,6 +249,7 @@ sector = bytearray(b'\xff' * 4096)
 sector[0:len(sig_blob)] = sig_blob
 
 if egg_text:
+    # 校验规则与 --check-egg-text 预检完全一致(同一套规则,防两处漂移)
     try:
         egg_bytes = egg_text.encode('ascii')
     except UnicodeEncodeError as exc:

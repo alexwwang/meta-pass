@@ -56,7 +56,7 @@ static lv_obj_t *s_info;             // 详情/导入页的多行文本
 static lv_obj_t *s_status_line;      // 导入页状态行
 static lv_obj_t *s_egg_panel;        // 彩蛋页可滚动面板(teardown 时随屏销毁)
 static lv_obj_t *s_mascot;
-static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN OK-LONG 的匹配状态
+static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(四 CLICK)的匹配状态
 
 // ---------- 公共小部件 ----------
 
@@ -183,7 +183,7 @@ static void page_detail_build(int slot)
      lv_screen_load(s_scr);
 }
 
-// ---------- 页面:彩蛋(详情页隐藏序列 UP UP DOWN DOWN OK-LONG 进入) ----------
+// ---------- 页面:彩蛋(详情页隐藏序列 UP UP DOWN DOWN 快速四 CLICK 进入) ----------
 
 static void page_egg_build(void)
 {
@@ -361,22 +361,21 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_DETAIL: {
         const meta_slot_info_t *s = &s_slots[s_detail_slot];
 
-        // 隐藏彩蛋序列: UP UP DOWN DOWN OK-LONG,相邻两键间隔 <0.5s(meta_seq)。
-        // 只认 CLICK/LONG 语义事件;PRESS/DOUBLE 不参与也不打断。
-        if (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) {
-            meta_seq_key_t k;
-            bool recognized = true;
-            if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_UP;
-            else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) k = META_SEQ_KEY_DOWN;
-            else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) k = META_SEQ_KEY_OK_LONG;
-            else recognized = false;   // 其他按键组合:用户意图明确改变,打断序列
-            if (!recognized) {
-                meta_seq_reset(&s_egg_seq);
-            } else if (meta_seq_feed(&s_egg_seq, k,
-                                     (uint32_t)(esp_timer_get_time() / 1000))) {
-                goto_page(PAGE_EGG);   // 命中:吞掉这个 LONG,不再触发"返回列表"
+        // 隐藏彩蛋序列: 快速连按 UP UP DOWN DOWN(四个 CLICK),相邻两键间隔 <0.5s(meta_seq)。
+        // 只认 UP/DOWN 的 CLICK 事件;LONG/PRESS/OK CLICK 不参与也不打断(LONG 保留"返回列表")。
+        // 命中时吞掉第 4 个 CLICK,跳转彩蛋页且不移动选中行
+        // (前 3 个 CLICK 仍会移动选中行,属可接受副作用)。
+        if (ev == BSP_BTN_CLICK &&
+            (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
+            const meta_seq_key_t k = (btn == BSP_BTN_UP) ? META_SEQ_KEY_UP
+                                                         : META_SEQ_KEY_DOWN;
+            if (meta_seq_feed(&s_egg_seq, k,
+                              (uint32_t)(esp_timer_get_time() / 1000))) {
+                goto_page(PAGE_EGG);   // 命中:吞掉第 4 个 CLICK,直接进彩蛋页
                 break;
             }
+        } else if (ev == BSP_BTN_LONG || ev == BSP_BTN_PRESS) {
+            meta_seq_reset(&s_egg_seq);   // 非快速 CLICK 输入:打断序列
         }
 
         if (ev == BSP_BTN_CLICK) {

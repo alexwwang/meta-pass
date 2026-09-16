@@ -4,7 +4,6 @@
 static const meta_seq_key_t k_seq[META_SEQ_LEN] = {
     META_SEQ_KEY_UP, META_SEQ_KEY_UP,
     META_SEQ_KEY_DOWN, META_SEQ_KEY_DOWN,
-    META_SEQ_KEY_OK_LONG,
 };
 
 void meta_seq_reset(meta_seq_state_t *st)

@@ -1,5 +1,5 @@
 // main/meta_seq.h —— 隐藏按键序列匹配器(纯逻辑,与 BSP/ESP-IDF 解耦)。
-// 彩蛋页入口:详情页快速连按 UP UP DOWN DOWN OK-LONG,
+// 彩蛋页入口:详情页快速连按 UP UP DOWN DOWN(四个 CLICK),
 // 相邻两键间隔必须严格小于 META_SEQ_GAP_MS,否则进度作废。
 #pragma once
 
@@ -11,7 +11,6 @@
 typedef enum {
     META_SEQ_KEY_UP = 0,
     META_SEQ_KEY_DOWN,
-    META_SEQ_KEY_OK_LONG,
 } meta_seq_key_t;
 
 typedef struct {
@@ -19,7 +18,7 @@ typedef struct {
     uint32_t last_ms;    // 上一有效键时刻(毫秒,时基由调用方注入,便于测试)
 } meta_seq_state_t;
 
-#define META_SEQ_LEN 5u
+#define META_SEQ_LEN 4u
 
 void meta_seq_reset(meta_seq_state_t *st);
 

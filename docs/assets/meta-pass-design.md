@@ -213,7 +213,7 @@ as absent.
 ```
 
 On device, the egg text of a slot is viewable from its detail page via a hidden key
-sequence: fast `UP UP DOWN DOWN OK-LONG` (inter-key gap <0.5s) opens the egg page;
+sequence: fast `UP UP DOWN DOWN` (four CLICKs, inter-key gap <0.5s) opens the egg page;
 `UP/DOWN` scroll the text, `OK` click returns. Slots without a valid MAEG field show
 "No egg."; corrupted fields show "Egg data corrupted.".
 

@@ -172,7 +172,7 @@ magic）视为未签名——走未签名固件警告页的 BOOT / CANCEL 选择
   [1B xor 校验,固定位于窗口内偏移 3927,覆盖前 3927 字节(含 padding)]
 ```
 
-设备端查看:在对应槽位的详情页快速连按 `UP UP DOWN DOWN OK-LONG`(相邻两键间隔 <0.5 秒)
+设备端查看:在对应槽位的详情页快速连按 `UP UP DOWN DOWN`(四个 CLICK,相邻两键间隔 <0.5 秒)
 进入彩蛋页;`UP/DOWN` 滚动文本,`OK` 短按返回。无有效 MAEG 字段的槽位显示 "No egg.";
 字段损坏显示 "Egg data corrupted."。
 
