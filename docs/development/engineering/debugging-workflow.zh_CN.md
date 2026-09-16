@@ -90,3 +90,12 @@ IDF 的 `esp_image_verify` 推导出逐字节相同的 `image_len`。安装页�
 `esp_image_verify` 仍是拒绝畸形镜像的最终仲裁者),避免"页面接受、签名链无法处理"的契约
 分裂。对官方工具链镜像探测处于休眠,故该变更对现有构建行为中立。行动项已登记在
 `handoff-unsigned-rootcause.md` §4;尚未实现。
+
+**实施记录(2026-09-16,已完成)。** 三个解析器均已实现 `[16, 0]` 探测。锁定测试:
+`test_integration.c --selftest`(纯 24B → 240、24B+16B-ext → 256;fixture 以 0xab 填充,
+错误布局会读出巨大 `data_len` 而自然回退)与 `test-extract.mjs` PASS 3c(同一 fixture +
+不可解析截断镜像的负例)。对合成 fixture 的三方回放确认 Python/C/JS 结果完全一致。
+fixture 的两个坑值得记住:`data_len` 必须按完整 u32 LE 写入(只写 1 字节会在高位留下
+0xab,长度静默变大),C 测试缓冲区必须 memset —— JS 侧等价 fixture 能通过是因为
+`Uint8Array.fill` 初始化了全部字节。变更后对真实 pass-radar 镜像重签,image_len 仍为
+962416、验签 `META_SIG_OK`。

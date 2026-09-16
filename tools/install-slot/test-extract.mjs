@@ -99,6 +99,36 @@ function buildAppImage() {
   console.log("PASS 3b: signed image keeps full 4KB tail sector; unsigned image reports offset only");
 }
 
+// 3c. 布局探测契约:纯 24B 头(总长 240)与 24B+16B 扩展头(总长 256)两种布局都精确收敛,
+//     与 sign-firmware.sh / test_integration.c 三方同源(决策见 debugging-workflow.md §4)
+{
+  function buildLayout(withExt) {
+    const seg0Off = withExt ? 40 : 24;
+    let total = 24 + (withExt ? 16 : 0) + (8 + 100) + (8 + 64);
+    while (total % 16 !== 15) total++;
+    total += 1 + 32;
+    const buf = new Uint8Array(total).fill(0xab);
+    buf[0] = 0xe9;
+    buf[1] = 2;
+    buf[12] = 5; buf[13] = 0; // chip_id ESP32-C3
+    buf[23] = 1;              // hash_appended
+    buf.set([0x00, 0x00, 0xc8, 0x3f, 100, 0, 0, 0], seg0Off);        // seg0 @0x3fc80000, len 100
+    buf.set([0x20, 0x00, 0x00, 0x42, 64, 0, 0, 0], seg0Off + 108);  // seg1 @0x42000020, len 64
+    return buf;
+  }
+  const plain = buildLayout(false);
+  const ext = buildLayout(true);
+  assert.equal(plain.length, 240, "plain fixture total length changed");
+  assert.equal(ext.length, 256, "ext fixture total length changed");
+  assert.equal(espImageLength(plain, 0), 240, "plain 24B layout must resolve");
+  assert.equal(espImageLength(ext, 0), 256, "16B-extended-header layout must resolve");
+  // 负例:两种布局都走不通的截断镜像必须抛错(而不是静默取错布局)
+  const truncated = ext.slice(0, 200);
+  assert.throws(() => espImageLength(truncated, 0), /Truncated|segment|extends/i,
+    "unresolvable image must throw");
+  console.log("PASS 3c: layout probe — plain-24B→240, 24B+16B-ext→256; unresolvable throws");
+}
+
 // ===== 4. 显示名 blob(name-blob.js,与 tests/test_meta_name.c 双向锁定)=====
 
 // 期望字节序列与 C 侧 host test 逐字节一致(手工按格式算出,双向锁定)

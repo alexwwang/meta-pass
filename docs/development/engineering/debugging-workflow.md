@@ -111,3 +111,13 @@ device's `esp_image_verify` remaining the final arbiter that rejects malformed i
 a contract split where the page accepts something the signer cannot process. The probe is
 dormant for official-toolchain images, so the change is behavior-neutral for current builds.
 Tracked as an action item in `handoff-unsigned-rootcause.md` §4; not yet implemented.
+
+**Implementation note (2026-09-16, done).** All three parsers now probe `[16, 0]`. Locking
+tests: `test_integration.c --selftest` (plain-24B → 240, 24B+16B-ext → 256; fixtures 0xab-filled
+so a wrong layout reads a huge `data_len` and falls through) and `test-extract.mjs` PASS 3c
+(same fixtures + an unresolvable-truncation negative case). A three-way replay over the
+synthetic fixtures confirmed identical results across Python/C/JS. Fixture pitfalls worth
+remembering: `data_len` must be written as a full u32 LE (a one-byte store leaves 0xab in the
+upper bytes and silently turns the length huge), and C test buffers must be memset — the
+equivalent JS fixtures pass because `Uint8Array.fill` initializes everything. Re-signing the
+real pass-radar image after the change still produces image_len 962416 / `META_SIG_OK`.

@@ -114,7 +114,11 @@ with the §3.1 root cause.
   (`extract-app-image.js` has one) — not triggered by current images, but the contract is
   inconsistent. **Decision (2026-09-16, compatibility-first): port the same `[16, 0]`
   auto-detect into both parsers** so all three share the contract; rationale and established
-  facts in `docs/development/engineering/debugging-workflow.md` §4. **Pending.**
+  facts in `docs/development/engineering/debugging-workflow.md` §4. **DONE (2026-09-16):**
+  both parsers now probe `[16, 0]`; `test_integration.c --selftest` plus `test-extract.mjs`
+  PASS 3c lock the contract (plain-24B → 240, 24B+16B-ext → 256, identical across
+  Python/C/JS); re-signing the real pass-radar image still yields image_len 962416 and
+  `META_SIG_OK` (behavior-neutral for official images).
 - The Wi-Fi path (`meta_net.c`) has signature protection (`meta_sign_detect_sector` → never overwrite a
   signed sector's MNAM); the USB page relies on the JS extraction being correct instead.
 

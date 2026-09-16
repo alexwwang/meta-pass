@@ -17,6 +17,7 @@
 //      -o build/host-verify/test_integration
 // 运行:
 //   build/host-verify/test_integration build/<signed>.bin
+//   build/host-verify/test_integration --selftest   # 解析器 24B/16B-ext 双布局自检
 //
 // 退出码: 0 = 验签通过; 1 = 验签失败; 2 = 用法/解析错误
 #include <stdio.h>
@@ -38,35 +39,41 @@ static void hex(const unsigned char *b, int n)
 }
 
 // 镜像长度,与设备侧 esp_image_verify() 语义一致。
-// 与 tools/signing/sign-firmware.sh 内 compute_esp_image_len() 保持逐字对齐。
-static uint32_t esp_image_len(const unsigned char *img, size_t fsize)
+// 与 tools/signing/sign-firmware.sh 的 compute_esp_image_len() 及 install-slot/extract-app-image.js
+// 保持同一契约:依次尝试 24B 头 + 16B 扩展头与纯 24B 头两种布局(互斥,恰有一种能走通
+// segment 表且长度收敛),决策见 docs/development/engineering/debugging-workflow.md §4。
+static uint32_t try_layout(const unsigned char *img, size_t fsize, uint32_t ext_hdr_len)
 {
-    if (fsize == 0 || img[0] != ESP_IMAGE_MAGIC) return (uint32_t)fsize;
-
     const unsigned char seg_count = img[1];
-    uint32_t off = ESP_HDR_LEN;
+    uint32_t off = ESP_HDR_LEN + ext_hdr_len;
     for (uint32_t i = 0; i < seg_count; i++) {
-        if (off + ESP_SEG_HDR_LEN > fsize) {
-            fprintf(stderr, "error: truncated image header at segment %u\n", i);
-            return 0;
-        }
+        if (off + ESP_SEG_HDR_LEN > fsize) return 0;
         const uint32_t seg_len = (uint32_t)img[off + 4] |
                                  ((uint32_t)img[off + 5] << 8) |
                                  ((uint32_t)img[off + 6] << 16) |
                                  ((uint32_t)img[off + 7] << 24);
         off += ESP_SEG_HDR_LEN + seg_len;
-        if (off > fsize) {
-            fprintf(stderr, "error: segment %u exceeds file size\n", i);
-            return 0;
-        }
+        if (off > fsize) return 0;
     }
     // checksum: 当前偏移处 1 字节,随后整体填充到 16 字节边界
     const uint32_t unpadded = off;
-    const uint32_t length = (unpadded + 1 + 15) & ~15u;
-    off = unpadded + (length - unpadded);
+    off = unpadded + ((unpadded + 1 + 15) & ~15u) - unpadded;
     // esp_image_header_t 末字节(偏移 23)的 hash_appended 标志
     if (img[23] & 1) off += 32;
     return off;
+}
+
+static uint32_t esp_image_len(const unsigned char *img, size_t fsize)
+{
+    if (fsize == 0 || img[0] != ESP_IMAGE_MAGIC) return (uint32_t)fsize;
+    // 先按带 16B 扩展头解析(与 JS 安装页探测顺序一致),失败回退纯 24B 头布局
+    for (int i = 0; i < 2; i++) {
+        const uint32_t ext_hdr_len = (i == 0) ? 16u : 0u;
+        const uint32_t result = try_layout(img, fsize, ext_hdr_len);
+        if (result != 0) return result;
+    }
+    fprintf(stderr, "error: image segment table does not resolve under any known layout (16B-ext or plain)\n");
+    return 0;
 }
 
 static int run(const unsigned char *buf, size_t fsize, uint32_t image_len,
@@ -115,8 +122,43 @@ static int run(const unsigned char *buf, size_t fsize, uint32_t image_len,
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--selftest") == 0) {
+        // 解析器自检:官方布局(24B 头,segment0@24)与 16B 扩展头布局都必须精确收敛。
+        // fixture 与 tools/install-slot/test-extract.mjs 的 buildLayout() 同源:
+        //   plain 24+8+100+8+64=204 → pad 到 %16==15(207)→ +1 checksum → +32 hash = 240
+        //   ext   24+16+8+100+8+64=220 → 223 → +1 → +32 = 256
+        // 0xab 填充保证未写区域读作 data_len=0xabababab(巨大),错误布局必然越界回退。
+        static const uint32_t WANT[2] = {240u, 256u};   // [plain, ext]
+        for (int v = 0; v < 2; v++) {
+            unsigned char img[256];
+            memset(img, 0xab, sizeof(img));
+            const uint32_t seg0_off = v ? 40u : 24u;
+            img[0] = ESP_IMAGE_MAGIC;
+            img[1] = 2;                                 // 2 segments
+            img[12] = 5;                                // chip_id = ESP32-C3 (LE)
+            img[23] = 1;                                // hash_appended
+            img[seg0_off + 0] = 0x00; img[seg0_off + 1] = 0x00;
+            img[seg0_off + 2] = 0xc8; img[seg0_off + 3] = 0x3f; // load_addr 0x3fc80000
+            img[seg0_off + 4] = 100; img[seg0_off + 5] = 0;     // data_len = 100 (u32 LE)
+            img[seg0_off + 6] = 0;   img[seg0_off + 7] = 0;
+            const uint32_t seg1_off = seg0_off + 8u + 100u;
+            img[seg1_off + 0] = 0x20; img[seg1_off + 1] = 0x00;
+            img[seg1_off + 2] = 0x00; img[seg1_off + 3] = 0x42; // load_addr 0x42000020
+            img[seg1_off + 4] = 64;  img[seg1_off + 5] = 0;     // data_len = 64 (u32 LE)
+            img[seg1_off + 6] = 0;   img[seg1_off + 7] = 0;
+            const uint32_t got = esp_image_len(img, sizeof(img));
+            if (got != WANT[v]) {
+                fprintf(stderr, "selftest FAIL: layout %s resolved %u, want %u\n",
+                        v ? "16B-ext" : "plain-24B", got, WANT[v]);
+                return 1;
+            }
+        }
+        printf("selftest: plain-24B -> %u, 16B-ext -> %u; probe order [16, 0] picks the converging layout\n",
+               WANT[0], WANT[1]);
+        return 0;
+    }
     if (argc != 2) {
-        fprintf(stderr, "usage: %s <signed.bin>\n", argv[0]);
+        fprintf(stderr, "usage: %s <signed.bin>|--selftest\n", argv[0]);
         return 2;
     }
 

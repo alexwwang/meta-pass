@@ -78,23 +78,56 @@ SIG="$(mktemp -t metapass-sig)"
 trap 'rm -f "$SIG"' EXIT
 
 # 计算 image_len（与设备侧 esp_image_verify 语义一致：segments + checksum pad + appended hash）
+# 布局探测与 install-slot/extract-app-image.js 相同：依次尝试 24B 头 + 16B 扩展头与纯 24B 头
+# 两种布局（互斥，恰有一种能走通 segment 表且长度收敛），三方解析器共享同一契约
+# （决策见 docs/development/engineering/debugging-workflow.md §4）。
 IMAGE_LEN=$(python3 -c '
 import struct, sys
-with open(sys.argv[1], "rb") as f:
-    image = f.read()
-if not image or image[0] != 0xE9:
-    print(len(image)); sys.exit()
-seg_count = image[1]
-offset = 24
-for i in range(seg_count):
-    seg_len = struct.unpack("<I", image[offset+4:offset+8])[0]
-    offset += 8 + seg_len
-unpadded = offset
-length = (unpadded + 1 + 15) & ~15
-offset = unpadded + (length - unpadded)
-if image[23] & 1:
-    offset += 32
-print(offset)
+
+
+def try_layout(image, ext_hdr_len):
+    """按给定扩展头长度走 segment 表,返回镜像总长;结构不合法返回 None。"""
+    seg_count = image[1]
+    offset = 24 + ext_hdr_len
+    for i in range(seg_count):
+        if offset + 8 > len(image):
+            return None
+        seg_len = struct.unpack("<I", image[offset+4:offset+8])[0]
+        offset += 8 + seg_len
+        if offset > len(image):
+            return None
+    # checksum: 1 byte at current offset, then pad to 16-byte boundary
+    unpadded = offset
+    offset = unpadded + ((unpadded + 1 + 15) & ~15) - unpadded
+    # appended hash (32 bytes) if HASH_APPENDED flag is set at byte 23
+    # (IDF esp_image_header_t: 24-byte packed struct, hash_appended is last byte)
+    if image[23] & 1:
+        offset += 32
+    return offset
+
+
+def compute_esp_image_len(image):
+    """Mirror esp_image_verify(): header + segments + checksum pad + appended hash."""
+    if not image or image[0] != 0xE9:
+        return len(image)
+    last_err = None
+    for ext_hdr_len in (16, 0):
+        try:
+            result = try_layout(image, ext_hdr_len)
+        except struct.error as exc:
+            last_err = exc
+            continue
+        if result is not None:
+            return result
+    if last_err is not None:
+        raise SystemExit(f"error: {last_err}")
+    raise SystemExit("error: image segment table does not resolve under any known layout (16B-ext or plain)")
+
+
+if __name__ == "__main__":
+    with open(sys.argv[1], "rb") as f:
+        image = f.read()
+    print(compute_esp_image_len(image))
 ' "$BIN")
 
 # 计算 SHA-256 digest（覆盖 image_len 字节，与设备侧 slot_sha256 一致）
@@ -129,26 +162,35 @@ with open(sig_path, 'rb') as f:
     signature = f.read()
 
 def compute_esp_image_len(image):
-    """Mirror esp_image_verify(): header + segments + checksum pad + appended hash."""
+    """Mirror esp_image_verify(): header + segments + checksum pad + appended hash.
+    布局探测与上方 IMAGE_LEN 段及 install-slot/extract-app-image.js 一致(16B 扩展头优先,回退纯 24B)。"""
     if not image or image[0] != 0xE9:
         return len(image)
     seg_count = image[1]
-    hdr_len = 24  # esp_image_header_t (IDF 5.x extended)
-    offset = hdr_len
-    for i in range(seg_count):
-        if offset + 8 > len(image):
-            raise SystemExit(f"error: truncated image header at segment {i}")
-        seg_len = struct.unpack('<I', image[offset+4:offset+8])[0]
-        offset += 8 + seg_len
-    # checksum: 1 byte at current offset, then pad to 16-byte boundary
-    unpadded = offset
-    length = (unpadded + 1 + 15) & ~15
-    offset = unpadded + (length - unpadded)
-    # appended hash (32 bytes) if HASH_APPENDED flag is set at byte 23
-    # (IDF esp_image_header_t: 24-byte packed struct, hash_appended is last byte)
-    if image[23] & 1:
-        offset += 32
-    return offset
+    last_err = None
+    for ext_hdr_len in (16, 0):
+        offset = 24 + ext_hdr_len
+        ok = True
+        for i in range(seg_count):
+            if offset + 8 > len(image):
+                ok = False
+                break
+            seg_len = struct.unpack('<I', image[offset+4:offset+8])[0]
+            offset += 8 + seg_len
+            if offset > len(image):
+                ok = False
+                break
+        if not ok:
+            continue
+        # checksum: 1 byte at current offset, then pad to 16-byte boundary
+        unpadded = offset
+        offset = unpadded + ((unpadded + 1 + 15) & ~15) - unpadded
+        # appended hash (32 bytes) if HASH_APPENDED flag is set at byte 23
+        # (IDF esp_image_header_t: 24-byte packed struct, hash_appended is last byte)
+        if image[23] & 1:
+            offset += 32
+        return offset
+    raise SystemExit("error: image segment table does not resolve under any known layout (16B-ext or plain)")
 
 image_len = compute_esp_image_len(image)
 sig_off = (image_len + 4095) // 4096 * 4096
