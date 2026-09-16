@@ -30,6 +30,7 @@
 | BSP、引脚、总线、显示、音频、电池 | `docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.zh_CN.md`、`components/bsp/include/bsp_pins.h` |
 | 启动器 UI 或菜单 | `main/main.c`、`components/bsp/` 的按键与显示 API |
 | 构建、测试、依赖、分区 | `docs/development/engineering/build-and-test.zh_CN.md`、`docs/development/engineering/protected-flash-layout.zh_CN.md`、`sdkconfig.defaults`、`partitions.csv` |
+| 排查设备行为或签名/安装器问题 | `docs/development/engineering/debugging-workflow.zh_CN.md`、`docs/BUGS.zh_CN.md`、`docs/assets/handoff-unsigned-rootcause.zh_CN.md` |
 | CI 或发布 | `docs/development/ci/CI-*.zh_CN.md` 中的对应文件与 `.github/workflows/` |
 | 项目开发完成 | `./tools/validate.sh` 全门禁 + `docs/assets/meta-pass-design.zh_CN.md` §10 验收清单 |
 | 文档 | `docs/contribution/doc-conventions.zh_CN.md`、`docs/README.zh_CN.md` |

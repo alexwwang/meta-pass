@@ -16,6 +16,7 @@ This directory contains AI Passport engineering rules and reusable workflows, gr
 - [build-and-test.md](engineering/build-and-test.md): ESP-IDF build and validation.
 - [protected-flash-layout.md](engineering/protected-flash-layout.md): mandatory merged-artifact and protected-partition layout.
 - [coding-conventions.md](engineering/coding-conventions.md): source-code and resource conventions.
+- [debugging-workflow.md](engineering/debugging-workflow.md): root-cause debugging workflow and lessons from the signature-verification investigation (case history, standard workflow, the 16 B extended-header decision).
 
 ## CI
 

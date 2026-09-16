@@ -1,0 +1,92 @@
+<p align="right">
+  <strong>简体中文</strong> · <a href="debugging-workflow.md">English</a>
+</p>
+
+# 根因排查工作流 —— 签名验证排查的经验沉淀
+
+> 状态:工程规则(对本仓库的 AI 辅助与人工调试均有约束力)。
+> 源自 2026-09"子固件 USB 线刷后显示未签名"排查(BUG-01…04、BUG-03 安装路径损坏、
+> 线上安装页滞后)。案例档案:`docs/BUGS.zh_CN.md`、
+> `docs/assets/handoff-unsigned-rootcause.zh_CN.md`;契约:
+> `docs/assets/meta-pass-signing-design.zh_CN.md`。
+
+## 1. 案例历史(三轮排查,实际发生了什么)
+
+**第一轮 —— 对照设计文档的全分支静态审查。** 对照 `docs/assets/meta-pass-design.md`
+审查全分支,产出 BUG-01…04(未初始化电量标签、`HOST_TEST` stub 彩蛋魔数反转、开发版
+安装页漂移、`size_t` 用 `%d`),每条带 file:line 证据;同时记录了**已排除嫌疑清单**
+(LVGL 定时器自删除、滚动语义、大小上限算术、按键长按接线)及其排除证据。记录已排除项
+很重要:后来者不必重查。
+
+**第二轮 —— "重签的固件仍显示未签名"。** 最诱人的假设(签名链坏了)**最先被证伪**:
+宿主集成测试编译的是*真实*固件验签器,对最新签名镜像返回 `META_SIG_OK`,且两个 launcher
+构建都嵌着当前公钥。真正原因在**安装路径**:开发版安装页(README 首选本地工作流)用第二次
+`writeFlash` 向已含签名的同一 4KB 尾扇区写显示名 blob —— esptool 每写必擦整扇区,签名在
+烧写瞬间被抹掉,.bin 文件本身毫无问题。结构性修复:安装页单一规范目录,本地 dev server 与
+Cloudflare 部署同源;尾扇区永远单次 `writeFlash` 写入。
+
+**第三轮 —— 关闭"host PASS + 真机 FAIL"的 gap。** 静态分析无法证明*线上部署的*旧版
+安装页实际往 flash 写了什么。不靠猜,在宿主上**回放安装页的字节路径**:提取 → MNAM 补丁 →
+组装槽位字节 → 喂给真实固件验签器(真 mbedtls)→ `META_SIG_OK`。随后用户经修复后的页面
+重刷,真机行为符合预期。通用教训:**当宿主与设备结论相悖,在宿主上逐字节复现变换过程,把
+结果喂给为宿主编译的设备侧代码** —— 这把无法证伪的"flash 内容可能不同"变成具体的通过/失败。
+
+## 2. 经验教训(下次怎么做)
+
+1. **先验签名者,再查传输路径。** "文件有效但设备不认"时,先用*真实*验签器证明文件本身
+   (`tools/signing/run-verify-tests.sh` 编译 `main/meta_sign.c` + mbedtls),再沿写入路径回溯。
+2. **设备读的是 flash,不是文件。** 任何针对 `.bin` 的测试都无法说明安装器在槽位偏移处写了什么。
+   端到端的定义:源文件 → 安装器变换 → 组装后的槽位字节 → 设备验签器。
+3. **一个扇区,一次写入。** esptool/esp_ota 按写擦除;对同一 4KB 扇区写两次 = 第一次静默丢失。
+   这就是尾扇区(MSIG/MAEG/MNAM)必须在内存拼好、单次写入的原因
+   (`meta-pass-signing-design.md` §7.1 单写契约)。
+4. **副本必漂移;部署必滞后。** 仓库已修复时,滞后的 `https://meta-pass.pages.dev/` 旧页面
+   仍造成真机症状。任何安装器/页面的两份副本都是常驻 bug(BUG-03):服务规范目录
+   (`server.mjs` → `install-slot/`),且任何修复后要**逐字节校验线上部署的资源**,而非仓库里的。
+5. **抄送已排除嫌疑清单。** 带证据的已排除项能防止反复走进死胡同
+   (BUGS.md "cleared" 部分;handoff §2 "ruled out")。
+6. **信任边界采用不对称严格性。** 接收第三方二进制的解析器(安装页)可以自动探测布局变体;
+   签名/信任链内部的解析器(脚本、宿主测试、设备)对单一布局保持严格。16B 扩展头决策见 §4。
+7. **HOST_TEST 变体就是产品代码。** `#ifdef HOST_TEST` 分支每次 `validate.sh` 都会编译 ——
+   那里的 bug(魔数反转,BUG-02)即使没有设备路径执行它也是真实缺陷。要像其他代码一样
+   给它回归测试。
+
+## 3. 设备行为类 bug 的标准工作流
+
+1. **低成本复现,能上宿主就别上设备。** 优先级:单测 → 真实模块的宿主集成测试
+   (`run-verify-tests.sh`、`test_meta_net_upload.c`)→ QEMU 模拟器(`tools/sim/`)→ 最后才是真机。
+2. **修复前先闭合证据环。** 对每一层(密钥链、image_len 语义、digest 范围、布局偏移)
+   记录排除/确认它的检查 —— 格式见 handoff §2。
+3. **静态分析搞不定就 dump 或回放字节。** flash dump 分流脚本与按结果分流表在
+   `handoff-unsigned-rootcause.md` §3.3。
+4. **修一类问题,不是一例。** 签名擦除的修复同时消除了"页面副本"这一类问题(单一来源),
+   并加了锁定布局的回归测试(`tests/test_meta_net_upload.c` m1–m4 与 `sign-firmware.sh` 互锁)。
+5. **过完整门禁交付,并把案例写下来。** `tools/validate.sh --static`,然后同一变更里更新
+   `docs/BUGS.md` / handoff 文档(双语)。
+
+## 4. 16B 扩展头问题 —— 背景与决策
+
+**背景。** 四方契约(`meta-pass-signing-design.md` §8)要求签名脚本、宿主测试、安装页 JS、
+IDF 的 `esp_image_verify` 推导出逐字节相同的 `image_len`。安装页额外自动探测 24B
+`esp_image_header_t` 之后假想的"16B 扩展头"(`extract-app-image.js` 依次试 `[16, 0]`
+两种布局,取 segment 表能走通的那个 —— 两种布局互斥,恰有一个收敛)。脚本与宿主测试
+只解析纯 24B 布局。
+
+**已确立的事实(IDF v5.5.3 + 真实镜像)。**
+- `esp_app_format.h:110` 断言 `sizeof(esp_image_header_t) == 24`(packed);官方文档的
+  esptool 示例显示 segment 0 位于文件偏移 `0x18` = 24。esptool 所称的 "Extended Image
+  Header"(WP pin、flash pin drive settings、chip_id、min/max rev —— 字节 8..23)是 24B
+  头的**内部**字段,不是头后附加的 16 字节 —— 这个命名陷阱很可能就是"多 16B"说法的来源。
+- 真实 pass-radar 镜像:偏移 24 处段头为 `load_addr=0x3c0b0020`(合法 C3 DROM)、
+  `data_len=147660`;image_len 962416 四方一致。对官方工具链镜像,ext=16 探测分支从不胜出,
+  处于休眠状态。
+- 即使这类镜像到达设备,IDF 自身没有探测:`esp_image_verify` 会在偏移 24 处读到伪段表,
+  直接判槽位 INVALID。设备不能、也不应该接受非标准布局。
+
+**决策(兼容性优先,2026-09-16 采纳)。** 把同样的 `[16, 0]` 自动探测移植进
+`sign-firmware.sh`(`compute_esp_image_len()`)与 `tools/signing/test_integration.c`
+(`esp_image_len()`),使三个解析器共享同一契约,§8 表不再列出已知不一致。理由:安装页是
+第三方二进制的开放输入边界;让签名/验签链也能*解析*同样的变体(设备的
+`esp_image_verify` 仍是拒绝畸形镜像的最终仲裁者),避免"页面接受、签名链无法处理"的契约
+分裂。对官方工具链镜像探测处于休眠,故该变更对现有构建行为中立。行动项已登记在
+`handoff-unsigned-rootcause.md` §4;尚未实现。

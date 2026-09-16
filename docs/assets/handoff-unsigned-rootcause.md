@@ -111,7 +111,10 @@ with the §3.1 root cause.
 ## 5. Minor Drifts (same chain, handle together)
 
 - The `sign-firmware.sh` / `test_integration.c` parsers have **no 16 B extended-header probe**
-  (`extract-app-image.js` has one) — not triggered by current images, but the contract is inconsistent.
+  (`extract-app-image.js` has one) — not triggered by current images, but the contract is
+  inconsistent. **Decision (2026-09-16, compatibility-first): port the same `[16, 0]`
+  auto-detect into both parsers** so all three share the contract; rationale and established
+  facts in `docs/development/engineering/debugging-workflow.md` §4. **Pending.**
 - The Wi-Fi path (`meta_net.c`) has signature protection (`meta_sign_detect_sector` → never overwrite a
   signed sector's MNAM); the USB page relies on the JS extraction being correct instead.
 

@@ -30,6 +30,7 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 | BSP, pins, buses, display, audio, battery | `docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md`, `components/bsp/include/bsp_pins.h` |
 | Launcher UI or menu | `main/main.c`, `components/bsp/` button and display APIs |
 | Build, test, dependencies, partitions | `docs/development/engineering/build-and-test.md`, `docs/development/engineering/protected-flash-layout.md`, `sdkconfig.defaults`, `partitions.csv` |
+| Debugging device-behavior or signature/installer issues | `docs/development/engineering/debugging-workflow.md`, `docs/BUGS.md`, `docs/assets/handoff-unsigned-rootcause.md` |
 | CI or release | the matching file in `docs/development/ci/CI-*.md` and `.github/workflows/` |
 | Project completion | full `./tools/validate.sh` gate + the acceptance checklist in `docs/assets/meta-pass-design.md` (§10) |
 | Documentation | `docs/contribution/doc-conventions.md`, `docs/README.md` |

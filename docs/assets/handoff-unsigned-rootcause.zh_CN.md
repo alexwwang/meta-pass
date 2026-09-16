@@ -97,7 +97,10 @@ xxd /tmp/device_tailsector.bin | head
 ## 5. 次要漂移(同链路,一并处理)
 
 - 脚本 `sign-firmware.sh` / 宿主测试 `test_integration.c` 解析器**无 16B 扩展头探测**
-  (`extract-app-image.js` 有)——当前镜像无扩展头不触发,但契约不一致。
+  (`extract-app-image.js` 有)——当前镜像无扩展头不触发,但契约不一致。**决策
+  (2026-09-16,兼容性优先):将同样的 `[16, 0]` 自动探测移植进两个解析器**,使三方共享
+  同一契约;理由与已确立事实见 `docs/development/engineering/debugging-workflow.zh_CN.md`
+  §4。**待实现。**
 - Wi-Fi 路径(`meta_net.c`)有签名保护(`meta_sign_detect_sector` → 已签名不写 MNAM);
   USB 页无等价运行时保护,依赖 JS 提取正确。
 

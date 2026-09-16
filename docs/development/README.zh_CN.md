@@ -25,6 +25,7 @@
 - [build-and-test.zh_CN.md](engineering/build-and-test.zh_CN.md)：构建与验证（ESP-IDF 命令、逻辑测试、改动验证要求）。
 - [protected-flash-layout.zh_CN.md](engineering/protected-flash-layout.zh_CN.md)：合并产物与保护分区的强制布局。
 - [coding-conventions.zh_CN.md](engineering/coding-conventions.zh_CN.md)：代码约定（语言风格、复用、注释、测试同步、资源约束等）。
+- [debugging-workflow.zh_CN.md](engineering/debugging-workflow.zh_CN.md)：根因排查工作流与签名验证排查的经验沉淀（案例历史、标准工作流、16B 扩展头决策）。
 
 ## CI（ci）
 

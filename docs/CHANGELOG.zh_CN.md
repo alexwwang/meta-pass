@@ -5,6 +5,7 @@
 # Changelog
 
 ## Unreleased
+- 签名验证链路加固（`feat/sign` 分支）：修复 BUG-01/02/04（未初始化电量标签、`HOST_TEST` 彩蛋魔数反转并新增 m1–m4 回归测试、`size_t` 日志改 `%zu`），安装页单一来源化（`server.mjs` 直接服务规范 `install-slot/`，关闭开发副本漂移，BUG-03），一键本地编译脚本（`tools/build-firmware.sh`），双语 bug 报告与根因知识库（`docs/BUGS.zh_CN.md`、`docs/assets/handoff-unsigned-rootcause.zh_CN.md`、`docs/assets/meta-pass-signing-design.zh_CN.md`、`docs/development/engineering/debugging-workflow.zh_CN.md`）。真机"未签名"症状的根因是线上部署的旧版安装页而非签名链；经修复页重刷后行为符合预期。
 - 新增 meta-pass 多固件启动器（`feature/meta-pass` 分支）：分区表在保留 `factory`/`cardid` 契约的前提下新增 `otadata` 与三个大小不等的 OTA 槽位（`ota_0@0x180000` / `0x1D6000`、`ota_1@0x360000` / `0x200000`、`ota_2@0x560000` / `0x29E000`）；启用应用回滚（未适配子固件任何重启后自动回退启动器）；Wi-Fi SoftAP + 网页导入固件（随机密码 + 屏幕一次性配对码，1024 字节分块流式写入）；镜像强制完整性校验（magic/chip-id/大小/SHA-256 显示，`esp_ota_end()` 权威复核），未签名固件启动前弹警告页走 BOOT / CANCEL 菜单确认；本地管理界面支持查看/启动/删除槽位固件；BSP 按键暴露显式 `BSP_BTN_LONG`（1.5 秒）阈值；纯逻辑模块（镜像校验、槽位注册表、导入状态机）配 host tests 并接入静态门禁。设计文档见 `docs/assets/meta-pass-design.zh_CN.md`。
 - 第二导入通道（USB 串口，`tools/install-slot/`）：Chrome + Web Serial + esptool-js 在
   ROM 下载模式（按住 UP 键开机）下把子固件直接写入槽位；本地 `.bin`（Full 镜像自动
