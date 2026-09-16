@@ -14,3 +14,6 @@ tools/signing/bin/
 
 # 模拟器 QEMU wasm(3.3MB 第三方预编译产物,由 tools/sim/run-sim-test.sh 从 passport-sim 复制)
 tools/sim/esp_emu_bg.wasm
+# QEMU 测试构建产物(仅 tools/test-bootable-qemu.mjs 本地使用)
+build-qemu/
+sdkconfig.qemu-bak
