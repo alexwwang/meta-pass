@@ -91,7 +91,8 @@ cp -f build/bootloader/bootloader.bin          build/upgrade/bootloader.bin
 cp -f build/partition_table/partition-table.bin build/upgrade/partition-table.bin
 cp -f build/FoloToy-AI-Passport.bin             build/upgrade/FoloToy-AI-Passport.bin
 cp -f build/ota_data_initial.bin                build/upgrade/ota_data_initial.bin
-# 单文件升级容器(MPUP):市场分发要求升级产物是且仅是一个文件;
+# 单文件升级容器(MPUP):线刷页专用(解包+逐段校验+分区表比对后按地址写入);
+# 市场分发用另产的 meta-pass-bootable_<版本>.bin(原样写 0x0 即可引导)。
 # 四段镜像打包进一个 .bin,线刷页选这一个文件、按段表逐段写入各分区地址。
 python3 - <<'PYEOF'
 import sys
@@ -129,6 +130,27 @@ version = __import__("subprocess").run(
     capture_output=True, text=True).stdout.strip() or "v0.0.0-dev"
 (U / f"meta-pass-upgrade_{version}.bin").write_bytes(bytes(out))
 print(f"MPUP container: {len(out)} bytes ({len(PLAN)} segments)")
+
+# ---- 市场分发镜像:可引导单文件小镜像(~1.1MB,原样写 0x0 即可引导)----
+# MPUP 容器是自定义格式,只有本仓库线刷页认识;市场刷机工具是"原样写 0x0",
+# 需要 0x0 处就是 bootloader。这里把 bootloader+分区表+app 按 flash 偏移铺平成
+# 一张连续小镜像(约 1.07MB),与 8MB 全量镜像的差异仅是不含 otadata/数据区:
+#   空白机:otadata 本就是擦除态 → 引导 factory ✓
+#   已装子固件的 meta-pass 机:otadata 保留,若指向子固件槽,bootloader 校验
+#   失败自动回退 factory(长按 OK 也能回 launcher),无变砖路径 ✓
+#   零售原厂机:0x7FE000 区域无有效 otadata → 引导 factory ✓
+bl = (Path("build/bootloader/bootloader.bin")).read_bytes()
+pt = (Path("build/partition_table/partition-table.bin")).read_bytes()
+app = (Path("build/FoloToy-AI-Passport.bin")).read_bytes()
+assert bl[0] == 0xE9, "bootloader magic"
+assert pt[:2] == b"\xAA\x50", "partition table magic"
+assert app[0] == 0xE9, "app magic"
+bootable = bytearray(0x10000 + len(app))
+bootable[0:len(bl)] = bl
+bootable[0x8000:0x8000+len(pt)] = pt
+bootable[0x10000:0x10000+len(app)] = app
+(Path("build") / f"meta-pass-bootable_{version}.bin").write_bytes(bytes(bootable))
+print(f"Bootable market image: {len(bootable)} bytes (bootloader+table+app)")
 PYEOF
 cat > build/upgrade/flash-args.txt <<'EOF'
 # launcher 升级最小写入集:升级 meta-pass 不动用户数据。
@@ -155,8 +177,9 @@ cat <<EOF
 
 产物(build/ 下):
   meta-pass_${VERSION}.bin          完整 8MB 镜像(出厂/全量烧写用;数据区为擦除态)
+  meta-pass-bootable_${VERSION}.bin 市场分发镜像 ~1.1MB(bootloader+分区表+app,原样写 0x0 即可引导)
   FoloToy-AI-Passport.bin           app 分区镜像(OTA / 安装页导入用)
-  upgrade/meta-pass-upgrade_${VERSION}.bin  单文件升级容器(市场分发用,推荐)
+  upgrade/meta-pass-upgrade_${VERSION}.bin  单文件升级容器(本仓库线刷页专用)
   upgrade/{4 个分段 bin + flash-args.txt}   命令行烧写用原始分段
 
 升级已装的 meta-pass(保留 NVS 存储数据与全部子固件,推荐):

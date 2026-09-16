@@ -297,9 +297,10 @@ const I18N = {
     msg_syncing: "Syncing with ROM bootloader…",
     msg_chip_connected: "Connected: {chip}",
     msg_connecting: "Connecting…",
+    msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
-    msg_baud_upgraded: "Serial speed raised to 921600 baud (faster reads/writes).",
-    msg_baud_fallback: "Could not raise serial speed, staying at 115200: {err}",
+    msg_read_fast: "Fast flash reads enabled (4 KB blocks, 64-deep window).",
+    msg_read_slow: "Fast reads rejected by device ({err}) — using conservative 1 KB blocks (slower).",
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
     msg_connect_failed: "Connect failed: {err}",
@@ -343,7 +344,9 @@ const I18N = {
     msg_backup_start: "Backing up slots…",
     msg_backup_reading: "Reading slot {slot} ({size} at {addr})… this can take a minute per slot.",
     msg_backup_slot_done: "Slot {slot}: {firmware}",
-    msg_backup_read_retry: "Slot {slot}: read error at {addr} ({err}) — retrying ({n}/3)…",
+    msg_backup_read_retry: "Slot {slot}: read error at {addr} ({err}) — retrying ({n}/{total})…",
+    msg_backup_resync_failed: "Serial re-sync failed ({err}) — giving up this slot.",
+    msg_backup_all_failed: "All selected slots failed to read — no backup produced.",
     msg_backup_read_failed: "Slot {slot}: read failed after 3 retries — skipped, other slots continue.",
     msg_backup_partial: "Backup saved with skipped slots: {slots}. Those slots are NOT in the zip.",
     msg_backup_save_cancelled: "Save cancelled — backup data was discarded, nothing written.",
@@ -428,9 +431,10 @@ const I18N = {
     msg_syncing: "正在与 ROM bootloader 同步…",
     msg_chip_connected: "已连接:{chip}",
     msg_connecting: "连接中…",
+    msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
-    msg_baud_upgraded: "串口速率已提升到 921600,读写更快。",
-    msg_baud_fallback: "串口提速失败,维持 115200:{err}",
+    msg_read_fast: "快速读取已启用(4KB 块 / 64 块在途窗口)。",
+    msg_read_slow: "设备不支持快速读取({err})—— 回退 1KB 慢速模式。",
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
     msg_connect_failed: "连接失败:{err}",
@@ -474,7 +478,9 @@ const I18N = {
     msg_backup_start: "开始备份槽位…",
     msg_backup_reading: "读取槽位 {slot}({size} @ {addr})… 每个槽位可能需要一分钟。",
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
-    msg_backup_read_retry: "槽位 {slot}:读取 {addr} 出错({err})—— 重试({n}/3)…",
+    msg_backup_read_retry: "槽位 {slot}:读取 {addr} 出错({err})—— 重试({n}/{total})…",
+    msg_backup_resync_failed: "串口重同步失败({err})—— 放弃当前槽位。",
+    msg_backup_all_failed: "所选槽位全部读取失败,未产出备份。",
     msg_backup_read_failed: "槽位 {slot}:重试 3 次后仍失败 —— 已跳过,其余槽位继续。",
     msg_backup_partial: "备份已保存,但部分槽位被跳过:{slots}。这些槽位不在 zip 中。",
     msg_backup_save_cancelled: "已取消保存 —— 备份数据已丢弃,未写入任何文件。",
@@ -608,6 +614,7 @@ import("./vendor/esptool-js.js")
 // ===== 运行状态 =====
 let transport = null;
 let loader = null;
+let connecting = false; // 连接流程进行中:防止重入把串口搞成半开状态
 let busy = false;
 let activeTab = "local";
 let localImage = null;   // { data, length, source, name }
@@ -775,28 +782,42 @@ $("btn-connect").addEventListener("click", async () => {
     log(t("msg_esptool_loading"), "error");
     return;
   }
+  if (busy || connecting) { log(t("msg_busy"), "warn"); return; }   // 操作/连接进行中禁止重入
+  connecting = true;
+  let newTransport = null;   // 本轮连接的传输层:失败只清理它,不碰已有连接
   try {
     log(t("msg_requesting_port"));
     $("chip-status").textContent = t("msg_connecting");   // 立即反馈,连接失败时状态行不过期
     $("chip-status").className = "";
     const port = await navigator.serial.requestPort();
-    transport = new Transport(port, false);
+    newTransport = new Transport(port, false);
     // 连接期即监听系统级断开(拔线/休眠/设备重启):状态行同步刷新,按钮即时锁定。
     port.addEventListener("disconnect", () => { if (transport?.device === port) markDisconnected(); });
-    loader = new ESPLoader({ transport, baudrate: 115200, romBaudrate: 115200 });
+    const newLoader = new ESPLoader({ transport: newTransport, baudrate: 115200, romBaudrate: 115200 });
     log(t("msg_syncing"));
-    const chip = await loader.main(); // 同步 + 识别芯片(内部已加载 stub)
-    // stub 已在 RAM 运行:changeBaud() 走 ESP_CHANGE_BAUDRATE 切速后重连。
-    // 提速到 921600(8 倍):读取 5.8MB 从约 12 分钟降到约 1.5 分钟。
-    // 失败可降级:保持 115200 慢速路径,功能不受影响。
+    const chip = await newLoader.main(); // 同步 + 识别芯片(内部已加载 stub)
+    // 波特率对 C3 原生 USB 是虚设参数(真波特率只对外接 UART 桥板有意义),
+    // changeBaud() 的断开/重连舞蹈只增加故障面 → 不做。读取提速走 readFlash
+    // 的块/窗口命令参数,见下。
+    // 读取提速:readFlash(0xD0) 的块大小/流量窗口是命令参数。
+    // stub 侧 handle_flash_read() 用栈上 4KB 定长缓冲,block_size > 4096 时
+    // 静默 return(不报错!)→ 块大小绝不能超 4KB;esptool.py 官方即 4KB 块/64 窗。
+    // 提速靠放大在途窗口(64 个 4KB 块 = 256KB 在途):stub 连续吐 64 块才等
+    // 一次 ACK,往返次数降 64 倍。探针验证数据完整性,异常即回退出厂参数。
+    globalThis.__READFLASH_PARAMS__ = [4096, 64];
     try {
-      loader.baudrate = 921600;
-      await loader.changeBaud();
-      log(t("msg_baud_upgraded"), "ok");
-    } catch (baudErr) {
-      loader.baudrate = 115200;
-      log(t("msg_baud_fallback", { err: baudErr.message }), "warn");
+      const probe = await withTimeout(newLoader.readFlash(0x0, 0x4000), 15000, "probe timeout");
+      if (probe.length !== 0x4000) throw new Error(`short read ${probe.length}`);
+      if (probe[0] !== 0xe9) throw new Error(`bootloader magic 0x${probe[0].toString(16)} != 0xe9`);
+      log(t("msg_read_fast"), "ok");
+    } catch (probeErr) {
+      globalThis.__READFLASH_PARAMS__ = [4096, 1024];
+      try { await newLoader.readFlash(0x0, 0x1000); } catch { /* 连接层问题,后续操作自会暴露 */ }
+      log(t("msg_read_slow", { err: probeErr.message }), "warn");
     }
+    // 全部就绪才提交到全局:此前任何一步失败都不影响已有/后续连接。
+    transport = newTransport;
+    loader = newLoader;
     $("chip-status").textContent = t("msg_chip_connected", { chip });
     $("chip-status").className = "ok";
     log(t("msg_connected", { chip }), "ok");
@@ -804,13 +825,29 @@ $("btn-connect").addEventListener("click", async () => {
       log(t("msg_warn_chip", { chip }), "error");
     }
   } catch (err) {
-    loader = null;
-    $("chip-status").textContent = t("msg_connect_failed", { err: err.message });
-    $("chip-status").className = "error";
+    // 失败必须释放本轮已打开的串口:否则下次 open 同一端口会抛
+    // "The port is already open",设备从此连不上(只能重开页面)。
+    // 用户在 requestPort 取消选择时不碰已有连接。
+    try { await newTransport?.disconnect(); } catch { /* 已断开则忽略 */ }
+    if (transport === newTransport) { transport = null; loader = null; }  // 已提交过则整体回滚
+    if (!transport) {   // 没有存活连接才把状态行置为失败,避免覆盖有效连接的显示
+      $("chip-status").textContent = t("msg_connect_failed", { err: err.message });
+      $("chip-status").className = "error";
+    }
     log(t("msg_connect_failed", { err: err.message }), "error");
+  } finally {
+    connecting = false;
   }
   refreshInstallButton();
 });
+
+// 带超时的 Promise 竞速:防止设备端静默(不回错误)时连接流程无限挂死。
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} (${Math.round(ms / 1000)}s)`)), ms)),
+  ]);
+}
 
 // ===== 2. 槽位选择(radio 直接读值,无需额外逻辑)=====
 
@@ -1027,20 +1064,19 @@ function setBackupProgress(pct) { $("backup-bar").style.width = `${Math.max(0, M
 // 报 "No serial data received")。64KB/块 + 每块自动重试 3 次,偶发抖动自愈;
 // 数据流式拼入 slotBuf,进度按块推进。
 const BACKUP_CHUNK = 0x10000;
-const BACKUP_RETRIES = 3;
-// 读失败后的传输层恢复:esptool-js 的 readFlash 数据流中途中断时(read() 抛
-// "No serial data received" / "Packet content transfer stopped"),stub 端可能仍在
-// 发送剩余数据,传输缓冲里残留半包/碎包。直接重试会把残包当响应解析 → 连续失败。
-// 恢复 = 排空线路残留 → 重新 sync stub。sync 失败按致命处理(stub/传输层已死)。
-async function resyncAfterReadError() {
-  // a) 一次性清空传输层已缓冲的陈旧字节(buffer.length >= want 时 newRead 立即整块返回)。
-  const pending = loader.transport.inWaiting();
-  if (pending > 0) {
-    try { await loader.transport.newRead(pending, 100); } catch { /* 清不干净也无妨,下面继续 */ }
-  }
-  // b) 等 stub 把中断读取的剩余数据吐完(最多 1 块 64KB,115200 波特 ≈ 5.7s):
-  //    线路静默 300ms 即认为结束。newRead 超时返回空并顺带清空内部缓冲,正好用作静默探测。
-  //    若不先排空就 sync,同步帧会混进 stub 的发送流里被吞掉 → sync 必败。
+const BACKUP_RETRIES = 5;
+// 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 1KB 等浏览器
+// 回 4 字节累计确认(在途窗口 4096B)。中断后若只清缓冲不补确认,stub 会永远卡在
+// "等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧会被吞掉 → sync 必败
+// (实测日志:重试(1/3) 后同秒直接放弃,即 sync 抛错 break)。恢复顺序:
+//   a) 补发"整块已收满"确认帧 → 流量窗口全开,stub 发完剩余字节后回命令循环;
+//   b) 排空线路残留(300ms 静默视为发完,上限 15s 保护);
+//   c) sync 重新同步;失败则 flush 后再试一次(首试可能撞上残留帧),仍败按传输层已死处理。
+async function resyncAfterReadError(chunkSize) {
+  const ack = new Uint8Array([
+    chunkSize & 255, (chunkSize >> 8) & 255, (chunkSize >> 16) & 255, (chunkSize >> 24) & 255,
+  ]);
+  try { await loader.transport.write(ack); } catch { /* 发不出去则 sync 会给出结论 */ }
   const t0 = Date.now();
   for (;;) {
     if (Date.now() - t0 > 15000) break;   // 上限保护:stub 若持续乱吐,按不可恢复处理
@@ -1049,8 +1085,12 @@ async function resyncAfterReadError() {
     try { chunk = await loader.transport.newRead(want, 300); } catch { break; }
     if (!chunk || chunk.length === 0) break;
   }
-  // c) 重新同步 stub(此时它已回到命令循环):sync 成功后协议状态干净,可安全重试。
-  await loader.sync();
+  try {
+    await loader.sync();
+  } catch (e1) {
+    try { await loader.transport.flushInput(); } catch { /* ignore */ }
+    await loader.sync();   // 二次机会:首试可能撞上残留帧
+  }
   await new Promise((r) => setTimeout(r, 50));
 }
 async function readFlashChunked(start, size, onProgress, onRetry) {
@@ -1061,8 +1101,12 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
     let chunk = null, lastErr = null;
     for (let attempt = 1; attempt <= BACKUP_RETRIES && !chunk; attempt++) {
       if (attempt > 1) {
-        try { await resyncAfterReadError(); }
-        catch (syncErr) { lastErr = syncErr; break; }   // re-sync 失败 = 传输层已死,放弃该槽
+        try { await resyncAfterReadError(n); }
+        catch (syncErr) {
+          lastErr = syncErr;
+          log(t("msg_backup_resync_failed", { err: syncErr.message }), "warn");
+          break;   // re-sync 失败 = 传输层已死,放弃该槽
+        }
       }
       try {
         chunk = await loader.readFlash(start + got, n);
@@ -1106,7 +1150,7 @@ $("btn-backup").addEventListener("click", async () => {
         data = await readFlashChunked(
           s.offset, s.size,
           (got) => setBackupProgress(((i + got / s.size) / slots.length) * 100),
-          (addr, err, attempt) => log(t("msg_backup_read_retry", { slot, addr: hex(addr), err: err.message, n: attempt }), "warn"),
+          (addr, err, attempt) => log(t("msg_backup_read_retry", { slot, addr: hex(addr), err: err.message, n: attempt, total: BACKUP_RETRIES }), "warn"),
         );
       } catch (err) {
         log(t("msg_backup_read_failed", { slot }), "error");
@@ -1154,7 +1198,7 @@ $("btn-backup").addEventListener("click", async () => {
         firmware: `${fmtBytes(sliced.firmware.length)} + ${slotFiles.length - 1} metadata/data file(s)`,
       }), "ok");
     }
-    if (backedUp.length === 0) throw new Error(t("msg_backup_empty", { slot: "0/1/2" }));
+    if (backedUp.length === 0) throw new Error(t("msg_backup_all_failed"));
     // manifest:所有 slot 合并为一份(按 slot 分组),sha256 是唯一事实来源,恢复时据此校验
     const manifestObj = {
       manifest_version: 1,
