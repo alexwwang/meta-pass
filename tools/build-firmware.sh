@@ -124,7 +124,7 @@ cat <<EOF
 升级已装的 meta-pass(保留 Wi-Fi 配置与全部子固件,推荐):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
   2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
-  3. Connect → "Upgrade launcher" → 选择 upgrade/FoloToy-AI-Passport.bin → Upgrade
+  3. Connect → "Upgrade launcher" → 选择 upgrade/ 整个文件夹(含 4 个文件) → Upgrade
   (页面会先读回设备分区表逐字节比对,不一致则拒绝升级)
 
 安装到设备(首次烧录,USB 安装页自动处理签名/显示名):
