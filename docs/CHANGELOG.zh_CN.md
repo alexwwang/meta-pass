@@ -5,6 +5,14 @@
 # Changelog
 
 ## Unreleased
+- 修复备份读取反复失败（"Packet content transfer stopped" / "No serial data received",
+  重试永不恢复）的根因：esptool stub 在 flash 读取数据帧结束后会无条件追加一帧 16 字节
+  MD5 digest（`stub_commands.c`）,而 esptool-js 从不读它——残帧滞留传输缓冲、毒化下一条
+  命令的响应，协议错位随每次 `readFlash` 累积。`install-slot/vendor/esptool-js.js` 现在
+  逐帧 ACK 并读取/校验 digest 帧（与 `esptool.py read_flash` 完全对齐）；新增
+  `install-slot/vendor/md5.js` 提供 digest 校验；读取参数钉死为官方值（4KB 块——stub 硬
+  上限——与 64 帧在途窗口）。由 `tools/install-slot/test-readflash-protocol.mjs`
+  （mock stub 协议测试，已接入 `validate.sh`）覆盖。
 - 新增 `tools/test-bootable-qemu.mjs`：无头 QEMU 引导验证——用 passport-sim 的 QEMU WASM 核心
   实际引导构建产物，断言三件事：UART0 测试变体走完 bootloader→分区表→factory app→app_main
   全链路；MPUP 升级容器被原样写 0x0 时确实无法引导（负例，与真机实测一致）；市场镜像

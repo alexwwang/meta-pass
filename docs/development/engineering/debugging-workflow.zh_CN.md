@@ -10,7 +10,7 @@
 > `docs/assets/handoff-unsigned-rootcause.zh_CN.md`;契约:
 > `docs/assets/meta-pass-signing-design.zh_CN.md`。
 
-## 1. 案例历史(三轮排查,实际发生了什么)
+## 1. 案例历史(四轮排查,实际发生了什么)
 
 **第一轮 —— 对照设计文档的全分支静态审查。** 对照 `docs/assets/meta-pass-design.md`
 审查全分支,产出 BUG-01…04(未初始化电量标签、`HOST_TEST` stub 彩蛋魔数反转、开发版
@@ -30,6 +30,21 @@ Cloudflare 部署同源;尾扇区永远单次 `writeFlash` 写入。
 组装槽位字节 → 喂给真实固件验签器(真 mbedtls)→ `META_SIG_OK`。随后用户经修复后的页面
 重刷,真机行为符合预期。通用教训:**当宿主与设备结论相悖,在宿主上逐字节复现变换过程,把
 结果喂给为宿主编译的设备侧代码** —— 这把无法证伪的"flash 内容可能不同"变成具体的通过/失败。
+
+**第四轮 —— 备份必败:"Packet content transfer stopped / No serial data received",
+重试从不恢复。** 三轮看似合理的补丁(分块读、重试前重同步、流水线 ACK 窗口)都没修好,
+其中两次还引入回归(超过 stub 上限的读取块被静默忽略 → 会话假死;无超时的探针 → 串口
+占死)。真正的根因只有读了 **stub 源码**(`flasher_stub/stub_commands.c`)才实锤:
+`handle_flash_read` 在数据帧发完后**无条件**追加一帧 16 字节 MD5 digest,而久经验证的
+参照实现(`esptool.py read_flash`)会读取并校验它 —— **esptool-js(所有版本,含我们的
+vendored 副本)从不读这一帧**。残帧滞留在传输缓冲里毒化下一条命令的响应 → 协议错位随
+每次 `readFlash` 调用累积 → 大量读取(备份)必败,且每次重试继承错位的缓冲 —— 这就是
+盲重试永远无法恢复的原因。写入路径根本不走 readFlash,所以安装/升级一直正常而备份一直
+失败。修复:逐帧 ACK(esptool.py 语义)、读取并校验 digest 帧(本地 MD5)、块大小 ≤ 4KB
+(stub 硬上限,超限静默忽略)、以及回放 mock stub 的协议级单测
+(`tools/install-slot/test-readflash-protocol.mjs`)。元教训:**当第三方客户端库与同一
+协议的可用参照实现行为不一致时,先读服务端(stub/固件)源码和参照客户端,再考虑在坏
+客户端外围修补失败处理** —— 重试逻辑永远无法补偿协议一致性 bug。
 
 ## 2. 经验教训(下次怎么做)
 

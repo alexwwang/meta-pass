@@ -190,7 +190,9 @@ import {
   checkRestoreFit, restoreOrder, isAllFF, probeOffsets, buildRawMirror, rawMirrorFileName,
   firmwareFileName, extraFileName, tailFileName, MANIFEST_NAME,
 } from "./slot-backup.js";
-import { deflate } from "./vendor/pako.js";  import {
+import { deflate } from "./vendor/pako.js";
+import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlash digest 校验用)
+  import {
     checkUpgradeBundle,
     comparePartitionTables,
     upgradeWritePlan,
@@ -299,8 +301,7 @@ const I18N = {
     msg_connecting: "Connecting…",
     msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
-    msg_read_fast: "Fast flash reads enabled (4 KB blocks, 256 KB in-flight window).",
-    msg_read_slow: "Fast reads rejected by device ({err}) — using conservative 1 KB blocks (slower).",
+    msg_read_fast: "Flash read protocol aligned with esptool.py (per-frame ACK + MD5 digest verification).",
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
     msg_connect_failed: "Connect failed: {err}",
@@ -433,8 +434,7 @@ const I18N = {
     msg_connecting: "连接中…",
     msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
-    msg_read_fast: "快速读取已启用(4KB 块 / 256KB 在途窗口)。",
-    msg_read_slow: "设备不支持快速读取({err})—— 回退 1KB 慢速模式。",
+    msg_read_fast: "读取协议已对齐 esptool.py(逐帧 ACK + MD5 校验帧)。",
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
     msg_connect_failed: "连接失败:{err}",
@@ -799,23 +799,15 @@ $("btn-connect").addEventListener("click", async () => {
     // 波特率对 C3 原生 USB 是虚设参数(真波特率只对外接 UART 桥板有意义),
     // changeBaud() 的断开/重连舞蹈只增加故障面 → 不做。读取提速走 readFlash
     // 的块/窗口命令参数,见下。
-    // 读取提速:readFlash(0xD0) 的块大小/在途窗口是命令参数,stub 侧两者都按
-    // 字节计数(handle_flash_read)。块大小有 4KB 硬上限(栈缓冲),超限静默
-    // return(不报错!);esptool.py 官方即 4KB 块。提速靠放大在途窗口到 256KB
-    // (64 块 × 4KB):窗口 > 单次读长时 stub 连续吐完整个请求才等一次 ACK,
-    // 往返次数降 64 倍;JS 端同步改为按窗口 ACK(esptool-js.js 同改),避免
-    // 突发期间的逐帧 ACK 堆积成垃圾命令。探针验证数据完整性,异常即回退出厂参数。
-    globalThis.__READFLASH_PARAMS__ = [4096, 0x40000];
-    try {
-      const probe = await withTimeout(newLoader.readFlash(0x0, 0x4000), 15000, "probe timeout");
-      if (probe.length !== 0x4000) throw new Error(`short read ${probe.length}`);
-      if (probe[0] !== 0xe9) throw new Error(`bootloader magic 0x${probe[0].toString(16)} != 0xe9`);
-      log(t("msg_read_fast"), "ok");
-    } catch (probeErr) {
-      globalThis.__READFLASH_PARAMS__ = [4096, 1024];
-      try { await newLoader.readFlash(0x0, 0x1000); } catch { /* 连接层问题,后续操作自会暴露 */ }
-      log(t("msg_read_slow", { err: probeErr.message }), "warn");
-    }
+    // 读取协议参数:与 esptool.py 官方完全一致(4KB 块 / max_in_flight=64 帧)。
+    // 关键修复在 readFlash 本身(vendor/esptool-js.js):①每帧 ACK(官方语义,
+    // 回退此前“按窗口 ACK”的激进改动);②读完数据帧后读走并校验 stub 无条件
+    // 追加的 16B MD5 digest 帧(stub_commands.c:MD5Final+SLIP_send)——esptool-js
+    // 上游从不读它,残帧滞留传输缓冲毒化下一条命令,这正是备份反复
+    // "Packet content transfer stopped / No serial data received"且重试必败、
+    // 而写入路径从不踩坑的根因。参数已是官方久经验证值,无需探针。
+    globalThis.__READFLASH_PARAMS__ = [4096, 64];
+    log(t("msg_read_fast"), "ok");
     // 全部就绪才提交到全局:此前任何一步失败都不影响已有/后续连接。
     transport = newTransport;
     loader = newLoader;

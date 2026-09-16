@@ -5,6 +5,16 @@
 # Changelog
 
 ## Unreleased
+- Fix the root cause of backup read failures ("Packet content transfer stopped" / "No serial
+  data received", retries never recovering): the esptool stub appends an unconditional 16-byte
+  MD5 digest frame after flash-read data frames (`stub_commands.c`), which esptool-js never
+  reads — the leftover frame poisons the next command's response and protocol desync
+  accumulates per `readFlash` call. `install-slot/vendor/esptool-js.js` now ACKs per data
+  frame and reads/verifies the digest frame (matching `esptool.py read_flash`); new
+  `install-slot/vendor/md5.js` provides the digest check; read params pinned to the official
+  values (4 KB block — the stub's hard limit — and 64-frame in-flight window). Covered by
+  `tools/install-slot/test-readflash-protocol.mjs` (mock-stub protocol test, wired into
+  `validate.sh`).
 - Add `tools/test-bootable-qemu.mjs`: headless QEMU boot verification — boots build artifacts
   through the passport-sim QEMU WASM core and asserts three things: the UART0 test variant
   completes bootloader → partition table → factory app → app_main; the MPUP upgrade container

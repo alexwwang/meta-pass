@@ -39,6 +39,27 @@ on-device behavior as expected after re-flashing through the fixed page. The gen
 result to the device-side code compiled for the host** — this converts an unfalsifiable
 "maybe the flash content differs" into a concrete pass/fail.
 
+**Round 4 — backup always fails with "Packet content transfer stopped / No serial data
+received", retries never recover.** Three rounds of plausible-looking patches (chunked read,
+resync-before-retry, pipelined ACK window) did not fix it, and two of them introduced
+regressions (an oversized read block that the stub silently ignores → dead session; a probe
+with no timeout → stuck serial port). The real root cause was found only by reading the
+**stub source** (`flasher_stub/stub_commands.c`): `handle_flash_read` unconditionally appends
+a 16-byte MD5 digest frame after the data frames, and the battle-tested reference
+(`esptool.py read_flash`) reads and verifies it — while **esptool-js (all versions, including
+our vendored copy) never reads that frame**. The leftover digest frame stays in the transport
+buffer and poisons the next command's response → protocol desync that accumulates per
+`readFlash` call → bulk reads (backup) always fail mid-stream, and every retry inherits the
+desynced buffer, which is why blind retries never recover. Writes never hit the code path,
+which is why install/upgrade always worked while backup always failed. Fixes: per-frame ACK
+(esptool.py semantics), read + verify the digest frame (using a local MD5), block size ≤ 4 KB
+(the stub's hard limit; larger values are silently ignored), and a protocol-level unit test
+that replays a mock stub (`tools/install-slot/test-readflash-protocol.mjs`). Meta-lesson:
+**when a third-party client library disagrees with a working reference implementation on the
+same protocol, read the server-side (stub/firmware) source and the reference client before
+patching failure handling around the broken client** — retry logic cannot compensate for a
+protocol-conformance bug.
+
 ## 2. Lessons (what to do differently)
 
 1. **Verify the signer before the transport.** When "valid file, device disagrees", first
