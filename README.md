@@ -166,8 +166,10 @@ tools/build-firmware.sh
 
 That's it. The script finds ESP-IDF v5.5.3 automatically (`~/esp/esp-idf-v5.5.3`,
 or pass `--idf-path <dir>`), builds, merges the 8 MB full image, verifies the
-protected layout, drops artifacts into `build/` (`meta-pass_v<version>.bin`,
-`FoloToy-AI-Passport.bin`) and prints install/flash instructions. If ESP-IDF is
+protected layout **and upgrade safety** (the NVS / cardid / ota_0-2 / otadata
+regions must stay erased in the artifact), drops artifacts into `build/`
+(`meta-pass_v<version>.bin`, `FoloToy-AI-Passport.bin`, and a `upgrade/`
+launcher-upgrade bundle) and prints install/flash instructions. If ESP-IDF is
 missing it prints step-by-step install commands. First-time install of ESP-IDF:
 
 ```bash
@@ -175,6 +177,30 @@ mkdir -p ~/esp
 git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3
 ~/esp/esp-idf-v5.5.3/install.sh esp32c3
 ```
+
+### Upgrading the launcher without losing data
+
+The partition layout is stable, so launcher upgrades never need to touch user
+data. Two paths:
+
+- **USB installer page (recommended)** — section "7. Upgrade launcher": pick
+  the `build/upgrade/` folder produced by `tools/build-firmware.sh`. The page
+  reads back the device partition table and byte-compares it against the
+  bundle (a layout mismatch refuses the upgrade), then writes only the factory
+  app, partition table, bootloader, and the OTA-data reset (erased). NVS
+  (Wi-Fi config), `cardid`, and all three child-firmware slots stay untouched.
+- **Command line** — flash the four files listed in `build/upgrade/flash-args.txt`:
+
+```bash
+python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \
+  0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
+```
+
+Never flash the full 8 MB image (`meta-pass_v<version>.bin`) over an existing
+installation to "upgrade": esptool erases every sector it writes, so any
+carried data would destroy the device's NVS and installed child firmware. The
+full image is for factory flashing only; `tools/verify_firmware.py` enforces
+that it carries no data in the user-data regions.
 
 ### Full validation gates
 

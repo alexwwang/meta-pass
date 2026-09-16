@@ -84,8 +84,27 @@ info "合并 8MB 完整镜像(merge-bin)"
 idf.py merge-bin -o FoloToy-AI-Passport-full.bin >/dev/null \
     || fail "merge-bin 失败(注意:输出路径必须是文件名,见 docs/BUGS.md 记录)"
 
-# ---- 4. 受保护布局校验 ---------------------------------------------------
-info "校验受保护固件布局(verify_firmware.py)"
+# ---- 5. 生成 launcher 升级包(仅刷 factory/分区表/bootloader/otadata,NVS 与子固件槽零接触)----
+info "生成 launcher 升级包(build/upgrade/)"
+mkdir -p build/upgrade
+cp -f build/bootloader/bootloader.bin          build/upgrade/bootloader.bin
+cp -f build/partition_table/partition-table.bin build/upgrade/partition-table.bin
+cp -f build/FoloToy-AI-Passport.bin             build/upgrade/FoloToy-AI-Passport.bin
+cp -f build/ota_data_initial.bin                build/upgrade/ota_data_initial.bin
+cat > build/upgrade/flash-args.txt <<'EOF'
+# launcher 升级最小写入集:升级 meta-pass 不动用户数据。
+#   NVS(0x9000, Wi-Fi 配置)、cardid、ota_0/1/2(已装子固件)全部保留。
+# esptool 命令:
+#   python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \
+#     0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
+0x0 bootloader.bin
+0x8000 partition-table.bin
+0x10000 FoloToy-AI-Passport.bin
+0x7fe000 ota_data_initial.bin
+EOF
+
+# ---- 6. 受保护布局与升级安全校验 ----
+info "校验受保护固件布局与升级安全(verify_firmware.py)"
 python3 tools/verify_firmware.py build/ || fail "布局校验未通过"
 
 # ---- 5. 汇总产物与烧写指引 -----------------------------------------------
@@ -96,11 +115,19 @@ info "构建完成 ✓"
 cat <<EOF
 
 产物(build/ 下):
-  meta-pass_${VERSION}.bin          完整 8MB 镜像(blearner/全量烧写用)
+  meta-pass_${VERSION}.bin          完整 8MB 镜像(出厂/全量烧写用;数据区为擦除态)
   FoloToy-AI-Passport.bin           app 分区镜像(OTA / 安装页导入用)
-  bootloader/partition_table        引导与分区表
+  upgrade/                          launcher 升级包(推荐用于升级,见下)
+    FoloToy-AI-Passport.bin         factory app
+    partition-table.bin / bootloader.bin / ota_data_initial.bin
 
-安装到设备(推荐,USB 安装页自动处理签名/显示名):
+升级已装的 meta-pass(保留 Wi-Fi 配置与全部子固件,推荐):
+  1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
+  2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
+  3. Connect → "Upgrade launcher" → 选择 upgrade/FoloToy-AI-Passport.bin → Upgrade
+  (页面会先读回设备分区表逐字节比对,不一致则拒绝升级)
+
+安装到设备(首次烧录,USB 安装页自动处理签名/显示名):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
   2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
   3. Connect → 选槽位 → 选择 build/meta-pass_${VERSION}.bin → Install

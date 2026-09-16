@@ -231,6 +231,28 @@ hardware level. Trust comes from user judgment + pairing-code physical possessio
 trial-boot isolation. eFuse write protection / Secure Boot v2 (irreversible) is deferred
 for separate evaluation.
 
+## 7.2 Launcher Upgrade Contract (data-preserving)
+
+The partition layout is stable; launcher upgrades must never touch user data.
+Binding rules:
+
+- **Allowed write set** (the only regions an in-place upgrade may write):
+  `bootloader@0x0`, `partition-table@0x8000`, factory app `@0x10000`, and
+  `otadata@0x7FE000` written in its erased state (boot back to factory).
+- **Never written**: `nvs@0x9000` (Wi-Fi credentials), `cardid@0x356000`,
+  `ota_0/1/2` (installed child firmware). These survive every upgrade.
+- **Layout gate**: before writing, the installer reads back the device
+  partition table (4 KB at `0x8000`) and byte-compares it with the upgrade
+  bundle's `partition-table.bin`. Any difference refuses the upgrade — the
+  "only factory moves" assumption no longer holds.
+- **Artifact gate**: `tools/verify_firmware.py` requires the merged 8 MB image
+  to keep `nvs`/`ota_0`/`ota_1`/`ota_2`/`otadata` fully erased (0xFF). A full
+  image is for factory flashing only — esptool erases every sector it writes,
+  so flashing it over an existing installation would destroy user data.
+- **Tooling**: `tools/build-firmware.sh` emits `build/upgrade/` (the four files
+  + `flash-args.txt`); the USB installer page offers "7. Upgrade launcher"
+  which implements the read-back gate and the minimal write set.
+
 ## 8. Local Management UI
 
 Keeps the `ui_pixel` theme (sky/grass/title board/mascot) and the top-right battery

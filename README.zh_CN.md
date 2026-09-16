@@ -150,8 +150,9 @@ tools/build-firmware.sh
 
 就够了。脚本会自动寻找 ESP-IDF v5.5.3（默认找 `~/esp/esp-idf-v5.5.3`，
 也可用 `--idf-path <目录>` 指定），完成编译、合并 8MB 完整镜像、受保护
-布局校验，产物放入 `build/`（`meta-pass_v<版本>.bin`、
-`FoloToy-AI-Passport.bin`），并打印安装/烧写指引。找不到 ESP-IDF 时会
+布局与**升级安全性**校验（NVS / cardid / ota_0-2 / otadata 区域必须保持擦除态），
+产物放入 `build/`（`meta-pass_v<版本>.bin`、`FoloToy-AI-Passport.bin`、
+`upgrade/` launcher 升级包），并打印安装/烧写指引。找不到 ESP-IDF 时会
 给出逐行安装命令。首次安装 ESP-IDF：
 
 ```bash
@@ -159,6 +160,27 @@ mkdir -p ~/esp
 git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/esp-idf-v5.5.3
 ~/esp/esp-idf-v5.5.3/install.sh esp32c3
 ```
+
+### 升级 launcher 而不丢数据
+
+分区布局已稳定,launcher 升级永远不需要碰用户数据。两条路径:
+
+- **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择 `tools/build-firmware.sh`
+  生成的 `build/upgrade/` 目录。页面会读回设备分区表并与升级包逐字节比对
+  (布局不一致即拒绝升级),然后只写 factory 应用、分区表、bootloader 与
+  OTA 数据重置(擦除态)四项。NVS(Wi-Fi 配置)、`cardid` 与三个子固件槽位
+  全程不碰。
+- **命令行**——按 `build/upgrade/flash-args.txt` 烧写四个文件:
+
+```bash
+python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \
+  0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
+```
+
+**切勿**把完整 8MB 镜像(`meta-pass_v<版本>.bin`)直接刷到已有设备上"升级":
+esptool 对每个写入扇区都会先擦除,镜像里携带的任何数据都会摧毁设备的 NVS
+与已装子固件。完整镜像仅用于出厂烧录;`tools/verify_firmware.py` 已强制
+它在用户数据区不含任何数据。
 
 ### 完整验证门禁
 

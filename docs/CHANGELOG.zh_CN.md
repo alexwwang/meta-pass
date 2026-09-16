@@ -5,6 +5,13 @@
 # Changelog
 
 ## Unreleased
+- 保数据 launcher 升级（§7.2）：升级只写 bootloader + 分区表 + factory 应用 + 擦除态
+  OTA 数据重置四项；NVS（Wi-Fi 配置）、`cardid` 与三个子固件槽位永不触碰。USB 安装页
+  新增「7. 升级 launcher」章节，写入前读回设备分区表并与升级包逐字节比对（布局不一致
+  即拒绝升级）。`tools/build-firmware.sh` 新增产出 `build/upgrade/` 升级包（4 文件 +
+  `flash-args.txt`）；`tools/verify_firmware.py` 强制合并镜像中 `nvs`/`ota_0-2`/`otadata`
+  保持擦除态，使完整镜像永远不可能携带破坏用户数据的内容。核心逻辑在
+  `install-slot/launcher-upgrade.js`，配 Node 测试并接入 `tools/validate.sh --static` 门禁。
 - USB 安装页新增槽位备份与恢复（`install-slot/`）：备份按槽位整分区读取，切分为
   `slot{N}_firmware.bin`（解析出的 ESP app 镜像）+ `slot{N}_tail.bin`（4KB MSIG/MAEG/MNAM
   元数据扇区）+ 可选 `slot{N}_extra.bin`（尾扇区之后的额外存储数据），逐文件计算 SHA-256,

@@ -92,6 +92,7 @@ PY
     if [[ -n "${node_bin}" ]]; then
         "${node_bin}" tools/install-slot/test-extract.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
+        "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
     else
         echo "WARN: node not found; skipping install-slot mjs tests" >&2
     fi

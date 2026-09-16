@@ -24,6 +24,21 @@ CARDID_OFFSET = 0x356000
 CARDID_SIZE = 0x4000
 ENTRY = struct.Struct("<HBBII16sI")
 
+# 升级安全契约:发布镜像只携带 factory/bootloader/分区表,以下区域必须保持擦除态
+# (全 0xFF),这样"仅刷这些区域"的升级路径才不会覆盖设备上的用户数据:
+#   nvs      0x9000  0x6000  Wi-Fi 配置等用户数据(升级必须保留)
+#   ota_0    0x180000 0x1D6000  子固件槽位(升级必须保留)
+#   ota_1    0x360000 0x200000  子固件槽位(升级必须保留)
+#   ota_2    0x560000 0x29E000  子固件槽位 / littlefs 录音(升级必须保留)
+#   otadata  0x7FE000 0x2000  OTA 启动选择(升级时重置为擦除态,回到 factory)
+UPGRADE_PRESERVED_REGIONS = (
+    ("nvs", 0x9000, 0x6000),
+    ("ota_0", 0x180000, 0x1D6000),
+    ("ota_1", 0x360000, 0x200000),
+    ("ota_2", 0x560000, 0x29E000),
+    ("otadata", 0x7FE000, 0x2000),
+)
+
 
 @dataclass(frozen=True)
 class Partition:
@@ -115,6 +130,57 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
     print(f"Protected firmware layout: PASS (app {app_size} / {APP_MAX_SIZE} bytes)")
 
 
+def verify_upgrade_safety(merged: bytes) -> None:
+    """发布镜像不得携带任何会覆盖用户数据的内容。
+
+    升级策略:launcher 升级只写 bootloader / 分区表 / factory app / otadata,
+    其余分区(NVS、cardid、三个 OTA 槽位)在设备上原样保留。为此,发布镜像
+    里这些区域必须全 0xFF——若未来构建流程把数据烧进了这些区域,说明布局
+    契约被破坏,必须立即失败而不是静默抹掉用户数据。
+    """
+    for label, offset, size in UPGRADE_PRESERVED_REGIONS:
+        region = merged[offset : offset + size]
+        if len(region) < size:
+            raise ValueError(f"merged artifact truncated inside {label} region")
+        dirty = next((i for i, b in enumerate(region) if b != 0xFF), None)
+        if dirty is not None:
+            raise ValueError(
+                f"merged artifact must keep {label} erased (byte 0x{offset + dirty:x} "
+                f"is 0x{region[dirty]:02x}) — upgrades rely on never touching {label}"
+            )
+    print(
+        "Upgrade safety: PASS (nvs/ota_0/ota_1/ota_2/otadata erased "
+        "— launcher upgrade preserves them)"
+    )
+
+
+def verify_upgrade_bundle(merged: bytes, build_dir: Path) -> None:
+    """若 build/upgrade/ 存在,校验升级包与主镜像逐字节同源。
+
+    升级包内容(升级 launcher 的最小写入集):
+      FoloToy-AI-Passport.bin  @ 0x10000
+      partition-table.bin      @ 0x8000
+      bootloader.bin           @ 0x0
+      ota_data_initial.bin     @ 0x7FE000(擦除态,升级后回到 factory)
+    """
+    upgrade_dir = build_dir / "upgrade"
+    if not upgrade_dir.is_dir():
+        return
+    bundle = {
+        0x0: "bootloader.bin",
+        0x8000: "partition-table.bin",
+        0x10000: "FoloToy-AI-Passport.bin",
+        0x7FE000: "ota_data_initial.bin",
+    }
+    for offset, name in bundle.items():
+        path = upgrade_dir / name
+        if not path.is_file():
+            raise ValueError(f"upgrade bundle missing {name}")
+        if path.read_bytes() != merged[offset : offset + path.stat().st_size]:
+            raise ValueError(f"upgrade bundle {name} differs from the merged image")
+    print("Upgrade bundle: PASS (build/upgrade/ matches the merged image)")
+
+
 def main() -> int:
     build_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "build").resolve()
     merged_path = build_dir / "FoloToy-AI-Passport-full.bin"
@@ -147,6 +213,8 @@ def main() -> int:
 
     try:
         verify_protected_layout(merged, build_dir)
+        verify_upgrade_safety(merged)
+        verify_upgrade_bundle(merged, build_dir)
     except (OSError, UnicodeDecodeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
