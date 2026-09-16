@@ -139,6 +139,7 @@
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
     <p class="subtitle" data-i18n="restore_desc">Restores a backup zip onto the device slots, with automatic space and integrity checks.</p>
+    <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
     <button id="btn-restore" class="primary" disabled data-i18n="btn_restore">Restore</button>
@@ -331,12 +332,17 @@ const I18N = {
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
     restore_desc: "Restores a backup zip onto the device slots, with automatic space and integrity checks.",
+    restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
     msg_backup_start: "Backing up slots…",
     msg_backup_reading: "Reading slot {slot} ({size} at {addr})… this can take a minute per slot.",
     msg_backup_slot_done: "Slot {slot}: {firmware}",
+    msg_backup_read_retry: "Slot {slot}: read error at 0x{addr} ({err}) — retrying ({n}/3)…",
+    msg_backup_read_failed: "Slot {slot}: read failed after 3 retries — skipped, other slots continue.",
+    msg_backup_partial: "Backup saved with skipped slots: {slots}. Those slots are NOT in the zip.",
+    msg_backup_save_cancelled: "Save cancelled — backup data was discarded, nothing written.",
     msg_backup_empty: "Slot {slot}: empty, skipped.",
     msg_backup_bad_image: "Slot {slot}: data present but not a valid app image — skipped (never backed up blind).",
     msg_backup_raw_fallback: "Slot {slot}: not a recognizable firmware + signature/easter-egg/name structure — dd-style raw mirror backup ({size}); restore does a size + SHA-256 check only.",
@@ -453,12 +459,17 @@ const I18N = {
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
     restore_desc: "将备份 zip 恢复到设备槽位,自动进行空间与完整性校验。",
+    restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_start: "开始备份槽位…",
     msg_backup_reading: "读取槽位 {slot}({size} @ {addr})… 每个槽位可能需要一分钟。",
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
+    msg_backup_read_retry: "槽位 {slot}:读取 0x{addr} 出错({err})—— 重试({n}/3)…",
+    msg_backup_read_failed: "槽位 {slot}:重试 3 次后仍失败 —— 已跳过,其余槽位继续。",
+    msg_backup_partial: "备份已保存,但部分槽位被跳过:{slots}。这些槽位不在 zip 中。",
+    msg_backup_save_cancelled: "已取消保存 —— 备份数据已丢弃,未写入任何文件。",
     msg_backup_empty: "槽位 {slot}:空槽,跳过。",
     msg_backup_bad_image: "槽位 {slot}:有数据但不是合法应用镜像 —— 跳过(绝不盲备)。",
     msg_backup_raw_fallback: "槽位 {slot}:无固件+签名/彩蛋/名称结构 —— 已做 dd 式整槽镜像备份({size});恢复时仅做空间与 SHA-256 校验。",
@@ -978,6 +989,33 @@ async function sha256File(fileOrBuf) {
 // --- 5. 备份 ---
 function setBackupProgress(pct) { $("backup-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`; }
 
+// 分块读 flash:单次大请求一旦 USB 抖动/超时就整槽报废(实测 slot1 2MB 流读
+// 报 "No serial data received")。64KB/块 + 每块自动重试 3 次,偶发抖动自愈;
+// 数据流式拼入 slotBuf,进度按块推进。
+const BACKUP_CHUNK = 0x10000;
+const BACKUP_RETRIES = 3;
+async function readFlashChunked(start, size, onProgress, onRetry) {
+  const buf = new Uint8Array(size);
+  let got = 0;
+  while (got < size) {
+    const n = Math.min(BACKUP_CHUNK, size - got);
+    let chunk = null, lastErr = null;
+    for (let attempt = 1; attempt <= BACKUP_RETRIES && !chunk; attempt++) {
+      try {
+        chunk = await loader.readFlash(start + got, n);
+      } catch (err) {
+        lastErr = err;
+        if (attempt < BACKUP_RETRIES) onRetry?.(start + got, err, attempt);
+      }
+    }
+    if (!chunk) throw lastErr;
+    buf.set(chunk.subarray(0, n), got);
+    got += n;
+    onProgress?.(got);
+  }
+  return buf;
+}
+
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
   const slots = [0, 1, 2].filter((i) => $(`bk-slot${i}`).checked);
@@ -998,13 +1036,18 @@ $("btn-backup").addEventListener("click", async () => {
       const slot = slots[i];
       const s = SLOTS[slot];
       log(t("msg_backup_reading", { slot, size: fmtBytes(s.size), addr: hex(s.offset) }));
-      // 整槽读取:切片需要 tail 之后的全部字节以捕获额外存储数据
+      // 整槽读取:切片需要 tail 之后的全部字节以捕获额外存储数据。
+      // 分块读 + 重试:单槽失败只跳过该槽,其余槽位继续(部分成功也产出 zip)。
       let data;
       try {
-        data = await loader.readFlash(s.offset, s.size,
-          (chunk, got, total) => setBackupProgress(((i + got / total) / slots.length) * 100));
+        data = await readFlashChunked(
+          s.offset, s.size,
+          (got) => setBackupProgress(((i + got / s.size) / slots.length) * 100),
+          (addr, err, attempt) => log(t("msg_backup_read_retry", { slot, addr: hex(addr), err: err.message, n: attempt + 1 }), "warn"),
+        );
       } catch (err) {
-        throw new Error(`slot ${slot} read failed: ${err.message}`);
+        log(t("msg_backup_read_failed", { slot }), "error");
+        continue;   // 其余槽位继续,已读到的数据不浪费
       }
       let sliced = null;
       try {
@@ -1065,14 +1108,40 @@ $("btn-backup").addEventListener("click", async () => {
     const zip = buildZip(zipEntries);
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     const name = `metapass-slots-backup_${ts}.zip`;
-    const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
-    const a = document.createElement("a");
-    a.href = url; a.download = name; a.click();
-    URL.revokeObjectURL(url);
+    // 保存位置:优先 File System Access API(用户可选保存位置);不支持时降级到默认下载目录。
+    let savedVia = "downloads";
+    try {
+      if (window.showSaveFilePicker) {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: name,
+          types: [{ description: "Slot backup", accept: { "application/zip": [".zip"] } }],
+        });
+        await handle.createWritable().then((w) => w.write(zip).then(() => w.close()));
+        savedVia = "picker";
+      }
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        log(t("msg_backup_failed", { err: t("msg_backup_pick_slot") }), "warn");
+        $("backup-status").textContent = t("msg_backup_save_cancelled");
+        $("backup-status").className = "error";
+        return;   // 用户取消保存:数据已在内存,不再重复读取,直接结束
+      }
+      savedVia = "downloads-fallback";   // 选择器异常(权限等)降级下载
+    }
+    if (savedVia !== "picker") {
+      const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+      const a = document.createElement("a");
+      a.href = url; a.download = name; a.click();
+      URL.revokeObjectURL(url);
+    }
     setBackupProgress(100);
+    if (backedUp.length < slots.length) {
+      const skipped = slots.filter((sl) => !backedUp.includes(sl)).join(", ");
+      log(t("msg_backup_partial", { slots: skipped }), "warn");
+    }
     $("backup-status").textContent = t("msg_backup_done", { name, size: fmtBytes(zip.length) });
-    $("backup-status").className = "ok";
-    log(t("msg_backup_done", { name, size: fmtBytes(zip.length) }), "ok");
+    $("backup-status").className = backedUp.length < slots.length ? "warn" : "ok";
+    log(t("msg_backup_done", { name, size: fmtBytes(zip.length) }), backedUp.length < slots.length ? "warn" : "ok");
   } catch (err) {
     $("backup-status").textContent = t("msg_backup_failed", { err: err.message });
     $("backup-status").className = "error";
