@@ -125,7 +125,7 @@
 
   <section>
     <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">Reads each slot's app image, extra storage data and the 4 KB metadata sector (signature/easter egg/display name) and saves a verified zip locally.</p>
+    <p class="subtitle" data-i18n="backup_desc">Backs up the selected slots to a verified zip file on this computer.</p>
     <p>
       <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
       <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
@@ -138,7 +138,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Pick a backup zip, choose which slot each backup goes to; the page checks space and SHA-256 (from the zip's manifest), then writes firmware, extra data, and the metadata sector in order.</p>
+    <p class="subtitle" data-i18n="restore_desc">Restores a backup zip onto the device slots, with automatic space and integrity checks.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
     <button id="btn-restore" class="primary" disabled data-i18n="btn_restore">Restore</button>
@@ -148,7 +148,7 @@
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep child firmware & Wi-Fi)</h2>
-    <p class="subtitle" data-i18n="upgrade_desc">Updates the meta-pass launcher itself: writes only the factory app, partition table, bootloader, and OTA-data reset. NVS (Wi-Fi config), cardid, and all child-firmware slots are left untouched. The device partition table is read back and byte-compared first; a layout mismatch refuses the upgrade.</p>
+    <p class="subtitle" data-i18n="upgrade_desc">Upgrades the launcher while keeping Wi-Fi settings and all installed child firmware.</p>
     <p><input type="file" id="upgrade-input" webkitdirectory directory multiple> <span data-i18n="upgrade_pick_dir">select the build/upgrade/ folder from the firmware build (contains 4 files)</span></p>
     <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
     <span id="upgrade-status"></span>
@@ -160,6 +160,25 @@
     <div id="log"></div>
   </section>
 </main>
+<p id="module-fail" class="error" hidden>
+  页面脚本未能加载 —— 请勿直接双击打开 HTML 文件(file:// 下浏览器禁止 ES 模块)。
+  请运行 <code>node tools/install-slot/server.mjs</code> 后访问 <code>http://localhost:4191</code>,
+  或打开线上页面。 / Page script failed to load — don't open the HTML file directly (file://
+  blocks ES modules). Run <code>node tools/install-slot/server.mjs</code> and visit
+  <code>http://localhost:4191</code>, or use the deployed page.
+</p>
+<script>
+  // ES module 加载失败兜底:模块末尾会置 __installSlotReady = true;
+  // 若 1.5s 后仍为 false(典型原因:file:// 直开),显示指引横幅。
+  window.addEventListener("DOMContentLoaded", () => {
+    setTimeout(() => {
+      if (!window.__installSlotReady) {
+        const el = document.getElementById("module-fail");
+        if (el) el.hidden = false;
+      }
+    }, 1500);
+  });
+</script>
 
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
@@ -193,6 +212,9 @@ const SLOTS = [
 
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
+// 模块初始化成功标记:供尾部非模块脚本检测(ES module 在 file:// 下被浏览器禁止,
+// 页面会停在英文默认文案且全部按钮失效,需给出明确指引而非静默坏掉)
+window.__installSlotReady = false;
 
 // 槽位级残留清理:安装/恢复前把目标槽 tail 之后(或整个槽)的遗留数据清为 FF。
 // 场景:原厂机经市场轻量包迁移后,旧固件字节残留在新布局槽位内;writeFlash
@@ -305,10 +327,10 @@ const I18N = {
     msg_install_failed: "Install failed: {err}",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
-    backup_desc: "Reads each slot's app image, extra storage data and the 4 KB metadata sector (signature/easter egg/display name) and saves a verified zip locally.",
+    backup_desc: "Backs up the selected slots to a verified zip file on this computer.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "Pick a backup zip, choose which slot each backup goes to; the page checks space and SHA-256 (from the zip's manifest), then writes firmware, extra data, and the metadata sector in order.",
+    restore_desc: "Restores a backup zip onto the device slots, with automatic space and integrity checks.",
     btn_restore: "Restore",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
@@ -337,7 +359,7 @@ const I18N = {
     msg_restore_done: "Restore complete: {slots}. Power-cycle the device.",
     msg_restore_failed: "Restore failed: {err}",
     step_upgrade: "7. Upgrade launcher (keep child firmware & Wi-Fi)",
-    upgrade_desc: "Updates the meta-pass launcher itself: writes only the factory app, partition table, bootloader, and OTA-data reset. NVS (Wi-Fi config), cardid, and all child-firmware slots are left untouched. The device partition table is read back and byte-compared first; a layout mismatch refuses the upgrade.",
+    upgrade_desc: "Upgrades the launcher while keeping Wi-Fi settings and all installed child firmware.",
     upgrade_pick_dir: "select the build/upgrade/ folder from the firmware build (contains 4 files)",
     btn_upgrade: "Upgrade launcher",
     msg_upgrade_busy: "Another operation is in progress.",
@@ -426,10 +448,10 @@ const I18N = {
     msg_install_failed: "烧录失败:{err}",
     // 备份/恢复流程
     step_backup: "5. 备份子固件(读取槽位 → zip)",
-    backup_desc: "读取每个槽位的应用镜像、额外存储数据和 4KB 元数据扇区(签名/彩蛋/显示名),打包为带校验的 zip 保存到本地。",
+    backup_desc: "将选中的槽位备份为一个带校验的 zip 文件,保存到本机。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "选择备份 zip,指定每份备份的目标槽位;页面会检查空间并按 zip 内 manifest 的 SHA-256 校验,然后按 固件 → 额外数据 → 元数据扇区 的顺序写入。",
+    restore_desc: "将备份 zip 恢复到设备槽位,自动进行空间与完整性校验。",
     btn_restore: "开始恢复",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
@@ -458,7 +480,7 @@ const I18N = {
     msg_restore_done: "恢复完成:{slots}。请重新上电设备。",
     msg_restore_failed: "恢复失败:{err}",
     step_upgrade: "7. 升级 launcher(保留子固件与 Wi-Fi 配置)",
-    upgrade_desc: "升级 meta-pass 启动器本身:只写 factory 应用、分区表、bootloader 与 OTA 数据重置四项。NVS(Wi-Fi 配置)、cardid 与全部子固件槽位保持原样不动。升级前会读回设备分区表逐字节比对,布局不一致即拒绝升级。",
+    upgrade_desc: "升级启动器,保留 Wi-Fi 配置与已安装的全部子固件。",
     upgrade_pick_dir: "选择固件构建产物目录 build/upgrade/(包含 4 个文件)",
     btn_upgrade: "升级 launcher",
     msg_upgrade_busy: "有操作正在进行中。",
@@ -1318,6 +1340,7 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
+window.__installSlotReady = true;   // 模块初始化完成:关闭 file:// 兜底横幅检测
 </script>
 </body>
 </html>
