@@ -17,7 +17,11 @@
   元数据扇区）+ 可选 `slot{N}_extra.bin`（尾扇区之后的额外存储数据），逐文件计算 SHA-256,
   连同 `manifest.json` 打包为带时间戳的 zip。恢复时用户把每个备份槽位映射到任意目标槽位，
   按 manifest 长度做空间自检（自适应未来的槽位大小调整），写入前逐文件校验 SHA-256,再按
-  firmware → extra → tail 顺序写入（tail 最后写，防扇区重擦毁掉先写数据）。备份/恢复位于
+  firmware → extra → tail 顺序写入（tail 最后写，防扇区重擦毁掉先写数据）。槽内有数据但
+  既非擦除态也无法按 app 语义识别时（如 slot2 兼做数据存储区、littlefs 卷、非 ESP 镜像
+  资源包），不再跳过，改为 dd 式整槽镜像兜底 —— `slot{N}_raw.bin`（尾部擦除态字节裁剪）
+  + manifest `type: "raw"` 条目，恢复时从槽位起点原样写回，仅做总长 ≤ 分区大小与 SHA-256
+  校验（不预留尾扇区）。备份/恢复位于
   独立章节（§5/§6），与安装流程互不干扰；核心逻辑沉淀在纯 ES 模块 `slot-backup.js`,
   配 Node 测试并接入 `tools/validate.sh --static` 门禁。顺带修复 zip 读取器的
   `DataView(TypedArray)` 兼容性问题（旧引擎只接受 ArrayBuffer）。

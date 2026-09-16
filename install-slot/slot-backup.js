@@ -8,6 +8,16 @@
 //   slot{N}_tail.bin            4KB metadata sector(MSIG/MAEG/MNAM;全 0xFF 时省略)
 //   manifest.json               全部文件的 sha256 + 长度 + 来源信息(唯一事实来源)
 //
+// dd 兜底(镜像级备份):槽内有数据但既不是空槽也无法按 app 语义解析(如兼做数据
+// 存储区的槽位、littlefs 卷、非 ESP 镜像资源包)时,不再跳过,而是生成 slot{N}_raw.bin
+// —— 整槽原始镜像拷贝(尾部连续 0xFF 裁剪为零)+ manifest 中 type:raw 条目。恢复时
+// raw 条目从槽位起点整体写回,空间检查只要求总长 ≤ 分区大小(不预留 tail sector)。
+//
+// dd 兜底(镜像级备份):槽内有数据但既不是空槽也无法按 app 语义解析(如兼做数据
+// 存储区的槽位、littlefs 卷、非 ESP 镜像资源包)时,不再跳过,而是生成 slot{N}_raw.bin
+// —— 整槽原始镜像拷贝(尾部连续 0xFF 裁剪为零)+ manifest 中 type:raw 条目。恢复时
+// raw 条目从槽位起点整体写回,空间检查只要求总长 ≤ 分区大小(不预留 tail sector)。
+//
 // 恢复顺序(必须):firmware → extra → tail。tail sector 必须最后写,
 // 避免 esptool"每写必擦整扇区"破坏先写入的数据(见 docs/BUGS.md BUG-03)。
 
@@ -21,6 +31,7 @@ export const EMPTY_BYTE = 0xff;
 export function firmwareFileName(slot) { return `slot${slot}_firmware.bin`; }
 export function extraFileName(slot)   { return `slot${slot}_extra.bin`; }
 export function tailFileName(slot)    { return `slot${slot}_tail.bin`; }
+export function rawMirrorFileName(slot) { return `slot${slot}_raw.bin`; }
 
 // ===== 备份侧 =====
 
@@ -30,6 +41,14 @@ export function isAllFF(u8) {
     if (u8[i] !== EMPTY_BYTE) return false;
   }
   return true;
+}
+
+// dd 兜底:整槽原始镜像。尾部连续 0xFF 裁剪为零(esptool 逐扇区先擦后写,
+// 恢复后擦除态自动还原,裁剪不损失信息,还能显著减小 zip 体积)。
+export function buildRawMirror(slotData) {
+  let end = slotData.length;
+  while (end > 0 && slotData[end - 1] === EMPTY_BYTE) end--;
+  return slotData.subarray(0, end);
 }
 
 // 从整个 slot 的原始读取数据(imageLen + tail + extra 已按 app 语义解析)中切出三份文件。
@@ -114,12 +133,18 @@ export function manifestFilesForSlot(manifest, slot) {
 
 // 恢复前置检查:备份内容是否能放进目标槽位(自适应性核心)。
 // partSize: 目标设备该 slot 的分区大小。返回 { ok, reason? }。
-// 规则:所有文件长度之和 ≤ partSize,且 firmware ≤ partSize - 4KB(tail sector 必须放得下)。
+// 规则:
+//   app 语义条目 —— 所有文件长度之和 ≤ partSize,且 firmware ≤ partSize - 4KB
+//                   (tail sector 必须放得下);
+//   raw 兜底条目 —— 恢复时从槽位起点整体写回,无 app/tail 结构,只要求
+//                   总长 ≤ partSize(数据区槽位没有 tail 语义,不预留)。
+// 单个 slot 的清单内 raw 与 app 条目互斥(备份侧保证),存在 raw 即按 raw 规则。
 export function checkRestoreFit(files, partSize) {
   const total = files.reduce((n, f) => n + f.bytes, 0);
   if (total > partSize) {
     return { ok: false, reason: `backup needs ${total} bytes, slot holds ${partSize} bytes` };
   }
+  if (files.some((f) => f.type === "raw")) return { ok: true };
   const fw = files.find((f) => f.name.endsWith("_firmware.bin"));
   if (fw && fw.bytes > partSize - TAIL_SECTOR) {
     return {
@@ -131,10 +156,15 @@ export function checkRestoreFit(files, partSize) {
 }
 
 // 恢复写入顺序:firmware → extra → tail(绝对顺序,见文件头注释)。
+// raw 镜像条目自成一类(与 app 条目互斥,出现即唯一文件)。
 // files: 该 slot 的 manifest 文件清单;返回 [{ name, order, why }]。
 export function restoreOrder(files) {
-  const rank = (name) => (name.endsWith("_firmware.bin") ? 0 : name.endsWith("_extra.bin") ? 1 : 2);
-  return [...files].sort((a, b) => rank(a.name) - rank(b.name));
+  const rank = (f) =>
+    f.type === "raw" || f.name.endsWith("_raw.bin") ? 0
+    : f.name.endsWith("_firmware.bin") ? 1
+    : f.name.endsWith("_extra.bin") ? 2
+    : 3;
+  return [...files].sort((a, b) => rank(a) - rank(b));
 }
 
 // ===== 残留清理(槽位级)=====

@@ -92,7 +92,11 @@ node tools/install-slot/server.mjs
 - 测试：`node tools/install-slot/test-extract.mjs`（镜像解包、名字 blob
   向量、与 C 侧 `tests/test_meta_name.c` 字节级锁定、尺寸边界）与
   `node tools/install-slot/test-slot-backup.mjs`（备份切片 / manifest 往返 /
-  恢复空间自检）。两者均已接入 `tools/validate.sh --static` 门禁。
+  恢复空间自检 / dd 镜像兜底）。两者均已接入 `tools/validate.sh --static` 门禁。
+- 备份格式门禁：槽位只有在能识别出「应用镜像 + 签名/彩蛋/名称」结构时才按
+  固件/尾扇区/额外数据三段结构化备份；否则自动改为 dd 式整槽镜像兜底
+  （`slot{N}_raw.bin`，manifest 中 `type: "raw"`）——恢复时仅校验
+  总长 ≤ 目标分区与 SHA-256。
 
 ## 仓库布局
 

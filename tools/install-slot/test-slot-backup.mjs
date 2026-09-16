@@ -1,7 +1,7 @@
 // tools/install-slot/test-slot-backup.mjs —— slot-backup.js 的 Node 自检。
 // 运行:/usr/local/bin/node tools/install-slot/test-slot-backup.mjs
 // 覆盖:切片(固件/尾扇区/额外数据/空槽/坏镜像)、manifest 构建与解析、
-//       恢复空间自检(自适应核心)、恢复顺序契约。
+//       恢复空间自检(自适应核心)、恢复顺序契约、dd 兜底(raw 镜像备份/恢复)。
 import assert from "node:assert/strict";
 import {
   probeOffsets,
@@ -9,6 +9,7 @@ import {
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
   checkRestoreFit, restoreOrder, isAllFF,
+  buildRawMirror, rawMirrorFileName,
   firmwareFileName, extraFileName, tailFileName,
   MANIFEST_NAME, MANIFEST_VERSION,
 } from "../../install-slot/slot-backup.js";
@@ -122,5 +123,51 @@ assert.deepEqual(probeOffsets(0x1000, 0), []);
 const small = probeOffsets(0x1000, 4096);
 assert.ok(small.length >= 2);
 console.log("PASS 7: probeOffsets — uniform probes in range, null for tiny, [] for empty");
+
+// ---- PASS 8: dd 兜底(raw 镜像备份/恢复)----
+// 8a. buildRawMirror:整槽镜像拷贝 + 尾部连续 0xFF 裁剪为零;补回 0xFF 可逐字节还原
+{
+  const slot = new Uint8Array(0x200000).fill(0xff);
+  const blob = new Uint8Array([0x4c, 0x45, 0x4f, 0x56, 0x49, 0x44, 0x31, 0x30]);   // "LEOVID10" 资源包头
+  slot.set(blob, 0);
+  slot.set([0xde, 0xad, 0xbe, 0xef], 0x1234);
+  const raw = buildRawMirror(slot);
+  assert.equal(raw.length, 0x1238, "trailing erased bytes must be trimmed");
+  assert.equal(raw[0], 0x4c);
+  // 还原:裁剪部分补 0xFF 后与原槽逐字节一致(恢复写回时 esptool 逐扇区先擦后写,擦除态自动还原)
+  const restored = new Uint8Array(0x200000).fill(0xff);
+  restored.set(raw, 0);
+  assert.deepEqual(Array.from(restored), Array.from(slot), "raw mirror must round-trip byte-exact");
+  // 全 FF 槽:裁剪后为空(调用方按空槽处理)
+  assert.equal(buildRawMirror(new Uint8Array(4096).fill(0xff)).length, 0);
+  console.log("PASS 8a: buildRawMirror — trim trailing FF, byte-exact roundtrip, empty for erased");
+}
+
+// 8b. BAD_IMAGE 槽位的完整兜底链路:raw 条目入 manifest → 解析 → raw 空间规则 → 写入顺序
+{
+  const slot = new Uint8Array(0x1D6000).fill(0xff);   // 数据区槽位(littlefs/资源包,非 ESP 镜像)
+  slot.set([0x4c, 0x45, 0x4f], 0);                    // 任意非镜像头
+  slot.set([1, 2, 3, 4], 0x1000);
+  const raw = buildRawMirror(slot);
+  // 备份侧:raw 条目(带 type:raw)进 manifest
+  const man = buildManifest({
+    slot: 2,
+    entries: [{ name: rawMirrorFileName(2), sha256: "d".repeat(64), bytes: raw.length, type: "raw" }],
+  });
+  const parsed = parseManifest(JSON.stringify(man));
+  const files = manifestFilesForSlot(parsed, 2);
+  assert.equal(files.length, 1);
+  assert.equal(files[0].type, "raw");
+  // 恢复侧:空间规则 —— raw 不预留 tail sector,只要求总长 ≤ 分区大小
+  const fitExact = checkRestoreFit([{ ...files[0], bytes: 0x1D6000 }], 0x1D6000);   // 恰好塞满 → 通过(raw 无 tail 语义)
+  assert.equal(fitExact.ok, true, "raw mirror may fill the whole slot (no tail sector reserved)");
+  assert.equal(checkRestoreFit([{ ...files[0], bytes: 0x1D6000 + 1 }], 0x1D6000).ok, false, "oversize raw must be rejected");
+  // 写入顺序:raw 自成一类,排最前(实际恢复中它是该 slot 唯一文件)
+  const order = restoreOrder([
+    { name: tailFileName(0) }, { name: rawMirrorFileName(0), type: "raw" }, { name: firmwareFileName(0) },
+  ]).map((f) => f.name);
+  assert.equal(order[0], rawMirrorFileName(0), "raw mirror sorts first");
+  console.log("PASS 8b: raw fallback manifest roundtrip + fit rule (no tail reserved) + order");
+}
 
 console.log("All slot-backup tests passed.");

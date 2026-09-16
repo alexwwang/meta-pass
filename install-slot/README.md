@@ -108,8 +108,13 @@ API proxy lives.
 - Tests: `node tools/install-slot/test-extract.mjs` (image unpacking, name
   blob vectors byte-locked against `tests/test_meta_name.c`, size-limit
   boundaries) and `node tools/install-slot/test-slot-backup.mjs` (backup
-  slicing / manifest roundtrip / restore fit check). Both run inside
-  `tools/validate.sh --static`.
+  slicing / manifest roundtrip / restore fit check / raw-mirror fallback).
+  Both run inside `tools/validate.sh --static`.
+- Backup format gate: a slot is backed up as the structured
+  firmware/tail/extra set only when it holds a recognizable app image +
+  signature/easter-egg/name metadata; otherwise a dd-style raw mirror
+  (`slot{N}_raw.bin`, `type: "raw"` in the manifest) is produced instead —
+  restore verifies size vs. the target partition and SHA-256 only.
 
 ## Repo layout
 

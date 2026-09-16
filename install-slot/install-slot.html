@@ -44,6 +44,7 @@
   #progress-bar { height: 100%; width: 0; background: #31a24c; transition: width .15s; }
   .error { color: #c00; }
   .ok { color: #2a7d2a; }
+  .warn { color: #b26a00; }
   #chip-status, #file-info, #install-status { margin-left: 8px; }
   #play-info { margin-top: 10px; }
   #play-info dl { margin: 0; display: grid; grid-template-columns: 90px 1fr; gap: 2px 10px; }
@@ -56,6 +57,7 @@
   }
   #log .error { color: #ff8a80; }
   #log .ok { color: #a5d6a7; }
+  #log .warn { color: #ffd180; }
   /* 语言切换:右上角固定 */
   #lang-switch { position: fixed; top: 12px; right: 24px; display: flex; gap: 4px; }
   #lang-switch button {
@@ -165,7 +167,7 @@ import { extractAppImage, hex } from "./extract-app-image.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
-  checkRestoreFit, restoreOrder, isAllFF, probeOffsets,
+  checkRestoreFit, restoreOrder, isAllFF, probeOffsets, buildRawMirror, rawMirrorFileName,
   firmwareFileName, extraFileName, tailFileName, MANIFEST_NAME,
 } from "./slot-backup.js";
 import { deflate } from "./vendor/pako.js";
@@ -315,6 +317,7 @@ const I18N = {
     msg_backup_slot_done: "Slot {slot}: {firmware}",
     msg_backup_empty: "Slot {slot}: empty, skipped.",
     msg_backup_bad_image: "Slot {slot}: data present but not a valid app image — skipped (never backed up blind).",
+    msg_backup_raw_fallback: "Slot {slot}: not a recognizable firmware + signature/easter-egg/name structure — dd-style raw mirror backup ({size}); restore does a size + SHA-256 check only.",
     msg_backup_zipping: "Packing zip…",
     msg_backup_done: "Backup saved: {name} ({size}).",
     msg_backup_failed: "Backup failed: {err}",
@@ -330,6 +333,7 @@ const I18N = {
     err_restore_sha: "SHA-256 mismatch for {name}: expected {expected}, got {got}. Aborting.",
     err_restore_missing_file: "Zip is missing {name} listed in the manifest.",
     msg_restore_writing: "Writing {name} ({size}) to slot {slot} at {addr}…",
+    msg_restore_raw_write: "Raw mirror: writing back from slot {slot} base address {addr} (no app/tail layout — size + SHA-256 verified only).",
     msg_restore_done: "Restore complete: {slots}. Power-cycle the device.",
     msg_restore_failed: "Restore failed: {err}",
     step_upgrade: "7. Upgrade launcher (keep child firmware & Wi-Fi)",
@@ -434,6 +438,7 @@ const I18N = {
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
     msg_backup_empty: "槽位 {slot}:空槽,跳过。",
     msg_backup_bad_image: "槽位 {slot}:有数据但不是合法应用镜像 —— 跳过(绝不盲备)。",
+    msg_backup_raw_fallback: "槽位 {slot}:无固件+签名/彩蛋/名称结构 —— 已做 dd 式整槽镜像备份({size});恢复时仅做空间与 SHA-256 校验。",
     msg_backup_zipping: "正在打包 zip…",
     msg_backup_done: "备份已保存:{name}({size})。",
     msg_backup_failed: "备份失败:{err}",
@@ -449,6 +454,7 @@ const I18N = {
     err_restore_sha: "{name} 的 SHA-256 不匹配:期望 {expected},实际 {got}。已中止。",
     err_restore_missing_file: "zip 缺少 manifest 中列出的 {name}。",
     msg_restore_writing: "写入 {name}({size})到槽位 {slot} @ {addr}…",
+    msg_restore_raw_write: "镜像兜底:从槽位 {slot} 起始地址 {addr} 原样写回(无固件/尾扇区布局 —— 仅做空间与 SHA-256 校验)。",
     msg_restore_done: "恢复完成:{slots}。请重新上电设备。",
     msg_restore_failed: "恢复失败:{err}",
     step_upgrade: "7. 升级 launcher(保留子固件与 Wi-Fi 配置)",
@@ -969,15 +975,26 @@ $("btn-backup").addEventListener("click", async () => {
       } catch (err) {
         throw new Error(`slot ${slot} read failed: ${err.message}`);
       }
-      let sliced;
+      let sliced = null;
       try {
         sliced = sliceSlotBackup(data);
       } catch (err) {
-        if (err.code === "BAD_IMAGE") {
-          log(t("msg_backup_bad_image", { slot }), "error");
-          continue;   // 绝不盲备:无法解析的槽位跳过,由用户决定
+        if (err.code !== "BAD_IMAGE") throw err;
+        // dd 兜底:有数据但不是可识别的"固件+签名/彩蛋/名称"结构 —— 整槽原始镜像备份。
+        // 典型场景:slot2 兼做数据存储区(littlefs/资源包),无 app 镜像语义可解析。
+        const raw = buildRawMirror(data);
+        if (raw.length === 0) {
+          log(t("msg_backup_empty", { slot }));
+          continue;
         }
-        throw err;
+        entries.push({ name: rawMirrorFileName(slot), data: raw });
+        manifestEntries.push({
+          slot,
+          files: [{ name: rawMirrorFileName(slot), sha256: await sha256Hex(raw), bytes: raw.length, type: "raw" }],
+        });
+        backedUp.push(slot);
+        log(t("msg_backup_raw_fallback", { slot, size: fmtBytes(raw.length) }), "warn");
+        continue;
       }
       if (!sliced) {
         log(t("msg_backup_empty", { slot }));
@@ -1143,7 +1160,10 @@ $("btn-restore").addEventListener("click", async () => {
         // 固件 → 从槽位起点写;extra → 紧跟 tail sector 之后(与备份时布局一致);
         // tail → app 之后的 4K 对齐扇区。
         let addr;
-        if (f.name.endsWith("_firmware.bin")) {
+        if (f.type === "raw" || f.name.endsWith("_raw.bin")) {
+          addr = s.offset;   // dd 兜底:整槽镜像从槽位起点原样写回(无 app/tail 结构)
+          log(t("msg_restore_raw_write", { slot: job.to, addr: hex(addr) }));
+        } else if (f.name.endsWith("_firmware.bin")) {
           addr = s.offset;
         } else if (f.name.endsWith("_tail.bin")) {
           addr = s.offset + Math.ceil(dataMap.get(firmwareFileName(job.from)).length / 4096) * 4096;
