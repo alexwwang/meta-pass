@@ -1069,13 +1069,21 @@ $("debug-mode").addEventListener("change", () => {
 });
 
 // 分块读 flash:单次大请求一旦 USB 抖动/超时就整槽报废(实测 slot1 2MB 流读
-// 报 "No serial data received")。64KB/块 + 每块自动重试 3 次,偶发抖动自愈;
+// 报 "No serial data received")。32KB/块 + 每块自动重试 5 次,偶发抖动自愈;
 // 数据流式拼入 slotBuf,进度按块推进。
-const BACKUP_CHUNK = 0x10000;
+// 为什么是 32KB 而不是 64KB:每收一帧要发一个 4 字节裸 ACK(累计字节数,非 SLIP
+// 封帧)。64KB = 16 帧,第 12 个 ACK = 0x0000C000 —— 字节里含 0xC0,恰是 SLIP 帧定
+// 界符,会被 stub 帧解析器误判为帧边界 → 解析错位 → 严重时下一条 READ 命令被静默
+// 吞掉(实测:同一地址连续 5 次超时、sync 却每次都成功)。32KB = 8 帧,ACK 累计值
+// 4096j(j≤8)的字节 ∈ {0x10..0x80},可证永不出现 0xC0/0xDB —— 协议流里不再存在
+// 不安全字节;同时失败粒度与重试代价减半。
+const BACKUP_CHUNK = 0x8000;
 const BACKUP_RETRIES = 5;
 // 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 4KB 块等浏览器
-// 回 4 字节累计确认(max_in_flight=64 块)。中断后若只清缓冲不补确认,stub 会停在
-// "等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧会被吞掉 → sync 必败。
+// 回 4 字节累计确认(max_in_flight=64 帧,实际受读取总长限制)。中断后若只清缓冲
+// 不补确认,stub 会停在"等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧
+// 会被吞掉 → sync 必败。注意 ACK 是裸字节非 SLIP 封帧,其值必须避免 0xC0/0xDB
+// (SLIP 特殊字节,见 BACKUP_CHUNK 注释)—— 32KB 块的 ACK=0x00008000 安全。
 // 恢复顺序(每步硬超时,任何一步失败立即上抛 —— 恢复路径绝不允许挂死页面):
 //   a) 补发"整块已收满"确认帧 → stub 发完剩余字节后回命令循环(3s);
 //   b) 排空线路残留(300ms 静默视为发完,总上限 5s);
@@ -1116,8 +1124,8 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
   while (got < size) {
     const n = Math.min(BACKUP_CHUNK, size - got);
     let chunk = null, lastErr = null;
-    const chunkT0 = Date.now();
     for (let attempt = 1; attempt <= BACKUP_RETRIES && !chunk; attempt++) {
+      const chunkT0 = Date.now();
       if (attempt > 1) {
         try { await resyncAfterReadError(n); }
         catch (syncErr) {
