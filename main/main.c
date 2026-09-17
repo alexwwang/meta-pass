@@ -498,10 +498,13 @@ void app_main(void)
         ESP_LOGW(TAG, "电池计不在位,电量显示降级");
     }
 
-    // 让 factory(启动器自身)成为永久有效的回滚目标;非待验证态返回错误属正常。
+    // 单次会话模型:每次开机清空 otadata,保证下次上电 bootloader 默认引导
+    // factory 列表页(签名子固件也不跨重启常驻)。
+    // 边界:若设备正被旧版 hook 写入 VALID 的常驻子固件引导,本代码不会执行
+    // (启动器未被引导);那种设备用子固件返回钩子(OK 长按)或重装解锁。
     const esp_err_t mv = meta_store_mark_factory_valid();
-    if (mv != ESP_OK && mv != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "factory 有效标记返回 %s", esp_err_to_name(mv));
+    if (mv != ESP_OK) {
+        ESP_LOGW(TAG, "otadata 清除失败(%s)", esp_err_to_name(mv));
     }
 
     meta_store_scan(s_slots);

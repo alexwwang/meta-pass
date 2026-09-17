@@ -166,7 +166,17 @@ esp_err_t meta_store_boot_slot(int slot)
 
 esp_err_t meta_store_mark_factory_valid(void)
 {
-    return esp_ota_mark_app_valid_cancel_rollback();
+    // 单次会话模型(2026-09-17):启动器每次开机清空 otadata,维护不变量
+    // "启动器运行 ⇒ otadata 为空 ⇒ 下次上电 bootloader 默认引导 factory"。
+    // 自愈场景:某槽位镜像在 bootloader 级校验失败而回退 factory 时,残留的
+    // ota 状态被清掉。
+    // 注意边界:若旧版 hook 的子固件已写入 VALID 且正在常驻,本函数不会执行
+    // (启动器未被引导)——那种设备需用子固件的返回钩子(OK 长按)或重装固件
+    // 解锁;本函数只保证不再产生新的锁死态。
+    const esp_partition_t *otadata =
+        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+    if (!otadata) return ESP_ERR_NOT_FOUND;
+    return esp_partition_erase_range(otadata, 0, otadata->size);
 }
 
 meta_egg_result_t meta_store_read_egg(int slot, uint32_t image_len, char *out, size_t out_cap)

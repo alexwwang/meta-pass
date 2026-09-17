@@ -89,9 +89,9 @@ CONFIG_LV_BUILD_EXAMPLES=n
 CONFIG_FREERTOS_HZ=1000
 # --- OTA 槽位(meta-pass 多固件启动,3-Slot 架构) ---
 # 分区表含 otadata + ota_0/ota_1/ota_2(见 partitions.csv)。
-# 启用应用回滚:新烧入的子固件首启处于"待验证"态,未自验证前任何重启(崩溃/断电/看门狗)
-# 都会让 bootloader 自动回退 factory(meta-pass)。第三方子固件无需配合即天然防变砖;
-# 已适配子固件调用 esp_ota_mark_app_valid_cancel_rollback() 后跨重启常驻。
+# 启用应用回滚(单次会话模型,2026-09-17):子固件由列表页引导后仅运行当前会话,
+# ota 状态保持"待验证"且永不写 VALID(hook 不再调 cancel_rollback,启动器开机擦
+# otadata 收编存量)——任何重启(崩溃/断电/看门狗)后 bootloader 自动回退 factory。
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # --- Bluetooth LE ---

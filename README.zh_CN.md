@@ -118,7 +118,8 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 子固件不改造也能跑（试运行模式）。想长期驻留 + OK 长按返回，包含
 `main/metapass_hook.h` 并实现两条：
 
-1. 自检通过后调用 `metapass_mark_valid()`（否则重启即回启动器）；
+1. 自检通过后可选调用 `metapass_mark_valid()` 做签名自诊断（仅返回值——子固件为单次会话：
+   每次上电都回启动器列表页，OK 长按始终是可靠的退出途径）；
 2. 把 OK 键的 LONG（1.5 秒）事件接到 `metapass_return_to_launcher()`。
 
 签名徽章（可选）:`tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]` 在镜像后
@@ -218,6 +219,6 @@ MIT）开发：`factory`/`cardid` 布局、`verify_firmware.py` 等基线契约�
 | --- | --- |
 | 串口选择框是空的 | 设备没进下载模式（按住 UP 再开机），或 USB 线只能充电 |
 | 子固件里按键没反应 / 无法 OK 长按返回 | 未适配固件没有返回钩子；断电重启即回启动器（回滚机制），这是设计行为 |
-| 子固件重启后回到了启动器 | 未适配固件 = 试运行；想常驻需固件侧接 `metapass_mark_valid()` |
+| 子固件重启后回到了启动器 | 按设计（单次会话模型）：每次上电都回启动器列表页；崩溃自恢复走同一回滚机制 |
 | 槽位显示 "AI-Passport" 而不是玩法名 | 该固件经合成镜像/旧通道装入，没有显示名 blob；用 USB 安装页重装并填 Display name |
 | 镜像被拒绝 | 超过槽位上限（分区大小 − 4KB，尾部 4KB 保留给名字 blob），或不是 ESP32-C3 镜像 |

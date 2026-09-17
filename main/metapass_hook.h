@@ -1,13 +1,18 @@
 // main/metapass_hook.h —— 子固件适配 meta-pass 启动器的最小 hook(header-only)。
 //
+// 运行模型(2026-09-17 起为"单次会话"):
+//   子固件每次由启动器列表页引导后运行到本次关机/重启为止;任何再上电,bootloader
+//   都回到 factory 启动器列表页 —— 子固件不跨重启常驻,ota 状态永远不写 VALID。
+//
 // 用法(子固件):
-//   1. 启动自检通过后调用 metapass_mark_valid()  → 跨重启常驻,否则下次重启自动回启动器。
-//      ★ 内部先验签:签名徽章存在且验签通过才允许常驻;未签名返回 ESP_ERR_NOT_SUPPORTED,
-//        OTA 保持"待验证"态 → 下次重启自动回退启动器(trial boot)。
+//   1. (可选)启动自检通过后调用 metapass_mark_valid() 做签名自诊断:
+//      返回 ESP_OK 表示当前运行的是带有效签名的镜像;签名缺失/无效返回 ESP_ERR_NOT_SUPPORTED。
+//      ★ 无论返回值如何,本函数都不改变启动行为 —— 子固件一律单次会话,
+//        下次上电由 bootloader 回退启动器(ota 状态保持待验证态,崩溃同样自动回退)。
 //   2. 在按键处理里响应 OK 键的 BSP_BTN_LONG(1.5s) → 调 metapass_return_to_launcher()
 //      退回启动器(设置启动分区为 factory 并重启)。
 //
-// 只有返回启动器和常驻两个能力需要适配;不适配的子固件表现为"试运行"(重启即回启动器)。
+// 只有返回启动器需要适配;不适配的子固件任何重启/掉电都自动回启动器(防变砖)。
 //
 // CMakeLists 依赖:REQUIRES mbedtls
 // 签名徽章格式见 docs/assets/meta-pass-design.md §7。
@@ -80,7 +85,7 @@ static int mp_stream_sha256(const esp_partition_t *part, uint32_t len, uint8_t o
     return 0;
 }
 
-// ── 验签:检查当前运行固件是否携带有效签名徽章 ──────────────────────
+// ── 自诊断:检查当前运行固件是否携带有效签名徽章 ──────────────────────
 // 布局:[app image (image_len)] [metadata sector (4KB: MSIG/MAEG/MNAM)]
 // esp_image_verify 只校验 image_len 范围;metadata sector 在其后,安全。
 // 返回 true = 签名有效;false = 无签名或验签失败。
@@ -135,16 +140,19 @@ static bool mp_is_current_app_signed(void)
     return rc == 0;
 }
 
-// ── 自检通过后调用:标记当前固件有效,取消自动回滚 ────────────────────
-// 签名固件 → 允许常驻;未签名 → 返回错误,OTA 保持待验证态 → 下次重启自动回启动器。
-// 返回 ESP_OK 表示已常驻;ESP_ERR_NOT_SUPPORTED 表示未签名(试运行);
+// ── 自诊断:签名有效性探测(不改变启动行为) ────────────────────────────
+// 单次会话模型:子固件不跨重启常驻,ota 状态保持"待验证" → 任何再上电
+// bootloader 自动回退 factory 启动器(含崩溃/掉电,防变砖)。
+// 本函数仅做签名自诊断并返回结果;不再调用 esp_ota_mark_app_valid_cancel_rollback()
+// (历史版本会写 VALID 使子固件常驻 —— 该行为已废弃,与新启动模型冲突)。
+// 返回 ESP_OK 表示签名有效;ESP_ERR_NOT_SUPPORTED 表示未签名/验签失败;
 // 其他值表示非 OTA 启动(如直接从 factory 调试运行),可忽略。
 static inline esp_err_t metapass_mark_valid(void)
 {
     if (!mp_is_current_app_signed()) {
-        return ESP_ERR_NOT_SUPPORTED;  // 未签名 → 不常驻,下次重启回启动器
+        return ESP_ERR_NOT_SUPPORTED;  // 未签名/验签失败(仅诊断意义)
     }
-    return esp_ota_mark_app_valid_cancel_rollback();
+    return ESP_OK;
 }
 
 // 把启动分区切回 factory(meta-pass 启动器)并立即重启,不返回。

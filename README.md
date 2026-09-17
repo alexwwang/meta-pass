@@ -132,8 +132,9 @@ see below).
 Children work unmodified (trial-boot mode). To persist across reboots and get OK LONG
 return, include `main/metapass_hook.h` and wire two calls:
 
-1. Call `metapass_mark_valid()` after self-check (otherwise the next reboot returns to
-   the launcher);
+1. Call `metapass_mark_valid()` after self-check as an optional signature self-diagnostic
+   (return value only — children are single-session: every power-on returns to the launcher
+   list page, so OK LONG always works as the escape hatch);
 2. Route the OK key's LONG (1.5 s) event to `metapass_return_to_launcher()`.
 
 Signed badge (optional): `tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]`
@@ -244,6 +245,6 @@ This is an unofficial project, not affiliated with FoloToy.
 | --- | --- |
 | Serial picker is empty | Device is not in download mode (hold UP while powering on), or the USB cable is charge-only |
 | Child firmware ignores buttons / no OK LONG return | Un-adapted firmware has no return hook; power-cycle to return (rollback). By design |
-| Rebooting a child lands back in the launcher | Un-adapted children are trial boots; persist requires `metapass_mark_valid()` in the child |
+| Rebooting a child lands back in the launcher | By design (single-session model): every power-on returns to the launcher list page; crash recovery uses the same rollback |
 | Slot shows "AI-Passport" instead of the play name | The firmware was installed without a display-name blob (merged image / old channel); reinstall via the USB page with a Display name |
 | Image rejected | Over the slot's limit (`partition_size − 4KB`, the last 4KB sector is reserved for the name blob), or not an ESP32-C3 image |

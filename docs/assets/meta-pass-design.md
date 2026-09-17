@@ -63,17 +63,20 @@ not enforced by the partition table.
 
 ## 4. Boot and Rollback Model
 
-`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`:
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` + **single-session model (2026-09-17)**:
 
 - **Boot a child**: after validation, the launcher calls
   `esp_ota_set_boot_partition(ota_x)` + `esp_restart()`.
-- **Adapted child**: calls `esp_ota_mark_app_valid_cancel_rollback()` after self-check →
-  persistent across reboots.
-- **Un-adapted child**: never self-validates → any reboot (crash/power loss/watchdog)
-  makes the bootloader fall back to factory automatically. "Runs once, returns to the
-  launcher on reboot." Anti-brick needs no third-party cooperation.
-- **Launcher itself**: calls `esp_ota_mark_app_valid_cancel_rollback()` early in
-  `app_main` so the rollback target is always valid.
+- **Every power-on returns to the launcher**: the child runs for the current session only.
+  On any reboot/power-cycle the bootloader falls back to factory automatically — the ota
+  state is never promoted to VALID (the hook no longer calls `cancel_rollback`), and the
+  launcher maintains the invariant "launcher ran ⇒ otadata is empty ⇒ next boot defaults
+  to factory" by erasing otadata early in `app_main`. Boundary note: a device already held
+  by a pre-model child (VALID in otadata) never reaches the launcher — unlock via that
+  child's return hook (OK long-press) or a re-flash. Crash/power-loss auto-recovery is the
+  same mechanism (anti-brick).
+- **Launcher itself**: `app_main` erases otadata early so the bootloader defaults to
+  factory; nothing else needed (factory is the default boot target when otadata is empty).
 
 ## 5. Child Adaptation Convention (optional but recommended)
 
@@ -81,7 +84,8 @@ Children are separately built derivatives of this repository. Adapt for full exp
 
 1. Include `main/metapass_hook.h`; on `BSP_BTN_LONG` (OK key, long-press 1.5s) call
    `metapass_return_to_launcher()` (set boot partition to factory and restart).
-2. Call `esp_ota_mark_app_valid_cancel_rollback()` after self-check to stay persistent.
+2. Optionally call `metapass_mark_valid()` after self-check as a signature self-diagnostic
+   (return value only; it does not change boot behavior — children are single-session).
 3. When using the shared NVS, prefix your namespaces to avoid clashing with other
    firmware.
 

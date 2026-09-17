@@ -41,14 +41,17 @@ meta-pass 是 AI Passport 的**多固件启动器**：作为 factory 应用常�
 
 ## 4. 启动与回滚模型
 
-启用 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`：
+启用 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` + **单次会话模型（2026-09-17）**：
 
 - **启动子固件**：启动器校验通过后 `esp_ota_set_boot_partition(ota_x)` + `esp_restart()`。
-- **已适配子固件**：自检后调用 `esp_ota_mark_app_valid_cancel_rollback()` → 跨重启常驻。
-- **未适配子固件**：从不自验证 → 任何重启（崩溃/断电/看门狗）后 bootloader 自动回退
-  factory。即「试运行一次，重启即回启动器」。防变砖不需要第三方配合。
-- **启动器自身**：`app_main` 早期调用 `esp_ota_mark_app_valid_cancel_rollback()` 标记
-  factory 有效，保证回滚目标永远可用。
+- **每次上电都回启动器**：子固件仅运行当前会话。任何重启/断电后 bootloader 自动回退
+  factory——ota 状态永不提升为 VALID（hook 不再调用 `cancel_rollback`），且启动器
+  `app_main` 早期擦除 otadata，维护不变量「启动器运行 ⇒ otadata 为空 ⇒ 下次上电默认
+  引导 factory」。边界说明：已被旧模型子固件（otadata 含 VALID）锁死的设备到不了
+  启动器——需用该子固件的返回钩子（OK 长按）或重刷固件解锁。崩溃/断电自恢复是
+  同一机制（防变砖）。
+- **启动器自身**：`app_main` 早期擦除 otadata，bootloader 在 otadata 为空时默认引导
+  factory；无需其他操作。
 
 ## 5. 子固件适配约定（可选但推荐）
 
@@ -56,7 +59,8 @@ meta-pass 是 AI Passport 的**多固件启动器**：作为 factory 应用常�
 
 1. 包含 `main/metapass_hook.h`，在处理 `BSP_BTN_LONG`（OK 键长按 1.5 秒）时调用
    `metapass_return_to_launcher()`（设置启动分区为 factory 并重启）。
-2. 自检通过后调用 `esp_ota_mark_app_valid_cancel_rollback()` 以常驻。
+2. 可选：自检通过后调用 `metapass_mark_valid()` 做签名自诊断（仅返回值，不改变启动
+   行为——子固件一律单次会话）。
 3. 继续使用共享 NVS 时自行加命名空间前缀，避免与其他固件冲突。
 
 按键模型：OK 键只有一个长按阈值（约 1.5 秒）。在 meta-pass 内：`LONG` = 返回上级
