@@ -306,6 +306,9 @@ const I18N = {
     msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
     msg_read_fast: "Flash read protocol ready: per-frame ACK + MD5 digest verification + pipelined 32 KB window.",
+    msg_baud_try: "Connecting at 921600 baud (8× faster reads)…",
+    msg_baud_ok: "Serial link running at 921600 baud.",
+    msg_baud_fallback: "921600 failed ({err}) — falling back to 115200 (slower but reliable).",
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
     msg_connect_failed: "Connect failed: {err}",
@@ -443,6 +446,9 @@ const I18N = {
     msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
     msg_read_fast: "读取协议就绪:逐帧 ACK + MD5 校验帧 + 32KB 流水线窗口。",
+    msg_baud_try: "尝试以 921600 波特率连接(读取提速 8 倍)…",
+    msg_baud_ok: "串口链路已运行在 921600 波特率。",
+    msg_baud_fallback: "921600 连接失败({err})—— 回退 115200(较慢但可靠)。",
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
     msg_connect_failed: "连接失败:{err}",
@@ -805,12 +811,31 @@ $("btn-connect").addEventListener("click", async () => {
     newTransport = new Transport(port, false);
     // 连接期即监听系统级断开(拔线/休眠/设备重启):状态行同步刷新,按钮即时锁定。
     port.addEventListener("disconnect", () => { if (transport?.device === port) markDisconnected(); });
-    const newLoader = new ESPLoader({ transport: newTransport, baudrate: 115200, romBaudrate: 115200 });
-    log(t("msg_syncing"));
-    const chip = await newLoader.main(); // 同步 + 识别芯片(内部已加载 stub)
-    // 波特率对 C3 原生 USB 是虚设参数(真波特率只对外接 UART 桥板有意义),
-    // changeBaud() 的断开/重连舞蹈只增加故障面 → 不做。读取提速走 readFlash
-    // 的块/窗口命令参数,见下。
+    // 高速连接:921600。实测证据(2026-09-17 debug 日志):每 4KB 帧 356ms ≈ 115200
+    // 波特的纯线路时间(4096B×10bit÷115200≈356ms)—— 链路确实被 115200 限速,提速
+    // 预期 8 倍。此前"改波特率无效"的真相:页面传 baudrate===romBaudrate(115200),
+    // vendor main() 的 changeBaud 分支(仅 romBaudrate!==baudrate 时执行)从未触发过。
+    // 失败自动回退 115200:最坏等同旧行为,绝不更差。
+    const tryConnect = async (baud) => {
+      const tr = new Transport(port, false);
+      newTransport = tr;   // 失败时供外层清理
+      const ld = new ESPLoader({ transport: tr, baudrate: baud, romBaudrate: 115200 });
+      log(t("msg_syncing"));
+      const chipName = await ld.main(); // 同步 + 识别芯片(baud≠115200 时内部执行 changeBaud)
+      // 数据路径即时验证:若高波特率不可用,在这里就暴露并回退,而不是留给备份流程慢慢失败。
+      await withTimeout(ld.readReg(ld.CHIP_DETECT_MAGIC_REG_ADDR), 5000, "波特率验证超时");
+      return { tr, ld, chipName };
+    };
+    let newLoader, chip;
+    try {
+      log(t("msg_baud_try"));
+      ({ tr: newTransport, ld: newLoader, chipName: chip } = await tryConnect(921600));
+      log(t("msg_baud_ok"), "ok");
+    } catch (eHigh) {
+      log(t("msg_baud_fallback", { err: eHigh && eHigh.message ? eHigh.message : String(eHigh) }), "warn");
+      try { await newTransport?.disconnect(); } catch { /* 半开端口由重建 Transport 兜底 */ }
+      ({ tr: newTransport, ld: newLoader, chipName: chip } = await tryConnect(115200));
+    }
     // 读取协议参数:与 esptool.py 官方完全一致(4KB 块 / max_in_flight=64 帧)。
     // 关键修复在 readFlash 本身(vendor/esptool-js.js):①每帧 ACK(官方语义,
     // 回退此前“按窗口 ACK”的激进改动);②读完数据帧后读走并校验 stub 无条件
@@ -1600,7 +1625,7 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
-log(`[page] build 2026-09-17-probe4 · chunk=32KB retries=5 recovery=hard-timeout`, "warn");
+log(`[page] build 2026-09-17-probe5 · chunk=32KB pipeline baud=921600(fallback 115200)`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。

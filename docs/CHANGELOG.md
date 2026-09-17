@@ -5,6 +5,13 @@
 # Changelog
 
 ## Unreleased
+- Connect at 921600 baud (8x faster reads). The earlier conclusion that "baudrate is a
+  no-op on C3 native USB" was disproved by measurement: debug logs show ~356 ms per 4 KB
+  frame, matching 115200-baud wire time. The reason previous baud changes did nothing:
+  the page passed baudrate===romBaudrate, so the vendor main() changeBaud branch never
+  fired. Now connecting with baudrate=921600/romBaudrate=115200 (standard changeBaud flow),
+  with an immediate data-path check and automatic fallback to 115200 on any failure
+  (worst case = previous behavior). Read timeout 15s->8s.
 - Pipelined backup reads for a large speedup (measured 10.1 KB/s baseline): pinned down the
   `max_in_flight` semantics of the stub's `handle_flash_read` (`stub_commands.c:111`,
   `num_sent - num_acked < max_in_flight` — all three are **bytes**). We passed 64, i.e. 64

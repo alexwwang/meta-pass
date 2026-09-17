@@ -5,6 +5,11 @@
 # Changelog
 
 ## Unreleased
+- 连接提速至 921600 波特(读取链路 8 倍)。此前"波特率对 C3 原生 USB 是虚设参数"的结论
+  被实测推翻:debug 日志显示每 4KB 帧 356ms ≈ 115200 波特的纯线路时间。而"改波特率无效"
+  的真相是:页面传 baudrate===romBaudrate,vendor main() 的 changeBaud 分支从未触发。
+  现以 baudrate=921600/romBaudrate=115200 连接(main() 自动执行标准 changeBaud 流程),
+  并做即时数据路径验证,失败自动回退 115200 重连(最坏等同旧行为)。读超时 15s→8s。
 - 备份读取流水线化提速（实测 10.1 KB/s → 预期 5~8 倍）：钉死 stub `handle_flash_read`
   的 `max_in_flight` 语义（`stub_commands.c:111`，`num_sent - num_acked < max_in_flight`
   三者皆为**字节**）——此前传的 64 是 64 字节，小于一帧 4KB，stub 每发一帧就停等 ACK，
