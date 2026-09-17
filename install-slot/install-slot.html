@@ -1577,6 +1577,16 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
+log(`[page] build 2026-09-17-probe3 · chunk=32KB retries=5 recovery=hard-timeout`, "warn");
+
+// 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
+// (仅读写内存数据,无副作用;正式部署无害)。
+window.__installSlotDebug = {
+  get loader() { return loader; },
+  readFlashChunked,
+  log,
+  build: "2026-09-17-probe3",
+};
 window.__installSlotReady = true;   // 模块初始化完成:关闭 file:// 兜底横幅检测
 </script>
 </body>
