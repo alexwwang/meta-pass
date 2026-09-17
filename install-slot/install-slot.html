@@ -217,6 +217,15 @@ const SLOTS = [
   { offset: 0x560000, size: 0x29E000 },  // ota_2 (dual-use)
 ];
 
+// ===== 串口/读取协议配置(单一事实源:波特率与协议参数只允许在这里改) =====
+const ROM_BAUD = 115200;        // ROM bootloader 固定 115200(esptool 规范,不可调)
+const HIGH_BAUD = 921600;       // 会话波特率:实测读取提速 7.6 倍,esptool.py 同配置 5/5 稳定
+const READFLASH_BLOCK = 4096;   // stub 栈缓冲硬上限:更大的块会被 stub 静默截断
+const READFLASH_WINDOW = 64;    // esptool.py read_flash 同款(停等模式,字节单位)。
+                                // 实测决策 2026-09-17:流水线(32768)在 921600 下失败率
+                                // 随吞吐量颩升(ACK 上行与数据下行同端点交叠),停等 5/5 零失败。
+const PROBE_READ_SIZE = 4096;   // 探针单次读取大小(一个完整帧,足够验证全协议链路)
+
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
 // 模块初始化成功标记:供尾部非模块脚本检测(ES module 在 file:// 下被浏览器禁止,
@@ -306,9 +315,9 @@ const I18N = {
     msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
     msg_read_fast: "Flash read protocol ready: per-frame ACK + MD5 digest verification + stop-and-wait window (esptool.py proven config).",
-    msg_baud_try: "Connecting at 921600 baud (8× faster reads)…",
-    msg_baud_ok: "Serial link running at 921600 baud.",
-    msg_baud_fallback: "921600 failed ({err}) — falling back to 115200 (slower but reliable).",
+    msg_baud_try: "Connecting at {baud} baud (8× faster reads)…",
+    msg_baud_ok: "Serial link running at {baud} baud.",
+    msg_baud_fallback: "{baud} failed ({err}) — falling back to {romBaud} (slower but reliable).",
     msg_resync_l2: "Soft recovery failed — reopening serial port at {baud} baud…",
     msg_resync_l3: "Full device reset + stub re-upload (last resort)…",
     msg_connected: "Connected to {chip}.",
@@ -448,9 +457,9 @@ const I18N = {
     msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
     msg_read_fast: "读取协议就绪:逐帧 ACK + MD5 校验帧 + 停等窗口(esptool.py 久经考验配置)。",
-    msg_baud_try: "尝试以 921600 波特率连接(读取提速 8 倍)…",
-    msg_baud_ok: "串口链路已运行在 921600 波特率。",
-    msg_baud_fallback: "921600 连接失败({err})—— 回退 115200(较慢但可靠)。",
+    msg_baud_try: "尝试以 {baud} 波特率连接(读取提速 8 倍)…",
+    msg_baud_ok: "串口链路已运行在 {baud} 波特率。",
+    msg_baud_fallback: "{baud} 连接失败({err})—— 回退 {romBaud}(较慢但可靠)。",
     msg_resync_l2: "软恢复失败——按 {baud} 波特率重开串口…",
     msg_resync_l3: "整机复位 + 重传 stub(最后兑底)…",
     msg_connected: "已连接到 {chip}。",
@@ -640,7 +649,7 @@ let transport = null;
 let loader = null;
 let connecting = false; // 连接流程进行中:防止重入把串口搞成半开状态
 let busy = false;
-let linkBaud = 115200;  // 当前会话实际波特率(恢复路径必须用它重开串口,见 resyncAfterReadError)
+let linkBaud = ROM_BAUD;  // 当前会话实际波特率(恢复路径必须用它重开串口,见 resyncAfterReadError)
 let activeTab = "local";
 let localImage = null;   // { data, length, source, name }
 let playDetail = null;   // 社区玩法详情
@@ -826,9 +835,9 @@ $("btn-connect").addEventListener("click", async () => {
     const tryConnect = async (baud) => {
       const tr = new Transport(port, false);
       newTransport = tr;   // 失败时供外层清理
-      const ld = new ESPLoader({ transport: tr, baudrate: baud, romBaudrate: 115200 });
+      const ld = new ESPLoader({ transport: tr, baudrate: baud, romBaudrate: ROM_BAUD });
       log(t("msg_syncing"));
-      const chipName = await ld.main(); // 同步 + 识别芯片(baud≠115200 时内部执行 changeBaud)
+      const chipName = await ld.main(); // 同步 + 识别芯片(baud≠ROM_BAUD 时内部执行 changeBaud)
       // 数据路径即时验证:若高波特率不可用,在这里就暴露并回退,而不是留给备份流程慢慢失败。
       await withTimeout(ld.readReg(ld.CHIP_DETECT_MAGIC_REG_ADDR), 5000, "波特率验证超时");
       linkBaud = baud;   // 会话波特率确立:恢复路径重开串口必须用它
@@ -836,13 +845,13 @@ $("btn-connect").addEventListener("click", async () => {
     };
     let newLoader, chip;
     try {
-      log(t("msg_baud_try"));
-      ({ tr: newTransport, ld: newLoader, chipName: chip } = await tryConnect(921600));
-      log(t("msg_baud_ok"), "ok");
+      log(t("msg_baud_try", { baud: HIGH_BAUD }));
+      ({ tr: newTransport, ld: newLoader, chipName: chip } = await tryConnect(HIGH_BAUD));
+      log(t("msg_baud_ok", { baud: HIGH_BAUD }), "ok");
     } catch (eHigh) {
-      log(t("msg_baud_fallback", { err: eHigh && eHigh.message ? eHigh.message : String(eHigh) }), "warn");
+      log(t("msg_baud_fallback", { baud: HIGH_BAUD, romBaud: ROM_BAUD, err: eHigh && eHigh.message ? eHigh.message : String(eHigh) }), "warn");
       try { await newTransport?.disconnect(); } catch { /* 半开端口由重建 Transport 兜底 */ }
-      ({ tr: newTransport, ld: newLoader, chipName: chip } = await tryConnect(115200));
+      ({ tr: newTransport, ld: newLoader, chipName: chip } = await tryConnect(ROM_BAUD));
     }
     // 读取协议参数:与 esptool.py 官方完全一致(4KB 块 / max_in_flight=64 帧)。
     // 关键修复在 readFlash 本身(vendor/esptool-js.js):①每帧 ACK(官方语义,
@@ -857,7 +866,7 @@ $("btn-connect").addEventListener("click", async () => {
     // ACK 上行与巨量数据下行在同一 USB CDC 端点交叠,触发 C3 USB-Serial-JTAG 的
     // RX 丢失/竞争(日志证据:失败后"排空"竟达 16s = stub 积压大量在途数据)。
     // 波特率提升已把帧间间隙从 300ms 压到 ~10ms,流水线收益 ≤15%,不值得其风险。
-    globalThis.__READFLASH_PARAMS__ = [4096, 64];
+    globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
     log(t("msg_read_fast"), "ok");
     // 全部就绪才提交到全局:此前任何一步失败都不影响已有/后续连接。
     transport = newTransport;
@@ -1118,8 +1127,11 @@ $("btn-probe").addEventListener("click", async () => {
   try {
     const params = globalThis.__READFLASH_PARAMS__;
     log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}(块,窗口字节;64=停等,与 esptool.py 一致)`, "warn");
-    if (params && (params[0] !== 4096 || params[1] !== BACKUP_CHUNK)) {
-      log(`[probe] 警告:读取窗口(${params[1]}B)与备份块(${BACKUP_CHUNK}B)不一致,请重连刷新参数`, "error");
+    // 守卫只检查与真机协议相关的硬约束:块必须是 4096(stub 栈缓冲硬上限,更大的值
+    // 会被 stub 静默截断)、窗口必须为正。窗口大小(64=停等/更大=流水线)是性能取舍,
+    // 与备份块大小无耦合 —— readFlash 每次调用都动态读取参数,不存在"过期参数"。
+    if (!params || params[0] !== READFLASH_BLOCK || !(params[1] > 0)) {
+      log(`[probe] 警告:读取参数异常(${JSON.stringify(params)}),块应为 ${READFLASH_BLOCK}、窗口应为正数`, "error");
     }
     // vendor 版本戳:HTML 与 vendor ES module 是独立缓存条目,硬刷 HTML 不保证 vendor
     // 同步更新(旧 vendor:无逐帧 ACK/digest 校验 → 4KB 单帧探针可通过而多帧读取
@@ -1128,8 +1140,10 @@ $("btn-probe").addEventListener("click", async () => {
     const vendorNew = vf.includes("digest");
     log(`[probe] vendor build: ${vendorNew ? "NEW (per-frame ACK + MD5 digest)" : "OLD — 请强制刷新(Cmd+Shift+R)后再试"}`, vendorNew ? "warn" : "error");
     const t0 = Date.now();
-    const data = await loader.readFlash(0x180000, 4096);
-    log(`[probe] 4KB @0x180000 OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
+    const probeAddr = SLOTS[0].offset;
+    const data = await loader.readFlash(probeAddr, PROBE_READ_SIZE);
+    const hexAddr = "0x" + probeAddr.toString(16);
+    log(`[probe] ${PROBE_READ_SIZE}B @${hexAddr} OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
   } catch (err) {
     log(`[probe] FAIL: ${err && err.message ? err.message : String(err)}`, "error");
   } finally {
@@ -1215,10 +1229,10 @@ async function resyncAfterReadError(chunkSize, attempt = 2) {
     loader.syncStubDetected = false; // 防 runStub 被误跳过)
     // "usb_reset" 强制走 USB-JTAG 复位序列把设备打回 ROM bootloader
     await loader.connect("usb_reset");   // 同步 ROM + 识别芯片(内部开端口+复位)
-    await loader.runStub();               // 重新上传 stub(115200 线速,与首次连接一致)
-    if (linkBaud !== 115200) {
+    await loader.runStub();               // 重新上传 stub(ROM 波特率,与首次连接一致)
+    if (linkBaud !== ROM_BAUD) {
       try {
-        const ld = new ESPLoader({ transport: loader.transport, baudrate: linkBaud, romBaudrate: 115200 });
+        const ld = new ESPLoader({ transport: loader.transport, baudrate: linkBaud, romBaudrate: ROM_BAUD });
         await withTimeout(ld.changeBaud(), 10000, "resync: 恢复高速波特率超时");
         await withTimeout(ld.sync(), 8000, "resync: 高波特率确认超时");
         loader = ld;   // 会话 loader 整体替换:状态清晰(波特率/同步全部属于新实例)
@@ -1685,7 +1699,7 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
-log(`[page] build 2026-09-17-probe6 · chunk=32KB stop-and-wait baud=921600(fallback 115200)`, "warn");
+log(`[page] build 2026-09-17-probe7 · chunk=32KB stop-and-wait baud=921600(fallback 115200)`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。
