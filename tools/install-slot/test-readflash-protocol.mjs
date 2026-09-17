@@ -5,7 +5,9 @@
 //   1. vendor/md5.js —— RFC 1321 标准向量 + 与 Node crypto MD5 交叉验证
 //      (含非 64 倍数长度,防补位/长度编码错误);
 //   2. vendor/esptool-js.js readFlash —— 对齐 esptool.py 官方协议:
-//      a) 每个数据帧 ACK 一次(累计字节数,不再是按窗口);
+//      a) 每个数据帧 ACK 一次(累计字节数);在途窗口 = max_in_flight(字节!
+//         stub_commands.c:111 num_sent/num_acked/max_in_flight 同单位),窗口 ≥ 块长
+//         时 stub 连发不停(流水线),窗口 < 块长时停等 —— 两种模式都必须工作;
 //      b) 数据帧收完后读取 stub 无条件追加的 16B MD5 digest 帧并校验
 //         (stub_commands.c: MD5Final + SLIP_send,无条件);
 //      c) digest 篡改 → 报错(而不是静默吞下坏数据);
@@ -80,7 +82,7 @@ console.log("1. vendor/md5.js 正确性");
 // 每收到一个 ACK(4 字节累计)续发,数据发完且全部确认后追加 16B MD5 digest 帧
 // (stub_commands.c: MD5Final + SLIP_send,无条件)。read() 与真实 Transport 一致:
 // 按完整 SLIP 帧解码后 yield Uint8Array。
-function makeStubTransport(data, { tamperDigest = false, omitDigest = false, ackLog } = {}) {
+function makeStubTransport(data, { tamperDigest = false, omitDigest = false, ackLog, stopAndWait = false } = {}) {
   const SLIP_END = 0xc0, SLIP_ESC = 0xdb, SLIP_ESC_END = 0xdc, SLIP_ESC_ESC = 0xdd;
   const slip = (bytes) => {
     const out = [SLIP_END];
@@ -94,16 +96,18 @@ function makeStubTransport(data, { tamperDigest = false, omitDigest = false, ack
   };
   let sent = 0;          // stub 已发出字节数(num_sent)
   let acked = 0;         // 主机已确认字节数(num_acked)
+  let window = 0;        // max_in_flight,字节单位(从 READ 命令包解析,同 stub)
   let phase = "wait_cmd"; // wait_cmd -> data -> digest/done
   const digest = md5(data);
   if (tamperDigest) digest[0] ^= 0xff;
   const pending = [];    // 线上待读原始字节(SLIP 帧流)
 
-  // stub 主循环:在途未确认 < max_in_flight(64 帧 × 4KB)就继续发;
-  // 全部发出且全部确认 → 发 digest 帧(omitDigest 则不发)。phase=done 后
-  // pending 中剩余帧(如 digest)仍可被读走,读完即终止。
+  // stub 主循环:在途未确认字节数 < max_in_flight 就继续发;全部发出且全部
+  // 确认后发 digest 帧(omitDigest 则不发)。phase=done 后 pending 中剩余帧
+  // (如 digest)仍可被读走,读完即终止。stopAndWait 模拟“窗口 < 4KB”的历史
+  // 配置(如窗口=64 字节):每发一帧就被窗口挡住,只能靠逐帧 ACK 推进。
   const streamFrames = () => {
-    while (sent < data.length && sent - acked < 64 * 4096) {
+    while (sent < data.length && sent - acked < (stopAndWait ? 64 : window)) {
       const n = Math.min(4096, data.length - sent);
       pending.push(...slip(data.subarray(sent, sent + n)));
       sent += n;
@@ -154,7 +158,10 @@ function makeStubTransport(data, { tamperDigest = false, omitDigest = false, ack
         ackLog?.push(acked);
         if (phase === "data") streamFrames();
       } else if (bytes.length > 8 && bytes[1] === 0xd2) {
-        // ESP_READ_FLASH 命令 → 首波突发
+        // ESP_READ_FLASH 命令 → 像真 stub 一样从命令包解析参数并进入数据阶段
+        // 包格式:8B 命令头 + LE32 offset + LE32 length + LE32 block_size + LE32 max_in_flight
+        const dv = new DataView(bytes.buffer, bytes.byteOffset + 8);
+        window = dv.getUint32(12, true);
         phase = "data";
         streamFrames();
       }
@@ -191,13 +198,15 @@ function makeLoader(transport) {
   return l;
 }
 
-console.log("2. readFlash 协议行为(esptool.py 对齐)");
+console.log("2. readFlash 协议行为(esptool.py 对齐 + 流水线窗口)");
 {
   const data = Buffer.alloc(0x4000); // 16KB = 4 个 4KB 数据帧
   for (let i = 0; i < data.length; i++) data[i] = i & 0xff;
 
-  // a+b) 正常路径:数据正确 + 每帧 ACK + digest 被读走
+  // a+b) 正常路径:数据正确 + 每帧 ACK + digest 被读走(默认参数 = 历史停等配置,
+  //      验证窗口 < 块长时逐帧 ACK 推进仍然工作 —— 兼容性回归)
   {
+    globalThis.__READFLASH_PARAMS__ = [4096, 64];
     const ackLog = [];
     const t = makeStubTransport(data, { ackLog });
     const l = makeLoader(t);
@@ -208,8 +217,41 @@ console.log("2. readFlash 协议行为(esptool.py 对齐)");
     assert.equal(ackLog.at(-1), data.length, "最终 ACK 未覆盖全部数据");
     // digest 帧被读走:阶段推进到 idle 后不再有 pending
     assert.equal(t.pending.length, 0, "digest 帧残留在传输缓冲(协议错位未修)");
-    console.log("   PASS: 数据一致,逐帧 ACK(累计),digest 帧已读走不残留");
+    console.log("   PASS: 数据一致,逐帧 ACK(累计),digest 帧已读走不残留(停等模式兼容)");
   }
+
+  // a2) 窗口字节语义:32KB 读取 + 窗口 32768B → 首波 8 帧连发,期间零 ACK;
+  //     每帧仍 ACK(累计)。这是「停等慢」根因(窗口 64B < 一帧)的回归守卫。
+  {
+    globalThis.__READFLASH_PARAMS__ = [4096, 32768];
+    const big = Buffer.alloc(0x8000); // 32KB = 8 帧
+    for (let i = 0; i < big.length; i++) big[i] = (i * 13) & 0xff;
+    const ackLog = [];
+    const t = makeStubTransport(big, { ackLog });
+    const l = makeLoader(t);
+    const got = await l.readFlash(0, big.length);
+    assert.equal(Buffer.compare(Buffer.from(got), big), 0, "流水线读回数据不一致");
+    assert.equal(ackLog.length, 8, `流水线模式下应逐帧 ACK 8 次,实发 ${ackLog.length}`);
+    assert.equal(ackLog[0], 4096, "首个 ACK 应为 4096(累计语义)");
+    assert.equal(ackLog.at(-1), big.length, "最终 ACK 未覆盖全部数据");
+    assert.equal(t.pending.length, 0, "digest 帧残留");
+    console.log("   PASS: 窗口 32768B(字节语义)→ 8 帧连发零等待,逐帧累计 ACK,digest 收尾");
+  }
+
+  // a3) 停等模式下的窗口<块长回归:窗口 64B → stub 每帧必停,靠逐帧 ACK 推进完成
+  //     (证明 readFlash 对任意窗口值都协议正确,与窗口大小解耦)
+  {
+    globalThis.__READFLASH_PARAMS__ = [4096, 64];
+    const ackLog = [];
+    const t = makeStubTransport(data, { ackLog, stopAndWait: true });
+    const l = makeLoader(t);
+    const got = await l.readFlash(0, data.length);
+    assert.equal(Buffer.compare(Buffer.from(got), data), 0, "停等模式读回数据不一致");
+    assert.equal(ackLog.length, 4, `停等模式应恰好逐帧 ACK 4 次,实发 ${ackLog.length}`);
+    assert.equal(t.pending.length, 0, "digest 帧残留");
+    console.log("   PASS: 停等模式(窗口 64B < 帧长)依靠逐帧 ACK 完整读回 —— 与窗口值解耦");
+  }
+  globalThis.__READFLASH_PARAMS__ = [4096, 64];
 
   // c) digest 篡改 → 报错
   {

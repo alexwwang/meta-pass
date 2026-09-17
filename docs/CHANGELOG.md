@@ -5,6 +5,18 @@
 # Changelog
 
 ## Unreleased
+- Pipelined backup reads for a large speedup (measured 10.1 KB/s baseline): pinned down the
+  `max_in_flight` semantics of the stub's `handle_flash_read` (`stub_commands.c:111`,
+  `num_sent - num_acked < max_in_flight` — all three are **bytes**). We passed 64, i.e. 64
+  bytes — less than one 4 KB frame, so the stub stopped and waited for an ACK after every
+  frame; on top of that, USB-CDC only flushes a trailing partial (<64 B) packet when pushed
+  by the next data wave — and in stop-and-wait every frame ends in a 4-byte trailing packet,
+  costing ~300 ms per frame. The in-flight window is now
+  `globalThis.__READFLASH_PARAMS__ = [4096, 32768]` (byte window = one 32 KB chunk; the stub
+  streams 8 frames before waiting); ACKs are still sent per frame (as esptool.py does), with
+  cumulative values staying within 0x1000..0x8000 (no 0xC0/0xDB bytes). Covered by a new
+  "window bytes semantics" case in `test-readflash-protocol.mjs` (32 KB read must stream 8
+  frames with zero ACKs; stop-and-wait mode still supported).
 - Fix two transport-layer deadlock defects (observed as: every read session dies at ~2 min,
   and the retry recovery then hangs silently for 30+ minutes with no log):
   ① vendor `readLoop` abandons the in-flight `reader.read()` on timeout; when that

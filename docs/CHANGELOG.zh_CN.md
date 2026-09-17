@@ -5,6 +5,15 @@
 # Changelog
 
 ## Unreleased
+- 备份读取流水线化提速（实测 10.1 KB/s → 预期 5~8 倍）：钉死 stub `handle_flash_read`
+  的 `max_in_flight` 语义（`stub_commands.c:111`，`num_sent - num_acked < max_in_flight`
+  三者皆为**字节**）——此前传的 64 是 64 字节，小于一帧 4KB，stub 每发一帧就停等 ACK，
+  再叠加 USB-CDC 未满 64 字节的尾包要等下一波数据才发出（停等模式下每帧末尾都有
+  4 字节尾包，等包 ≈ 300ms）——这两层是读取慢的全部原因。在途窗口改为
+  `globalThis.__READFLASH_PARAMS__ = [4096, 32768]`（字节窗口 = 一个 32KB 块，stub 连发
+  8 帧再等确认）；ACK 仍逐帧发（与 esptool.py 一致），累计值域 0x1000~0x8000 安全
+  （无 0xC0/0xDB）。由 `test-readflash-protocol.mjs` 新增「窗口字节语义」用例覆盖：
+  32KB 读取必须零 ACK 续发 8 帧，兼容 stop-and-wait 模式。
 - 修复传输层两个挂死缺陷（实测表现为：读取会话约 2 分钟后必然死链，重试恢复又
   静默挂死 30 分钟无任何日志）：
   ① vendor `readLoop` 超时触发时遗弃未决的 `reader.read()`，其超时定时器后续触发

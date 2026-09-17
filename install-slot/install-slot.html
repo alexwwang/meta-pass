@@ -305,7 +305,7 @@ const I18N = {
     msg_connecting: "Connecting…",
     msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
-    msg_read_fast: "Flash read protocol aligned with esptool.py (per-frame ACK + MD5 digest verification).",
+    msg_read_fast: "Flash read protocol ready: per-frame ACK + MD5 digest verification + pipelined 32 KB window.",
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
     msg_connect_failed: "Connect failed: {err}",
@@ -442,7 +442,7 @@ const I18N = {
     msg_connecting: "连接中…",
     msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
-    msg_read_fast: "读取协议已对齐 esptool.py(逐帧 ACK + MD5 校验帧)。",
+    msg_read_fast: "读取协议就绪:逐帧 ACK + MD5 校验帧 + 32KB 流水线窗口。",
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
     msg_connect_failed: "连接失败:{err}",
@@ -493,7 +493,7 @@ const I18N = {
     debug_mode: "Debug 模式(输出协议级诊断日志)",
     btn_probe: "探针:单读 4KB 测试",
     msg_backup_all_failed: "所选槽位全部读取失败,未产出备份。",
-    msg_backup_read_failed: "槽位 {slot}:重试 5 次后仍失败 —— 已跳过,其余槽位继续。",
+    msg_backup_read_failed: "槽位 {slot}:读取失败 —— 已跳过,其余槽位继续。",
     msg_backup_partial: "备份已保存,但部分槽位被跳过:{slots}。这些槽位不在 zip 中。",
     msg_backup_save_cancelled: "已取消保存 —— 备份数据已丢弃,未写入任何文件。",
     msg_backup_empty: "槽位 {slot}:空槽,跳过。",
@@ -817,8 +817,11 @@ $("btn-connect").addEventListener("click", async () => {
     // 追加的 16B MD5 digest 帧(stub_commands.c:MD5Final+SLIP_send)——esptool-js
     // 上游从不读它,残帧滞留传输缓冲毒化下一条命令,这正是备份反复
     // "Packet content transfer stopped / No serial data received"且重试必败、
-    // 而写入路径从不踩坑的根因。参数已是官方久经验证值,无需探针。
-    globalThis.__READFLASH_PARAMS__ = [4096, 64];
+    // 而写入路径从不踩坑的根因。参数:块 4096(stub 栈缓冲硬上限)+ **窗口 32768 字节**
+    // —— stub_commands.c:111 的 max_in_flight 是**字节**单位(num_sent/num_acked 同为
+    // 字节),传 64 字节会让 stub 停等(每帧等 ACK);32768 = 一个 32KB 备份块,stub
+    // 连发 8 帧再等确认(流水线)。ACK 累计值域 0x1000~0x8000 安全(无 0xC0/0xDB)。
+    globalThis.__READFLASH_PARAMS__ = [4096, 32768];
     log(t("msg_read_fast"), "ok");
     // 全部就绪才提交到全局:此前任何一步失败都不影响已有/后续连接。
     transport = newTransport;
@@ -1078,7 +1081,10 @@ $("btn-probe").addEventListener("click", async () => {
   refreshInstallButton();
   try {
     const params = globalThis.__READFLASH_PARAMS__;
-    log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}`, "warn");
+    log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}(块,窗口字节;窗口=流水线深度)`, "warn");
+    if (params && (params[0] !== 4096 || params[1] !== BACKUP_CHUNK)) {
+      log(`[probe] 警告:读取窗口(${params[1]}B)与备份块(${BACKUP_CHUNK}B)不一致,请重连刷新参数`, "error");
+    }
     // vendor 版本戳:HTML 与 vendor ES module 是独立缓存条目,硬刷 HTML 不保证 vendor
     // 同步更新(旧 vendor:无逐帧 ACK/digest 校验 → 4KB 单帧探针可通过而多帧读取
     // 必挂,正是"探针 OK / 备份挂"分裂的候选解释)。直接检查运行时函数体特征。
@@ -1152,8 +1158,9 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
   while (got < size) {
     const n = Math.min(BACKUP_CHUNK, size - got);
     let chunk = null, lastErr = null;
+    let chunkT0 = Date.now();   // while 级作用域:成功日志在 for 外引用它(内层声明会 ReferenceError —— 曾致"开 Debug 必炸"的真凶)
     for (let attempt = 1; attempt <= BACKUP_RETRIES && !chunk; attempt++) {
-      const chunkT0 = Date.now();
+      chunkT0 = Date.now();
       if (debugMode()) log(`[debug] → read 0x${(start + got).toString(16)} +${n}B #${attempt}`, "warn");
       if (attempt > 1) {
         try { await resyncAfterReadError(n); }
@@ -1593,7 +1600,7 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
-log(`[page] build 2026-09-17-probe3 · chunk=32KB retries=5 recovery=hard-timeout`, "warn");
+log(`[page] build 2026-09-17-probe4 · chunk=32KB retries=5 recovery=hard-timeout`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。
@@ -1601,7 +1608,7 @@ window.__installSlotDebug = {
   get loader() { return loader; },
   readFlashChunked,
   log,
-  build: "2026-09-17-probe3",
+  build: "2026-09-17-probe4",
 };
 window.__installSlotReady = true;   // 模块初始化完成:关闭 file:// 兜底横幅检测
 </script>
