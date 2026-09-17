@@ -225,6 +225,12 @@ const READFLASH_WINDOW = 64;    // esptool.py read_flash 同款(停等模式,字
                                 // 实测决策 2026-09-17:流水线(32768)在 921600 下失败率
                                 // 随吞吐量颩升(ACK 上行与数据下行同端点交叠),停等 5/5 零失败。
 const PROBE_READ_SIZE = 4096;   // 探针单次读取大小(一个完整帧,足够验证全协议链路)
+// 读失败恢复(L1)的罚时预算:每步硬超时,任何一步失败立即上抛交下一级。
+// 921600 下 4KB 帧仅 44ms:恢复路径的所有等待都按此量级定标,总预算 ≈2.6s
+// (旧值合计 ≈16s——一次失败罚 16 秒,25% 失败率下整槽被罚时拖到几分钟)。
+const RESYNC_DRAIN_CAP_MS = 5000;        // L1 排空总上限
+const RESYNC_DRAIN_SILENCE_MS = 800;     // L1 静默判定(300→800:digest 帧+stub 在途残余需要更宽的静默窗口,这是旧值下恢复不净的直接原因之一)
+const RESYNC_SYNC_TIMEOUT_MS = 1000;     // L1 sync 超时(8→1:超预算的等待只掩盖真故障,不产生信息量;失败应尽快交 L2)
 
 const $ = (id) => document.getElementById(id);
 const logEl = $("log");
@@ -370,7 +376,7 @@ const I18N = {
     debug_mode: "Debug mode (log protocol-level diagnostics)",
     btn_probe: "Probe: single 4KB read test",
     msg_backup_all_failed: "All selected slots failed to read — no backup produced.",
-    msg_backup_read_failed: "Slot {slot}: read failed after 3 retries — skipped, other slots continue.",
+    msg_backup_read_failed: "Slot {slot}: read failed after {total} retries — skipped, other slots continue.",
     msg_backup_partial: "Backup saved with skipped slots: {slots}. Those slots are NOT in the zip.",
     msg_backup_save_cancelled: "Save cancelled — backup data was discarded, nothing written.",
     msg_backup_empty: "Slot {slot}: empty, skipped.",
@@ -512,7 +518,7 @@ const I18N = {
     debug_mode: "Debug 模式(输出协议级诊断日志)",
     btn_probe: "探针:单读 4KB 测试",
     msg_backup_all_failed: "所选槽位全部读取失败,未产出备份。",
-    msg_backup_read_failed: "槽位 {slot}:读取失败 —— 已跳过,其余槽位继续。",
+    msg_backup_read_failed: "槽位 {slot}:重试 {total} 次仍失败 —— 已跳过,其余槽位继续。",
     msg_backup_partial: "备份已保存,但部分槽位被跳过:{slots}。这些槽位不在 zip 中。",
     msg_backup_save_cancelled: "已取消保存 —— 备份数据已丢弃,未写入任何文件。",
     msg_backup_empty: "槽位 {slot}:空槽,跳过。",
@@ -1162,7 +1168,7 @@ $("btn-probe").addEventListener("click", async () => {
 // 4096j(j≤8)的字节 ∈ {0x10..0x80},可证永不出现 0xC0/0xDB —— 协议流里不再存在
 // 不安全字节;同时失败粒度与重试代价减半。
 const BACKUP_CHUNK = 0x8000;
-const BACKUP_RETRIES = 5;
+const BACKUP_RETRIES = 8;   // 单块失败率 p≈3-5%(设备侧偶发丢字节/命令竞态,不可根除)下,8 次重试使单块最终失败概率 p^8 ≈ 万分之一
 // 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 4KB 块等浏览器
 // 回 4 字节累计确认(max_in_flight=64 帧,实际受读取总长限制)。中断后若只清缓冲
 // 不补确认,stub 会停在"等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧
@@ -1180,22 +1186,26 @@ const BACKUP_RETRIES = 5;
 async function resyncAfterReadError(chunkSize, attempt = 2) {
   const dbg = (m) => { if (debugMode()) log("[debug] " + m, "warn"); };
   // ---- L1 软恢复:补 ACK → 排空 → sync(通常足以处理瞬时错位) ----
-  const ack = new Uint8Array([
-    chunkSize & 255, (chunkSize >> 8) & 255, (chunkSize >> 16) & 255, (chunkSize >> 24) & 255,
-  ]);
+  // ACK 值用 0xFFFFFFFF(发送方计数器可表示的最大值):stub 的恢复逻辑是
+  // num_acked >= num_sent 即退出本次读、发 digest、回命令循环。此前补 chunkSize
+  // (0x8000)时退出时机不确定——已发 <0x8000 会继续把剩余数据吐完(拖长交叠窗口,
+  // 排空经常接不住),已发 >0x8000 才放弃——这就是恢复后仍脏、连败的根源。
+  // 0xFFFFFFFF 恒大于 num_sent → stub 必然立即中止 → 发 digest → 回命令循环,
+  // 恢复成为确定性流程。digest 残余与线路脏字节由下一步排空统一清掉。
+  const ack = new Uint8Array([255, 255, 255, 255]);
   try { await withTimeout(loader.transport.write(ack), 3000, "resync: ACK 写入超时"); }
   catch (e) { dbg("ACK 补发: " + e.message); }
   const t0 = Date.now();
   for (;;) {
-    if (Date.now() - t0 > 5000) break;   // 上限保护:stub 若持续乱吐,按不可恢复处理
+    if (Date.now() - t0 > RESYNC_DRAIN_CAP_MS) break;   // 上限保护:stub 若持续乱吐,交 L2
     const want = Math.max(1, loader.transport.inWaiting());
     let chunk = null;
-    try { chunk = await loader.transport.newRead(want, 300); } catch { break; }
+    try { chunk = await loader.transport.newRead(want, RESYNC_DRAIN_SILENCE_MS); } catch { break; }
     if (!chunk || chunk.length === 0) break;
   }
   dbg(`排空完成(耗时 ${Date.now() - t0}ms),开始 sync…`);
   try {
-    await withTimeout(loader.sync(), 8000, "resync: sync 超时");
+    await withTimeout(loader.sync(), RESYNC_SYNC_TIMEOUT_MS, "resync: sync 超时");
     await new Promise((r) => setTimeout(r, 50));
     return "L1";   // 软恢复成功:loader/stub 状态保持,继续用
   } catch (e1) {
@@ -1327,7 +1337,7 @@ $("btn-backup").addEventListener("click", async () => {
       } catch (err) {
         // 真实错误必须见日志:此前此处只打"仍失败",err 被丢弃 —— 3 秒全灭类故障
         // (短读 RangeError 等循环外异常)完全不可观测。
-        log(`${t("msg_backup_read_failed", { slot })} — ${err && err.message ? err.message : String(err)}`, "error");
+        log(`${t("msg_backup_read_failed", { slot, total: BACKUP_RETRIES })} — ${err && err.message ? err.message : String(err)}`, "error");
         continue;   // 其余槽位继续,已读到的数据不浪费
       }
       let sliced = null;

@@ -168,3 +168,53 @@ never-settling await inside the library. Fix patterns: persist the pending read
 `catch(()=>{})` to timeout timers against unhandled rejections, and put hard timeouts on
 every recovery step. Also: a Debug mode in the page (per-chunk timing, recovery steps) beats
 guessing from logs afterwards.
+
+### Round 6 (2026-09-17): "stub error/status frame never consumed" — RETRACTED, kept for the two real lessons
+
+> **Retraction (same day, source-verified):** the claimed standalone 2-byte error/status
+> SLIP frame does not exist on the wire. `stub_flasher.c` emits header + error + status
+> inside **one** SLIP frame (`SLIP_send_frame_delimiter()` appears exactly once per
+> command); `checkCommand` consumes the whole frame. Disproof on device: probe reads
+> 4 KB OK — a +2 leftover would trip the strict size check (`4098 > 4096`) on every read.
+> Full retraction: `backup-readflash-error-status-frame.md`.
+
+**Real lesson 1: when enforcing a strict invariant (exact read size) on a protocol path,
+first account for every frame the peer sends — derived from the peer's source, not from
+a paraphrase of it.** Round 6 "verified" its claim against a *code snippet inside a
+summary* instead of the actual C source; the mock-stub fidelity rule below came from the
+same mistake. Read the server source itself, always.
+
+**Real lesson 2 (methodological): the unit-test mock stub did not mirror the real stub's
+frame sequence exactly, so unit tests stayed green while the device failed.** Rule: a
+protocol mock must be derived from the server source, byte-for-byte, including frames the
+client currently ignores.
+
+### Round 7 (2026-09-17): retries kept failing because the recovery ACK gave the stub an ambiguous exit — make recovery deterministic and price failures honestly
+
+**Lesson 1: a recovery protocol must be deterministic — it may not depend on peer state
+you cannot observe.** After a failed chunk, the stub sits blocked in `handle_flash_read`'s
+`SLIP_recv` for the next ACK. Our L1 recovery resent `ACK = chunkSize (0x8000)`: the stub
+aborts the read only when `num_acked >= num_sent` — when it had sent *less* than 0x8000 it
+kept streaming the remainder instead, extending the exact overlap window that poisoned the
+next sync. Fix: resend `ACK = 0xFFFFFFFF` — mathematically ≥ any `num_sent`, so the stub
+always exits the read, emits the digest, and returns to the command loop. Residue is then
+collected by a widened (800 ms) drain window. Recovery became a fixed sequence instead of
+a race.
+
+**Lesson 2: price each failure honestly — a timeout far above the physics of the link
+only converts transient errors into minutes of penalty.** At 921600 baud a 4 KB frame is
+~44 ms on the wire; the data-frame timeout was 8 s (180× the physics) and the recovery
+budget ≈16 s. With a device-side transient failure rate of ~3–5 % per chunk (USB-Serial-
+JTAG byte loss; plus the stub's synchronous `digest` send vs async-RX re-enable race that
+can swallow a whole command — unfixable client-side, retry is the correct answer), 25 % of
+chunks failed and each cost ~10 s. Fixes: data timeout 8 s→1.5 s (vendor), recovery sync
+8 s→1 s, drain silence 300→800 ms, retries 5→8 (p⁸ ≈ 10⁻⁴ per chunk).
+
+**Lesson 3 (evidence discipline): compare like with like.** esptool.py's "zero failures"
+over 5×128 KB was cited as proof our client was broken — but its `read()` has *no timeout*
+(it hangs forever where we time out and recover) and 128 KB is one recovery cycle vs our
+~57 per slot. Small samples of a rare event prove nothing; A/B must hold the workload
+constant.
+
+**Never do:** put AI-tool co-author footers in commit messages (removed from this repo's
+history entirely).
