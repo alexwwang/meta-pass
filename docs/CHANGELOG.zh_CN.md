@@ -5,6 +5,18 @@
 # Changelog
 
 ## Unreleased
+- 单次会话模型(启动器):每次上电都回到启动器列表页 —— 子固件不再跨重启常驻。
+  根因:签名字固件调用 `metapass_mark_valid()` → `esp_ota_mark_app_valid_cancel_rollback()`
+  把 otadata 写成 VALID(flash 持久),此后每次上电 bootloader 直接引导子固件槽位,
+  启动器永不运行;若子固件占用 OK 长按又没接返回钩子,设备被锁死(常驻子固件若崩溃循环
+  则是真·重启死循环)。修复分两层:hook 的 `metapass_mark_valid()` 改为纯签名自诊断
+  (不再调 `cancel_rollback`;ota 状态保持待验证 → 任何重启/掉电自动回退 factory,
+  崩溃自恢复走同一回滚机制);启动器在 `app_main` 早期擦除 otadata
+  (`meta_store_mark_factory_valid()`,契约已同步到 `meta_store.h`),维护不变量
+  "启动器运行 ⇒ otadata 为空 ⇒ 下次上电默认引导 factory"。边界:已被旧模型常驻子固件
+  锁住的设备到不了启动器 —— 需用该子固件的返回钩子(OK 长按)或重刷解锁。
+  `meta_store.h` 注释修正(`5cbadca`):mark_factory_valid 是擦 otadata,不是标记有效。
+  设计文档/README/sdkconfig 已同步单次会话契约。
 - sign-firmware.sh 现已支持 Full 合并镜像(bootloader+分区表+app,即市场可刷的发布格式),
   裸 app 镜像继续兼容。修复根因:脚本把 bootloader 头当 app 头解析(image_len=21024、
   total 为负、签名落在设备永不查找的位置 → 虽然命令带了 --egg-text 真机仍报"未签名")。
@@ -30,6 +42,14 @@
   波特率重开串口(修复恢复路径硬编码 115200 导致的"同址 5 连败":921600 会话中重开
   115200,后续全是波特率失配乱码)→ L3 整机 USB-JTAG 复位 + 重传 stub + 恢复高速波特率
   (全新 loader 实例,避免复用半死状态)。每级独立日志、独立失败上抛,绝不静默。
+  第七轮加固(对 `stub_commands.c` 源码核实):L1 恢复 ACK 原为 0x8000,仅在
+  `num_acked >= num_sent` 时才中止 stub 的 `handle_flash_read` —— 在途字节不足时 stub
+  会继续发完剩余数据、再次毒化链路(同址重试连败的成因)。恢复 ACK 改为 0xFFFFFFFF
+  (≥ 任何 num_sent → 确定性中止 → 发 digest → 回命令循环),排空静默 300→800ms
+  (digest + 在途残余需要更宽窗口),vendor 数据帧超时 8s→1.5s(921600 下 4KB 帧线时
+  仅 44ms),恢复 sync 8s→1s,重试 5→8 次(单块 p⁸ ≈ 万分之一),i18n 重试数字跟随常量。
+  预期效果:日志仍会出现单块瞬态失败(设备侧、无法根除),但每次代价 ~4s(原 ~10s)
+  且不再级联成整槽报废。
 - 连接提速至 921600 波特(读取链路 8 倍)。此前"波特率对 C3 原生 USB 是虚设参数"的结论
   被实测推翻:debug 日志显示每 4KB 帧 356ms ≈ 115200 波特的纯线路时间。而"改波特率无效"
   的真相是:页面传 baudrate===romBaudrate,vendor main() 的 changeBaud 分支从未触发。

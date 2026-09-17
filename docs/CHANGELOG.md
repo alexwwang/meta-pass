@@ -5,6 +5,20 @@
 # Changelog
 
 ## Unreleased
+- Single-session child boot (launcher): every power-on returns to the launcher list page —
+  child firmware no longer persists across reboots. Root cause: the signed child called
+  `metapass_mark_valid()` → `esp_ota_mark_app_valid_cancel_rollback()` wrote otadata=VALID
+  (flash-persistent), so the bootloader booted the child slot directly on every power-on and
+  the launcher never ran; a child that occupies the OK long-press without a return hook would
+  lock the device (and a crash-looping child = a true boot loop). Fix, two layers: the hook's
+  `metapass_mark_valid()` is now a signature self-diagnostic only (no `cancel_rollback`; ota
+  state stays pending → any reboot/power-cycle auto-falls back to factory, crash recovery rides
+  the same rollback), and the launcher erases otadata early in `app_main` (`meta_store_mark_factory_valid()`,
+  contract updated in `meta_store.h`) maintaining the invariant "launcher ran ⇒ otadata empty ⇒
+  next boot defaults to factory". Boundary: a device already held by an old-model resident child
+  never reaches the launcher — unlock via that child's return hook (OK long-press) or a re-flash.
+  `meta_store.h` comment corrected (`5cbadca`): mark_factory_valid erases otadata, it does not
+  mark anything valid. Design docs/README/sdkconfig synced to the single-session contract.
 - sign-firmware.sh now accepts the full merged image (bootloader + partition table + app,
   the marketplace flashable format) in addition to bare app images. Root cause fixed:
   the script parsed the bootloader header as the app header (image_len=21024, negative
@@ -38,7 +52,16 @@
   "5 consecutive failures at the same address": during a 921600 session a 115200 reopen
   yields baud-mismatch garbage) -> L3 full USB-JTAG reset + stub re-upload + baud
   restore (fresh loader instance; no reuse of half-dead state). Every tier logs and
-  propagates its own failures — no silent hangs.
+  propagates its own failures — no silent hangs. Round-7 hardening (source-verified against
+  `stub_commands.c`): the L1 recovery ACK was 0x8000, which only aborts the stub's
+  `handle_flash_read` when `num_acked >= num_sent` — with fewer bytes in flight the stub kept
+  streaming the remainder and re-poisoned the line (same-address retry cascades). The recovery
+  ACK is now 0xFFFFFFFF (≥ any num_sent → deterministic abort → digest → command loop),
+  drain silence 300→800 ms (digest + in-flight residue need a wider window), vendor data-frame
+  timeout 8 s→1.5 s (a 4 KB frame is 44 ms at 921600), recovery sync 8 s→1 s, retries 5→8
+  (p⁸ ≈ 1e-4 per chunk), i18n retry count follows the constant. Expected effect: transient
+  per-chunk failures still appear in the log (device-side, unavoidable) but each costs ~4 s
+  instead of ~10 s and no longer cascades into slot-wide abandonment.
 - Connect at 921600 baud (8x faster reads). The earlier conclusion that "baudrate is a
   no-op on C3 native USB" was disproved by measurement: debug logs show ~356 ms per 4 KB
   frame, matching 115200-baud wire time. The reason previous baud changes did nothing:
