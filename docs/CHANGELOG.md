@@ -5,6 +5,16 @@
 # Changelog
 
 ## Unreleased
+- On-device CLI verdict (esptool.py 4.12, 128 KB from slot-0 base): 115200 = 11.4 s,
+  921600 = 1.5 s (7.6x); SHA256 identical across both baud rates; 5 consecutive reads
+  at 921600 all passed. The high-baud link itself is reliable — backup read failures
+  were client-side recovery flaws (now covered by tiered recovery), not the link.
+- Tiered read-recovery for backup desync: L1 soft recovery (re-ACK, drain, sync) ->
+  L2 reopen the port at the session baud (fixes the hardcoded 115200 reopen that caused
+  "5 consecutive failures at the same address": during a 921600 session a 115200 reopen
+  yields baud-mismatch garbage) -> L3 full USB-JTAG reset + stub re-upload + baud
+  restore (fresh loader instance; no reuse of half-dead state). Every tier logs and
+  propagates its own failures — no silent hangs.
 - Connect at 921600 baud (8x faster reads). The earlier conclusion that "baudrate is a
   no-op on C3 native USB" was disproved by measurement: debug logs show ~356 ms per 4 KB
   frame, matching 115200-baud wire time. The reason previous baud changes did nothing:
