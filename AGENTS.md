@@ -59,4 +59,8 @@ Unverified: remaining board, instrument, or user checks
 
 Create commits and push only when the user requests them or the active workflow explicitly requires them. Record user-visible changes in `docs/CHANGELOG.md`; internal refactors, CI maintenance, typo fixes, and generated-file refreshes do not require a changelog entry.
 
+Commit messages must NOT contain any AI/agent attribution footers — no `Co-Authored-By:`
+trailer naming a tool or agent, no `Generated with ...` lines. This repo's history was
+rewritten once (2026-09-17) to strip such footers; do not reintroduce them.
+
 Community guidance is in `.github/CONTRIBUTING.md`, `.github/CODE_OF_CONDUCT.md`, `.github/SECURITY.md`, and `.github/SUPPORT.md`.
