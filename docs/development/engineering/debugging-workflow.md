@@ -191,15 +191,20 @@ client currently ignores.
 
 ### Round 7 (2026-09-17): retries kept failing because the recovery ACK gave the stub an ambiguous exit — make recovery deterministic and price failures honestly
 
-**Lesson 1: a recovery protocol must be deterministic — it may not depend on peer state
-you cannot observe.** After a failed chunk, the stub sits blocked in `handle_flash_read`'s
-`SLIP_recv` for the next ACK. Our L1 recovery resent `ACK = chunkSize (0x8000)`: the stub
-aborts the read only when `num_acked >= num_sent` — when it had sent *less* than 0x8000 it
-kept streaming the remainder instead, extending the exact overlap window that poisoned the
-next sync. Fix: resend `ACK = 0xFFFFFFFF` — mathematically ≥ any `num_sent`, so the stub
-always exits the read, emits the digest, and returns to the command loop. Residue is then
-collected by a widened (800 ms) drain window. Recovery became a fixed sequence instead of
-a race.
+**Lesson 1: verify the peer's exit condition against its source before claiming a
+mechanism — even your own recovery code.** After a failed chunk the stub sits blocked in
+`handle_flash_read`'s `SLIP_recv` for the next ACK. Round 7 first claimed the recovery ACK
+`0x8000` gave the stub an "ambiguous exit" (keeping it streaming when `num_sent < 0x8000`)
+— a re-read of `stub_commands.c:110` disproved this: the loop condition
+`num_acked < len && num_acked <= num_sent` already exits as soon as `num_acked >= len`, so
+`ACK = chunkSize` was *already* a deterministic abort for chunk ≤ 0x8000. The claim was
+asserted from memory, violating this very rule one round after it was learned. The real
+telemetry: digest emission is immediate after the exit, but residue from the desynced
+stream trickles in around it — the 300 ms drain window closed too early and left poison
+for `sync`. Actual fixes: widen drain silence 300→800 ms; `ACK = 0xFFFFFFFF` kept as
+unconditional-abort hardening (no coupling to the chunk ≤ ACK invariant); price timeouts
+honestly; raise retries 5→8. Honest expectation: lower per-failure penalty and fewer
+cascades — not a guaranteed drop in the underlying transient rate, which is device-side.
 
 **Lesson 2: price each failure honestly — a timeout far above the physics of the link
 only converts transient errors into minutes of penalty.** At 921600 baud a 4 KB frame is
