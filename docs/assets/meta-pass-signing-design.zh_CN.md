@@ -78,12 +78,25 @@ xor 覆盖窗口前 3927 字节(含 padding)
 
 ## 5. 签名流程(sign-firmware.sh)
 
-1. 解析 `image_len`:语义必须与 `esp_image_verify` 一致(§2 公式,`hash_appended` 读 byte 23 bit0,含 +32)。
+1. **定位应用镜像**(单一事实源 `tools/signing/locate_app_image.py`,与 `install-slot/extract-app-image.js`
+   同一契约):
+   - **裸 app 镜像**:文件头即 ESP 魔数(0xE9)→ app 在偏移 0。
+   - **Full 合并镜像(市场/发布格式)**:0x8000 处有分区表魔数(`AA 50`)→ app 位于
+     **factory 分区**偏移(典型 0x10000)。签名脚本绝不能把 bootloader 头当 app 头解析
+     (教训,2026-09-17:那样得到 image_len=21024——bootloader 自身长度、total 为负、
+     签名落在设备永不查找的位置 → 报"未签名")。
+2. 解析 `image_len`:语义必须与 `esp_image_verify` 一致(§2 公式,`hash_appended` 读 byte 23 bit0,含 +32)。
    - 注意:部分工具链会在 24B 头后插入 **16B 扩展头**——解析器应支持自动探测(先按带扩展头解析,失败回退)。
-2. `digest = SHA-256(file[0:image_len])`(覆盖完整 image_len,含 appended hash)。
-3. Keychain 签名 → DER(64..72B)。
-4. 组装 4096B sector:MSIG@0(blob ≤81B),可选 MAEG@128,其余 0xFF。
-5. 输出:`[app 原样][0xFF pad 至 round_up(image_len,4096))][4096B sector]`;输出名 `{name}_{version}-signed.bin`。
+3. `digest = SHA-256(file[app_off : app_off+image_len])`(仅 app 区域——合并镜像的
+   bootloader/分区表绝不进入 digest)。
+4. Keychain 签名 → DER(64..72B)。
+5. 组装 4096B sector:MSIG@0(blob ≤81B),可选 MAEG@128,其余 0xFF。
+6. 输出:
+   - 裸镜像输入:`[app][0xFF pad 至 round_up(image_len,4096))][4096B sector]`。
+   - 合并镜像输入:`[原文件 0..app_off 逐字节保留(bootloader+分区表)][app][pad][4096B sector]`
+     —— 市场可刷格式保持不变;MSIG 落在 `app_off + round_up(image_len,4096)`,恰为设备/安装页
+     查找位置(脚本内置写后自检校验该点)。
+   - 输出名 `{name}_{version}-signed.bin`;脚本打印的 `total` = 签名输出文件总字节数。
 
 > 教训(2026-09-16 实测):工具链修复前签出的产物(如 `pass-radar_signed_v2.bin`)布局/魔数/xor 全对,
 > 但 ECDSA 签名对应的 digest 与正确语义(完整 image_len 含 appended hash)不一致 → 设备验签必然
@@ -126,10 +139,10 @@ xor 覆盖窗口前 3927 字节(含 padding)
 
 | 方 | 载体 | 语义 |
 |---|---|---|
-| 签名脚本 | sign-firmware.sh(Python) | §2 公式 |
-| 宿主验签测试 | tools/signing/test_integration.c | 与脚本逐字对齐 |
-| 安装页解析 | install-slot/extract-app-image.js | §2 公式 + 16B 扩展头自动探测 + byte23 `& 1` |
-| 设备侧 | esp_image_verify `meta.image_len` | IDF 权威 |
+| 签名脚本 | sign-firmware.sh + locate_app_image.py | §2 公式,app 定位见 §5.1 |
+| 宿主验签测试 | tools/signing/test_integration.c | §2 公式 + 合并镜像定位(§5.1) |
+| 安装页解析 | install-slot/extract-app-image.js | §2 公式 + 16B 扩展头自动探测 + byte23 `& 1` + 合并镜像定位 |
+| 设备侧 | esp_image_verify `meta.image_len` | IDF 权威(读的是槽位:app 从分区偏移开始) |
 
 任一方向性偏差(hash_appended 读错字节 / 漏 +32 / 扩展头 / checksum pad 对齐)都会导致
 **签名扇区写入位置或 digest 与设备读取错位 → 设备判 unsigned**——文件级测试无法覆盖设备侧实现,

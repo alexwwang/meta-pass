@@ -1,5 +1,12 @@
 #!/bin/bash
-# tools/signing/sign-firmware.sh —— 给子固件 app.bin 追加 meta-pass 签名徽章。
+# tools/signing/sign-firmware.sh —— 给子固件 app 追加 meta-pass 签名徽章。
+#
+#   输入可为裸 app 镜像或 Full 合并镜像(bootloader+分区表+app;发布/市场镜像即此格式)。
+#   定位逻辑见 tools/signing/locate_app_image.py(与 install-slot/extract-app-image.js
+#   同一契约)。输出:
+#     裸 app 输入   → 槽位镜像:app + 0xFF pad + 4KB tail metadata sector;
+#     合并镜像输入  → 原文件完整保留(bootloader+分区表逐字节不动,市场刷机格式不变),
+#                     仅在 app 区域之后追加 pad + 4KB tail(槽位相对布局与设备一致)。
 #
 #   --egg-text: 可选,写入尾部 metadata sector 中部 MAEG 彩蛋文本(最长 3919 字节 ASCII)
 #
@@ -115,68 +122,25 @@ fi
 SIG="$(mktemp -t metapass-sig)"
 trap 'rm -f "$SIG"' EXIT
 
-# 计算 image_len（与设备侧 esp_image_verify 语义一致：segments + checksum pad + appended hash）
-# 布局探测与 install-slot/extract-app-image.js 相同：依次尝试 24B 头 + 16B 扩展头与纯 24B 头
-# 两种布局（互斥，恰有一种能走通 segment 表且长度收敛），三方解析器共享同一契约
-# （决策见 docs/development/engineering/debugging-workflow.md §4）。
-IMAGE_LEN=$(python3 -c '
-import struct, sys
+# 定位应用镜像(单一事实源 tools/signing/locate_app_image.py):
+# 输出 "MODE APP_OFF IMAGE_LEN"。裸镜像 MODE=app APP_OFF=0;合并镜像 MODE=full,
+# APP_OFF=factory 分区偏移(典型 0x10000)。image_len 语义与设备 esp_image_verify 一致。
+LOCATE_OUT="$(python3 "$SCRIPT_DIR/locate_app_image.py" locate "$BIN")"
+read -r IMG_MODE APP_OFF IMAGE_LEN <<< "$LOCATE_OUT"
 
-
-def try_layout(image, ext_hdr_len):
-    """按给定扩展头长度走 segment 表,返回镜像总长;结构不合法返回 None。"""
-    seg_count = image[1]
-    offset = 24 + ext_hdr_len
-    for i in range(seg_count):
-        if offset + 8 > len(image):
-            return None
-        seg_len = struct.unpack("<I", image[offset+4:offset+8])[0]
-        offset += 8 + seg_len
-        if offset > len(image):
-            return None
-    # checksum: 1 byte at current offset, then pad to 16-byte boundary
-    unpadded = offset
-    offset = unpadded + ((unpadded + 1 + 15) & ~15) - unpadded
-    # appended hash (32 bytes) if HASH_APPENDED flag is set at byte 23
-    # (IDF esp_image_header_t: 24-byte packed struct, hash_appended is last byte)
-    if image[23] & 1:
-        offset += 32
-    return offset
-
-
-def compute_esp_image_len(image):
-    """Mirror esp_image_verify(): header + segments + checksum pad + appended hash."""
-    if not image or image[0] != 0xE9:
-        return len(image)
-    last_err = None
-    for ext_hdr_len in (16, 0):
-        try:
-            result = try_layout(image, ext_hdr_len)
-        except struct.error as exc:
-            last_err = exc
-            continue
-        if result is not None:
-            return result
-    if last_err is not None:
-        raise SystemExit(f"error: {last_err}")
-    raise SystemExit("error: image segment table does not resolve under any known layout (16B-ext or plain)")
-
-
-if __name__ == "__main__":
-    with open(sys.argv[1], "rb") as f:
-        image = f.read()
-    print(compute_esp_image_len(image))
-' "$BIN")
-
-# 计算 SHA-256 digest（覆盖 image_len 字节，与设备侧 slot_sha256 一致）
+# 计算 SHA-256 digest(从 APP_OFF 起覆盖 IMAGE_LEN 字节 —— 恰是设备侧 slot_sha256
+# 读到的范围;合并镜像时不能把 bootloader/分区表算进去)
 DIGEST="$(mktemp -t metapass-digest)"
 trap 'rm -f "$SIG" "$DIGEST"' EXIT
 python3 -c '
 import hashlib, sys
 with open(sys.argv[1], "rb") as f:
-    data = f.read(int(sys.argv[2]))
+    f.seek(int(sys.argv[2]))
+    data = f.read(int(sys.argv[3]))
+if len(data) != int(sys.argv[3]):
+    raise SystemExit(f"error: file truncated: need {sys.argv[3]} bytes at offset {sys.argv[2]}")
 sys.stdout.buffer.write(hashlib.sha256(data).digest())
-' "$BIN" "$IMAGE_LEN" > "$DIGEST"
+' "$BIN" "$APP_OFF" "$IMAGE_LEN" > "$DIGEST"
 
 # 签名:只用 Keychain(私钥不出本机)。private.pem 是旧密钥对,与固件公钥不匹配,禁止 fallback。
 if [ ! -x "$SIGNER" ]; then
@@ -188,51 +152,24 @@ if [ ! -s "$SIG" ]; then
     echo "error: keychain-sign produced no output — check Keychain access" >&2
     exit 1
 fi
-python3 - "$BIN" "$SIG" "$EGG_TEXT" "$VERSION" <<'PYEOF'
+python3 - "$BIN" "$SIG" "$EGG_TEXT" "$VERSION" "$IMG_MODE" "$APP_OFF" "$IMAGE_LEN" <<'PYEOF'
 import struct
 import sys
 
-bin_path, sig_path, egg_text, version = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+bin_path, sig_path, egg_text, version, img_mode, app_off, image_len = (
+    sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5], int(sys.argv[6]), int(sys.argv[7]),
+)
 
 with open(bin_path, 'rb') as f:
-    image = f.read()
+    f.seek(app_off)
+    image = f.read(image_len)
+if len(image) != image_len:
+    raise SystemExit(f"error: file truncated: need {image_len} bytes at offset {app_off}")
 with open(sig_path, 'rb') as f:
     signature = f.read()
 
-def compute_esp_image_len(image):
-    """Mirror esp_image_verify(): header + segments + checksum pad + appended hash.
-    布局探测与上方 IMAGE_LEN 段及 install-slot/extract-app-image.js 一致(16B 扩展头优先,回退纯 24B)。"""
-    if not image or image[0] != 0xE9:
-        return len(image)
-    seg_count = image[1]
-    last_err = None
-    for ext_hdr_len in (16, 0):
-        offset = 24 + ext_hdr_len
-        ok = True
-        for i in range(seg_count):
-            if offset + 8 > len(image):
-                ok = False
-                break
-            seg_len = struct.unpack('<I', image[offset+4:offset+8])[0]
-            offset += 8 + seg_len
-            if offset > len(image):
-                ok = False
-                break
-        if not ok:
-            continue
-        # checksum: 1 byte at current offset, then pad to 16-byte boundary
-        unpadded = offset
-        offset = unpadded + ((unpadded + 1 + 15) & ~15) - unpadded
-        # appended hash (32 bytes) if HASH_APPENDED flag is set at byte 23
-        # (IDF esp_image_header_t: 24-byte packed struct, hash_appended is last byte)
-        if image[23] & 1:
-            offset += 32
-        return offset
-    raise SystemExit("error: image segment table does not resolve under any known layout (16B-ext or plain)")
-
-image_len = compute_esp_image_len(image)
-sig_off = (image_len + 4095) // 4096 * 4096
-pad_len = sig_off - len(image)
+# image_len 由调用方经 locate_app_image.py 解析后传入(与设备 esp_image_verify /
+# install-slot/extract-app-image.js 同一契约),此处不再重复解析,防两处实现漂移。
 
 assert 64 <= len(signature) <= 72, f"unexpected DER sig length: {len(signature)}"
 
@@ -245,6 +182,8 @@ sig_blob = header + payload_len + signature + bytes([xor])
 
 assert len(sig_blob) <= 81  # 8 + 72 + 1
 
+sig_off = (image_len + 4095) // 4096 * 4096   # 槽位内 tail sector 落点(相对 app 起点)
+pad_len = sig_off - image_len
 sector = bytearray(b'\xff' * 4096)
 sector[0:len(sig_blob)] = sig_blob
 
@@ -271,6 +210,11 @@ if egg_text:
     egg_field[3927] = xor
     sector[128:4056] = egg_field
 
+# ---- 输出组装 ----
+#   裸 app 输入:   [app(image_len)][0xFF pad][4KB tail]           ← 与设备槽位 1:1
+#   合并镜像输入:  [原 bootloader+分区表 0..app_off][app][pad][4KB tail]
+#                  头部逐字节保留(市场刷机需要);不变量:MSIG 写在
+#                  app_off + sig_off,恰为设备/安装页查找的绝对位置。
 import os
 base_name = os.path.basename(bin_path).rsplit('.', 1)[0]
 out_dir = os.path.dirname(os.path.abspath(bin_path))
@@ -279,19 +223,39 @@ if version:
 else:
     out_name = f"{base_name}-signed.bin"
 out_path = os.path.join(out_dir, out_name)
+
+head = b""
+if img_mode == "full":
+    with open(bin_path, 'rb') as f:
+        head = f.read(app_off)
+    if len(head) != app_off:
+        raise SystemExit(f"error: file truncated: need {app_off} bytes for bootloader+partition table")
+
+tail_file = app_off + sig_off
 with open(out_path, 'wb') as f:
+    f.write(head)
     f.write(image)
     if pad_len > 0:
         f.write(b'\xff' * pad_len)
     f.write(bytes(sector))
 
+# 自检:重读输出,确认 MSIG 落在安装页/设备查找的位置
+with open(out_path, 'rb') as f:
+    f.seek(tail_file)
+    probe = f.read(4)
+if probe != b'MSIG':
+    raise SystemExit(f"error: self-check failed: no MSIG at output offset 0x{tail_file:x}")
+
+total = len(head) + image_len + pad_len + len(sector)
+input_size = os.path.getsize(bin_path)
 print(f"signed: {out_path}")
-if version:
-    print(f"  version:  {version}")
-print(f"  image_len: {image_len}")
-print(f"  sig_offset: {sig_off}")
-print(f"  sig_blob: {len(sig_blob)} bytes (payload_len={len(signature)})")
+print(f"  input:      {img_mode} image ({input_size} bytes, app at file offset 0x{app_off:x})")
+print(f"  image_len:  {image_len}")
+print(f"  sig_offset: {sig_off} slot-relative -> 0x{tail_file:x} in output file")
+print(f"  sig_blob:   {len(sig_blob)} bytes (payload_len={len(signature)})")
 if egg_text:
-    print(f"  egg_text: {egg_text!r}")
-print(f"  total: {image_len + pad_len + len(sector)}")
+    print(f"  egg_text:   {egg_text!r}")
+print(f"  total:      {total}  (signed output file size in bytes)")
+if img_mode == "full":
+    print("  (full image: bootloader + partition table preserved byte-for-byte)")
 PYEOF

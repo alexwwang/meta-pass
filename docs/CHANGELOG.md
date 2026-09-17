@@ -5,6 +5,18 @@
 # Changelog
 
 ## Unreleased
+- sign-firmware.sh now accepts the full merged image (bootloader + partition table + app,
+  the marketplace flashable format) in addition to bare app images. Root cause fixed:
+  the script parsed the bootloader header as the app header (image_len=21024, negative
+  `total`, signature at an offset the device never reads -> "unsigned" on device even
+  though the command included --egg-text). App location now comes from the single-source
+  locator `tools/signing/locate_app_image.py` (factory partition @0x10000, same contract
+  as install-slot/extract-app-image.js); merged outputs keep bootloader/partition bytes
+  byte-for-byte and append pad + 4 KB metadata sector only; digest covers the app region
+  only. test_integration.c gained the same merged-image parsing. Output labels clarified
+  (`total` = signed output file size; `sig_offset` now printed slot-relative + absolute).
+  Verified on-device-representative host tests: merged + bare inputs both PASS
+  (META_SIG_OK + egg parse), structure asserts (head preserved / pad 0xFF / MSIG@offset / MAEG xor).
 - Revert pipeline window 32768 -> 64 (stop-and-wait, identical to esptool.py read_flash);
   keep 921600. On-device A/B: esptool.py stop-and-wait @921600 ran 5/5 clean (87 KB/s),
   while the self-built pipeline failed proportionally to throughput at the same baud.

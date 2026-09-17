@@ -138,7 +138,10 @@ return, include `main/metapass_hook.h` and wire two calls:
 
 Signed badge (optional): `tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]`
 appends an ECDSA-P256 badge (+ optional easter-egg text) after the image; meta-pass then
-shows SIGNED on the detail page and boots without the warning page. The private key lives
+shows SIGNED on the detail page and boots without the warning page. Input may be a bare
+app image **or the full merged image (bootloader + partition table + app — the
+marketplace flashable format)**; merged inputs keep their header bytes byte-for-byte and
+only the pad + 4 KB metadata sector are appended. The private key lives
 in the macOS Keychain (created once via `tools/signing/bin/keychain-keygen`, which also
 publishes `tools/signing/public.pem`); the signing key is held by the meta-pass
 publisher — third-party developers submit binaries for signing rather than self-signing.

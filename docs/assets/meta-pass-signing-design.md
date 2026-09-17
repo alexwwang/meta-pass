@@ -83,13 +83,26 @@ The front of the window stays 0xFF
 
 ## 5. Signing Flow (sign-firmware.sh)
 
-1. Parse `image_len`: semantics must match `esp_image_verify` (§2 formula; `hash_appended` reads byte 23 bit0, includes +32).
+1. **Locate the app image** (single source of truth: `tools/signing/locate_app_image.py`, same contract as
+   `install-slot/extract-app-image.js`):
+   - **Bare app image**: file starts with the ESP magic (0xE9) → app at offset 0.
+   - **Full merged image (the marketplace/release format)**: partition-table magic (`AA 50`) at 0x8000 →
+     app at the **factory partition** offset (typically 0x10000). The signing script must NOT parse the
+     bootloader header as the app header (lesson, 2026-09-17: doing so produced image_len=21024 — the
+     bootloader's own length — a negative `total`, and a signature the device never finds → "unsigned").
+2. Parse `image_len`: semantics must match `esp_image_verify` (§2 formula; `hash_appended` reads byte 23 bit0, includes +32).
    - Note: some toolchains insert a **16 B extended header** after the 24 B header — parsers should auto-detect
      (try with extended header first, fall back).
-2. `digest = SHA-256(file[0:image_len])` (covering the full image_len, appended hash included).
-3. Keychain signing → DER (64..72 B).
-4. Assemble the 4096 B sector: MSIG@0 (blob ≤ 81 B), optional MAEG@128, rest 0xFF.
-5. Output: `[app as-is][0xFF pad to round_up(image_len,4096)][4096 B sector]`; output name `{name}_{version}-signed.bin`.
+3. `digest = SHA-256(file[app_off : app_off+image_len])` (app region only — bootloader/partition table never
+   enter the digest for merged images).
+4. Keychain signing → DER (64..72 B).
+5. Assemble the 4096 B sector: MSIG@0 (blob ≤ 81 B), optional MAEG@128, rest 0xFF.
+6. Output:
+   - Bare input: `[app][0xFF pad to round_up(image_len,4096)][4096 B sector]`.
+   - Merged input: `[original bytes 0..app_off (bootloader+partition table, byte-for-byte)][app][pad][4096 B sector]`
+     — the marketplace flashable format is preserved; MSIG lands at `app_off + round_up(image_len,4096)`,
+     exactly where device/install page lookups hit (verified by a post-write self-check in the script).
+   - Output name `{name}_{version}-signed.bin`; `total` printed by the script = signed output file size in bytes.
 
 > Lesson (observed 2026-09-16): artifacts signed before the toolchain fix (e.g. `pass-radar_signed_v2.bin`) had a
 > correct layout/magic/xor, but the digest behind the ECDSA signature did not match the correct semantics
@@ -136,10 +149,10 @@ The front of the window stays 0xFF
 
 | Party | Carrier | Semantics |
 |---|---|---|
-| Signing script | sign-firmware.sh (Python) | §2 formula |
-| Host verify test | tools/signing/test_integration.c | word-for-word with the script |
-| Install page parser | install-slot/extract-app-image.js | §2 formula + 16 B extended-header auto-detect + byte23 `& 1` |
-| Device side | esp_image_verify `meta.image_len` | IDF authoritative |
+| Signing script | sign-firmware.sh + locate_app_image.py | §2 formula, app located via §5.1 |
+| Host verify test | tools/signing/test_integration.c | §2 formula + merged-image location (§5.1) |
+| Install page parser | install-slot/extract-app-image.js | §2 formula + 16 B extended-header auto-detect + byte23 `& 1` + merged-image location |
+| Device side | esp_image_verify `meta.image_len` | IDF authoritative (reads the slot: app starts at partition offset) |
 
 Any directional deviation (wrong hash_appended byte / missing +32 / extended header / checksum pad alignment) causes
 **the signature sector to land or the digest to be computed at an offset the device does not read → the device reports

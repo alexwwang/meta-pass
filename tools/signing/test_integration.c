@@ -31,6 +31,34 @@
 #define ESP_IMAGE_MAGIC 0xE9u
 #define ESP_HDR_LEN 24u
 #define ESP_SEG_HDR_LEN 8u
+#define PART_TABLE_OFF 0x8000u
+#define PART_ENTRY_LEN 32u
+
+// Full 合并镜像识别:0x8000 处分区表 magic(AA 50) —— 与
+// tools/signing/locate_app_image.py / install-slot/extract-app-image.js 同一契约。
+static int is_full_image(const unsigned char *buf, size_t fsize)
+{
+    return fsize > PART_TABLE_OFF + 1 &&
+           buf[PART_TABLE_OFF] == 0xAA && buf[PART_TABLE_OFF + 1] == 0x50;
+}
+
+// 分区表逐条扫描(32B/条):type@+2、subtype@+3、offset U32LE@+4。
+// type=0 且 subtype=0 即 factory 应用;未找到返回 0。
+static uint32_t find_factory_partition(const unsigned char *buf, size_t fsize)
+{
+    uint32_t off = PART_TABLE_OFF;
+    while (off + PART_ENTRY_LEN <= fsize) {
+        if (buf[off] != 0xAA || buf[off + 1] != 0x50) break;
+        if (buf[off + 2] == 0x00 && buf[off + 3] == 0x00) {
+            return (uint32_t)buf[off + 4] |
+                   ((uint32_t)buf[off + 5] << 8) |
+                   ((uint32_t)buf[off + 6] << 16) |
+                   ((uint32_t)buf[off + 7] << 24);
+        }
+        off += PART_ENTRY_LEN;
+    }
+    return 0;
+}
 
 static void hex(const unsigned char *b, int n)
 {
@@ -181,20 +209,40 @@ int main(int argc, char **argv)
     }
     fclose(f);
 
-    const uint32_t image_len = esp_image_len(buf, (size_t)fsize);
+    // image_len 与 tail sector 位置按输入格式解析:
+    //   裸 app 镜像  app_off = 0,digest 从文件头起;
+    //   Full 合并镜像  app_off = factory 分区偏移(典型 0x10000),
+    //                    digest 仅覆盖 app 区域(bootloader/分区表不入 digest),
+    //                    tail sector 在 app_off + align4k(image_len)。
+    // 算法与设备侧 esp_image_verify()、sign-firmware.sh、install-slot/extract-app-image.js
+    // 四方同一契约。
+    uint32_t app_off = 0;
+    const char *img_mode = "app";
+    if (is_full_image(buf, (size_t)fsize)) {
+        img_mode = "full";
+        app_off = find_factory_partition(buf, (size_t)fsize);
+        if (app_off == 0) {
+            fprintf(stderr, "error: full flash image detected, but no factory app partition found\n");
+            free(buf);
+            return 2;
+        }
+    }
+    const uint32_t image_len = esp_image_len(buf + app_off, (size_t)fsize - app_off);
     const uint32_t tail_off = (image_len + META_SIG_SECTOR - 1u) &
                               ~(META_SIG_SECTOR - 1u);
-    if (fsize == 0 || image_len == 0 || tail_off + META_SIG_SECTOR > (uint32_t)fsize) {
-        fprintf(stderr, "error: image_len=%u tail_offset=%u exceeds file size %ld\n",
-                image_len, tail_off, fsize);
+    if (fsize == 0 || image_len == 0 ||
+        app_off + tail_off + META_SIG_SECTOR > (uint32_t)fsize) {
+        fprintf(stderr, "error: image_len=%u tail_offset=%u (app at 0x%x) exceeds file size %ld\n",
+                image_len, tail_off, app_off, fsize);
         free(buf);
         return 2;
     }
 
     printf("file:        %s (%ld bytes)\n", argv[1], fsize);
+    printf("input:       %s image (app at file offset 0x%x)\n", img_mode, app_off);
     printf("image_len:   %u\n", image_len);
-    printf("tail_offset: %u\n", tail_off);
-    const int rc = run(buf, (size_t)fsize, image_len, tail_off);
+    printf("tail_offset: 0x%x in file (slot-relative %u)\n", app_off + tail_off, tail_off);
+    const int rc = run(buf + app_off, (size_t)fsize, image_len, tail_off);
     free(buf);
     return rc;
 }

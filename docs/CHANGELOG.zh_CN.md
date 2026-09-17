@@ -5,6 +5,15 @@
 # Changelog
 
 ## Unreleased
+- sign-firmware.sh 现已支持 Full 合并镜像(bootloader+分区表+app,即市场可刷的发布格式),
+  裸 app 镜像继续兼容。修复根因:脚本把 bootloader 头当 app 头解析(image_len=21024、
+  total 为负、签名落在设备永不查找的位置 → 虽然命令带了 --egg-text 真机仍报"未签名")。
+  app 定位改用单一事实源 `tools/signing/locate_app_image.py`(factory 分区 @0x10000,
+  与 install-slot/extract-app-image.js 同一契约);合并镜像输出逐字节保留
+  bootloader/分区表,仅追加 pad + 4KB 元数据 sector;digest 仅覆盖 app 区域。
+  test_integration.c 同步支持合并镜像解析。输出字段含义澄清(`total` = 签名输出文件
+  总字节数;`sig_offset` 同时打印槽位相对与文件绝对偏移)。真机代表路径实测:
+  合并+裸镜像均 PASS(META_SIG_OK + 彩蛋解析),结构断言全过(头部保留/pad 0xFF/MSIG 位置/MAEG xor)。
 - 回退流水线窗口 32768 → 64(停等,与 esptool.py read_flash 完全一致),921600 保留。
   真机 A/B:esptool.py 停等 @921600 连跑 5 遍零失败(87KB/s);自研流水线同波特率失败
   随吞吐量颩升。机制:流水线下 ACK 上行与巨量数据下行在同一 USB CDC 端点交叠,触发

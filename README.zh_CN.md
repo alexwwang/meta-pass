@@ -123,7 +123,9 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 
 签名徽章（可选）:`tools/signing/sign-firmware.sh <app.bin> [--egg-text "..."]` 在镜像后
 追加 ECDSA-P256 徽章（可附带彩蛋文本）;meta-pass 详情页显示 SIGNED 并跳过警告页
-直接启动。私钥托管在 macOS Keychain（首次用 `tools/signing/bin/keychain-keygen` 生成，
+直接启动。输入可以是裸 app 镜像,也可以是 **Full 合并镜像(bootloader+分区表+app,
+即市场可刷的发布格式)**——合并镜像的头部字节逐字节保留,只在 app 后追加 pad 与
+4KB 元数据 sector。私钥托管在 macOS Keychain（首次用 `tools/signing/bin/keychain-keygen` 生成，
 同时发布 `tools/signing/public.pem`)；签名私钥由 meta-pass 发布方持有——
 第三方开发者提交二进制给发布方签名，不能自签。
 
