@@ -23,8 +23,11 @@ esp_err_t meta_store_boot_slot(int slot);
 // 槽位分区句柄(供 meta_net 流式写入与容量查询)。失败返回 NULL。
 const esp_partition_t *meta_store_slot_partition(int slot);
 
-// 让 factory(启动器自身)成为永久有效的回滚目标:首启后标记当前 factory 镜像有效。
-// 幂等;非待验证状态时返回 ESP_ERR_INVALID_STATE,属正常情况,调用方按日志处理即可。
+// 清空 otadata(单次会话模型):启动器每次开机调用,保证下次上电 bootloader
+// 默认引导 factory 列表页(签名子固件也不跨重启常驻)。幂等(重复擦除无害)。
+// 返回 ESP_ERR_NOT_FOUND 表示分区表无 otadata(配置损坏)。
+// 注:名称保留 mark_factory_valid 以兼容历史调用点,语义等价 ——
+// esp_ota_set_boot_partition(factory) 的 IDF 实现即擦除 otadata。
 esp_err_t meta_store_mark_factory_valid(void);
 
 // 惰性读取槽位彩蛋文本:定位 tail sector 并解析 MAEG(meta_sign.h)。
