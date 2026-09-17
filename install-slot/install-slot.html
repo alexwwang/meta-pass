@@ -309,6 +309,8 @@ const I18N = {
     msg_baud_try: "Connecting at 921600 baud (8× faster reads)…",
     msg_baud_ok: "Serial link running at 921600 baud.",
     msg_baud_fallback: "921600 failed ({err}) — falling back to 115200 (slower but reliable).",
+    msg_resync_l2: "Soft recovery failed — reopening serial port at {baud} baud…",
+    msg_resync_l3: "Full device reset + stub re-upload (last resort)…",
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
     msg_connect_failed: "Connect failed: {err}",
@@ -449,6 +451,8 @@ const I18N = {
     msg_baud_try: "尝试以 921600 波特率连接(读取提速 8 倍)…",
     msg_baud_ok: "串口链路已运行在 921600 波特率。",
     msg_baud_fallback: "921600 连接失败({err})—— 回退 115200(较慢但可靠)。",
+    msg_resync_l2: "软恢复失败——按 {baud} 波特率重开串口…",
+    msg_resync_l3: "整机复位 + 重传 stub(最后兑底)…",
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
     msg_connect_failed: "连接失败:{err}",
@@ -619,10 +623,12 @@ async function sha256Hex(buf) {
 // ===== esptool-js(本地 vendor 加载;不阻塞页面其余功能)=====
 let ESPLoader = null;
 let Transport = null;
+let UsbJtagSerialReset = null;
 import("./vendor/esptool-js.js")
   .then((m) => {
     ESPLoader = m.ESPLoader;
     Transport = m.Transport;
+    UsbJtagSerialReset = m.UsbJtagSerialReset;
     log(t("msg_esptool_loaded"));
   })
   .catch((err) => {
@@ -634,6 +640,7 @@ let transport = null;
 let loader = null;
 let connecting = false; // 连接流程进行中:防止重入把串口搞成半开状态
 let busy = false;
+let linkBaud = 115200;  // 当前会话实际波特率(恢复路径必须用它重开串口,见 resyncAfterReadError)
 let activeTab = "local";
 let localImage = null;   // { data, length, source, name }
 let playDetail = null;   // 社区玩法详情
@@ -824,6 +831,7 @@ $("btn-connect").addEventListener("click", async () => {
       const chipName = await ld.main(); // 同步 + 识别芯片(baud≠115200 时内部执行 changeBaud)
       // 数据路径即时验证:若高波特率不可用,在这里就暴露并回退,而不是留给备份流程慢慢失败。
       await withTimeout(ld.readReg(ld.CHIP_DETECT_MAGIC_REG_ADDR), 5000, "波特率验证超时");
+      linkBaud = baud;   // 会话波特率确立:恢复路径重开串口必须用它
       return { tr, ld, chipName };
     };
     let newLoader, chip;
@@ -1147,11 +1155,14 @@ const BACKUP_RETRIES = 5;
 //   a) 补发"整块已收满"确认帧 → stub 发完剩余字节后回命令循环(3s);
 //   b) 排空线路残留(300ms 静默视为发完,总上限 5s);
 //   c) sync 重新同步(8s);
-//   d) sync 失败 → 关闭并重开串口再 sync(各 5s/10s)。vendor 旧版此处用
-//      flushInput() 兑底,但 await reader.closed 在活跃串口上永不落定 —— 这就是
-//      "重试(1/5) 后静默挂死 30 分钟"的根因,已从 vendor 层移除该调用。
-async function resyncAfterReadError(chunkSize) {
+//   d) sync 失败 → L2:按**会话波特率**(linkBaud,不是写死值!)关闭并重开串口再 sync
+//      —— 曾因写死 115200 而设备已跑在 921600,重开后波特率失配,后续重试收到的全是
+//      乱码(Invalid head of packet),同一地址 5 连败整槽报废(实测 13:52 日志)。
+//   e) L2 也失败 → L3:整机 USB-JTAG 复位回 ROM bootloader + 重新上传 stub + 同步,
+//      全自动无需用户干预。stub 已死/会话彻底报废时的最后兜底。
+async function resyncAfterReadError(chunkSize, attempt = 2) {
   const dbg = (m) => { if (debugMode()) log("[debug] " + m, "warn"); };
+  // ---- L1 软恢复:补 ACK → 排空 → sync(通常足以处理瞬时错位) ----
   const ack = new Uint8Array([
     chunkSize & 255, (chunkSize >> 8) & 255, (chunkSize >> 16) & 255, (chunkSize >> 24) & 255,
   ]);
@@ -1168,14 +1179,60 @@ async function resyncAfterReadError(chunkSize) {
   dbg(`排空完成(耗时 ${Date.now() - t0}ms),开始 sync…`);
   try {
     await withTimeout(loader.sync(), 8000, "resync: sync 超时");
+    await new Promise((r) => setTimeout(r, 50));
+    return "L1";   // 软恢复成功:loader/stub 状态保持,继续用
   } catch (e1) {
-    dbg("sync 失败(" + e1.message + "),关闭并重开串口再同步…");
-    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: 关闭串口超时"); } catch { /* ignore */ }
-    try { await withTimeout(loader.transport.connect(115200), 5000, "resync: 重开串口超时"); }
-    catch (e2) { throw new Error("重开串口失败: " + e2.message); }
-    await withTimeout(loader.sync(), 10000, "resync: 重开后 sync 超时");
+    dbg("L1 sync 失败(" + e1.message + ")");
   }
-  await new Promise((r) => setTimeout(r, 50));
+  // ---- L2 重开串口:必须用会话波特率(stub 仍在设备上跑);残留缓冲必须清空,
+  //      否则脏字节会让 sync 的 SLIP 解析吃垃圾 ----
+  try {
+    log(t("msg_resync_l2", { baud: linkBaud }), "warn");
+    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: 关闭串口超时"); } catch { /* 半开由重开兑底 */ }
+    try { await withTimeout(loader.transport.connect(linkBaud), 5000, "resync: 重开串口超时"); }
+    catch (e2) { throw new Error("重开串口失败: " + e2.message); }
+    loader.transport.buffer = new Uint8Array(0);   // 清残留脏字节
+    // stub 若在重开期间被冲掉,sync 会报错 → 交由 L3 处理
+    await withTimeout(loader.sync(), 10000, "resync: L2 sync 超时");
+    await new Promise((r) => setTimeout(r, 50));
+    return "L2";
+  } catch (e2) {
+    dbg("L2 失败(" + e2.message + ")");
+  }
+  // ---- L3 整机复位 + 重传 stub:最后兜底 ----
+  // 顺序严格对齐 vendor 语义:connect 内部自己开端口(romBaudrate)+ 执行复位序列,
+  // 绝不能在它之前手动 transport.connect(否则 "port already open")。换波特率用
+  // 全新 loader 实例执行 changeBaud(命令在 115200 发出、设备切换、宿主重开),
+  // 避免在旧 loader 上留下"命令已发但宿主未跟上"的模糊状态。
+  if (attempt < 3) throw new Error("L1/L2 恢复失败,升级 L3 仅在 retry ≥ 3 时执行");
+  try {
+    log(t("msg_resync_l3"), "warn");
+    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: L3 关闭串口超时"); } catch { /* ignore */ }
+    loader.IS_STUB = false;          // 重传 stub 的前置状态(显式清零,
+    loader.syncStubDetected = false; // 防 runStub 被误跳过)
+    // "usb_reset" 强制走 USB-JTAG 复位序列把设备打回 ROM bootloader
+    await loader.connect("usb_reset");   // 同步 ROM + 识别芯片(内部开端口+复位)
+    await loader.runStub();               // 重新上传 stub(115200 线速,与首次连接一致)
+    if (linkBaud !== 115200) {
+      try {
+        const ld = new ESPLoader({ transport: loader.transport, baudrate: linkBaud, romBaudrate: 115200 });
+        await withTimeout(ld.changeBaud(), 10000, "resync: 恢复高速波特率超时");
+        await withTimeout(ld.sync(), 8000, "resync: 高波特率确认超时");
+        loader = ld;   // 会话 loader 整体替换:状态清晰(波特率/同步全部属于新实例)
+      } catch (eBaud) {
+        dbg("changeBaud 失败(" + eBaud.message + "),链路降级 115200 继续");
+        linkBaud = 115200;
+        loader.baudrate = 115200;
+        await withTimeout(loader.sync(), 8000, "resync: 降级 115200 确认超时");
+      }
+    } else {
+      await withTimeout(loader.sync(), 8000, "resync: L3 sync 超时");
+    }
+    await new Promise((r) => setTimeout(r, 50));
+    return "L3";
+  } catch (e3) {
+    throw new Error("L3 整机复位恢复失败: " + e3.message);
+  }
 }
 async function readFlashChunked(start, size, onProgress, onRetry) {
   const buf = new Uint8Array(size);
@@ -1188,7 +1245,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
       chunkT0 = Date.now();
       if (debugMode()) log(`[debug] → read 0x${(start + got).toString(16)} +${n}B #${attempt}`, "warn");
       if (attempt > 1) {
-        try { await resyncAfterReadError(n); }
+        try { await resyncAfterReadError(n, attempt); }
         catch (syncErr) {
           lastErr = syncErr;
           log(t("msg_backup_resync_failed", { err: syncErr.message }), "warn");
