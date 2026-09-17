@@ -5,6 +5,20 @@
 # Changelog
 
 ## Unreleased
+- Fix two transport-layer deadlock defects (observed as: every read session dies at ~2 min,
+  and the retry recovery then hangs silently for 30+ minutes with no log):
+  ① vendor `readLoop` abandons the in-flight `reader.read()` on timeout; when that
+  generator's timeout timer later fires, `finally{buffer=new Uint8Array(0)}` wipes the whole
+  transport buffer — any read session outliving `FLASH_READ_TIMEOUT` self-destructs, and
+  every `newRead` spawning a fresh generator left stale timers counting. Now: persistent
+  `_pendingRead`, explicit generator close, buffer wipe removed; `FLASH_READ_TIMEOUT`
+  100s→15s.
+  ② vendor `flushInput()` starts with `await this.reader.closed`, which never settles on an
+  active serial port — the recovery path hung there forever. Now a bounded cancel
+  (cancel + 500ms race); the page-level recovery chain got hard timeouts on every step and
+  auto re-opens the serial port when sync fails.
+- Add a Debug-mode checkbox to the backup section: logs protocol-level diagnostics (per-chunk
+  timing, recovery steps, timeout positions) for remote troubleshooting.
 - Fix the root cause of backup read failures ("Packet content transfer stopped" / "No serial
   data received", retries never recovering): the esptool stub appends an unconditional 16-byte
   MD5 digest frame after flash-read data frames (`stub_commands.c`), which esptool-js never

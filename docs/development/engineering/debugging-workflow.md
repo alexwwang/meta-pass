@@ -142,3 +142,29 @@ remembering: `data_len` must be written as a full u32 LE (a one-byte store leave
 upper bytes and silently turns the length huge), and C test buffers must be memset — the
 equivalent JS fixtures pass because `Uint8Array.fill` initializes everything. Re-signing the
 real pass-radar image after the change still produces image_len 962416 / `META_SIG_OK`.
+
+### Round 5 (vendored esptool-js transport): hidden self-destruct via timers & promises
+
+**Lesson: a library's `finally{}` blocks and pending promises can kill you long after you
+thought they were done.**
+
+Backup reads died at ~2 min and the retry recovery hung silently for 30+ minutes. Three
+rounds of chunking/retry/ACK patching missed it; only a line-by-line read of the vendored
+minified bundle exposed two structural defects:
+
+1. `readLoop`'s `finally{buffer=new Uint8Array(0)}` wipes the transport buffer when its
+   timeout fires — and an abandoned generator's timeout timer still fires later, swallowing
+   the tail of an in-flight stream. With `FLASH_READ_TIMEOUT=100s` this matches the observed
+   "dies at ~2 min" exactly; it had been misdiagnosed as USB jitter.
+2. `flushInput()` starts with `await this.reader.closed`, which **never settles** on an
+   active serial port — any recovery path reaching it hangs forever, without even an error.
+   That was the "retry (1/5) then 30 minutes of silence".
+
+Method takeaway: **when debugging a hang in a timeout chain, first audit the library's
+internal `Promise.race` settlement paths and `finally` side effects before blaming the
+environment**; when upper-layer retries/timeouts cannot revive it, there is almost always a
+never-settling await inside the library. Fix patterns: persist the pending read
+(`_pendingRead` reuse), close generators explicitly with `return()`, attach
+`catch(()=>{})` to timeout timers against unhandled rejections, and put hard timeouts on
+every recovery step. Also: a Debug mode in the page (per-chunk timing, recovery steps) beats
+guessing from logs afterwards.

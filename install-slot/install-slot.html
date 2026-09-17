@@ -133,6 +133,9 @@
     </p>
     <button id="btn-backup" class="primary" disabled data-i18n="btn_backup">Backup now</button>
     <span id="backup-status"></span>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:0.9em;">
+      <input type="checkbox" id="debug-mode"> <span data-i18n="debug_mode">Debug 模式(输出协议级诊断日志)</span>
+    </label>
     <div class="progress"><div id="backup-bar"></div></div>
   </section>
 
@@ -347,6 +350,9 @@ const I18N = {
     msg_backup_slot_done: "Slot {slot}: {firmware}",
     msg_backup_read_retry: "Slot {slot}: read error at {addr} ({err}) — retrying ({n}/{total})…",
     msg_backup_resync_failed: "Serial re-sync failed ({err}) — giving up this slot.",
+    msg_debug_on: "Debug mode ON — protocol-level diagnostics will be logged.",
+    msg_debug_off: "Debug mode OFF.",
+    debug_mode: "Debug mode (log protocol-level diagnostics)",
     msg_backup_all_failed: "All selected slots failed to read — no backup produced.",
     msg_backup_read_failed: "Slot {slot}: read failed after 3 retries — skipped, other slots continue.",
     msg_backup_partial: "Backup saved with skipped slots: {slots}. Those slots are NOT in the zip.",
@@ -480,8 +486,11 @@ const I18N = {
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
     msg_backup_read_retry: "槽位 {slot}:读取 {addr} 出错({err})—— 重试({n}/{total})…",
     msg_backup_resync_failed: "串口重同步失败({err})—— 放弃当前槽位。",
+    msg_debug_on: "Debug 模式已开启 —— 将输出协议级诊断日志。",
+    msg_debug_off: "Debug 模式已关闭。",
+    debug_mode: "Debug 模式(输出协议级诊断日志)",
     msg_backup_all_failed: "所选槽位全部读取失败,未产出备份。",
-    msg_backup_read_failed: "槽位 {slot}:重试 3 次后仍失败 —— 已跳过,其余槽位继续。",
+    msg_backup_read_failed: "槽位 {slot}:重试 5 次后仍失败 —— 已跳过,其余槽位继续。",
     msg_backup_partial: "备份已保存,但部分槽位被跳过:{slots}。这些槽位不在 zip 中。",
     msg_backup_save_cancelled: "已取消保存 —— 备份数据已丢弃,未写入任何文件。",
     msg_backup_empty: "槽位 {slot}:空槽,跳过。",
@@ -1053,36 +1062,51 @@ async function sha256File(fileOrBuf) {
 // --- 5. 备份 ---
 function setBackupProgress(pct) { $("backup-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`; }
 
+// Debug 模式:输出协议级诊断(每块耗时/恢复步骤/超时位置),供远程排障读取。
+function debugMode() { return $("debug-mode")?.checked === true; }
+$("debug-mode").addEventListener("change", () => {
+  log(debugMode() ? t("msg_debug_on") : t("msg_debug_off"), "warn");
+});
+
 // 分块读 flash:单次大请求一旦 USB 抖动/超时就整槽报废(实测 slot1 2MB 流读
 // 报 "No serial data received")。64KB/块 + 每块自动重试 3 次,偶发抖动自愈;
 // 数据流式拼入 slotBuf,进度按块推进。
 const BACKUP_CHUNK = 0x10000;
 const BACKUP_RETRIES = 5;
-// 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 1KB 等浏览器
-// 回 4 字节累计确认(在途窗口 4096B)。中断后若只清缓冲不补确认,stub 会永远卡在
-// "等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧会被吞掉 → sync 必败
-// (实测日志:重试(1/3) 后同秒直接放弃,即 sync 抛错 break)。恢复顺序:
-//   a) 补发"整块已收满"确认帧 → 流量窗口全开,stub 发完剩余字节后回命令循环;
-//   b) 排空线路残留(300ms 静默视为发完,上限 15s 保护);
-//   c) sync 重新同步;失败则 flush 后再试一次(首试可能撞上残留帧),仍败按传输层已死处理。
+// 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 4KB 块等浏览器
+// 回 4 字节累计确认(max_in_flight=64 块)。中断后若只清缓冲不补确认,stub 会停在
+// "等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧会被吞掉 → sync 必败。
+// 恢复顺序(每步硬超时,任何一步失败立即上抛 —— 恢复路径绝不允许挂死页面):
+//   a) 补发"整块已收满"确认帧 → stub 发完剩余字节后回命令循环(3s);
+//   b) 排空线路残留(300ms 静默视为发完,总上限 5s);
+//   c) sync 重新同步(8s);
+//   d) sync 失败 → 关闭并重开串口再 sync(各 5s/10s)。vendor 旧版此处用
+//      flushInput() 兑底,但 await reader.closed 在活跃串口上永不落定 —— 这就是
+//      "重试(1/5) 后静默挂死 30 分钟"的根因,已从 vendor 层移除该调用。
 async function resyncAfterReadError(chunkSize) {
+  const dbg = (m) => { if (debugMode()) log("[debug] " + m, "warn"); };
   const ack = new Uint8Array([
     chunkSize & 255, (chunkSize >> 8) & 255, (chunkSize >> 16) & 255, (chunkSize >> 24) & 255,
   ]);
-  try { await loader.transport.write(ack); } catch { /* 发不出去则 sync 会给出结论 */ }
+  try { await withTimeout(loader.transport.write(ack), 3000, "resync: ACK 写入超时"); }
+  catch (e) { dbg("ACK 补发: " + e.message); }
   const t0 = Date.now();
   for (;;) {
-    if (Date.now() - t0 > 15000) break;   // 上限保护:stub 若持续乱吐,按不可恢复处理
+    if (Date.now() - t0 > 5000) break;   // 上限保护:stub 若持续乱吐,按不可恢复处理
     const want = Math.max(1, loader.transport.inWaiting());
     let chunk = null;
     try { chunk = await loader.transport.newRead(want, 300); } catch { break; }
     if (!chunk || chunk.length === 0) break;
   }
+  dbg(`排空完成(耗时 ${Date.now() - t0}ms),开始 sync…`);
   try {
-    await loader.sync();
+    await withTimeout(loader.sync(), 8000, "resync: sync 超时");
   } catch (e1) {
-    try { await loader.transport.flushInput(); } catch { /* ignore */ }
-    await loader.sync();   // 二次机会:首试可能撞上残留帧
+    dbg("sync 失败(" + e1.message + "),关闭并重开串口再同步…");
+    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: 关闭串口超时"); } catch { /* ignore */ }
+    try { await withTimeout(loader.transport.connect(115200), 5000, "resync: 重开串口超时"); }
+    catch (e2) { throw new Error("重开串口失败: " + e2.message); }
+    await withTimeout(loader.sync(), 10000, "resync: 重开后 sync 超时");
   }
   await new Promise((r) => setTimeout(r, 50));
 }
@@ -1092,6 +1116,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
   while (got < size) {
     const n = Math.min(BACKUP_CHUNK, size - got);
     let chunk = null, lastErr = null;
+    const chunkT0 = Date.now();
     for (let attempt = 1; attempt <= BACKUP_RETRIES && !chunk; attempt++) {
       if (attempt > 1) {
         try { await resyncAfterReadError(n); }
@@ -1111,6 +1136,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
     if (!chunk) throw lastErr;
     buf.set(chunk.subarray(0, n), got);
     got += n;
+    if (debugMode()) log(`[debug] 0x${(start + got - n).toString(16)} +${n}B · ${Date.now() - chunkT0}ms`, "warn");
     onProgress?.(got);
   }
   return buf;

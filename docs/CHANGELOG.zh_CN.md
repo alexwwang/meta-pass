@@ -5,6 +5,18 @@
 # Changelog
 
 ## Unreleased
+- 修复传输层两个挂死缺陷（实测表现为：读取会话约 2 分钟后必然死链，重试恢复又
+  静默挂死 30 分钟无任何日志）：
+  ① vendor `readLoop` 超时触发时遗弃未决的 `reader.read()`，其超时定时器后续触发
+  会把传输缓冲整体清空（`finally{buffer=new Uint8Array(0)}`）——持续超过
+  `FLASH_READ_TIMEOUT` 的读取会话自毁，且每次 `newRead` 都新建 generator、旧 generator
+  的超时定时器仍在计时。现在改为持久 `_pendingRead`、显式关闭 generator、移除缓冲
+  清空；`FLASH_READ_TIMEOUT` 100s→15s。
+  ② vendor `flushInput()` 首行 `await this.reader.closed` 在活跃串口上永不落定——
+  恢复路径走到这里就永久挂死。改为有界取消（cancel + 500ms 竞速），页面恢复链
+  每步硬超时、sync 失败自动关闭/重开串口再同步。
+- 安装备份区新增 Debug 模式复选框：开启后输出协议级诊断（每块耗时、恢复步骤、
+  超时位置），供远程排障。
 - 修复备份读取反复失败（"Packet content transfer stopped" / "No serial data received",
   重试永不恢复）的根因：esptool stub 在 flash 读取数据帧结束后会无条件追加一帧 16 字节
   MD5 digest（`stub_commands.c`）,而 esptool-js 从不读它——残帧滞留传输缓冲、毒化下一条

@@ -114,3 +114,22 @@ fixture 的两个坑值得记住:`data_len` 必须按完整 u32 LE 写入(只写
 0xab,长度静默变大),C 测试缓冲区必须 memset —— JS 侧等价 fixture 能通过是因为
 `Uint8Array.fill` 初始化了全部字节。变更后对真实 pass-radar 镜像重签,image_len 仍为
 962416、验签 `META_SIG_OK`。
+
+### 第五轮(vendored esptool-js 传输层):定时器与 Promise 的隐性自毁
+
+**教训:库代码里的 `finally{}` 与未决 Promise 会在你以为早已结束的时刻杀死你。**
+
+备份读取"约 2 分钟必死、重试恢复又静默挂死 30 分钟",前三轮在分块/重试/ACK 策略
+层面打转,直到逐行读 vendor 压缩产物才定位到两个结构性缺陷:
+
+1. `readLoop` 超时 throw 后 `finally{buffer=new Uint8Array(0)}` 清空传输缓冲 —— 长会话
+   里这是**定时炸弹**:遗弃的 generator 超时定时器仍会触发,把正在流失效的数据整段
+   吞掉。`FLASH_READ_TIMEOUT=100s` 与实测"~2 分钟死链"精确吻合,先前误判为 USB 抖动。
+2. `flushInput()` 首行 `await this.reader.closed` 在活跃串口上**永不落定** —— 恢复路径
+   一旦走到它就无限期挂死,连错误都不抛。这就是"重试(1/5) 后 30 分钟零输出"。
+
+方法论沉淀:**排障超时链路时,先审计库内部所有 `Promise.race` 的落定路径与
+`finally` 块的副作用,再怀疑外部因素**;对上层"加重试/加超时"无效的挂死,几乎必然是
+库层有永不落定的 await。修复模式:未决 read 持久化(`_pendingRead` 复用)、generator
+显式 `return()` 关闭、超时定时器附 `catch(()=>{})` 防未决拒绝、恢复链每步硬超时。
+另外:给页面加 Debug 模式(每块耗时/恢复步骤)远比事后猜日志有效。
