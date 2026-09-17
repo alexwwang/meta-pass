@@ -1079,6 +1079,12 @@ $("btn-probe").addEventListener("click", async () => {
   try {
     const params = globalThis.__READFLASH_PARAMS__;
     log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}`, "warn");
+    // vendor 版本戳:HTML 与 vendor ES module 是独立缓存条目,硬刷 HTML 不保证 vendor
+    // 同步更新(旧 vendor:无逐帧 ACK/digest 校验 → 4KB 单帧探针可通过而多帧读取
+    // 必挂,正是"探针 OK / 备份挂"分裂的候选解释)。直接检查运行时函数体特征。
+    const vf = loader.readFlash.toString();
+    const vendorNew = vf.includes("digest");
+    log(`[probe] vendor build: ${vendorNew ? "NEW (per-frame ACK + MD5 digest)" : "OLD — 请强制刷新(Cmd+Shift+R)后再试"}`, vendorNew ? "warn" : "error");
     const t0 = Date.now();
     const data = await loader.readFlash(0x180000, 4096);
     log(`[probe] 4KB @0x180000 OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
@@ -1148,6 +1154,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
     let chunk = null, lastErr = null;
     for (let attempt = 1; attempt <= BACKUP_RETRIES && !chunk; attempt++) {
       const chunkT0 = Date.now();
+      if (debugMode()) log(`[debug] → read 0x${(start + got).toString(16)} +${n}B #${attempt}`, "warn");
       if (attempt > 1) {
         try { await resyncAfterReadError(n); }
         catch (syncErr) {
@@ -1158,12 +1165,19 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
       }
       try {
         chunk = await loader.readFlash(start + got, n);
+        // 短读/长读防护:readFlash 若返回长度不符的缓冲(历史毒帧/协议错位的可能
+        // 症状),buf.set 会在无日志路径上抛 RangeError,被外层吞成"仍失败"。
+        // 显式校验 + 报告,把这类失败拉回可观测区。
+        if (!(chunk instanceof Uint8Array) || chunk.length !== n) {
+          throw new Error(`readFlash returned ${chunk ? chunk.constructor.name + "(" + chunk.length + "B)" : String(chunk)}, expected ${n}B`);
+        }
       } catch (err) {
+        chunk = null;
         lastErr = err;
         // 每次失败都记录(含最后一次):此前仅 attempt<max 时打日志,最后一次错误被吞,
         // 用户只见"重试 5 次仍失败"却不知道败因 —— 排障关键盲区。
         const msg = `[read-error] 0x${(start + got).toString(16)} attempt ${attempt}/${BACKUP_RETRIES}: ${err && err.message ? err.message : String(err)}`;
-        try { log(debugMode() ? msg : msg, "warn"); } catch { console.error(msg); }
+        try { log(msg, "warn"); } catch { console.error(msg); }
       }
     }
     if (!chunk) throw lastErr;
@@ -1205,7 +1219,9 @@ $("btn-backup").addEventListener("click", async () => {
           (addr, err, attempt) => log(t("msg_backup_read_retry", { slot, addr: hex(addr), err: err.message, n: attempt, total: BACKUP_RETRIES }), "warn"),
         );
       } catch (err) {
-        log(t("msg_backup_read_failed", { slot }), "error");
+        // 真实错误必须见日志:此前此处只打"仍失败",err 被丢弃 —— 3 秒全灭类故障
+        // (短读 RangeError 等循环外异常)完全不可观测。
+        log(`${t("msg_backup_read_failed", { slot })} — ${err && err.message ? err.message : String(err)}`, "error");
         continue;   // 其余槽位继续,已读到的数据不浪费
       }
       let sliced = null;
