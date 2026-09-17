@@ -5,6 +5,18 @@
 # Changelog
 
 ## Unreleased
+- Revert pipeline window 32768 -> 64 (stop-and-wait, identical to esptool.py read_flash);
+  keep 921600. On-device A/B: esptool.py stop-and-wait @921600 ran 5/5 clean (87 KB/s),
+  while the self-built pipeline failed proportionally to throughput at the same baud.
+  Mechanism: with pipelining, ACK uplink overlaps the bulk data downlink on the same USB
+  CDC endpoint, triggering C3 USB-Serial-JTAG RX loss (log evidence: post-failure drains
+  up to 16 s = the stub was sitting on a large backlog of in-flight data). 921600 already
+  shrank the per-frame gap from ~300 ms to ~10 ms, so pipelining bought <=15% at high risk.
+- Post-hoc retraction of the round-6 investigation doc: the claimed standalone 2-byte
+  stub error/status frame does not exist (header + status share one SLIP frame per
+  stub_flasher.c; the OK probe and successful full backups disprove a leftover frame).
+  Kept: the chunkT0 scope bug (real) and the mock-fidelity methodology lesson. See
+  backup-readflash-error-status-frame.md (zh_CN keeps the original as an archive).
 - On-device CLI verdict (esptool.py 4.12, 128 KB from slot-0 base): 115200 = 11.4 s,
   921600 = 1.5 s (7.6x); SHA256 identical across both baud rates; 5 consecutive reads
   at 921600 all passed. The high-baud link itself is reliable — backup read failures

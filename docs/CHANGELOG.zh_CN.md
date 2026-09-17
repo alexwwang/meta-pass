@@ -5,6 +5,15 @@
 # Changelog
 
 ## Unreleased
+- 回退流水线窗口 32768 → 64(停等,与 esptool.py read_flash 完全一致),921600 保留。
+  真机 A/B:esptool.py 停等 @921600 连跑 5 遍零失败(87KB/s);自研流水线同波特率失败
+  随吞吐量颩升。机制:流水线下 ACK 上行与巨量数据下行在同一 USB CDC 端点交叠,触发
+  C3 USB-Serial-JTAG RX 丢失(日志证据:失败后"排空"长达 16s = stub 积压大量在途数据)。
+  921600 已把帧间间隙从 300ms 压到 ~10ms,流水线收益 ≤15%,不值得其风险。
+- 第六轮排查文档后验修正:所谓"stub 独立 2B error/status 帧未消费"不成立 —— 源码核对
+  证实响应头与 error/status 同在一个 SLIP 帧内(单 delimiter 对),探针 4KB OK 与完整
+  备份成功均否证残帧存在;保留 chunkT0 作用域(真)与"mock 必须逐字节忠实于服务端源码"
+  方法论教训。见 backup-readflash-error-status-frame.md(zh_CN 为原文存档)。
 - 真机 CLI 实测定案(esptool.py 4.12,读槽0起始 128KB):115200 = 11.4s,921600 = 1.5s
   (7.6 倍),两种波特率读出数据 SHA256 完全一致,921600 连跑 5 遍全部成功 —— 高波特率
   链路本身可靠,页面备份偶发失败应归因客户端恢复逻辑(已由三级恢复兜住),而非链路。

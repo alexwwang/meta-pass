@@ -305,7 +305,7 @@ const I18N = {
     msg_connecting: "Connecting…",
     msg_busy: "An operation is in progress — wait for it to finish.",
     msg_device_gone: "Device disconnected — reconnect in step 1.",
-    msg_read_fast: "Flash read protocol ready: per-frame ACK + MD5 digest verification + pipelined 32 KB window.",
+    msg_read_fast: "Flash read protocol ready: per-frame ACK + MD5 digest verification + stop-and-wait window (esptool.py proven config).",
     msg_baud_try: "Connecting at 921600 baud (8× faster reads)…",
     msg_baud_ok: "Serial link running at 921600 baud.",
     msg_baud_fallback: "921600 failed ({err}) — falling back to 115200 (slower but reliable).",
@@ -447,7 +447,7 @@ const I18N = {
     msg_connecting: "连接中…",
     msg_busy: "有操作正在进行——请等它完成。",
     msg_device_gone: "设备已断开连接——请在第 1 步重新连接。",
-    msg_read_fast: "读取协议就绪:逐帧 ACK + MD5 校验帧 + 32KB 流水线窗口。",
+    msg_read_fast: "读取协议就绪:逐帧 ACK + MD5 校验帧 + 停等窗口(esptool.py 久经考验配置)。",
     msg_baud_try: "尝试以 921600 波特率连接(读取提速 8 倍)…",
     msg_baud_ok: "串口链路已运行在 921600 波特率。",
     msg_baud_fallback: "921600 连接失败({err})—— 回退 115200(较慢但可靠)。",
@@ -850,11 +850,14 @@ $("btn-connect").addEventListener("click", async () => {
     // 追加的 16B MD5 digest 帧(stub_commands.c:MD5Final+SLIP_send)——esptool-js
     // 上游从不读它,残帧滞留传输缓冲毒化下一条命令,这正是备份反复
     // "Packet content transfer stopped / No serial data received"且重试必败、
-    // 而写入路径从不踩坑的根因。参数:块 4096(stub 栈缓冲硬上限)+ **窗口 32768 字节**
-    // —— stub_commands.c:111 的 max_in_flight 是**字节**单位(num_sent/num_acked 同为
-    // 字节),传 64 字节会让 stub 停等(每帧等 ACK);32768 = 一个 32KB 备份块,stub
-    // 连发 8 帧再等确认(流水线)。ACK 累计值域 0x1000~0x8000 安全(无 0xC0/0xDB)。
-    globalThis.__READFLASH_PARAMS__ = [4096, 32768];
+    // 而写入路径从不踩坑的根因。参数:块 4096(stub 栈缓冲硬上限)+ **窗口 64 字节**
+    // —— 与 esptool.py read_flash 完全一致(停等模式:stub 每发一帧停下等 ACK)。
+    // 实测决策(2026-09-17):同机同波特率 A/B —— esptool.py 停等 @921600 连跑 5 遍
+    // 零失败(87KB/s);自研流水线(窗口 32768)失败随吞吐量颩升。机制:流水线下
+    // ACK 上行与巨量数据下行在同一 USB CDC 端点交叠,触发 C3 USB-Serial-JTAG 的
+    // RX 丢失/竞争(日志证据:失败后"排空"竟达 16s = stub 积压大量在途数据)。
+    // 波特率提升已把帧间间隙从 300ms 压到 ~10ms,流水线收益 ≤15%,不值得其风险。
+    globalThis.__READFLASH_PARAMS__ = [4096, 64];
     log(t("msg_read_fast"), "ok");
     // 全部就绪才提交到全局:此前任何一步失败都不影响已有/后续连接。
     transport = newTransport;
@@ -1114,7 +1117,7 @@ $("btn-probe").addEventListener("click", async () => {
   refreshInstallButton();
   try {
     const params = globalThis.__READFLASH_PARAMS__;
-    log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}(块,窗口字节;窗口=流水线深度)`, "warn");
+    log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}(块,窗口字节;64=停等,与 esptool.py 一致)`, "warn");
     if (params && (params[0] !== 4096 || params[1] !== BACKUP_CHUNK)) {
       log(`[probe] 警告:读取窗口(${params[1]}B)与备份块(${BACKUP_CHUNK}B)不一致,请重连刷新参数`, "error");
     }
@@ -1682,7 +1685,7 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
-log(`[page] build 2026-09-17-probe5 · chunk=32KB pipeline baud=921600(fallback 115200)`, "warn");
+log(`[page] build 2026-09-17-probe6 · chunk=32KB stop-and-wait baud=921600(fallback 115200)`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。
