@@ -136,6 +136,7 @@
     <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:0.9em;">
       <input type="checkbox" id="debug-mode"> <span data-i18n="debug_mode">Debug 模式(输出协议级诊断日志)</span>
     </label>
+    <button id="btn-probe" style="margin-top:6px;" data-i18n="btn_probe">Probe: single 4KB read test</button>
     <div class="progress"><div id="backup-bar"></div></div>
   </section>
 
@@ -353,6 +354,7 @@ const I18N = {
     msg_debug_on: "Debug mode ON — protocol-level diagnostics will be logged.",
     msg_debug_off: "Debug mode OFF.",
     debug_mode: "Debug mode (log protocol-level diagnostics)",
+    btn_probe: "Probe: single 4KB read test",
     msg_backup_all_failed: "All selected slots failed to read — no backup produced.",
     msg_backup_read_failed: "Slot {slot}: read failed after 3 retries — skipped, other slots continue.",
     msg_backup_partial: "Backup saved with skipped slots: {slots}. Those slots are NOT in the zip.",
@@ -489,6 +491,7 @@ const I18N = {
     msg_debug_on: "Debug 模式已开启 —— 将输出协议级诊断日志。",
     msg_debug_off: "Debug 模式已关闭。",
     debug_mode: "Debug 模式(输出协议级诊断日志)",
+    btn_probe: "探针:单读 4KB 测试",
     msg_backup_all_failed: "所选槽位全部读取失败,未产出备份。",
     msg_backup_read_failed: "槽位 {slot}:重试 5 次后仍失败 —— 已跳过,其余槽位继续。",
     msg_backup_partial: "备份已保存,但部分槽位被跳过:{slots}。这些槽位不在 zip 中。",
@@ -1068,6 +1071,25 @@ $("debug-mode").addEventListener("change", () => {
   log(debugMode() ? t("msg_debug_on") : t("msg_debug_off"), "warn");
 });
 
+// 探针:单次 4KB 读取逐步打点,把"几秒内全灭"的失败拆成可见的步骤序列。
+$("btn-probe").addEventListener("click", async () => {
+  if (busy || !loader) return;
+  busy = true;
+  refreshInstallButton();
+  try {
+    const params = globalThis.__READFLASH_PARAMS__;
+    log(`[probe] __READFLASH_PARAMS__ = ${JSON.stringify(params)}`, "warn");
+    const t0 = Date.now();
+    const data = await loader.readFlash(0x180000, 4096);
+    log(`[probe] 4KB @0x180000 OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
+  } catch (err) {
+    log(`[probe] FAIL: ${err && err.message ? err.message : String(err)}`, "error");
+  } finally {
+    busy = false;
+    refreshInstallButton();
+  }
+});
+
 // 分块读 flash:单次大请求一旦 USB 抖动/超时就整槽报废(实测 slot1 2MB 流读
 // 报 "No serial data received")。32KB/块 + 每块自动重试 5 次,偶发抖动自愈;
 // 数据流式拼入 slotBuf,进度按块推进。
@@ -1138,7 +1160,10 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
         chunk = await loader.readFlash(start + got, n);
       } catch (err) {
         lastErr = err;
-        if (attempt < BACKUP_RETRIES) onRetry?.(start + got, err, attempt);
+        // 每次失败都记录(含最后一次):此前仅 attempt<max 时打日志,最后一次错误被吞,
+        // 用户只见"重试 5 次仍失败"却不知道败因 —— 排障关键盲区。
+        const msg = `[read-error] 0x${(start + got).toString(16)} attempt ${attempt}/${BACKUP_RETRIES}: ${err && err.message ? err.message : String(err)}`;
+        try { log(debugMode() ? msg : msg, "warn"); } catch { console.error(msg); }
       }
     }
     if (!chunk) throw lastErr;
