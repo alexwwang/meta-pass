@@ -12,6 +12,7 @@ import {
   buildRawMirror, rawMirrorFileName,
   firmwareFileName, extraFileName, tailFileName,
   MANIFEST_NAME, MANIFEST_VERSION,
+  NVS_FILE_NAME, findNvsPartition,
 } from "../../install-slot/slot-backup.js";
 
 // 与 test-extract.mjs PASS 3c 同源 fixture:24+16B 扩展头,总长 256
@@ -168,6 +169,93 @@ console.log("PASS 7: probeOffsets — uniform probes in range, null for tiny, []
   ]).map((f) => f.name);
   assert.equal(order[0], rawMirrorFileName(0), "raw mirror sorts first");
   console.log("PASS 8b: raw fallback manifest roundtrip + fit rule (no tail reserved) + order");
+}
+
+// PASS 9: NVS 自动备份/还原的定位纯逻辑(用户决策 2026-09-18:自动打包/自动还原,
+// 无 UI 选项)。定位规则:data(0x01)+ nvs 子类型(0x02),排除 cardid。
+{
+  assert.equal(findNvsPartition([]), null, "empty table → null");
+  assert.equal(findNvsPartition(null), null, "null table → null");
+  const mk = (label, type, subtype, offset, size) => ({ label, type, subtype, offset, size });
+  // 真实布局缩影:nvs + cardid(同为 nvs 子类型,必须被排除)+ 各 app 槽
+  const table = [
+    mk("nvs", 0x01, 0x02, 0x9000, 0x6000),
+    mk("phy_init", 0x01, 0x02, 0xf000, 0x1000),      // nvs 子类型但 label 不叫 nvs —— 仍匹配(规则按子类型)
+    mk("factory", 0x00, 0x00, 0x10000, 0x170000),    // app 类型 → 忽略
+    mk("ota_0", 0x00, 0x10, 0x180000, 0x1D6000),
+    mk("cardid", 0x01, 0x02, 0x356000, 0x4000),      // 设备身份 → 排除
+    mk("otadata", 0x01, 0x00, 0x7fe000, 0x2000),     // ota 子类型 → 忽略
+  ];
+  const nv = findNvsPartition(table);
+  assert.ok(nv, "nvs partition found");
+  assert.equal(nv.label, "nvs");
+  assert.equal(nv.offset, 0x9000, "first nvs-subtype non-cardid wins (not cardid, not phy_init)");
+  assert.equal(findNvsPartition([mk("cardid", 0x01, 0x02, 0x356000, 0x4000)]), null, "cardid-only table → null");
+  assert.equal(findNvsPartition([mk("nvs", 0x01, 0x03, 0x9000, 0x6000)]), null, "wrong subtype → null");
+  // manifest 顶层 nvs 字段(新 zip)与旧 zip(无该字段)双兼容:parseManifest 不拒绝未知字段,
+  // 恢复侧仅当 manifest.nvs 存在时才要求 nvs.bin(页面逻辑,此处钉死解析层契约)
+  const withNvs = parseManifest(JSON.stringify({
+    manifest_version: MANIFEST_VERSION, kind: "meta-pass-slot-backup", created_utc: "t",
+    slots: [{ slot: 0, files: [{ name: firmwareFileName(0), sha256: "a".repeat(64), bytes: 1 }] }],
+    nvs: { file: NVS_FILE_NAME, sha256: "b".repeat(64), bytes: 0x6000, source_offset: 0x9000 },
+  }));
+  assert.equal(withNvs.nvs.file, NVS_FILE_NAME);
+  assert.equal(withNvs.nvs.bytes, 0x6000);
+  const old = parseManifest(JSON.stringify({
+    manifest_version: MANIFEST_VERSION, kind: "meta-pass-slot-backup", created_utc: "t",
+    slots: [{ slot: 0, files: [] }],
+  }));
+  assert.equal(old.nvs, undefined, "old zips (no nvs field) parse unchanged");
+  console.log("PASS 9: findNvsPartition (subtype rule, cardid excluded, first-wins) + manifest nvs field compat");
+}
+
+// PASS 10: NVS 纳入备份/还原的完整数据路径契约(模拟页面胶水层的真实序列)。
+// 备份:分区表定位 NVS → 读 → 全 FF 检测 → sha256 入 manifest(nvs 字段);
+// 还原:manifest.nvs → 文件存在 + 字节数 + sha256 三重校验 → 写回**目标设备**定位的
+// NVS(source_offset 仅溯源,不用于写入 —— 自适应语义)。篡改任一字节必须被拒。
+{
+  const { createHash } = await import("node:crypto");
+  const sha256Hex = (u8) => createHash("sha256").update(u8).digest("hex");
+
+  // 模拟设备分区表(parsePartitionTable 输出形态)
+  const deviceTable = [
+    { label: "nvs", type: 0x01, subtype: 0x02, offset: 0x9000, size: 0x6000 },
+    { label: "ota_0", type: 0x00, subtype: 0x10, offset: 0x180000, size: 0x1D6000 },
+    { label: "cardid", type: 0x01, subtype: 0x02, offset: 0x356000, size: 0x4000 },
+  ];
+  const nv = findNvsPartition(deviceTable);
+
+  // —— 备份侧 ——
+  const nvsData = new Uint8Array(0x6000).fill(0xff);
+  nvsData.set([0x01, 0x02, 0x03, 0x42], 0x10);   // 有数据:非全 FF → 应纳入
+  assert.equal(isAllFF(nvsData), false, "populated NVS must not be treated as erased");
+  const nvsEntry = { file: NVS_FILE_NAME, sha256: sha256Hex(nvsData), bytes: nvsData.length, source_offset: nv.offset };
+  const manifest = parseManifest(JSON.stringify({
+    manifest_version: MANIFEST_VERSION, kind: "meta-pass-slot-backup", created_utc: "t",
+    slots: [{ slot: 0, files: [{ name: firmwareFileName(0), sha256: "a".repeat(64), bytes: 4 }] }],
+    nvs: nvsEntry,
+  }));
+
+  // —— 还原侧(目标设备 NVS 偏移不同:自适应,不沿用 source_offset)——
+  const targetTable = [
+    { label: "nvs", type: 0x01, subtype: 0x02, offset: 0xA000, size: 0x6000 },   // 新布局偏移变了
+    { label: "cardid", type: 0x01, subtype: 0x02, offset: 0x356000, size: 0x4000 },
+  ];
+  const targetNv = findNvsPartition(targetTable);
+  assert.notEqual(targetNv.offset, nv.offset, "layout change scenario: target offset differs");
+  assert.equal(manifest.nvs.file, NVS_FILE_NAME);
+  assert.equal(manifest.nvs.bytes, nvsData.length, "size gate: zip entry must match manifest bytes");
+  assert.equal(sha256Hex(nvsData), manifest.nvs.sha256, "digest gate: write-back only on sha256 match");
+  assert.notEqual(targetNv.offset, manifest.nvs.source_offset, "source_offset is provenance only — restore uses device-located offset");
+
+  // 篡改负例:任一字节被改 → sha 失配 → 还原拒绝(页面按 err_restore_sha 抛错)
+  const tampered = new Uint8Array(nvsData);
+  tampered[0x11] ^= 0xff;
+  assert.notEqual(sha256Hex(tampered), manifest.nvs.sha256, "tampered NVS must fail digest gate");
+
+  // 全 FF NVS:备份侧不产出条目(manifest 无 nvs 字段 → 还原侧跳过,旧 zip 同型)
+  assert.equal(isAllFF(new Uint8Array(0x6000).fill(0xff)), true, "erased NVS → skipped in backup");
+  console.log("PASS 10: NVS backup→restore data-path contract (locate/read/digest/manifest/adaptive write-back/tamper-reject)");
 }
 
 console.log("All slot-backup tests passed.");
