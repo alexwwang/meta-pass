@@ -64,6 +64,11 @@ PY
         tests/test_meta_seq.c main/meta_seq.c \
         -o "${test_dir}/test_meta_seq"
     "${test_dir}/test_meta_seq"
+    # 开机策略纯逻辑(单次会话模型规则引擎,bootloader hook 与宿主共享)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_boot_policy.c \
+        -o "${test_dir}/test_meta_boot_policy"
+    "${test_dir}/test_meta_boot_policy"
     # 上传链路集成测试:桩化 ESP-IDF(tests/esp_stubs),主机编译真实 meta_net.c
     # 死代码剥离 flag 平台相关:macOS ld 用 -dead_strip,GNU ld 用 --gc-sections
     local gc_flag="-Wl,--gc-sections"

@@ -67,14 +67,20 @@ not enforced by the partition table.
 
 - **Boot a child**: after validation, the launcher calls
   `esp_ota_set_boot_partition(ota_x)` + `esp_restart()`.
-- **Every power-on returns to the launcher**: the child runs for the current session only.
-  On any reboot/power-cycle the bootloader falls back to factory automatically — the ota
-  state is never promoted to VALID (the hook no longer calls `cancel_rollback`), and the
-  launcher maintains the invariant "launcher ran ⇒ otadata is empty ⇒ next boot defaults
-  to factory" by erasing otadata early in `app_main`. Boundary note: a device already held
-  by a pre-model child (VALID in otadata) never reaches the launcher — unlock via that
-  child's return hook (OK long-press) or a re-flash. Crash/power-loss auto-recovery is the
-  same mechanism (anti-brick).
+- **Every power-on returns to the launcher (bootloader-enforced, 2026-09-18)**: the child
+  runs for the current session only. The boot policy is enforced unilaterally by meta-pass's
+  2nd-stage bootloader, independent of child behavior: `bootloader_components/
+  meta_boot_hooks/` registers `bootloader_after_init` (IDF hooks mechanism) which — before
+  any application runs — inspects both otadata copies and erases the sector of any copy
+  whose `ota_state == VALID` (PENDING is left untouched to preserve trial-run rollback;
+  deep-sleep wake skips everything; flash encryption disables intervention). Effect: even a
+  device already held by a pre-model child (VALID written to otadata) heals itself on the
+  next power cycle — the hook clears it and the bootloader falls back to factory. **No
+  re-flash is needed to unlock a locked device.** Defense in depth: the launcher still
+  erases otadata early in `app_main`; the child hook template no longer calls
+  `cancel_rollback`. Crash/power-loss auto-recovery (anti-brick) is the same mechanism.
+  PENDING is marked ABORTED by the IDF bootloader itself before selection, so the trial-run
+  flow is unaffected by this policy.
 - **Launcher itself**: `app_main` erases otadata early so the bootloader defaults to
   factory; nothing else needed (factory is the default boot target when otadata is empty).
 

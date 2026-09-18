@@ -193,6 +193,7 @@ import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
   checkRestoreFit, restoreOrder, isAllFF, probeOffsets, buildRawMirror, rawMirrorFileName,
   firmwareFileName, extraFileName, tailFileName, MANIFEST_NAME,
+  NVS_FILE_NAME, findNvsPartition,
 } from "./slot-backup.js";
 import { deflate } from "./vendor/pako.js";
 import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlash digest 校验用)
@@ -383,6 +384,12 @@ const I18N = {
     msg_backup_bad_image: "Slot {slot}: data present but not a valid app image — skipped (never backed up blind).",
     msg_backup_raw_fallback: "Slot {slot}: not a recognizable firmware + signature/easter-egg/name structure — dd-style raw mirror backup ({size}); restore does a size + SHA-256 check only.",
     msg_backup_zipping: "Packing zip…",
+    msg_backup_nvs_reading: "Reading NVS data ({size} @ {addr})…",
+    msg_backup_nvs_done: "NVS data ({size}) included in backup.",
+    msg_backup_nvs_empty: "NVS partition is erased — nothing to back up.",
+    msg_backup_nvs_failed: "NVS read failed ({err}) — backup continues without NVS.",
+    err_restore_nvs_missing: "Backup contains NVS data but this device has no NVS partition.",
+    msg_restore_nvs_write: "Restoring NVS data ({size} → {addr})…",
     msg_backup_done: "Backup saved: {name} ({size}).",
     msg_backup_failed: "Backup failed: {err}",
     msg_restore_pick_file: "Choose a backup zip first.",
@@ -525,6 +532,12 @@ const I18N = {
     msg_backup_bad_image: "槽位 {slot}:有数据但不是合法应用镜像 —— 跳过(绝不盲备)。",
     msg_backup_raw_fallback: "槽位 {slot}:无固件+签名/彩蛋/名称结构 —— 已做 dd 式整槽镜像备份({size});恢复时仅做空间与 SHA-256 校验。",
     msg_backup_zipping: "正在打包 zip…",
+    msg_backup_nvs_reading: "读取 NVS 存储数据({size} @ {addr})…",
+    msg_backup_nvs_done: "NVS 存储数据({size})已纳入备份。",
+    msg_backup_nvs_empty: "NVS 分区为擦除态,无需备份。",
+    msg_backup_nvs_failed: "NVS 读取失败({err})—— 备份继续,本次不含 NVS。",
+    err_restore_nvs_missing: "备份包含 NVS 数据,但设备分区表中没有 NVS 分区。",
+    msg_restore_nvs_write: "还原 NVS 存储数据({size} → {addr})…",
     msg_backup_done: "备份已保存:{name}({size})。",
     msg_backup_failed: "备份失败:{err}",
     msg_restore_pick_file: "请先选择备份 zip。",
@@ -1385,12 +1398,37 @@ $("btn-backup").addEventListener("click", async () => {
       }), "ok");
     }
     if (backedUp.length === 0) throw new Error(t("msg_backup_all_failed"));
+    // NVS 自动纳入(用户决策 2026-09-18:无需用户选择、无 UI 选项)。裸刷单文件固件
+    // 与市场刷机都会覆盖 NVS 官方约定位置(0x9000),因此 NVS 必须随槽位一起备份。
+    // 失败不阻断槽位备份:槽位数据已读到的更该落袋为安,NVS 可下次重试。
+    let nvsEntry = null;
+    try {
+      const nv = await ensureDeviceNvs();
+      if (nv) {
+        log(t("msg_backup_nvs_reading", { addr: hex(nv.offset), size: fmtBytes(nv.size) }));
+        const nvsData = await readFlashChunked(
+          nv.offset, nv.size, () => {},
+          (addr, err, attempt) => log(`[nvs] read ${hex(addr)} error(${attempt}) — ${err.message}`, "warn"),
+        );
+        if (!isAllFF(nvsData)) {
+          entries.push({ name: NVS_FILE_NAME, data: nvsData });
+          nvsEntry = { file: NVS_FILE_NAME, sha256: await sha256Hex(nvsData), bytes: nvsData.length, source_offset: nv.offset };
+          log(t("msg_backup_nvs_done", { size: fmtBytes(nvsData.length) }), "ok");
+        } else {
+          log(t("msg_backup_nvs_empty"));
+        }
+      }
+    } catch (err) {
+      log(t("msg_backup_nvs_failed", { err: err.message }), "warn");
+    }
     // manifest:所有 slot 合并为一份(按 slot 分组),sha256 是唯一事实来源,恢复时据此校验
+    // nvs(source_offset 仅为溯源信息):还原时以设备分区表定位,不沿用源偏移
     const manifestObj = {
       manifest_version: 1,
       kind: "meta-pass-slot-backup",
       created_utc: new Date().toISOString(),
       slots: manifestEntries,
+      ...(nvsEntry ? { nvs: nvsEntry } : {}),
     };
     entries.push({
       name: MANIFEST_NAME,
@@ -1441,6 +1479,7 @@ $("btn-backup").addEventListener("click", async () => {
     log(t("msg_backup_failed", { err: err.message }), "error");
   } finally {
     busy = false;
+    deviceNvs = null;   // 设备分区表缓存随连接会话失效
     refreshInstallButton();
   }
 });
@@ -1449,6 +1488,17 @@ $("btn-backup").addEventListener("click", async () => {
 function setRestoreProgress(pct) { $("restore-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`; }
 
 let restoreZip = null;   // { manifest, filesBySlot: Map<slot, Map<name, Uint8Array>> , slotList: [] }
+
+// ===== NVS 自动备份/还原(共享定位)=====
+// 读设备分区表并定位 NVS 分区;连接会话内缓存,备份/还原共用一次读取。
+async function ensureDeviceNvs() {
+  if (deviceNvs !== null) return deviceNvs;
+  const table = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
+  const parts = parsePartitionTable(table);
+  deviceNvs = findNvsPartition(parts);
+  return deviceNvs;
+}
+let deviceNvs = null;   // null=未解析;undefined=设备无 NVS 分区;否则 {label,offset,size}
 
 $("restore-input").addEventListener("change", async (ev) => {
   restoreZip = null;
@@ -1475,7 +1525,17 @@ $("restore-input").addEventListener("change", async (ev) => {
       }
       filesBySlot.set(s.slot, m);
     }
-    restoreZip = { manifest, filesBySlot };
+    // NVS(manifest.nvs,可选):与槽位文件同规则校验(存在性 + 字节数)后载入
+    let nvsData = null;
+    if (manifest.nvs) {
+      const d = entries.get(manifest.nvs.file);
+      if (!d) throw new Error(t("err_restore_missing_file", { name: manifest.nvs.file }));
+      if (d.length !== manifest.nvs.bytes) {
+        throw new Error(t("msg_restore_bad_zip", { err: `${manifest.nvs.file} is ${d.length} bytes, manifest says ${manifest.nvs.bytes}` }));
+      }
+      nvsData = d;
+    }
+    restoreZip = { manifest, filesBySlot, nvsData };
     const slotList = manifest.slots.map((s) => s.slot);
     $("restore-info").textContent = t("msg_restore_loaded", { slots: slotList.join(", ") });
     $("restore-info").className = "ok";
@@ -1577,6 +1637,25 @@ $("btn-restore").addEventListener("click", async () => {
       restoredSlots.push(`${job.from}→${job.to}`);
       done++;
     }
+    // NVS 自动还原(与备份对称):sha256 校验后写回设备分区表定位的 NVS 分区。
+    // 用户决策 2026-09-18:自动执行,无 UI 选项。
+    if (restoreZip.nvsData) {
+      const nv = await ensureDeviceNvs();
+      if (!nv) throw new Error(t("err_restore_nvs_missing"));
+      const digest = await sha256Hex(restoreZip.nvsData);
+      if (digest !== restoreZip.manifest.nvs.sha256) {
+        throw new Error(t("err_restore_sha", { name: restoreZip.manifest.nvs.file, expected: restoreZip.manifest.nvs.sha256, got: digest }));
+      }
+      log(t("msg_restore_nvs_write", { size: fmtBytes(restoreZip.nvsData.length), addr: hex(nv.offset) }));
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(restoreZip.nvsData), address: nv.offset }],
+        flashSize: "keep",
+        flashMode: "keep",
+        flashFreq: "keep",
+        compress: true,
+        reportProgress: (_i, written, total) => setRestoreProgress(Math.min(99, 95 + (written / total) * 4)),
+      });
+    }
     setRestoreProgress(100);
     $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") });
     $("restore-status").className = "ok";
@@ -1587,6 +1666,7 @@ $("btn-restore").addEventListener("click", async () => {
     log(t("msg_restore_failed", { err: err.message }), "error");
   } finally {
     busy = false;
+    deviceNvs = null;   // 设备分区表缓存随连接会话失效
     refreshInstallButton();
   }
 });

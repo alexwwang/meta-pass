@@ -5,6 +5,21 @@
 # Changelog
 
 ## Unreleased
+- 开机策略升级为 **bootloader 强制(2026-09-18)**:新增
+  `bootloader_components/meta_boot_hooks/`(IDF hooks 机制,`bootloader_after_init`
+  在任何应用运行之前执行),检查 otadata 两个副本,凡 `ota_state == VALID` 一律擦除
+  ——子固件写 VALID 也无法跨重启常驻,开机策略由 meta-pass 单方面决定,与子固件行为
+  无关;被旧模型子固件锁死的设备断电重启即自愈,无需重刷。PENDING 不碰(trial-run
+  回滚不受影响)、深睡眠唤醒跳过、flash 加密启用时放弃干预。策略纯逻辑独立为
+  `main/meta_boot_policy.h`(宿主测试 `tests/test_meta_boot_policy.c` 钉死 32B 副本
+  布局与全部状态判定);QEMU 新增 C3 用例:otadata 预置「CRC 合法 VALID + ota_0 放
+  真实子固件」的最恶劣常驻态,断言两副本被擦除并回退 factory 列表页。
+- 安装页备份/还原纳入 **NVS 自动打包/自动写回(2026-09-18)**:从设备自身分区表
+  定位 NVS(data/nvs 子类型,排除 `cardid`),备份自动读入打包为 `nvs.bin`(SHA-256
+  入 manifest `nvs` 字段),还原校验后写回目标设备定位的偏移(自适应,不沿用源偏移);
+  两侧均无用户选项,擦除态跳过,旧备份包兼容。背景:裸刷单文件固件会擦除 0x9000
+  处 NVS,应用数据只有经备份/还原才能跨刷机保留。测试:`test-slot-backup.mjs`
+  PASS 9(定位规则 + manifest 兼容)与 PASS 10(备份→还原数据路径契约,含篡改负例)。
 - 唯一发布工件(构建/打包):`tools/build-firmware.sh` 现在只产出一个文件——
   `meta-pass_v<版本>.bin`(~1.1MB),取代原来的三件套(8MB 合并镜像、
   `meta-pass-bootable_*`、MPUP 升级容器)。格式:可引导本体(bootloader + 分区表

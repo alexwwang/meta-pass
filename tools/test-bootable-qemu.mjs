@@ -138,6 +138,12 @@ wasmExports = await init(new WebAssembly.Module(
   await readFile(path.join(simWasmDir, "pkg", "esp_emu_bg.wasm")),
 ));
 
+// META_QEMU_C3_ONLY=1:只跑 C3(迭代单次会话策略时省时间);完整门禁必须不带该变量跑全量。
+const C3_ONLY = !!process.env.META_QEMU_C3_ONLY;
+if (C3_ONLY) {
+  log("META_QEMU_C3_ONLY=1 —— 跳过 C1/C2/A2,仅运行 C3(单次会话策略验证)");
+}
+if (!C3_ONLY) {
 // ==== C1. 引导单文件固件 → 列表页高亮 slot0 ====
 log(`C1. 引导单文件固件,每 ${SNAP_EVERY_MS / 1000}s 截帧,等待列表页(高亮=slot0,连续两次一致)`);
 const bootablePath = await newestBuild("meta-pass_v.*\\.bin$");
@@ -197,6 +203,97 @@ if (sel0Stable) {
 } else {
   failed = true;
   log("FAIL A2: C1 未能引导出列表页,需复查尾段是否破坏引导");
+}
+} // end !C3_ONLY(C1/C2/A2)
+
+// ==== C3. 单次会话策略:otadata 预置「CRC 合法的 VALID 常驻态」→ hook 必须清除 ====
+// 最恶劣场景构造:otadata 两副本均写入 seq=1 / state=VALID(0x2) / CRC 合法,且 ota_0
+// 放入真实可引导子固件 —— 标准 IDF bootloader 面对该状态必然直接引导 ota_0(子固件
+// 常驻)。meta-boot hook 生效时:两副本被擦除 → "Defaulting to factory image" → 列表页。
+// 任一副本漏擦都会指向可引导的 ota_0,常驻依旧 —— 因此本断言不可能「碰巧通过」。
+{
+  log("\nC3. otadata VALID 常驻态:两副本 CRC 合法 + ota_0 放真实子固件 → hook 必须擦除并回 factory");
+
+  // zlib 标准 CRC32,等价于 IDF 判定公式 bootloader_common_ota_select_crc:
+  // esp_rom_crc32_le(UINT32_MAX, (uint8_t*)&s->ota_seq, 4)(ROM 实现首尾各取反一次,
+  // 初值 0xFFFFFFFF 与终值取反互抵,即标准 zlib CRC32)。
+  const crc32Le = (bytes) => {
+    let c = 0xFFFFFFFF;
+    for (const v of bytes) {
+      c ^= v;
+      for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
+    }
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  };
+  if (crc32Le(new TextEncoder().encode("123456789")) !== 0xCBF43926) {
+    throw new Error("crc32Le 自检失败:CRC32('123456789') != 0xCBF43926");
+  }
+
+  // 现场合并全新 flash 镜像(不用可能过期的 build/*-full.bin):三段按固定偏移铺设,
+  // 其余全 0xFF(擦除态)。三段取自 build/ 最新一次带 hook 的编译产物。
+  const flash = Buffer.alloc(8 * 1024 * 1024, 0xff);
+  for (const [off, rel] of [
+    [0x0, "build/bootloader/bootloader.bin"],
+    [0x8000, "build/partition_table/partition-table.bin"],
+    [0x10000, "build/FoloToy-AI-Passport.bin"],
+  ]) {
+    const b = await readFile(path.join(repoRoot, rel));
+    b.copy(flash, off);
+    log(`   铺设 ${path.basename(rel)}(${b.length}B)@ 0x${off.toString(16)}`);
+  }
+
+  // 分区表自解析(0x8000 起,32B/条,魔数 0x50AA)—— otadata/ota_0 偏移不硬编码。
+  let otadataOff = -1, ota0Off = -1, ota0Size = -1;
+  for (let a = 0x8000; a < 0x8C00; a += 32) {
+    if (flash.readUInt16LE(a) !== 0x50AA) break;
+    const label = flash.subarray(a + 12, a + 28).toString("latin1").replace(/\0.*$/, "");
+    const off = flash.readUInt32LE(a + 4);
+    const size = flash.readUInt32LE(a + 8);
+    if (label === "otadata") { otadataOff = off; log(`   分区表:otadata @ 0x${off.toString(16)} (${size}B)`); }
+    if (label === "ota_0") { ota0Off = off; ota0Size = size; log(`   分区表:ota_0 @ 0x${off.toString(16)} (${size}B)`); }
+  }
+  if (otadataOff < 0 || ota0Off < 0) throw new Error("分区表解析失败:otadata 或 ota_0 未找到");
+
+  // ota_0 放入真实签名子固件(候选槽位必须可引导,否则本用例失去鉴别力)。
+  const childPath = path.resolve(repoRoot, "..", "pass-radar", "build", "pass-radar_v0.1-2-g8fcce59-signed.bin");
+  const child = await readFile(childPath);
+  if (child.length > ota0Size) throw new Error(`子固件 ${child.length}B 超出 ota_0 容量 ${ota0Size}B`);
+  child.copy(flash, ota0Off);
+  log(`   ota_0 已放入 ${path.basename(childPath)}(${child.length}B)`);
+
+  // otadata 两副本(每副本占 otadata 分区内 1 个 4KB 扇区):seq=1 → 映射 ota_0;
+  // state=VALID(0x2);crc = zlib32(ota_seq)。
+  const entry = Buffer.alloc(32, 0xff);
+  entry.writeUInt32LE(1, 0);
+  Buffer.from(new TextEncoder().encode("metapass-c3-policy-2")).copy(entry, 4);
+  entry.writeUInt32LE(0x2, 24);
+  entry.writeUInt32LE(crc32Le(entry.subarray(0, 4)), 28);
+  entry.copy(flash, otadataOff);
+  entry.copy(flash, otadataOff + 0x1000);
+  log(`   otadata 两副本已写:seq=1 state=VALID(0x2) crc=0x${crc32Le(entry.subarray(0, 4)).toString(16)}(均指向 ota_0)`);
+
+  const sess3 = bootSession(new Uint8Array(flash));
+  let e0 = false, e1 = false, fb = false, listed = false, prev3 = null;
+  const t3 = Date.now();
+  while (Date.now() - t3 < C1_TIMEOUT_MS) {
+    sess3.runFor(SNAP_EVERY_MS);
+    if (!e0) e0 = sess3.uart.includes("otadata copy 0 in VALID state -> erasing");
+    if (!e1) e1 = sess3.uart.includes("otadata copy 1 in VALID state -> erasing");
+    if (!fb) fb = sess3.uart.includes("Defaulting to factory image");
+    const s = sess3.snapshot("c3");
+    const el = Math.round((Date.now() - t3) / 1000);
+    log(`   [+${el}s] hook擦除=[copy0:${e0 ? "✓" : "-"} copy1:${e1 ? "✓" : "-"}] factory回退=${fb ? "✓" : "-"} 高亮=${s.sel >= 0 ? s.sel : "无"}`);
+    if (s.valid && s.sel === 0 && prev3?.valid && prev3.sel === 0) { listed = true; break; }
+    prev3 = s;
+  }
+  if (listed && e0 && e1 && fb) {
+    log("PASS C3: 两副本 VALID 均被 hook 擦除 → bootloader 回退 factory → 列表页(slot0 高亮)出现。");
+    log("      面对该状态,标准 bootloader 必然直接引导 ota_0(子固件常驻);本用例同时证明 hook 已真实链接进 bootloader 并生效。");
+  } else {
+    failed = true;
+    log(`FAIL C3: hook擦除 copy0=${e0} copy1=${e1} factory回退=${fb} 列表页=${listed}(截图 /tmp/metapass-qemu-c3-*.ppm)`);
+    log(`      UART 尾部 600B:\n${sess3.uart.slice(-600)}`);
+  }
 }
 
 log(`\n==== ${failed ? "FAILED" : "ALL PASS"} ====`);

@@ -27,6 +27,22 @@ import { TAIL_SECTOR } from "./name-blob.js";
 export const MANIFEST_NAME = "manifest.json";
 export const MANIFEST_VERSION = 1;
 export const EMPTY_BYTE = 0xff;
+export const NVS_FILE_NAME = "nvs.bin";
+
+// ===== NVS 存储区定位(自动备份/还原,用户决策 2026-09-18)=====
+// 背景:NVS 保留在官方约定位置(本仓库 partitions.csv 的 0x9000),而单文件固件
+// 裸刷 0x0 与市场刷机工具都会先擦后写覆盖范围内扇区 —— NVS 在覆盖范围内,会被清空。
+// 因此备份/还原流程把 NVS 与子固件槽位一起自动打包/自动写回,不让用户选择。
+
+// 从 parsePartitionTable 的结果里定位 NVS 分区。
+// 规则:data 类型(0x01)+ nvs 子类型(0x02),排除 cardid —— 设备身份数据,
+// 在所有分发流程(裸刷/升级容器)的覆盖范围之外,不属于应用可备份数据。
+// 位置不硬编码:跟随设备分区表解析结果,布局调整时自适应。
+export function findNvsPartition(partitions) {
+  return (partitions ?? []).find(
+    (p) => p.type === 0x01 && p.subtype === 0x02 && p.label !== "cardid",
+  ) ?? null;
+}
 
 export function firmwareFileName(slot) { return `slot${slot}_firmware.bin`; }
 export function extraFileName(slot)   { return `slot${slot}_extra.bin`; }

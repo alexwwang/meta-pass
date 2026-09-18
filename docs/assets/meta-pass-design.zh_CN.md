@@ -44,12 +44,16 @@ meta-pass 是 AI Passport 的**多固件启动器**：作为 factory 应用常�
 启用 `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` + **单次会话模型（2026-09-17）**：
 
 - **启动子固件**：启动器校验通过后 `esp_ota_set_boot_partition(ota_x)` + `esp_restart()`。
-- **每次上电都回启动器**：子固件仅运行当前会话。任何重启/断电后 bootloader 自动回退
-  factory——ota 状态永不提升为 VALID（hook 不再调用 `cancel_rollback`），且启动器
-  `app_main` 早期擦除 otadata，维护不变量「启动器运行 ⇒ otadata 为空 ⇒ 下次上电默认
-  引导 factory」。边界说明：已被旧模型子固件（otadata 含 VALID）锁死的设备到不了
-  启动器——需用该子固件的返回钩子（OK 长按）或重刷固件解锁。崩溃/断电自恢复是
-  同一机制（防变砖）。
+- **每次上电都回启动器（bootloader 强制，2026-09-18）**：子固件仅运行当前会话。
+  开机策略由 meta-pass 的 2nd-stage bootloader 单方面执行，与子固件行为完全无关：
+  `bootloader_components/meta_boot_hooks/` 注册 `bootloader_after_init`（IDF hooks
+  机制），在任何应用运行之前检查 otadata 两个副本，凡 `ota_state == VALID` 一律擦除
+  其扇区（PENDING 不碰，保住 trial-run 回滚；深睡眠唤醒跳过；flash 加密启用时放弃
+  干预）。效果：即使设备被旧模型子固件（写 VALID 常驻）引导过、otadata 已含 VALID，
+  下一次上电 hook 也会把它清掉并回退 factory——**已锁死设备无需重刷即可自愈**。
+  纵深防御：启动器 `app_main` 早期仍擦除 otadata；子固件 hook 模板不再调用
+  `cancel_rollback`。崩溃/断电自恢复（防变砖）是同一机制。PENDING 状态由 IDF
+  bootloader 在选择前自动标 ABORTED，trial-run 流程不受本策略影响。
 - **启动器自身**：`app_main` 早期擦除 otadata，bootloader 在 otadata 为空时默认引导
   factory；无需其他操作。
 

@@ -5,6 +5,28 @@
 # Changelog
 
 ## Unreleased
+- Boot policy upgraded to **bootloader-enforced (2026-09-18)**: new
+  `bootloader_components/meta_boot_hooks/` (IDF hooks mechanism; `bootloader_after_init`
+  runs before any application) inspects both otadata copies and erases any whose
+  `ota_state == VALID` — a child writing VALID can no longer persist across reboots. The
+  boot policy is decided unilaterally by meta-pass, independent of child behavior; devices
+  locked by pre-model children self-heal on the next power cycle, no re-flash needed.
+  PENDING is untouched (trial-run rollback intact), deep-sleep wake skips everything, and
+  intervention is disabled under flash encryption. The policy's pure logic lives in
+  `main/meta_boot_policy.h` (host test `tests/test_meta_boot_policy.c` pins the 32-byte
+  copy layout and every state decision); QEMU gains case C3: otadata preloaded with the
+  harshest resident state (CRC-valid VALID + a real child image in ota_0), asserting both
+  copies get erased and the boot falls back to the factory list page.
+- Installer backup/restore now carries **NVS automatically (2026-09-18)**: the NVS
+  partition (data/nvs subtype, `cardid` excluded) is located from the device's own
+  partition table, read automatically during backup and packed as `nvs.bin` (SHA-256 in
+  the manifest `nvs` field); restore verifies presence/size/digest and writes it back at
+  the target device's located offset (adaptive — no source offset reuse). No user choice
+  on either side; an erased NVS is skipped and older zips stay compatible. Rationale: bare
+  flashing the single-file image erases NVS at 0x9000 — the backup/restore round-trip is
+  the only way app data survives a re-flash. Tests: `test-slot-backup.mjs` PASS 9
+  (location rules + manifest compat) and PASS 10 (backup→restore data-path contract with
+  tamper negative).
 - Single release artifact (build/packaging): `tools/build-firmware.sh` now emits ONE file —
   `meta-pass_v<version>.bin` (~1.1 MB), replacing the three-artifact set (8 MB merged image,
   `meta-pass-bootable_*`, MPUP upgrade container). Format: bootable body (bootloader +

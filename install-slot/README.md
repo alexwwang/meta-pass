@@ -115,6 +115,16 @@ API proxy lives.
   signature/easter-egg/name metadata; otherwise a dd-style raw mirror
   (`slot{N}_raw.bin`, `type: "raw"` in the manifest) is produced instead —
   restore verifies size vs. the target partition and SHA-256 only.
+- NVS auto-backup/restore (2026-09-18): the device's NVS partition (data/nvs
+  subtype, `cardid` excluded) is located from the **device's own partition
+  table**, read automatically during backup and packed as `nvs.bin` with its
+  SHA-256 in the manifest `nvs` field; restore verifies file presence, size
+  and digest, then writes it back to the **target device's** located NVS
+  offset (adaptive — `source_offset` in the manifest is provenance only).
+  No user choice is involved on either side; an erased NVS is skipped, and
+  zips without the `nvs` field (older backups) restore unchanged. Rationale:
+  bare-flashing the single-file image (market tool) erases NVS at 0x9000 —
+  only the backup/restore round-trip can carry app data across.
 
 ## Repo layout
 
