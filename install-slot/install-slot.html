@@ -1791,7 +1791,12 @@ $("btn-install").addEventListener("click", async () => {
 });
 
 log(t("msg_ready"));
-log(`[page] build 2026-09-17-probe7 · chunk=32KB stop-and-wait baud=921600(fallback 115200)`, "warn");
+// 页面版本(纳入版本管理):源码只存占位符 __PAGE_VERSION__,部署时替换。
+//   CI(GitHub Pages / Cloudflare Pages)→ 替换为 git 短 SHA;
+//   本地 server.mjs → 替换为 dev-<git describe>;
+//   直接以 file:// 打开(无替换)→ 显示 dev-source,明确标识未经部署管线。
+// 由 tools/validate.sh --static 守护:占位符被源码中误写死版本号即失败。
+log(`[page] __PAGE_VERSION__ · chunk=32KB stop-and-wait baud=921600(fallback 115200) · NVS 自动备份/还原已启用(无 UI 选项,见备份/还原日志)`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。

@@ -25,6 +25,13 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      # 网页版本管理:源码中的 __PAGE_VERSION__ 占位符替换为部署的 git 短 SHA,
+      # 线上页面日志可直接对应到具体源码(与固件 meta-pass_v<版本> 的可追溯性同标准)。
+      - name: Stamp page version from git
+        run: |
+          V="$(git rev-parse --short HEAD)"
+          sed -i "s/__PAGE_VERSION__/${V}/g" install-slot/install-slot.html
+          echo "page version: ${V}"
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:

@@ -104,6 +104,20 @@ PY
     fi
     rm -rf "${test_dir}"
     echo "Host tests: PASS"
+
+    # 安装页版本占位符守护(网页服务纳入版本管理):源码必须且只能包含
+    # __PAGE_VERSION__ 占位符,禁止误写死版本号(写死会让部署替换失效、
+    # 线上/本地版本标识漂移)。CI 部署时替换为 git 短 SHA,本地 server.mjs
+    # 替换为 dev-<git describe>。
+    if ! grep -q '__PAGE_VERSION__' install-slot/install-slot.html; then
+        echo "ERROR: install-slot.html 页面版本占位符 __PAGE_VERSION__ 丢失" >&2
+        return 1
+    fi
+    if grep -Eq 'build [0-9]{4}-[0-9]{2}-[0-9]{2}' install-slot/install-slot.html; then
+        echo "ERROR: install-slot.html 含写死的页面构建号(应使用 __PAGE_VERSION__ 占位符)" >&2
+        return 1
+    fi
+    echo "Page version placeholder: PASS"
 }
 
 run_firmware_checks() (

@@ -10,12 +10,29 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PAGE_DIR = path.resolve(DIR, "..", "..", "install-slot");
+
+// 页面版本占位符替换(本地 dev):与 CI 部署管线同一占位符 __PAGE_VERSION__。
+// 取 git describe(如 dev-v0.2.2-83-g71724a8),让日志页标可追溯到具体源码;
+// git 不可用或不在仓库内时降级 dev-unknown(不阻断服务)。
+function pageVersion() {
+  try {
+    const sha = execSync(
+      "git describe --tags --always --dirty 2>/dev/null",
+      { cwd: PAGE_DIR, encoding: "utf8", timeout: 3000 },
+    ).trim();
+    return sha ? `dev-${sha}` : "dev-unknown";
+  } catch {
+    return "dev-unknown";
+  }
+}
+const PAGE_VERSION = pageVersion();
 // 页面与静态模块均按请求现读,不在启动时缓存(页面迭代期免重启)
 // 页面以 type=module 引入的同目录 ES 模块;白名单按需登记
 const STATIC_FILES = new Map([
@@ -96,16 +113,26 @@ const server = http.createServer((req, res) => {
 
   // GET / → 安装页(规范目录 install-slot/)
   if (pathname === "/" || pathname === "/install-slot.html") {
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    // 每请求现读:页面迭代期免重启
-    fs.createReadStream(path.join(PAGE_DIR, "install-slot.html")).pipe(res);
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      // 页面与模块迭代期禁用缓存:浏览器缓存可能比仓库代码旧(ES 模块同样受限),
+      // 曾导致"改了但页面没体现"。生产环境(Cloudflare Pages)发自己的缓存策略,不受影响。
+      "cache-control": "no-store",
+    });
+    // 每请求现读:页面迭代期免重启;版本占位符随响应替换为当前 git describe
+    const html = fs.readFileSync(path.join(PAGE_DIR, "install-slot.html"), "utf8")
+      .replaceAll("__PAGE_VERSION__", PAGE_VERSION);
+    res.end(html);
     return;
   }
 
   // 白名单静态文件（页面引入的 ES 模块等）
   const staticEntry = STATIC_FILES.get(pathname);
   if (staticEntry) {
-    res.writeHead(200, { "content-type": staticEntry.type });
+    res.writeHead(200, {
+      "content-type": staticEntry.type,
+      "cache-control": "no-store",   // 同上:迭代期模块也必须新鲜
+    });
     fs.createReadStream(path.join(PAGE_DIR, staticEntry.file)).pipe(res);
     return;
   }
