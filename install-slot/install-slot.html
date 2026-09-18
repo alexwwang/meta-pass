@@ -1794,7 +1794,8 @@ log(t("msg_ready"));
 // 页面版本(纳入版本管理):源码只存占位符 __PAGE_VERSION__,部署时替换。
 //   CI(GitHub Pages / Cloudflare Pages)→ 替换为 git 短 SHA;
 //   本地 server.mjs → 替换为 dev-<git describe>;
-//   直接以 file:// 打开(无替换)→ 显示 dev-source,明确标识未经部署管线。
+//   直接以 file:// 打开(无替换)→ 显示原始占位符 __PAGE_VERSION__,
+//   本身即"未经部署管线"的标识。
 // 由 tools/validate.sh --static 守护:占位符被源码中误写死版本号即失败。
 log(`[page] __PAGE_VERSION__ · chunk=32KB stop-and-wait baud=921600(fallback 115200) · NVS 自动备份/还原已启用(无 UI 选项,见备份/还原日志)`, "warn");
 
