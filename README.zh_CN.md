@@ -154,8 +154,10 @@ tools/build-firmware.sh
 就够了。脚本会自动寻找 ESP-IDF v5.5.3（默认找 `~/esp/esp-idf-v5.5.3`，
 也可用 `--idf-path <目录>` 指定），完成编译、合并 8MB 完整镜像、受保护
 布局与**升级安全性**校验（NVS / cardid / ota_0-2 / otadata 区域必须保持擦除态），
-产物放入 `build/`（`meta-pass_v<版本>.bin`、`FoloToy-AI-Passport.bin`、
-`upgrade/` launcher 升级包），并打印安装/烧写指引。找不到 ESP-IDF 时会
+产物放入 `build/`。**唯一发布工件**是 `meta-pass_v<版本>.bin`（~1.1MB）:
+混合单文件——可引导本体（bootloader + 分区表 + phy + app）+ 44 字节
+`MPUPV2` 指纹尾段——同时服务市场安装（刷机工具原样写 0x0）与 USB 安装页
+升级（页面校验指纹后从本体切片升级段）。找不到 ESP-IDF 时会
 给出逐行安装命令。首次安装 ESP-IDF：
 
 ```bash
@@ -168,12 +170,14 @@ git clone -b v5.5.3 --recursive https://github.com/espressif/esp-idf.git ~/esp/e
 
 分区布局已稳定,launcher 升级永远不需要碰用户数据。两条路径:
 
-- **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择**单文件升级容器**
-  `build/upgrade/meta-pass-upgrade_<版本>.bin`(`tools/build-firmware.sh` 生成,
-  亦是分发给市场的唯一升级产物)。页面解包容器、逐段校验 SHA-256,读回设备
-  分区表逐字节比对(不一致即拒绝升级),再把四段镜像写到各自的分区地址。
-  NVS(存储数据:Wi-Fi 配置、应用内部状态)、`cardid` 与三个子固件槽位全程不碰。
-- **命令行**——按 `build/upgrade/flash-args.txt` 烧写四个文件:
+- **USB 安装页(推荐)**——「7. 升级 launcher」章节:选择与市场分发**同一个文件**
+  `build/meta-pass_<版本>.bin`。页面校验 `MPUPV2` 指纹（完整性 SHA-256），
+  读回设备分区表逐字节比对（不一致即拒绝升级），再从文件本体写入
+  bootloader / 分区表 / app,并把 otadata 重置为擦除态。
+  NVS（存储数据:Wi-Fi 配置、应用内部状态）、`cardid` 与三个子固件槽位全程不碰。
+  已分发过的旧版 `MPUPV1` 升级容器仍然兼容。
+- **命令行**——等价的 esptool 命令（升级只写这四个区域;切勿把 8MB 完整
+  镜像刷到已有设备上）:
 
 ```bash
 python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \

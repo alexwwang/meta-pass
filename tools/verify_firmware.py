@@ -154,111 +154,58 @@ def verify_upgrade_safety(merged: bytes) -> None:
     )
 
 
-def verify_upgrade_bundle(merged: bytes, build_dir: Path) -> None:
-    """若 build/upgrade/ 存在,校验升级包与主镜像逐字节同源。
+def verify_single_file_artifact(merged: bytes, build_dir: Path) -> None:
+    """唯一发布单文件(meta-pass_v*.bin):可引导本体 + 44B MPUPV2 指纹尾段。
 
-    升级包内容(升级 launcher 的最小写入集):
-      FoloToy-AI-Passport.bin  @ 0x10000
-      partition-table.bin      @ 0x8000
-      bootloader.bin           @ 0x0
-      ota_data_initial.bin     @ 0x7FE000(擦除态,升级后回到 factory)
+    同一个文件服务两个通道(契约见 install-slot/launcher-upgrade.js
+    parseUpgradeArtifact):
+      市场直接安装 —— 原样写 0x0,本体 = bootloader+分区表+phy+app,ROM 引导;
+      网页升级     —— 页面校验指纹后从本体切片升级三段,otadata 写擦除态。
+    校验项:指纹布局/长度、body_len 一致、body SHA-256、本体与合并镜像头部
+    逐字节同源、无陈旧双产物(bootable_*/upgrade 容器)残留。
+    指纹 44B:magic "MPUPV2"(8B,NUL 结尾)+ body_len u32le + body SHA-256 32B。
     """
-    upgrade_dir = build_dir / "upgrade"
-    if not upgrade_dir.is_dir():
-        return
-    bundle = {
-        0x0: "bootloader.bin",
-        0x8000: "partition-table.bin",
-        0x10000: "FoloToy-AI-Passport.bin",
-        0x7FE000: "ota_data_initial.bin",
-    }
-    for offset, name in bundle.items():
-        path = upgrade_dir / name
-        if not path.is_file():
-            raise ValueError(f"upgrade bundle missing {name}")
-        if path.read_bytes() != merged[offset : offset + path.stat().st_size]:
-            raise ValueError(f"upgrade bundle {name} differs from the merged image")
-    verify_upgrade_container(upgrade_dir, bundle, merged)
-
-
-def verify_upgrade_container(upgrade_dir: Path, bundle: dict, merged: bytes) -> None:
-    """单文件升级容器(MPUP):段表/逐段 SHA-256/与主镜像同源。
-
-    容器是市场分发的唯一升级产物;四段 bin 仍保留供命令行 esptool 使用。
-    布局:魔数 "MPUPV1\0" + header_size(u32) + count(u32) + count×72B 段表
-    (name 32B + offset u32 + size u32 + sha256 32B)+ 各段数据紧随。
-    """
-    import hashlib
-    import struct
-
-    containers = sorted(upgrade_dir.glob("meta-pass-upgrade_*.bin"))
-    if not containers:
-        raise ValueError("upgrade container missing: build/upgrade/meta-pass-upgrade_*.bin")
-    if len(containers) > 1:
+    artifacts = sorted(build_dir.glob("meta-pass_v*.bin"))
+    if not artifacts:
+        raise ValueError("single-file firmware missing: build/meta-pass_v*.bin")
+    if len(artifacts) > 1:
         raise ValueError(
-            f"multiple upgrade containers in build/upgrade/ ({[c.name for c in containers]}) "
+            f"multiple meta-pass_v*.bin in build/ ({[a.name for a in artifacts]}) "
             "— stale artifact? clean and rebuild"
         )
-    raw = containers[0].read_bytes()
-    if len(raw) < 16 or raw[0:6] != b"MPUPV1\x00"[:6]:
-        raise ValueError(f"{containers[0].name}: bad MPUP magic")
-    header_size, count = struct.unpack_from("<II", raw, 8)
-    if count != len(bundle):
-        raise ValueError(f"{containers[0].name}: segment count {count} != {len(bundle)}")
-    if header_size != 16 + count * 72:
-        raise ValueError(f"{containers[0].name}: header_size {header_size} != 16 + {count}*72")
-    body_at = header_size
-    for i in range(count):
-        at = 16 + i * 72
-        name_field = raw[at : at + 32]
-        name = name_field.split(b"\x00", 1)[0].decode()
-        if name not in bundle.values():
-            raise ValueError(f"{containers[0].name}: unexpected segment {name}")
-        offset, size = struct.unpack_from("<II", raw, at + 32)
-        if offset != next(o for o, n in bundle.items() if n == name):
-            raise ValueError(f"{containers[0].name}: {name} offset mismatch")
-        data = raw[body_at : body_at + size]
-        if len(data) != size:
-            raise ValueError(f"{containers[0].name}: {name} data truncated")
-        if hashlib.sha256(data).digest() != raw[at + 40 : at + 72]:
-            raise ValueError(f"{containers[0].name}: {name} sha256 mismatch")
-        if data != merged[offset : offset + size]:
-            raise ValueError(f"{containers[0].name}: {name} differs from the merged image")
-        body_at += size
-    if body_at != len(raw):
-        raise ValueError(f"{containers[0].name}: trailing bytes")
-    print(f"Upgrade container: PASS ({containers[0].name}, {count} segments, per-segment sha256 + merged-image parity)")
-    print("Upgrade bundle: PASS (build/upgrade/ matches the merged image)")
-
-
-def verify_bootable_image(merged: bytes, build_dir: Path) -> None:
-    """Market single-file bootable image: bootloader + partition table + app laid
-    out at their flash offsets, everything else erased. Market tools flash it raw
-    at 0x0; the ROM boots the factory app directly. Must be byte-identical to the
-    head of the merged image — safe to assert because verify_upgrade_safety
-    guarantees every region after the app is erased (0xFF) in the merged image,
-    so head parity implies the erased-tail contract carries over."""
-    images = sorted(build_dir.glob("meta-pass-bootable_*.bin"))
-    if not images:
-        raise ValueError("bootable market image missing: build/meta-pass-bootable_*.bin")
-    if len(images) > 1:
+    raw = artifacts[0].read_bytes()
+    FOOTER = 44
+    if len(raw) < FOOTER + 0x10000:
+        raise ValueError(f"{artifacts[0].name}: too small to carry a bootable body + footer")
+    body_len_decl = struct.unpack_from("<I", raw, len(raw) - FOOTER + 8)[0]
+    if body_len_decl != len(raw) - FOOTER:
+        raise ValueError(f"{artifacts[0].name}: footer body_len {body_len_decl} != {len(raw) - FOOTER}")
+    if raw[len(raw) - FOOTER : len(raw) - FOOTER + 8] != b"MPUPV2\x00\x00":
+        raise ValueError(f"{artifacts[0].name}: bad MPUPV2 footer magic")
+    digest = hashlib.sha256(raw[: len(raw) - FOOTER]).digest()
+    if digest != raw[len(raw) - FOOTER + 12 :]:
+        raise ValueError(f"{artifacts[0].name}: footer sha256 mismatch")
+    body = raw[: len(raw) - FOOTER]
+    if body[0] != 0xE9:
+        raise ValueError(f"{artifacts[0].name}: first byte is not the ESP image magic 0xE9")
+    if body[0x8000 : 0x8000 + 2] != b"\xAA\x50":
+        raise ValueError(f"{artifacts[0].name}: no partition table magic at 0x8000")
+    if body[0x10000] != 0xE9:
+        raise ValueError(f"{artifacts[0].name}: no app image at 0x10000")
+    if body != merged[: len(body)]:
+        raise ValueError(f"{artifacts[0].name}: body differs from the merged image head")
+    # 陈旧双产物检测:单文件化后这两个产物必须不存在,防止新旧格式混发
+    stale = sorted(build_dir.glob("meta-pass-bootable_*.bin")) + sorted(
+        (build_dir / "upgrade").glob("meta-pass-upgrade_*.bin")
+    ) if (build_dir / "upgrade").is_dir() else sorted(build_dir.glob("meta-pass-bootable_*.bin"))
+    if stale:
         raise ValueError(
-            "multiple bootable images in build/ — stale artifact? clean and rebuild"
+            f"stale dual-channel artifacts present: {[s.name for s in stale]} "
+            "— the single file replaces them; clean and rebuild"
         )
-    bootable = images[0].read_bytes()
-    if bootable[0] != 0xE9:
-        raise ValueError(f"{images[0].name}: first byte is not the ESP image magic 0xE9")
-    if len(bootable) <= 0x10000:
-        raise ValueError(f"{images[0].name}: too small to carry a partition table + app")
-    if bootable[0x8000 : 0x8000 + 2] != b"\xAA\x50":
-        raise ValueError(f"{images[0].name}: no partition table magic at 0x8000")
-    if bootable[0x10000] != 0xE9:
-        raise ValueError(f"{images[0].name}: no app image at 0x10000")
-    if bootable != merged[: len(bootable)]:
-        raise ValueError(f"{images[0].name}: differs from the merged image head")
     print(
-        f"Bootable market image: PASS ({images[0].name}, {len(bootable)} bytes, "
-        "boots factory when flashed raw at 0x0)"
+        f"Single-file firmware: PASS ({artifacts[0].name}, {len(raw)} bytes = "
+        f"{len(body)}B bootable body + 44B MPUPV2 footer; market install + web upgrade)"
     )
 
 
@@ -295,8 +242,7 @@ def main() -> int:
     try:
         verify_protected_layout(merged, build_dir)
         verify_upgrade_safety(merged)
-        verify_upgrade_bundle(merged, build_dir)
-        verify_bootable_image(merged, build_dir)
+        verify_single_file_artifact(merged, build_dir)
     except (OSError, UnicodeDecodeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

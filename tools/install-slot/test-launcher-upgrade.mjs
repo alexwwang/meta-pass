@@ -13,6 +13,8 @@ import {
   PARTITION_TABLE_READ_SIZE,
   packUpgradeContainer,
   unpackUpgradeContainer,
+  parseUpgradeArtifact,
+  HYBRID_MAGIC,
 } from "../../install-slot/launcher-upgrade.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -165,13 +167,23 @@ assert.equal(slotHasData(junk), true);
 assert.equal(slotHasData(new Uint8Array(12)), false, "wrong size treated as no-data");
 console.log("PASS 6: legacy-factory / blank classification; erase plan skips cardid & factory; slot-head detection");
 
-// ---- PASS 7: 单文件升级容器(MPUP)—— 打包/解包往返 + 逐段 SHA-256 门禁 ----
+// ---- PASS 7: 旧版 MPUP 容器(存量包兼容)—— 打包/解包往返 + 逐段 SHA-256 门禁 ----
+let packedFromPass7;   // PASS 8 兼容分发用例复用
 {
+  // 构造最小但结构合法的四段文件(build/upgrade 四段 bin 已随单文件化退役,
+  // 此处用确定性伪数据;checkUpgradeBundle 要求:分区表首条目 magic 合法、
+  // app 镜像 0xE9 头,故伪数据按此构造)
   const files = new Map();
-  for (const step of upgradeWritePlan()) {
-    files.set(step.name, new Uint8Array(readFileSync(join(HERE, "..", "..", "build", "upgrade", step.name))));
-  }
+  files.set("bootloader.bin", new Uint8Array(0x1000).fill(0xab));
+  const pt = new Uint8Array(0x1000).fill(0xff);
+  pt[0] = 0xaa; pt[1] = 0x50;   // 首条目 magic(小端 0x50AA),其余条目 0xFF 终止
+  files.set("partition-table.bin", pt);
+  const app = new Uint8Array(0x2000).fill(0x12);
+  app[0] = 0xe9;                 // ESP app image magic(checkUpgradeBundle 强制)
+  files.set("FoloToy-AI-Passport.bin", app);
+  files.set("ota_data_initial.bin", new Uint8Array(0x2000).fill(0xff));
   const packed = packUpgradeContainer(files);
+  packedFromPass7 = packed;
   // 容器头:魔数 + header_size + 段数
   assert.equal(new TextDecoder().decode(packed.subarray(0, 6)), "MPUPV1");
   const dv = new DataView(packed.buffer);
@@ -196,7 +208,66 @@ console.log("PASS 6: legacy-factory / blank classification; erase plan skips car
   const badCount = packed.slice();
   new DataView(badCount.buffer).setUint32(12, 3, true);
   assert.throws(() => unpackUpgradeContainer(badCount), /segment count|header_size/);
-  console.log("PASS 7: MPUP single-file container — roundtrip byte-exact, per-segment sha256 gate, malformed rejected");
+  console.log("PASS 7: legacy MPUP container (compat) — roundtrip byte-exact, per-segment sha256 gate, malformed rejected");
+}
+
+// ---- PASS 8: 单文件混合格式(MPUPV2 指纹尾段)—— 解析/切片/篡改负例/兼容分发 ----
+{
+  // 构造一个结构合法的 hybrid 文件:本体 = bootloader(真产物)…分区表…app(真产物)…填充。
+  // 用真实构建产物切片,保证 espImageLength/chip_id/魔数全部合法,不mock契约。
+  const bl = new Uint8Array(readFileSync(join(BUILD, "bootloader/bootloader.bin")));
+  const ptReal = new Uint8Array(readFileSync(join(BUILD, "partition_table/partition-table.bin")));
+  const appReal = new Uint8Array(readFileSync(join(BUILD, "FoloToy-AI-Passport.bin")));
+  const bodyLen = 0x10000 + appReal.length;
+  const body = new Uint8Array(bodyLen).fill(0xff);   // 间隙与真实合并镜像同为擦除态
+  body.set(bl, 0);
+  body.set(ptReal, 0x8000);
+  body.set(appReal, 0x10000);
+  const f = body.length;
+  const footer = new Uint8Array(44);
+  footer.set(new TextEncoder().encode(HYBRID_MAGIC), 0);   // MPUPV2 + 2 NUL
+  new DataView(footer.buffer).setUint32(8, f, true);
+  // body sha256:复用 launcher-upgrade 内部的同步实现(通过 parseUpgradeArtifact 间接验证;
+  // 这里用 node crypto 独立计算,双实现交叉验证)
+  const { createHash } = await import("node:crypto");
+  footer.set(createHash("sha256").update(body).digest(), 12);
+  const hybrid = new Uint8Array(f + 44);
+  hybrid.set(body); hybrid.set(footer, f);
+
+  // 解析:kind=hybrid,四段齐全,切片与真实产物逐字节一致
+  const parsed = parseUpgradeArtifact(hybrid);
+  assert.equal(parsed.kind, "hybrid");
+  assert.equal(parsed.body.length, f);
+  assert.deepEqual([...parsed.files.keys()].sort(),
+    ["FoloToy-AI-Passport.bin", "bootloader.bin", "ota_data_initial.bin", "partition-table.bin"]);
+  assert.equal(parsed.files.get("bootloader.bin").length, bl.length, "bootloader slice = real artifact length");
+  assert.equal(parsed.files.get("partition-table.bin").length, 0x1000);
+  assert.equal(parsed.files.get("ota_data_initial.bin").length, 0x2000);
+  assert.ok(parsed.files.get("ota_data_initial.bin").every((b) => b === 0xff), "otadata slice = erased state");
+  // 切片内容与本体逐字节一致
+  for (const [name, orig] of [["bootloader.bin", bl], ["FoloToy-AI-Passport.bin", appReal]]) {
+    const data = parsed.files.get(name);
+    assert.equal(data.length, orig.length, `${name} slice length`);
+    assert.ok(data.every((b, i) => b === orig[i]), `${name} slice matches body`);
+  }
+  // 分区表切片 = 整 4KB:前 0xC00 与真实表一致,其余为 0xFF 填充
+  const ptSlice = parsed.files.get("partition-table.bin");
+  assert.ok(ptSlice.subarray(0, ptReal.length).every((b, i) => b === ptReal[i]), "pt slice head matches real table");
+  assert.ok(ptSlice.subarray(ptReal.length).every((b) => b === 0xff), "pt slice tail erased");
+
+  // 篡改 body 任意字节 → 指纹 sha256 门禁拒绝
+  const tampered = hybrid.slice();
+  tampered[100] ^= 0xff;
+  assert.throws(() => parseUpgradeArtifact(tampered), /sha256 mismatch/);
+  // 篡改 body_len 字段 → 长度门禁拒绝
+  const badLen = hybrid.slice();
+  new DataView(badLen.buffer).setUint32(f + 8, f + 1, true);
+  assert.throws(() => parseUpgradeArtifact(badLen), /body_len mismatch/);
+  // 旧 MPUP 容器仍走 mpup 分支(兼容分发)
+  const mpupParsed = parseUpgradeArtifact(packedFromPass7);
+  assert.equal(mpupParsed.kind, "mpup");
+
+  console.log("PASS 8: hybrid single-file (44B MPUPV2 footer) — slices match body, otadata erased, tamper rejected, legacy MPUP compat");
 }
 
 console.log("All launcher-upgrade tests passed.");

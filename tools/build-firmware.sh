@@ -4,9 +4,11 @@
 # 做什么:
 #   1. 自动寻找 ESP-IDF v5.5.3(常用路径 / --idf-path 参数 / $IDF_PATH 环境变量),没有则给出安装指引;
 #   2. idf.py build 编译固件(含全部最新源码修复);
-#   3. idf.py merge-bin 合并出可直接烧写的 8MB 完整镜像;
-#   4. verify_firmware.py 校验受保护布局(应用大小 / 分区边界 / cardid 不被占用);
-#   5. 产物复制到 build/ 并打印烧写指引。
+#   3. idf.py merge-bin 合并出 8MB 完整镜像(供校验与工厂烧写);
+#   4. 生成唯一发布单文件 meta-pass_<版本>.bin(可引导本体 + 44B MPUPV2 指纹尾段,
+#      市场直接安装与线刷页升级共用);
+#   5. verify_firmware.py 校验受保护布局与升级安全;
+#   6. 打印烧写指引。
 #
 # 用法:
 #   tools/build-firmware.sh                  # 标准构建
@@ -84,113 +86,66 @@ info "合并 8MB 完整镜像(merge-bin)"
 idf.py merge-bin -o FoloToy-AI-Passport-full.bin >/dev/null \
     || fail "merge-bin 失败(注意:输出路径必须是文件名,见 docs/BUGS.md 记录)"
 
-# ---- 5. 生成 launcher 升级包(仅刷 factory/分区表/bootloader/otadata,NVS 与子固件槽零接触)----
-info "生成 launcher 升级包(build/upgrade/)"
-mkdir -p build/upgrade
-cp -f build/bootloader/bootloader.bin          build/upgrade/bootloader.bin
-cp -f build/partition_table/partition-table.bin build/upgrade/partition-table.bin
-cp -f build/FoloToy-AI-Passport.bin             build/upgrade/FoloToy-AI-Passport.bin
-cp -f build/ota_data_initial.bin                build/upgrade/ota_data_initial.bin
-# 单文件升级容器(MPUP):线刷页专用(解包+逐段校验+分区表比对后按地址写入);
-# 市场分发用另产的 meta-pass-bootable_<版本>.bin(原样写 0x0 即可引导)。
-# 四段镜像打包进一个 .bin,线刷页选这一个文件、按段表逐段写入各分区地址。
+# ---- 4. 单文件固件产物(可引导本体 + 44B MPUPV2 指纹尾段)----
+# 同一个文件服务两个通道(设计:docs/assets/meta-pass-design.md §7.2):
+#   市场直接安装 —— 原样写 0x0,ROM 引导 factory;
+#   网页升级     —— install-slot 页解析指纹后从本体切片 bootloader/分区表/app,
+#                   otadata 写擦除态,走「读回分区表比对 → 最小写入集」流程。
+# 8MB 全量镜像与独立 MPUP 升级容器不再作为发布产物(全量镜像保留在 build/ 供
+# verify_firmware.py 校验与 QEMU 工装引用)。
+info "生成单文件固件产物(build/meta-pass_<版本>.bin)"
 python3 - <<'PYEOF'
-import sys
-sys.path.insert(0, "tools")
-from hashlib import sha256
-from pathlib import Path
+import hashlib
 import struct
+import subprocess
+from pathlib import Path
 
-U = Path("build/upgrade")
-PLAN = [
-    ("bootloader.bin", 0x0),
-    ("partition-table.bin", 0x8000),
-    ("FoloToy-AI-Passport.bin", 0x10000),
-    ("ota_data_initial.bin", 0x7FE000),
-]
-NAME_MAX, ENTRY = 32, 72
-header_size = 16 + len(PLAN) * ENTRY
-segs, body = [], bytearray()
-for name, offset in PLAN:
-    data = (U / name).read_bytes()
-    segs.append((name, offset, len(data), sha256(data).digest(), len(body)))
-    body += data
-out = bytearray(header_size + len(body))
-out[0:6] = b"MPUPV1"
-struct.pack_into("<II", out, 8, header_size, len(PLAN))
-for i, (name, offset, size, digest, body_off) in enumerate(segs):
-    at = 16 + i * ENTRY
-    nb = name.encode()
-    out[at:at+len(nb)] = nb
-    struct.pack_into("<II", out, at + 32, offset, size)
-    out[at+40:at+72] = digest
-    out[header_size+body_off:header_size+body_off+size] = (U / name).read_bytes()
-version = __import__("subprocess").run(
+version = subprocess.run(
     ["git", "-C", ".", "describe", "--tags", "--match", "v[0-9]*"],
     capture_output=True, text=True).stdout.strip() or "v0.0.0-dev"
-(U / f"meta-pass-upgrade_{version}.bin").write_bytes(bytes(out))
-print(f"MPUP container: {len(out)} bytes ({len(PLAN)} segments)")
 
-# ---- 市场分发镜像:可引导单文件小镜像(~1.1MB,原样写 0x0 即可引导)----
-# MPUP 容器是自定义格式,只有本仓库线刷页认识;市场刷机工具是"原样写 0x0",
-# 需要 0x0 处就是 bootloader。这里把 bootloader+分区表+app 按 flash 偏移铺平成
-# 一张连续小镜像(约 1.07MB),与 8MB 全量镜像的差异仅是不含 otadata/数据区:
-#   空白机:otadata 本就是擦除态 → 引导 factory ✓
-#   已装子固件的 meta-pass 机:otadata 保留,若指向子固件槽,bootloader 校验
-#   失败自动回退 factory(长按 OK 也能回 launcher),无变砖路径 ✓
-#   零售原厂机:0x7FE000 区域无有效 otadata → 引导 factory ✓
-bl = (Path("build/bootloader/bootloader.bin")).read_bytes()
-pt = (Path("build/partition_table/partition-table.bin")).read_bytes()
+# 本体 = 合并镜像头部(0x0 .. app 末尾):bootloader+分区表+phy+app 按 flash 偏移
+# 铺平,与 8MB 全量镜像头部逐字节一致(verify_firmware.py 强校验)。合并镜像在
+# 0xF000 带 phy_init(RF 校准数据),全新机首启即有 RF 参数。
 app = (Path("build/FoloToy-AI-Passport.bin")).read_bytes()
-assert bl[0] == 0xE9, "bootloader magic"
-assert pt[:2] == b"\xAA\x50", "partition table magic"
 assert app[0] == 0xE9, "app magic"
-# 直接从合并镜像切头部(0x0 .. app 末尾),而不是重新拼三个文件:
-# 合并镜像在 0xF000 还带 phy_init(RF 校准数据),全新机首启即有 RF 参数;
-# 头部切法保证与合并镜像逐字节一致(verify_firmware.py 强校验这一点)。
-# NVS/ota_0-2/otadata 不在头部范围内,且 verify_upgrade_safety 已强制合并
-# 镜像中它们保持擦除态。
 full = (Path("build/FoloToy-AI-Passport-full.bin")).read_bytes()
-bootable = full[: 0x10000 + len(app)]
-assert bootable[0] == 0xE9 and bootable[0x8000:0x8000+2] == b"\xAA\x50", "head layout"
-(Path("build") / f"meta-pass-bootable_{version}.bin").write_bytes(bytes(bootable))
-print(f"Bootable market image: {len(bootable)} bytes (bootloader+table+phy+app)")
-PYEOF
-cat > build/upgrade/flash-args.txt <<'EOF'
-# launcher 升级最小写入集:升级 meta-pass 不动用户数据。
-#   NVS(0x9000, 存储数据:Wi-Fi 配置、应用内部状态)、cardid、ota_0/1/2(已装子固件)全部保留。
-# esptool 命令:
-#   python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \
-#     0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
-0x0 bootloader.bin
-0x8000 partition-table.bin
-0x10000 FoloToy-AI-Passport.bin
-0x7fe000 ota_data_initial.bin
-EOF
+body = full[: 0x10000 + len(app)]
+assert body[0] == 0xE9 and body[0x8000:0x8000+2] == b"\xAA\x50", "head layout"
 
-# ---- 6. 受保护布局与升级安全校验 ----
+# 指纹 44B:magic "MPUPV2"(8B,NUL 结尾)+ body_len u32le + body SHA-256 32B。
+# 与 install-slot/launcher-upgrade.js parseUpgradeArtifact() 同一契约。
+assert len(body) < 1 << 32, "body must fit u32"
+footer = b"MPUPV2\x00\x00" + struct.pack("<I", len(body)) + hashlib.sha256(body).digest()
+assert len(footer) == 44, "footer layout"
+
+out = Path("build") / f"meta-pass_{version}.bin"
+out.write_bytes(body + footer)
+print(f"Single-file firmware: {out.name} = {len(body)}B body + 44B MPUPV2 footer "
+      f"({len(body) + len(footer)} bytes total; market install + web upgrade)")
+PYEOF
+
+# ---- 5. 受保护布局与升级安全校验 ----
 info "校验受保护固件布局与升级安全(verify_firmware.py)"
 python3 tools/verify_firmware.py build/ || fail "布局校验未通过"
 
-# ---- 5. 汇总产物与烧写指引 -----------------------------------------------
+# ---- 7. 汇总产物与烧写指引 -----------------------------------------------
 VERSION="$(git -c safe.directory='*' -C "$REPO_ROOT" describe --tags --match 'v[0-9]*' 2>/dev/null || echo v0.0.0-dev)"
-cp -f build/FoloToy-AI-Passport-full.bin "build/meta-pass_${VERSION}.bin"
 
 info "构建完成 ✓"
 cat <<EOF
 
 产物(build/ 下):
-  meta-pass_${VERSION}.bin          完整 8MB 镜像(出厂/全量烧写用;数据区为擦除态)
-  meta-pass-bootable_${VERSION}.bin 市场分发镜像 ~1.1MB(bootloader+分区表+app,原样写 0x0 即可引导)
-  FoloToy-AI-Passport.bin           app 分区镜像(OTA / 安装页导入用)
-  upgrade/meta-pass-upgrade_${VERSION}.bin  单文件升级容器(本仓库线刷页专用)
-  upgrade/{4 个分段 bin + flash-args.txt}   命令行烧写用原始分段
+  meta-pass_${VERSION}.bin          唯一发布单文件(~1.1MB):市场原样写 0x0 安装;
+                                    线刷页 Upgrade launcher 升级用(同一个文件)
+  FoloToy-AI-Passport.bin           app 分区镜像(OTA / 安装页导入子固件用)
+  FoloToy-AI-Passport-full.bin      8MB 全量镜像(仅工厂烧写/校验,不对用户分发)
 
-升级已装的 meta-pass(保留 NVS 存储数据与全部子固件,推荐):
+升级已装的 meta-pass(保留 NVS 存储数据与全部子固件):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
   2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
-  3. Connect → "Upgrade launcher" → 选择 upgrade/meta-pass-upgrade_${VERSION}.bin(单文件) → Upgrade
-  (页面解析容器逐段校验 SHA-256,并先读回设备分区表逐字节比对,不一致则拒绝升级)
+  3. Connect → "Upgrade launcher" → 选择 build/meta-pass_${VERSION}.bin → Upgrade
+  (页面校验文件指纹 SHA-256,并先读回设备分区表逐字节比对,不一致则拒绝升级)
 
 安装到设备(首次烧录,USB 安装页自动处理签名/显示名):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"

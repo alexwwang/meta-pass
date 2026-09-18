@@ -171,9 +171,12 @@ tools/build-firmware.sh
 That's it. The script finds ESP-IDF v5.5.3 automatically (`~/esp/esp-idf-v5.5.3`,
 or pass `--idf-path <dir>`), builds, merges the 8 MB full image, verifies the
 protected layout **and upgrade safety** (the NVS / cardid / ota_0-2 / otadata
-regions must stay erased in the artifact), drops artifacts into `build/`
-(`meta-pass_v<version>.bin`, `FoloToy-AI-Passport.bin`, and a `upgrade/`
-launcher-upgrade bundle) and prints install/flash instructions. If ESP-IDF is
+regions must stay erased in the artifact), and drops artifacts into `build/`.
+The **only release artifact** is `meta-pass_v<version>.bin` (~1.1 MB): a hybrid
+single file — bootable body (bootloader + partition table + phy + app) plus a
+44-byte `MPUPV2` footer — that serves both the market install (flash tools
+write it raw at 0x0) and the USB-installer launcher upgrade (the page verifies
+the footer and slices the upgrade segments out of the body). If ESP-IDF is
 missing it prints step-by-step install commands. First-time install of ESP-IDF:
 
 ```bash
@@ -188,14 +191,16 @@ The partition layout is stable, so launcher upgrades never need to touch user
 data. Two paths:
 
 - **USB installer page (recommended)** — section "7. Upgrade launcher": pick
-  the **single-file upgrade container** `build/upgrade/meta-pass-upgrade_<version>.bin`
-  produced by `tools/build-firmware.sh` (this is the one file distributed to
-  the market). The page unpacks the container, verifies every segment's
-  SHA-256, reads back the device partition table and byte-compares it (a
-  layout mismatch refuses the upgrade), then writes the four segments to
-  their partition addresses. NVS (stored data: Wi-Fi config, per-app
-  state), `cardid`, and all three child-firmware slots stay untouched.
-- **Command line** — flash the four files listed in `build/upgrade/flash-args.txt`:
+  the **same single file** `build/meta-pass_<version>.bin` that goes to the
+  market. The page verifies the `MPUPV2` footer (integrity SHA-256), reads
+  back the device partition table and byte-compares it (a layout mismatch
+  refuses the upgrade), then writes bootloader / partition table / app from
+  the file body and resets otadata to its erased state. NVS (stored data:
+  Wi-Fi config, per-app state), `cardid`, and all three child-firmware slots
+  stay untouched. Legacy `MPUPV1` upgrade containers (already distributed)
+  remain accepted.
+- **Command line** — equivalent esptool invocation (upgrade = four regions
+  only; never flash the full merged image over an existing installation):
 
 ```bash
 python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-table.bin \

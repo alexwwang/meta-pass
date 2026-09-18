@@ -253,13 +253,23 @@ Binding rules:
   to keep `nvs`/`ota_0`/`ota_1`/`ota_2`/`otadata` fully erased (0xFF). A full
   image is for factory flashing only — esptool erases every sector it writes,
   so flashing it over an existing installation would destroy user data.
-- **Tooling**: `tools/build-firmware.sh` emits `build/upgrade/` — the **single-file
-  upgrade container** `meta-pass-upgrade_<version>.bin` (MPUP format: magic +
-  segment table + per-segment SHA-256; the one artifact distributed to the
-  market; the four raw segment bins stay for command-line esptool use) plus
-  `flash-args.txt`; the USB installer page offers "7. Upgrade launcher", which
-  unpacks the container and implements the read-back gate and the minimal
-  write set.
+- **Tooling**: `tools/build-firmware.sh` emits ONE release artifact —
+  `meta-pass_<version>.bin` (~1.1 MB), a **hybrid single file** that serves both
+  channels: a bootable body (bootloader + partition table + phy + app laid out
+  at their flash offsets, byte-identical to the head of the 8 MB merged image)
+  plus a 44-byte `MPUPV2` footer (magic + body length u32le + body SHA-256).
+  - Market install: flash tools write it raw at 0x0; the ROM boots the body and
+    never reads the footer (it lands in unused tail space of the factory
+    partition).
+  - USB-installer upgrade ("7. Upgrade launcher"): the page verifies the
+    footer, slices bootloader / partition table / app out of the body, treats
+    otadata as a generated all-0xFF segment, then runs the existing read-back
+    gate and minimal write set. Legacy `MPUPV1` upgrade containers (already
+    distributed) remain accepted via `parseUpgradeArtifact`.
+  - The 8 MB merged image stays in `build/` for `verify_firmware.py` and the
+    QEMU harness only; it is not a release artifact. Old
+    `meta-pass-bootable_*` / `meta-pass-upgrade_*` artifacts are stale and are
+    rejected by the verifier.
 
 ## 8. Local Management UI
 
@@ -285,8 +295,7 @@ Pure logic decoupled from ESP-IDF/LVGL comes first, covered by host tests:
 
 - `meta_image`: image header/size/chip-id/segment validation (valid, bad magic, wrong
   chip, oversize, truncated);
-- `meta_slots`: slot registry and state transitions (empty/occupied/bootable/invalid);
-- `meta_import`: import state machine (idle→ap→paired→receiving→verifying→done|error),
+- `meta_slots`: slot registry and state transitions (empty/occupied/bootable/invalid);- `meta_import`: import state machine (idle→ap→paired→receiving→verifying→done|error),
   pairing-code generation and comparison, Content-Length cap policy.
 
 New tests are wired into `tools/validate.sh --static`. Hardware-dependent paths (flash

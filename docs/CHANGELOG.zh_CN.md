@@ -5,6 +5,19 @@
 # Changelog
 
 ## Unreleased
+- 唯一发布工件(构建/打包):`tools/build-firmware.sh` 现在只产出一个文件——
+  `meta-pass_v<版本>.bin`(~1.1MB),取代原来的三件套(8MB 合并镜像、
+  `meta-pass-bootable_*`、MPUP 升级容器)。格式:可引导本体(bootloader + 分区表
+  + phy + app 按 flash 偏移铺平,与合并镜像头部逐字节一致)+ 44 字节 `MPUPV2` 指纹
+  尾段(魔数 + body 长度 u32le + body SHA-256)。市场刷机工具原样写 0x0(ROM 引导
+  本体;尾段落入 factory 分区尾部未用空间);安装页「升级 launcher」现在接受这同一个
+  文件——`parseUpgradeArtifact`(launcher-upgrade.js)校验指纹后从本体切片
+  bootloader/分区表/app,otadata 视为动态生成的全 0xFF 段;已分发的旧版 `MPUPV1`
+  容器仍兼容。8MB 合并镜像只留在 `build/` 供 `verify_firmware.py`/QEMU 使用;
+  校验器拒绝陈旧的 `bootable_*`/`upgrade` 产物,并强制指纹长度与本体 parity。
+  覆盖测试:`test-launcher-upgrade.mjs` 新增 PASS 7/8(真实产物切片 parity、篡改
+  负例、旧版兼容);QEMU 工装 C1/C2/A2 现在端到端引导混合格式文件(A2 从负例转为
+  正例——单文件必须可引导)。
 - 单次会话模型(启动器):每次上电都回到启动器列表页 —— 子固件不再跨重启常驻。
   根因:签名字固件调用 `metapass_mark_valid()` → `esp_ota_mark_app_valid_cancel_rollback()`
   把 otadata 写成 VALID(flash 持久),此后每次上电 bootloader 直接引导子固件槽位,

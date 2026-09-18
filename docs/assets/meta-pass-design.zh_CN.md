@@ -206,10 +206,16 @@ cardid。签名徽章证明固件来源（由 meta-pass 密钥持有者签名）
   `nvs`/`ota_0`/`ota_1`/`ota_2`/`otadata` 保持全擦除态(0xFF)。完整镜像仅用于
   出厂烧录——esptool 对每个写入扇区都会先擦除,把它直接刷到已有设备上会
   摧毁用户数据。
-- **工具链**:`tools/build-firmware.sh` 产出 `build/upgrade/`——**单文件升级容器**
-  `meta-pass-upgrade_<版本>.bin`(MPUP 格式:魔数 + 段表 + 逐段 SHA-256,
-  市场分发的唯一升级产物;四段镜像仍保留供命令行 esptool 使用)+ `flash-args.txt`;
-  USB 安装页提供「7. 升级 launcher」,解包容器后实现读回门禁与最小写入集。
+- **工具链**:`tools/build-firmware.sh` 只产出一个发布工件——`meta-pass_<版本>.bin`
+  (~1.1MB)的**混合单文件**,同一文件服务两个通道:可引导本体(bootloader + 分区表
+  + phy + app 按 flash 偏移铺平,与 8MB 合并镜像头部逐字节一致)+ 44 字节 `MPUPV2`
+  指纹尾段(魔数 + body 长度 u32le + body SHA-256)。
+  - 市场安装:刷机工具原样写 0x0,ROM 引导本体,不理会尾段(落在 factory 分区尾部未用空间)。
+  - USB 安装页升级(「7. 升级 launcher」):页面校验指纹后从本体切片 bootloader /
+    分区表 / app,otadata 视为动态生成的全 0xFF 段,然后走既有读回门禁与最小写入集。
+    已分发过的旧版 `MPUPV1` 升级容器经 `parseUpgradeArtifact` 仍然兼容。
+  - 8MB 合并镜像只留在 `build/` 供 `verify_firmware.py` 与 QEMU 工装使用,不再是发布
+    产物;旧的 `meta-pass-bootable_*` / `meta-pass-upgrade_*` 属陈旧产物,校验器直接拒绝。
 
 ## 8. 本地管理界面
 

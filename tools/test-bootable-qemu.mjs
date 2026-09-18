@@ -138,10 +138,10 @@ wasmExports = await init(new WebAssembly.Module(
   await readFile(path.join(simWasmDir, "pkg", "esp_emu_bg.wasm")),
 ));
 
-// ==== C1. 引导市场镜像 → 列表页高亮 slot0 ====
-log(`C1. 引导市场镜像,每 ${SNAP_EVERY_MS / 1000}s 截帧,等待列表页(高亮=slot0,连续两次一致)`);
-const bootablePath = await newestBuild("meta-pass-bootable_.*\\.bin$");
-log(`   镜像:${path.basename(bootablePath)}`);
+// ==== C1. 引导单文件固件 → 列表页高亮 slot0 ====
+log(`C1. 引导单文件固件,每 ${SNAP_EVERY_MS / 1000}s 截帧,等待列表页(高亮=slot0,连续两次一致)`);
+const bootablePath = await newestBuild("meta-pass_v.*\\.bin$");
+log(`   镜像:${path.basename(bootablePath)}(含 44B MPUPV2 指纹尾段,原样写 0x0 必须可引导)`);
 const sess = bootSession(new Uint8Array(await readFile(bootablePath)));
 let sel0Stable = false, prev = null;
 const t1 = Date.now();
@@ -185,17 +185,18 @@ if (sel0Stable) {
   log("\nC2. 跳过(列表页未出现,无按键前提)");
 }
 
-// ==== A2. 负例:MPUP 容器原样写 0x0 必须无法引导 ====
-log("\nA2. 负例:MPUP 容器(市场工具原样写 0x0 的错误刷法)");
-const containerPath = await newestBuild("upgrade/meta-pass-upgrade_.*\\.bin$");
-const bad = bootSession(new Uint8Array(await readFile(containerPath)));
-bad.runFor(25_000);
-if (bad.uart.includes("meta-pass launcher")) {
-  failed = true;
-  log("FAIL A2: 容器格式竟能引导出 launcher——与真机实测矛盾,需复查");
+// ==== A2. 单文件固件含指纹尾段,原样写 0x0 仍可引导(尾段不干扰 boot)====
+log("\nA2. 单文件固件尾段无干扰:全文件原样写 0x0(含 MPUPV2 指纹)照常引导出 launcher");
+// 引导证据 = C1 本身(截图驱动:列表页出现且可交互,必然经过完整 boot 链)。
+// 不用 UART 断言:固件日志级别为 WARN(CONFIG_LOG_DEFAULT_LEVEL=2),ESP_LOGI
+// 的 launcher 横幅不会出现在串口输出上(旧负例断言「不含」所以从未暴露此坑)。
+// 历史:旧 MPUP 升级容器是故意不可引导的格式(A2 曾是负例);单文件化后
+// 发布产物必须可引导,本用例随之从负例转为正例。
+if (sel0Stable) {
+  log("PASS A2: 单文件固件(含指纹尾段)原样写 0x0 引导出 launcher(C1 列表页已出现并响应按键)——尾段落入 factory 分区尾部未用空间,boot 不理会");
 } else {
-  const booted = bad.uart.includes("2nd stage bootloader");
-  log(`PASS A2: 容器原样写 0x0 无 launcher(bootloader 阶段到达=${booted},与真机行为一致)`);
+  failed = true;
+  log("FAIL A2: C1 未能引导出列表页,需复查尾段是否破坏引导");
 }
 
 log(`\n==== ${failed ? "FAILED" : "ALL PASS"} ====`);

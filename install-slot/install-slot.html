@@ -154,7 +154,7 @@
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
     <p class="subtitle" data-i18n="upgrade_desc">Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.</p>
-    <p><input type="file" id="upgrade-input" accept=".bin,application/octet-stream"> <span data-i18n="upgrade_pick_dir">select the single-file upgrade container (meta-pass-upgrade_*.bin from the firmware build)</span></p>
+    <p><input type="file" id="upgrade-input" accept=".bin,application/octet-stream"> <span data-i18n="upgrade_pick_dir">select the firmware file (meta-pass_v*.bin) — it both installs fresh on the market and upgrades here</span></p>
     <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
     <span id="upgrade-status"></span>
     <div class="progress"><div id="upgrade-bar"></div></div>
@@ -205,7 +205,7 @@ import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlas
     isLegacyFactoryLayout,
     slotHasData,
     parsePartitionTable,
-    unpackUpgradeContainer,
+    parseUpgradeArtifact,
     PARTITION_TABLE_OFFSET,
     PARTITION_TABLE_READ_SIZE,
   } from "./launcher-upgrade.js";
@@ -402,7 +402,7 @@ const I18N = {
     msg_restore_failed: "Restore failed: {err}",
     step_upgrade: "7. Upgrade launcher (keep NVS data & child firmware)",
     upgrade_desc: "Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.",
-    upgrade_pick_dir: "select the single-file upgrade container (meta-pass-upgrade_*.bin from the firmware build)",
+    upgrade_pick_dir: "select the firmware file (meta-pass_v*.bin) — it both installs fresh on the market and upgrades here",
     btn_upgrade: "Upgrade launcher",
     msg_upgrade_busy: "Another operation is in progress.",
     msg_upgrade_start: "Upgrading launcher: reading the device partition table for comparison…",
@@ -412,7 +412,7 @@ const I18N = {
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
     msg_upgrade_done: "Upgrade complete: launcher updated, NVS data and all child-firmware slots preserved. Power-cycle the device.",
     msg_upgrade_failed: "Upgrade failed: {err}",
-    msg_upgrade_loaded: "Upgrade container loaded: factory app {size}. Ready to upgrade.",
+    msg_upgrade_loaded: "Firmware file verified (integrity SHA-256 OK): factory app {size}. Ready to upgrade.",
     err_upgrade_missing: "Not an upgrade container: {missing}",
     msg_upgrade_connect_first: "Connect the device first (section 1), then click Upgrade.",
     msg_upgrade_blank: "Blank device detected (erased partition table) — installing the launcher fresh.",
@@ -544,7 +544,7 @@ const I18N = {
     msg_restore_failed: "恢复失败:{err}",
     step_upgrade: "7. 升级 launcher(保留 NVS 数据与子固件)",
     upgrade_desc: "升级启动器,保留 NVS 存储数据(Wi-Fi 配置、应用内部状态)与已安装的全部子固件。",
-    upgrade_pick_dir: "选择单文件升级容器(固件构建产物 meta-pass-upgrade_*.bin)",
+    upgrade_pick_dir: "选择固件单文件(固件构建产物 meta-pass_v*.bin)——市场安装与本地升级是同一个文件",
     btn_upgrade: "升级 launcher",
     msg_upgrade_busy: "有操作正在进行中。",
     msg_upgrade_start: "升级 launcher:正在读回设备分区表进行比对…",
@@ -554,7 +554,7 @@ const I18N = {
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
     msg_upgrade_done: "升级完成:launcher 已更新,NVS 存储数据与全部子固件槽位保留。请重新上电设备。",
     msg_upgrade_failed: "升级失败:{err}",
-    msg_upgrade_loaded: "升级容器已加载:factory 应用 {size}。可以开始升级。",
+    msg_upgrade_loaded: "固件文件已校验(完整性 SHA-256 通过):factory 应用 {size}。可以开始升级。",
     err_upgrade_missing: "不是升级容器文件:{missing}",
     msg_upgrade_connect_first: "请先连接设备(第 1 步),再点击升级。",
     msg_upgrade_blank: "检测到空白设备(分区表为擦除态)—— 全新安装 launcher。",
@@ -685,13 +685,15 @@ $("upgrade-input").addEventListener("change", async (ev) => {
   upgradeLoaded = false;
   $("upgrade-status").textContent = "";
   $("btn-upgrade").disabled = true;
-  // 升级包 = 单文件 MPUP 容器(构建脚本生成,四段镜像 + 段表 + 逐段 SHA-256)。
-  // 页面选这一个文件,解包校验后仍按写入计划逐段写到各分区地址。
+  // 升级工件 = 单文件固件本体(meta-pass_v*.bin,可引导镜像 + 44B MPUPV2 指纹尾段)
+  // 或旧版 MPUP 容器(存量包)。parseUpgradeArtifact 自动识别并返回写入计划四段:
+  // hybrid 三段从本体切片 + otadata 擦除态;逐段完整性由指纹/段表 SHA-256 保证。
   const file = ev.target.files[0];
   if (!file) return;
   try {
     const raw = new Uint8Array(await file.arrayBuffer());
-    const files = unpackUpgradeContainer(raw);   // 魔数/段表/逐段 SHA-256 全部校验
+    const parsed = parseUpgradeArtifact(raw);
+    const files = parsed.files;
     const check = checkUpgradeBundle(files);
     if (!check.ok) {
       $("upgrade-status").textContent = t("msg_upgrade_failed", { err: check.reason });

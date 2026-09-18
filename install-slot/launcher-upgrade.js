@@ -13,6 +13,7 @@
 // "仅刷 factory"的假设失效,可能覆盖或错位用户数据)。
 
 import { TAIL_SECTOR } from "./name-blob.js";
+import { espImageLength } from "./extract-app-image.js";
 
 export const PARTITION_TABLE_OFFSET = 0x8000;
 export const PARTITION_TABLE_READ_SIZE = 0x1000; // 读回整 4KB 扇区(表本体 0xC00)
@@ -220,6 +221,59 @@ export function unpackUpgradeContainer(raw) {
   }
   if (bodyAt !== raw.length) fail(`trailing bytes: file ${raw.length}, segments end at ${bodyAt}`);
   return files;
+}
+
+// ---- 单文件混合格式(v2,当前发布产物):可引导镜像本体 + 尾部 44B 指纹 ----
+// 同一个文件服务两个通道,文件不重复存储升级数据(与旧 bootable 等大):
+//   市场刷机 —— 原样写 0x0:本体即 bootloader+分区表+phy+app,ROM 直接引导;
+//               指纹落在 factory 分区尾部未用空间,boot 不理会。
+//   网页升级 —— 页面校验指纹后,从本体切片 bootloader(0x0 起,ESP 镜像解析器
+//               算长)、分区表(0x8000, 0x1000)、app(0x10000 起,同上);otadata
+//               段为动态生成的全 0xFF 擦除态(升级语义就是重置 OTA 选择,全 0xFF
+//               是常量;构建端 verify_firmware.py 已强制合并镜像 otadata 区全擦)。
+//               之后走既有的「读回分区表比对 → 最小写入集」流程。
+// 指纹布局(44B,追加在文件末尾):
+//   0x00 magic "MPUPV2" 8B(2 个 NUL 结尾)
+//   0x08 body_len u32le(= 文件长度 - 44)
+//   0x0C body 的 SHA-256 32B(市场包完整性校验同源)
+export const HYBRID_MAGIC = "MPUPV2";
+const HYBRID_FOOTER_SIZE = 44;
+const HYBRID_PT_SIZE = 0x1000;      // 从本体切片的分区表长度(整 4KB 扇区)
+const HYBRID_OTADATA_SIZE = 0x2000; // otadata 擦除态段大小
+
+// 解析任一版本的升级工件:
+//   混合格式(meta-pass_v*.bin)→ { kind: "hybrid", body, files }
+//   旧 MPUP 容器(meta-pass-upgrade_*.bin,存量包)→ { kind: "mpup", files }
+// 返回的 files 可直接交给 checkUpgradeBundle/页面按写入计划逐段写入;
+// hybrid 的 ota_data_initial.bin 为动态生成的全 0xFF 擦除态。校验失败抛
+// Error(message 以 "upgrade container: " 开头,与 MPUP 解析一致)。
+export function parseUpgradeArtifact(raw) {
+  if (raw instanceof Uint8Array && raw.length >= HYBRID_FOOTER_SIZE) {
+    const f = raw.length - HYBRID_FOOTER_SIZE;
+    // 魔数字段 8B("MPUPV2" + 2 NUL),比较前 6 个非 NUL 字节(与 MPUPV1 检查同风格)
+    if (new TextDecoder().decode(raw.subarray(f, f + 6)) === HYBRID_MAGIC) {
+      const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      const bodyLen = dv.getUint32(f + 8, true);
+      if (bodyLen !== f) failHybrid("hybrid body_len mismatch");
+      const digest = sha256Sync(raw.subarray(0, f));
+      const declared = raw.subarray(f + 12, f + 44);
+      for (let i = 0; i < 32; i++) {
+        if (digest[i] !== declared[i]) failHybrid("hybrid body sha256 mismatch");
+      }
+      if (bodyLen <= 0x10000) failHybrid("hybrid body too small");
+      const files = new Map();
+      files.set("bootloader.bin", raw.slice(0, espImageLength(raw, 0)));
+      files.set("partition-table.bin", raw.slice(PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET + HYBRID_PT_SIZE));
+      const appLen = espImageLength(raw, 0x10000);
+      files.set("FoloToy-AI-Passport.bin", raw.slice(0x10000, 0x10000 + appLen));
+      files.set("ota_data_initial.bin", new Uint8Array(HYBRID_OTADATA_SIZE).fill(0xff));
+      return { kind: "hybrid", body: raw.slice(0, f), files };
+    }
+  }
+  return { kind: "mpup", files: unpackUpgradeContainer(raw) };
+}
+function failHybrid(why) {
+  throw new Error(`upgrade container: ${why}`);
 }
 
 // ---- 同步 SHA-256(容器段校验用;标准算法,与 hashlib/openssl 互通)----

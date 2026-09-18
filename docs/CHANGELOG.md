@@ -5,6 +5,20 @@
 # Changelog
 
 ## Unreleased
+- Single release artifact (build/packaging): `tools/build-firmware.sh` now emits ONE file —
+  `meta-pass_v<version>.bin` (~1.1 MB), replacing the three-artifact set (8 MB merged image,
+  `meta-pass-bootable_*`, MPUP upgrade container). Format: bootable body (bootloader +
+  partition table + phy + app at flash offsets, byte-identical to the merged image head)
+  plus a 44-byte `MPUPV2` footer (magic + body length u32le + body SHA-256). Market tools
+  flash it raw at 0x0 (ROM boots the body; the footer lands in unused factory tail space);
+  the installer's "Upgrade launcher" now accepts this same file — `parseUpgradeArtifact`
+  (launcher-upgrade.js) verifies the footer, slices bootloader/table/app out of the body,
+  and treats otadata as a generated all-0xFF segment; legacy `MPUPV1` containers stay
+  accepted. The 8 MB merged image remains in `build/` for `verify_firmware.py`/QEMU only;
+  the verifier rejects stale `bootable_*`/`upgrade` artifacts and enforces footer length /
+  body parity. Covered by new PASS 7/8 in `test-launcher-upgrade.mjs` (real-artifact slice
+  parity, tamper negatives, legacy compat) and the QEMU harness C1/C2/A2 now boot the
+  hybrid file end-to-end (A2 turned from negative to positive — the single file must boot).
 - Single-session child boot (launcher): every power-on returns to the launcher list page —
   child firmware no longer persists across reboots. Root cause: the signed child called
   `metapass_mark_valid()` → `esp_ota_mark_app_valid_cancel_rollback()` wrote otadata=VALID

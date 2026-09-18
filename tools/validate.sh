@@ -117,14 +117,36 @@ run_firmware_checks() (
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
-    python3 tools/verify_firmware.py "${validation_build_dir}"
+    # 单文件混合格式产物(与 tools/build-firmware.sh 同一契约:
+    # bootable 本体 + 44B MPUPV2 指纹尾段;verify_firmware.py 强制校验)
     local version
     version="$(git -c safe.directory='*' -C "${repo_root}" describe --tags --match 'v[0-9]*' 2>/dev/null || echo v0.0.0-dev)"
+    python3 - "${validation_build_dir}" "${version}" <<'PYEOF'
+import hashlib
+import struct
+import sys
+from pathlib import Path
+
+d = Path(sys.argv[1])
+app = (d / "FoloToy-AI-Passport.bin").read_bytes()
+full = (d / "FoloToy-AI-Passport-full.bin").read_bytes()
+body = full[: 0x10000 + len(app)]
+assert body[0] == 0xE9 and body[0x8000:0x8000 + 2] == b"\xAA\x50", "head layout"
+footer = b"MPUPV2\x00\x00" + struct.pack("<I", len(body)) + hashlib.sha256(body).digest()
+assert len(footer) == 44
+# 文件名必须匹配 verify_firmware.py 的 glob「meta-pass_v*.bin」(v 开头);
+# 同时即发布工件名(CI 上传 / GitHub Release 附件同名)
+(d / f"meta-pass_{sys.argv[2]}.bin").write_bytes(body + footer)
+PYEOF
+    python3 tools/verify_firmware.py "${validation_build_dir}"
+    # 发布工件落盘:CI(firmware-checks.yml / build-firmware.yml)在 validate.sh
+    # --firmware 之后上传 build/meta-pass_v*.bin(if-no-files-found: error),
+    # release job 直接把它挂到 GitHub Release——必须在这里产出,否则 CI 断供。
     mkdir -p "${repo_root}/build"
     install -m 0644 \
-        "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \
+        "${validation_build_dir}/meta-pass_${version}.bin" \
         "${repo_root}/build/meta-pass_${version}.bin"
-    echo "Firmware build: PASS (build/meta-pass_${version}.bin)"
+    echo "Firmware build: PASS (hybrid single-file: build/meta-pass_${version}.bin)"
 )
 
 cd "${repo_root}"
