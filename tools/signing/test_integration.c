@@ -9,12 +9,10 @@
 //   tail_offset = image_len 向上对齐到 4K
 // 该算法与设备侧 esp_image_verify() 及 sign-firmware.sh 的实现一致。
 //
-// 编译(从仓库根目录):
-//   mkdir -p build/host-verify && \
-//   cc -O2 -I main -I$(brew --prefix mbedtls)/include \
-//      tools/signing/test_integration.c main/meta_sign.c \
-//      -L$(brew --prefix mbedtls)/lib -lmbedcrypto -lmbedx509 \
-//      -o build/host-verify/test_integration
+// 编译(从仓库根目录;各行独立命令,行尾不可带反斜杠 —— // 注释的
+// 行尾续行符会触发 -Werror=comment 的 multi-line comment 错误):
+//   mkdir -p build/host-verify
+//   cc -O2 -Wall -Werror -I main -I$(brew --prefix mbedtls)/include tools/signing/test_integration.c main/meta_sign.c -L$(brew --prefix mbedtls)/lib -lmbedcrypto -lmbedx509 -o build/host-verify/test_integration
 // 运行:
 //   build/host-verify/test_integration build/<signed>.bin
 //   build/host-verify/test_integration --selftest   # 解析器 24B/16B-ext 双布局自检

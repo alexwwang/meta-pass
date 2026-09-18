@@ -1,7 +1,8 @@
 // tests/test_meta_sign.c —— 签名段格式解析 host test。
 // 测 magic 检测、payload_len 校验、xor checksum、ABSENT 判定。
-// 编译: cc -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
-//         tests/test_meta_sign.c tests/esp_stubs/meta_sign_stub.c -o /tmp/test_meta_sign
+// 编译(单行,行尾不可带反斜杠 —— // 注释的行尾续行符会触发
+// -Werror=comment 的 multi-line comment 错误):
+// cc -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain tests/test_meta_sign.c tests/esp_stubs/meta_sign_stub.c -o /tmp/test_meta_sign
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
