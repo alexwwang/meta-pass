@@ -5,6 +5,16 @@
 # Changelog
 
 ## Unreleased
+
+(无)
+
+## v1.0.0 (2026-09-18)
+
+首个正式版:市场安装 / 保数据升级 / 槽位备份还原 / 固件签名工具链四大链路全部
+闭环;单文件混合格式(MPUPV2)、备份 manifest(v1)、签名格式、3-Slot 分区表四项
+契约自本版起冻结(详见下方条目;自适应设计保证未来布局微调不破坏既有备份与
+升级路径)。
+
 - 开机策略升级为 **bootloader 强制(2026-09-18)**:新增
   `bootloader_components/meta_boot_hooks/`(IDF hooks 机制,`bootloader_after_init`
   在任何应用运行之前执行),检查 otadata 两个副本,凡 `ota_state == VALID` 一律擦除

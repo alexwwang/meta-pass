@@ -5,6 +5,18 @@
 # Changelog
 
 ## Unreleased
+
+(nothing)
+
+## v1.0.0 (2026-09-18)
+
+First stable release: all four flows — market install, data-preserving
+upgrade, slot backup/restore, firmware signing toolchain — are complete;
+the four contracts (hybrid single-file MPUPV2, backup manifest v1,
+signature format, 3-slot partition layout) are frozen as of this version
+(see entries below; the adaptive design keeps future layout tweaks from
+breaking existing backups and upgrade paths).
+
 - Boot policy upgraded to **bootloader-enforced (2026-09-18)**: new
   `bootloader_components/meta_boot_hooks/` (IDF hooks mechanism; `bootloader_after_init`
   runs before any application) inspects both otadata copies and erases any whose
