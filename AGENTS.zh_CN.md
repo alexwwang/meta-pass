@@ -17,6 +17,9 @@
 - LVGL 非线程安全。LVGL 任务之外访问 LVGL 对象时必须持有 `bsp_lvgl_lock()`。
 - 按键回调不得阻塞。音频、存储、网络等慢操作必须放入工作任务。
 - demo 删除 screen 前，必须停止所有可能访问其 UI 的任务、定时器、回调和事件处理器。
+- 系统级策略（开机策略、otadata 状态、Flash 布局）必须在不可绕过的层（bootloader 或校验器）强制执行，不得依赖子固件配合；子固件 hook 仅作纵深防御。
+- 交付固件或 bootloader 改动前，必须验证改动真实存在于构建产物中（map 文件符号、日志字符串）——编译通过不等于已链接。
+- 测试与静态门禁不得依赖本地未提交的构建状态；`build/` 产物缺失时（CI 裸 checkout），测试回退到合成 fixture 并保持同等断言。
 - 可测试的状态机、协议、计时和布局计算应与 ESP-IDF/LVGL 解耦，并由 host tests 覆盖。
 - 禁止提交凭证、设备二维码秘密、私钥、个人数据或未脱敏日志。
 - 所有维护中的 Markdown 默认 `.md` 路径必须为英文，简体中文使用配对的 `.zh_CN.md` 文件。两种语言必须保持一致并保留互相切换链接。
@@ -58,5 +61,9 @@ Unverified: 仍需板卡、仪器或用户确认的事项
 ```
 
 仅在用户请求或当前工作流明确要求时创建 commit 和 push。用户可见变化记录到 `docs/CHANGELOG.zh_CN.md`；内部重构、CI 维护、拼写修复和生成文件刷新无需记录。
+
+Commit 信息中禁止任何 AI/agent 署名尾注——不得出现 `Co-Authored-By:`（指名工具或
+agent）或 `Generated with ...` 行。本仓库历史曾于 2026-09-17 专门重写以清除此类
+尾注，不得再次引入。
 
 社区规范见 `.github/CONTRIBUTING.zh_CN.md`、`.github/CODE_OF_CONDUCT.zh_CN.md`、`.github/SECURITY.zh_CN.md` 与 `.github/SUPPORT.zh_CN.md`。

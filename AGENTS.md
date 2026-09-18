@@ -17,6 +17,9 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 - LVGL is not thread-safe. Code outside the LVGL task must hold `bsp_lvgl_lock()` while accessing LVGL objects.
 - Button callbacks must stay non-blocking. Audio, storage, networking, and other slow operations belong in worker tasks.
 - A demo must stop every task, timer, callback, and event handler that can access its UI before deleting the screen.
+- System-level policies (boot policy, otadata state, flash layout) must be enforced at an unbypassable layer (bootloader or validator), never delegated to child-firmware cooperation. Child-firmware hooks are defense-in-depth only.
+- Before delivering a firmware or bootloader change, verify the change is physically present in the built artifact (map file symbols, log strings) — a clean build is not evidence of linkage.
+- Tests and static gates must not depend on local uncommitted build state; when `build/` artifacts are absent (CI bare checkout), tests fall back to synthetic fixtures and keep the same assertions.
 - Keep testable state machines, protocols, timing, and layout calculations independent from ESP-IDF/LVGL and cover them with host tests.
 - Never commit credentials, device QR secrets, private keys, personal data, or unsanitized logs.
 - Every maintained Markdown document uses English at its default `.md` path and Simplified Chinese in a paired `.zh_CN.md` file. Keep both versions aligned and retain reciprocal language links.

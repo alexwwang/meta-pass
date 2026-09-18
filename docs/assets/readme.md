@@ -14,6 +14,8 @@ page: architecture design, decision records, protocol conventions, and similar m
 
 - `meta-pass-design.md` / `meta-pass-design.zh_CN.md` — the design document for the
   meta-pass firmware launcher (single source of truth).
+- `meta-pass-v1-retrospective.md` / `meta-pass-v1-retrospective.zh_CN.md` — ELI5-style
+  retrospective of the v1.0.0 cycle: goals, approach, and lessons learned.
 
 ## For AI agents
 
