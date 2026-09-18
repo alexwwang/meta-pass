@@ -16,13 +16,74 @@ import {
   parseUpgradeArtifact,
   HYBRID_MAGIC,
 } from "../../install-slot/launcher-upgrade.js";
-import { readFileSync } from "node:fs";
+import { espImageLength } from "../../install-slot/extract-app-image.js";
+import { readFileSync, accessSync } from "node:fs";
+import { createHash as _cryptoCreateHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..");
 const BUILD = join(REPO, "build");
+
+// ---- 构建产物可用性(CI 的 --static 在全新 checkout 上无 build/,产物依赖段须跳过)----
+const exists = (rel) => { try { accessSync(join(BUILD, rel)); return true; } catch { return false; } };
+const HAVE_ARTIFACTS =
+  exists("partition_table/partition-table.bin") &&
+  exists("bootloader/bootloader.bin") &&
+  exists("FoloToy-AI-Passport.bin") &&
+  exists("ota_data_initial.bin");
+
+// 合成分区表(0xC00 布局,带 MD5 marker —— 与 idf.py 生成物同结构):真实产物缺失时
+// 替代 PASS 2/3/8 的表依赖。条目与 partitions.csv 契约一致,marker digest 覆盖其前数据。
+function syntheticPartitionTable() {
+  const raw = new Uint8Array(0xc00).fill(0xff);
+  const dv = new DataView(raw.buffer);
+  const entries = [
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["ota_1", 0, 0x11, 0x360000, 0x200000],
+    ["ota_2", 0, 0x12, 0x560000, 0x29e000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ];
+  let cursor = 0;
+  for (const [label, type, subtype, offset, size] of entries) {
+    dv.setUint16(cursor, 0x50aa, true);
+    raw[cursor + 2] = type;
+    raw[cursor + 3] = subtype;
+    dv.setUint32(cursor + 4, offset, true);
+    dv.setUint32(cursor + 8, size, true);
+    // label 字段 16B:名称 + NUL 终止(剩余保持 0xFF 会被解析器截到首个 NUL,
+    // 但 0xFF 不是合法字符串内容 —— 显式清零 label 区,与 idf.py 生成物一致)
+    raw.fill(0, cursor + 12, cursor + 28);
+    raw.set(new TextEncoder().encode(label), cursor + 12);
+    cursor += 32;
+  }
+  dv.setUint16(cursor, 0xebeb, true);   // MD5 marker 条目
+  // digest 覆盖 marker 之前的全部表数据;用 node:crypto md5 独立计算(与
+  // launcher-upgrade 内部实现交叉验证 —— marker 校验失败即说明两实现不一致)
+  const digest = _cryptoCreateHash("md5").update(raw.subarray(0, cursor)).digest();
+  raw.set(digest, cursor + 16);
+  return raw;
+}
+
+// 合成 ESP32-C3 app 镜像(无扩展头布局):0xE9 魔数 + chip_id=C3 + 单段 + 校验和对齐。
+// espImageLength 探测顺序 [16B 扩展头, 0],无扩展头布局会在第二次尝试收敛,
+// 与真实 IDF 无扩展头镜像同构。长度以 espImageLength 权威计算(手工公式易差一)。
+function syntheticAppImage(segDataLen) {
+  const img = new Uint8Array(24 + 8 + segDataLen + 64).fill(0x42);
+  img.fill(0, 0, 24);         // 头部 24B 清零:魔数/chip_id 等字段不可被填充值污染
+  img[0] = 0xe9;              // ESP_IMAGE_MAGIC
+  img[1] = 1;                 // segment count = 1
+  img[12] = 5;                // chip_id = ESP32-C3(u16 小端 = 0x0005,高字节必须为 0)
+  const dv = new DataView(img.buffer);
+  dv.setUint32(24, 0, true);          // segment load addr
+  dv.setUint32(28, segDataLen, true); // segment data len
+  return img.subarray(0, espImageLength(img, 0));   // 解析器权威长度(含对齐+校验和)
+}
 
 // ---- PASS 1: 升级写入计划 = 四项最小写入集,地址与分区表契约一致 ----
 const plan = upgradeWritePlan();
@@ -47,8 +108,13 @@ for (const step of plan) {
 }
 console.log("PASS 1: write plan = bootloader/table/app/otadata at contract offsets; no data regions");
 
-// ---- PASS 2: 真实构建产物的分区表解析(含 MD5 marker 校验) ----
-const bundleTable = new Uint8Array(readFileSync(join(BUILD, "partition_table/partition-table.bin")));
+// ---- PASS 2: 分区表解析(含 MD5 marker 校验)----
+// 真实构建产物存在(本地/CI 已先跑固件构建)→ 用真表;否则用合成表(同布局同 marker)。
+const bundleTable = new Uint8Array(
+  HAVE_ARTIFACTS
+    ? readFileSync(join(BUILD, "partition_table/partition-table.bin"))
+    : syntheticPartitionTable(),
+);
 const table = parsePartitionTable(bundleTable);
 const labels = table.map((p) => p.label);
 assert.deepEqual(
@@ -60,7 +126,7 @@ assert.equal(byLabel.factory.offset, 0x10000);
 assert.equal(byLabel.nvs.offset, 0x9000);
 assert.equal(byLabel.cardid.offset, 0x356000);
 assert.equal(byLabel.otadata.offset, 0x7fe000);
-console.log("PASS 2: real partition table parses with MD5 marker (8 partitions, contract offsets)");
+console.log(`PASS 2: partition table parses with MD5 marker (8 partitions, contract offsets) [${HAVE_ARTIFACTS ? "real artifact" : "synthetic"}]`);
 
 // ---- PASS 3: 设备读回表与升级包表逐字节比对 ----
 // 设备读回 = 整 4KB 扇区(表 + 0xFF 填充)
@@ -79,12 +145,18 @@ assert.equal(comparePartitionTables(new Uint8Array(0x800), bundleTable).ok, fals
 assert.equal(comparePartitionTables(deviceTable, new Uint8Array(0)).ok, false);
 console.log("PASS 3: byte-compare identical OK; tampered/short/empty rejected with reason");
 
-// ---- PASS 4: 升级包完整性(真实构建产物) ----
+// ---- PASS 4: 升级包完整性(真实产物优先,缺失时合成) ----
 const files = new Map([
-  ["bootloader.bin", new Uint8Array(readFileSync(join(BUILD, "bootloader/bootloader.bin")))],
+  ["bootloader.bin", HAVE_ARTIFACTS
+    ? new Uint8Array(readFileSync(join(BUILD, "bootloader/bootloader.bin")))
+    : syntheticAppImage(0x400)],
   ["partition-table.bin", bundleTable],
-  ["FoloToy-AI-Passport.bin", new Uint8Array(readFileSync(join(BUILD, "FoloToy-AI-Passport.bin")))],
-  ["ota_data_initial.bin", new Uint8Array(readFileSync(join(BUILD, "ota_data_initial.bin")))],
+  ["FoloToy-AI-Passport.bin", HAVE_ARTIFACTS
+    ? new Uint8Array(readFileSync(join(BUILD, "FoloToy-AI-Passport.bin")))
+    : syntheticAppImage(0x800)],
+  ["ota_data_initial.bin", HAVE_ARTIFACTS
+    ? new Uint8Array(readFileSync(join(BUILD, "ota_data_initial.bin")))
+    : new Uint8Array(0x2000).fill(0xff)],
 ]);
 assert.deepEqual(checkUpgradeBundle(files), { ok: true });
 // 缺文件
@@ -99,12 +171,12 @@ assert.equal(checkUpgradeBundle(badMagic).ok, false);
 const oversized = new Map(files);
 oversized.set("FoloToy-AI-Passport.bin", new Uint8Array(0x170001).fill(0xe9, 0, 1));
 assert.equal(checkUpgradeBundle(oversized).ok, false);
-console.log("PASS 4: bundle check passes on real artifacts; missing/bad-magic/oversized rejected");
+console.log(`PASS 4: bundle check passes [${HAVE_ARTIFACTS ? "real artifacts" : "synthetic"}]; missing/bad-magic/oversized rejected`);
 
-// ---- PASS 5: 真实 app 大小在 factory 限额内(升级可行性的正向断言) ----
+// ---- PASS 5: app 大小在 factory 限额内(升级可行性的正向断言) ----
 const appSize = files.get("FoloToy-AI-Passport.bin").length;
 assert.ok(appSize > 0 && appSize <= 0x170000, `app ${appSize} must fit factory 0x170000`);
-console.log(`PASS 5: real factory app ${appSize} bytes fits the 0x170000 partition`);
+console.log(`PASS 5: factory app ${appSize} bytes fits the 0x170000 partition [${HAVE_ARTIFACTS ? "real" : "synthetic"}]`);
 
 // ---- PASS 6: 设备分类与原厂机迁移(市场轻量包路径的安全前提) ----
 // 原厂旧布局 fixture:FoloToy 单固件机(factory 3MB + recovery@0x700000,无 OTA)
@@ -213,11 +285,16 @@ let packedFromPass7;   // PASS 8 兼容分发用例复用
 
 // ---- PASS 8: 单文件混合格式(MPUPV2 指纹尾段)—— 解析/切片/篡改负例/兼容分发 ----
 {
-  // 构造一个结构合法的 hybrid 文件:本体 = bootloader(真产物)…分区表…app(真产物)…填充。
-  // 用真实构建产物切片,保证 espImageLength/chip_id/魔数全部合法,不mock契约。
-  const bl = new Uint8Array(readFileSync(join(BUILD, "bootloader/bootloader.bin")));
-  const ptReal = new Uint8Array(readFileSync(join(BUILD, "partition_table/partition-table.bin")));
-  const appReal = new Uint8Array(readFileSync(join(BUILD, "FoloToy-AI-Passport.bin")));
+  // 本体 = bootloader…分区表…app…填充。真实产物存在时切片 parity 对真产物断言
+  // (本地/固件构建后的 CI);缺失时用合成镜像/合成表,契约断言全部保留,只降级
+  // 「与真产物逐字节一致」这一条(无真产物可比)。
+  const bl = HAVE_ARTIFACTS
+    ? new Uint8Array(readFileSync(join(BUILD, "bootloader/bootloader.bin")))
+    : syntheticAppImage(0x300);
+  const ptReal = bundleTable.subarray(0, 0xc00);
+  const appReal = HAVE_ARTIFACTS
+    ? new Uint8Array(readFileSync(join(BUILD, "FoloToy-AI-Passport.bin")))
+    : syntheticAppImage(0x700);
   const bodyLen = 0x10000 + appReal.length;
   const body = new Uint8Array(bodyLen).fill(0xff);   // 间隙与真实合并镜像同为擦除态
   body.set(bl, 0);
@@ -250,9 +327,9 @@ let packedFromPass7;   // PASS 8 兼容分发用例复用
     assert.equal(data.length, orig.length, `${name} slice length`);
     assert.ok(data.every((b, i) => b === orig[i]), `${name} slice matches body`);
   }
-  // 分区表切片 = 整 4KB:前 0xC00 与真实表一致,其余为 0xFF 填充
+  // 分区表切片 = 整 4KB:前 0xC00 与表(bundleTable,真或合成)一致,其余为 0xFF 填充
   const ptSlice = parsed.files.get("partition-table.bin");
-  assert.ok(ptSlice.subarray(0, ptReal.length).every((b, i) => b === ptReal[i]), "pt slice head matches real table");
+  assert.ok(ptSlice.subarray(0, ptReal.length).every((b, i) => b === ptReal[i]), "pt slice head matches table");
   assert.ok(ptSlice.subarray(ptReal.length).every((b) => b === 0xff), "pt slice tail erased");
 
   // 篡改 body 任意字节 → 指纹 sha256 门禁拒绝
@@ -267,7 +344,7 @@ let packedFromPass7;   // PASS 8 兼容分发用例复用
   const mpupParsed = parseUpgradeArtifact(packedFromPass7);
   assert.equal(mpupParsed.kind, "mpup");
 
-  console.log("PASS 8: hybrid single-file (44B MPUPV2 footer) — slices match body, otadata erased, tamper rejected, legacy MPUP compat");
+  console.log(`PASS 8: hybrid single-file (44B MPUPV2 footer) — slices match body, otadata erased, tamper rejected, legacy MPUP compat [${HAVE_ARTIFACTS ? "real-artifact parity" : "synthetic parity"}]`);
 }
 
 console.log("All launcher-upgrade tests passed.");
