@@ -184,10 +184,12 @@ python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-ta
   0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
 ```
 
-**切勿**把完整 8MB 镜像(`meta-pass_v<版本>.bin`)直接刷到已有设备上"升级":
-esptool 对每个写入扇区都会先擦除,镜像里携带的任何数据都会摧毁设备的 NVS
-与已装子固件。完整镜像仅用于出厂烧录;`tools/verify_firmware.py` 已强制
-它在用户数据区不含任何数据。
+**切勿**用 esptool 把发布文件原样刷到 0x0 给已有设备"升级":esptool 对每个写入
+扇区都会先擦除,而文件的覆盖范围(~1.1MB,至 0x10AC30)包含 NVS 区域(文件中为
+擦除态 0xFF),Wi-Fi 配置与应用内部存储数据会被清空。子固件槽位从 0x180000 起,
+在覆盖范围之外不会受损——但升级应走上面的安装页,或四区域命令行形式。8MB 完整
+镜像仅作为构建/校验中间产物保留在 `build/`,从不分发;`tools/verify_firmware.py`
+强制其用户数据区不含任何内容。
 
 ### 完整验证门禁
 

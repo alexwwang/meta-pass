@@ -207,11 +207,15 @@ python -m esptool --port PORT write_flash 0x0 bootloader.bin 0x8000 partition-ta
   0x10000 FoloToy-AI-Passport.bin 0x7fe000 ota_data_initial.bin
 ```
 
-Never flash the full 8 MB image (`meta-pass_v<version>.bin`) over an existing
-installation to "upgrade": esptool erases every sector it writes, so any
-carried data would destroy the device's NVS and installed child firmware. The
-full image is for factory flashing only; `tools/verify_firmware.py` enforces
-that it carries no data in the user-data regions.
+Never flash a release file raw at 0x0 over an existing installation to
+"upgrade": esptool erases every sector it writes, and the file's ~1.1 MB
+coverage includes the NVS region (carried as erased 0xFF), so Wi-Fi settings
+and per-app stored data would be wiped. Child-firmware slots start at 0x180000,
+beyond the file's coverage, and would survive — but upgrade through the
+installer page above or the four-region command form instead. The 8 MB merged
+image is a build/verification intermediate kept in `build/`, never distributed;
+`tools/verify_firmware.py` enforces that it carries no content in any
+user-data region.
 
 ### Full validation gates
 
