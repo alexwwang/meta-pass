@@ -32,7 +32,7 @@ static const char *TAG = "store_net";
 #define STA_CONNECT_MS     30000
 #define SNTP_SYNC_MS       15000
 #define JOB_QUEUE_LEN      2
-#define JOB_STACK          6144
+#define JOB_STACK          8192   // analyze/install(TLS+mbedTLS 握手峰值 ~8KB)在此任务内跑
 #define JOB_PRIO           5
 
 // 商店会话超时:构建期默认(Kconfig),运行时可覆盖(见头文件注释);
@@ -81,6 +81,7 @@ static bool               s_analysis_valid;
 static char s_prov_ssid[33];
 static char s_prov_pass[65];
 static volatile int  s_last_disconnect_reason;   // 最近一次 STA 断连原因码(诊断上屏)
+static volatile bool s_teardown_req;   // stop()/reset_wifi() 请求:任务内 teardown+回落 AP
 
 static void set_state(sn_state_t st, const char *msg)
 {
@@ -549,7 +550,8 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
 
     // 清掉上一轮连接残留的 GOT_IP/DISCONNECT 位,防本次等待被旧事件瞬时击穿。
     xEventGroupClearBits(s_events, EV_GOT_IP | EV_DISCONNECT);
-    // 等 IP:30s 死线内循环等待;每次断连事件都重发 esp_wifi_connect(不限次数)。
+    // 等 IP:30s 死线内循环等待;断连事件驱动的重试(无定时重发)。
+    // 等待前被清位吞掉的断连事件由首次 waitBits 的粘性位兜住。
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(STA_CONNECT_MS);
     bool got_ip = false;
     while (xTaskGetTickCount() < deadline) {
@@ -564,13 +566,12 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
         if (bits & EV_DISCONNECT) {
             ESP_LOGW(TAG, "STA 断连(reason=%d),重试...", s_last_disconnect_reason);
             esp_wifi_connect();
-        } else {
-            // 兜底:断连事件可能在 start/connect 之前就位、被上面的清位吞掉,
-            // 此后永远收不到新事件 → 连接死等 30s(r8 真机现象之一)。每秒
-            // 重发 connect:已连接时调用仅返回 ESP_ERR_WIFI_CONN 内部错误,
-            // 无副作用。
-            esp_wifi_connect();
         }
+        // 无事件的一秒:什么都不做。事件组位是粘性的(等待前丢失的
+        // DISCONNECT 会在首次 waitBits 立即返回),无需定时兜底重发 ——
+        // IDF 里 station 连接中再调 esp_wifi_connect 会"断开重连",
+        // 定时重发把内部信道扫描(1-3s)反复打断,关联永远不收敛
+        // (静态审查 F1;"尝试连接长时间连不上"的直接嫌疑)。
     }
     if (!got_ip) {
         err = ESP_ERR_TIMEOUT;
@@ -654,7 +655,17 @@ static void job_task_main(void *arg)
             s_events, EV_CREDENTIALS | EV_STOP, pdTRUE, pdFALSE,
             pdMS_TO_TICKS(500));
 
-        if (bits & EV_STOP) continue;   // stop() 会同步完成资源释放,此处仅唤醒
+        if (bits & EV_STOP) {
+            // F3:teardown/ap_start 只在本任务做(与 sta_online 串行,无竞态)。
+            if (s_teardown_req) {
+                s_teardown_req = false;
+                wifi_teardown();
+                xEventGroupClearBits(s_events, EV_STOP | EV_CREDENTIALS
+                                              | EV_GOT_IP | EV_DISCONNECT);
+                ap_start();
+            }
+            continue;
+        }
 
         if (bits & EV_CREDENTIALS) {
             char ssid[33], pass[65];
@@ -667,7 +678,9 @@ static void job_task_main(void *arg)
                 set_state(SN_STATE_ERROR, meta_store_wifi_fail_text(s_last_disconnect_reason, fail_buf, sizeof(fail_buf)));
                 ESP_LOGW(TAG, "STA 连接失败(reason=%d),回落配网页",
                          s_last_disconnect_reason);
-                ap_start();   // 失败回落:重新开配网 AP
+                if (!s_teardown_req) {
+                    ap_start();   // 失败回落:重新开配网 AP(stop/reset 请求优先)
+                }
             }
             continue;
         }
@@ -747,9 +760,11 @@ esp_err_t meta_store_net_begin(void)
 void meta_store_net_stop(void)
 {
     if (!s_initialized) return;
+    // 生命周期归一(F3):teardown 只发生在 job 任务内,与 sta_online/ap_start
+    // 天然互斥。置 STOP + s_teardown_req,任务在下一个 500ms 节拍收尾。
+    s_teardown_req = true;
     xEventGroupSetBits(s_events, EV_STOP);
     xQueueReset(s_job_queue);
-    wifi_teardown();
     set_state(SN_STATE_IDLE, "");
     set_job(SN_JOB_IDLE, "");
     s_analysis_valid = false;
@@ -797,12 +812,12 @@ esp_err_t meta_store_net_reset_wifi(void)
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (s_status.state == SN_STATE_AP_UP) return ESP_OK;   // 已在配网态,幂等
 
-    // 拆旧连接(可能正在 STA/CONNECTING/ONLINE):teardown 同步完成后重开 AP。
-    // 与 job_task 的互同由事件组保证:先置 STOP 位让任务循环空转,teardown 后
-    // 清位恢复任务(任务侧 EV_STOP 分支只 continue,不做资源操作)。
+    // 拆旧连接(可能正在 STA/CONNECTING/ONLINE)。生命周期归一(F3):不在此处
+    // 直接 teardown —— job 任务可能正在 sta_online 的 45s 等待里,跨任务
+    // deinit 会与失败回落 ap_start 撞车。置 s_teardown_req,任务在每个节拍
+    // 检查:teardown → 清位 → ap_start,全程单任务串行,天然互斥。
+    s_teardown_req = true;
     xEventGroupSetBits(s_events, EV_STOP);
-    wifi_teardown();
-    xEventGroupClearBits(s_events, EV_STOP | EV_CREDENTIALS | EV_GOT_IP | EV_DISCONNECT);
 
     // 擦凭证:nvs_open RW 失败不致命(可能分区刚初始化),下次配网保存时自然建。
     nvs_handle_t h;
@@ -813,10 +828,16 @@ esp_err_t meta_store_net_reset_wifi(void)
         nvs_close(h);
     }
 
-    const esp_err_t err = ap_start();
-    if (err != ESP_OK) {
-        set_state(SN_STATE_ERROR, "Setup AP failed.");
-        return err;
+    // AP 重开由 job 任务在 teardown 后统一做(本函数不再直接 ap_start)。
+    // 这里自旋等任务完成归一动作(上限 ~3s,teardown 最长几秒内完成;
+    // 典型路径 sta_online 未在跑,任务一个节拍内即完成)。
+    for (int i = 0; i < 30 && s_teardown_req; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (s_status.state != SN_STATE_AP_UP) {
+        // 任务没能完成(理论上不可达):状态行给出事实,用户重试。
+        set_state(SN_STATE_ERROR, "Reset stuck, retry.");
+        return ESP_FAIL;
     }
     return ESP_OK;
 }

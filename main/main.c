@@ -389,8 +389,10 @@ static void page_store_net_build(void)
         snprintf(text, sizeof(text), "%s\n\nWiFi: %s", st.message,
                  st.sta_ssid[0] ? st.sta_ssid : "-");
         lv_label_set_text(s_info, text);
-        // 已存凭证路径:给 RESET WIFI 行;AP 态没有(热点本身就是改网入口)。
-        s_net_reset_sel = (st.state != SN_STATE_ONLINE);
+        // 已存凭证路径:CONNECTING 态(自动重连进行中)不提供 RESET 选中 ——
+        // 重连窗口内误触 OK 会擦掉正确凭证,把可自愈的状态变成必配网(F4)。
+        // 连接失败(ERROR,凭证可能错)时才默认选中 RESET。
+        s_net_reset_sel = (st.state == SN_STATE_ERROR);
         s_net_online_at = (st.state == SN_STATE_ONLINE) ? esp_timer_get_time() / 1000 : 0;
     }
 
