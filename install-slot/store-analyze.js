@@ -27,14 +27,15 @@ export const SLOT_GEOMETRY = [
 
 const TAIL_SECTOR = 0x1000;
 
-// 合并镜像分区表检查(两级):
-//   硬拒(type=1 数据分区 + 白名单外 label,且 subtype 不是 0x40)→
-//     reason='custom-partitions',镜像不可装:目标布局没有该存储,应用运行时
-//     按标签查找会失败,装了必坏。
-//   警告(type=1 + subtype 0x40 自定义数据区,如 play 675 的 rec 512KB 回退区)→
-//     supported=true 照常可装,reason='custom-partitions' + detail=<label> 作
-//     警告透传:解包只取 factory 应用,该分区内容不会随镜像进入设备,若应用
-//     运行时真读写它,会缺存储而部分功能降级(用户在设备端看到警告后自决)。
+// 合并镜像分区表检查(r9 政策:白名单外数据分区一律警告放行):
+//   白名单(标准存储:nvs/phy_init/otadata/cardid/store/coredump)→ 静默通过。
+//   其余 type=1 数据分区(0x40 自定义区如 play 675 的 rec;标准文件系统如
+//   play 563 的 easter 0x82 SPIFFS、play 200 的 voicefs 0x81 FAT、play 2 的
+//   legacy_cardid 0x02 NVS)→ supported=true 照常可装,reason='custom-partitions'
+//   + detail=<label> 警告透传:解包只取 factory 应用,该分区内容不会随镜像
+//   进入设备;若子固件运行时真读写它,会缺存储而部分功能降级(设备 NOTE 行
+//   显示分区名,用户自决)。硬拒会让市场上带资源分区的玩法全部不可装 ——
+//   2026-09-27 实测 563(easter)因市场方新增彩蛋分区被拒,政策据此修正。
 // 应用类型分区(type=0,含 factory/ota_*/recovery 等)一律不检查:解包只取
 // factory 应用镜像写入槽位,其余应用分区内容在目标布局中完全惰性(563 的
 // recovery 即此类)。
@@ -180,12 +181,9 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       for (const p of parts) {
         if (p.type !== 0x01) continue; // 应用分区惰性,见 ALLOWED_PARTITION_LABELS 注释
         if (ALLOWED_PARTITION_LABELS.has(p.label)) continue;
-        if (p.subtype === CUSTOM_DATA_SUBTYPE) {
-          // 自定义数据区:可装但警告(首次出现即记,继续扫完确认没有更严重者)。
-          if (!partitionWarning) partitionWarning = p.label;
-          continue;
-        }
-        return { error: REASON_CUSTOM_PARTITIONS, detail: p.label };
+        // r9:白名单外数据分区一律警告放行(0x40 自定义区与标准文件系统 subtype
+        // 同性质 —— 内容不进设备,装了最坏功能降级)。首个分区名作 detail 透传。
+        if (!partitionWarning) partitionWarning = p.label;
       }
     }
 

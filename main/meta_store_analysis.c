@@ -25,7 +25,7 @@ static const struct {
     { "format",            false },
     { "no-factory",        false },
     { "wrong-chip",        false },
-    { "custom-partitions", false },   // supported 值仅约束硬拒分支;警告分支 true 也合法
+    { "custom-partitions", true  },   // r9:单态警告码(硬拒已废 —— 曾致 563/2/200 全 unsupported)
     { "too-large",         false },
 };
 
@@ -53,8 +53,8 @@ bool meta_store_analysis_parse(const char *json, size_t len, meta_store_analysis
     out->suggested_slot = (int8_t)v;
 
     // reason 可选(缺席保持 format);存在则必须在已知集合内(防服务端契约漂移
-    // 被静默吞掉),且与 supported 互洽。custom-partitions 是双态码(硬拒 false /
-    // 警告可继续 true),两种 supported 值都合法,由 detail 有无与 UI 分支区分。
+    // 被静默吞掉),且与 supported 互洽(契约不变量;r9 起 custom-partitions 为
+    // 单态警告码,无例外)。
     char reason[24] = {0};
     if (meta_store_json_get_string(json, len, "reason", reason, sizeof(reason))) {
         snprintf(out->reason, sizeof(out->reason), "%s", reason);
@@ -62,8 +62,7 @@ bool meta_store_analysis_parse(const char *json, size_t len, meta_store_analysis
         for (size_t i = 0; i < sizeof(k_reasons) / sizeof(k_reasons[0]); i++) {
             if (strcmp(reason, k_reasons[i].reason) == 0) {
                 known = true;
-                if (strcmp(reason, "custom-partitions") != 0
-                    && out->supported != k_reasons[i].supported) {
+                if (out->supported != k_reasons[i].supported) {
                     return false;
                 }
                 break;

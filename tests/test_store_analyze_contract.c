@@ -52,11 +52,15 @@ static const char SAMPLE_WRONG_CHIP[] =
     "\"suggestedSlot\":-1,\"supported\":false,\"reason\":\"wrong-chip\"}";
 
 // 不可装 · 形态 B 带 detail(custom-partitions 硬拒:非 0x40 陌生数据分区)。
-static const char SAMPLE_HARD_REJECT[] =
-    "{\"ok\":false,\"id\":902,\"revisionId\":null,\"name\":null,"
-    "\"store\":null,\"extracted\":null,\"slots\":null,"
-    "\"suggestedSlot\":-1,\"supported\":false,"
-    "\"reason\":\"custom-partitions\",\"detail\":\"spiffs\"}";
+// r9:custom-partitions 为单态警告码(supported=true + detail=分区名;
+// 形态对应 play 563 的 easter SPIFFS 分区 —— 真实市场回归)。
+static const char SAMPLE_WARN_SPIFFS[] =
+    "{\"ok\":true,\"id\":902,\"revisionId\":77,\"name\":\"easter-app\","
+    "\"store\":{\"size\":100,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
+    "\"extracted\":{\"imageLen\":100,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
+    "\"slots\":[{\"slot\":0,\"limit\":1921024,\"fit\":true}],"
+    "\"suggestedSlot\":0,\"supported\":true,"
+    "\"reason\":\"custom-partitions\",\"detail\":\"easter\"}";
 
 static void test_supported_ok(void)
 {
@@ -103,12 +107,17 @@ static void test_unsupported_keeps_reason(void)
     assert(!a.supported);
     assert(strcmp(a.reason, "wrong-chip") == 0);
 
-    // 形态 B + detail:硬拒的 detail 也要透传(UI 可显示分区名)。
-    assert(meta_store_analysis_parse(SAMPLE_HARD_REJECT,
-                                     sizeof(SAMPLE_HARD_REJECT) - 1, &a));
-    assert(!a.supported);
+    // r9:警告码恒 supported=true,detail 透传分区名(设备 NOTE 行)。
+    assert(meta_store_analysis_parse(SAMPLE_WARN_SPIFFS,
+                                     sizeof(SAMPLE_WARN_SPIFFS) - 1, &a));
+    assert(a.supported);
     assert(strcmp(a.reason, "custom-partitions") == 0);
-    assert(strcmp(a.detail, "spiffs") == 0);
+    assert(strcmp(a.detail, "easter") == 0);
+    assert(strcmp(a.name, "easter-app") == 0 && a.suggested_slot == 0);
+    // 反向:custom-partitions + supported=false = 契约漂移,拒收。
+    assert(!meta_store_analysis_parse(
+        "{\"supported\":false,\"suggestedSlot\":-1,\"reason\":\"custom-partitions\"}",
+        66, &a));
     printf("PASS: unsupported shapes keep server reason codes\n");
 }
 

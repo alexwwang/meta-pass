@@ -175,16 +175,16 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 4: wrong chip id -> reason=wrong-chip");
 }
 
-// ---- 5. custom-partitions 硬拒:陌生 subtype 数据分区 → supported=false + detail ----
+// ---- 5. custom-partitions 警告放行:陌生 subtype 数据分区 → supported=true + detail ----
 {
   const app = buildAppImage([64]);
   const parts = [...META_PARTS, ["spiffs", 1, 130, 0x7f0000, 0x10000]];
   const { fetchImpl } = makeEnv({ app, parts });
   const out = await makeAnalyzer(fetchImpl).analyze(563);
-  assert.equal(out.supported, false);
+  assert.equal(out.supported, true, "r9:白名单外数据分区警告放行");
   assert.equal(out.reason, "custom-partitions");
   assert.equal(out.detail, "spiffs");
-  console.log("PASS 5: unknown data partition (subtype!=0x40) -> hard reject");
+  console.log("PASS 5: unknown data partition (subtype!=0x40) -> warn & allow (r9 policy)");
 }
 
 // ---- 5b. 警告可继续:subtype 0x40 自定义数据分区(play 675 的 rec)→ supported=true + 警告 ----
@@ -200,6 +200,32 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   const ex = await makeAnalyzer(fetchImpl).extracted(563);
   assert.equal(ex.error, undefined, "警告路径 extracted 可用");
   console.log("PASS 5b: custom data partition subtype 0x40 -> warn & allow (play 675 rec)");
+
+// ---- 5c. r9 政策:任意白名单外数据分区(含标准文件系统 subtype)一律警告放行 ----
+// 真实回归:563 新增 easter(subtype 0x82 SPIFFS 彩蛋资源),旧政策硬拒导致
+// 市场主流玩法全部 unsupported。设备只刷 factory 应用,数据分区内容不进设备,
+// 最坏后果是子固件运行时缺资源分区、部分功能降级 —— 与 rec 同性质,警告即可。
+{
+  const app = buildAppImage([64]);
+  // [label, type, subtype, offset, size]
+  const cases = [
+    ["easter", 0x82],        // SPIFFS:play 563 真实形态
+    ["legacy_cardid", 0x02], // NVS subtype:play 2 真实形态
+    ["voicefs", 0x81],       // FAT:play 200 真实形态
+  ];
+  for (const [label, sub] of cases) {
+    const parts = [...META_PARTS, [label, 1, sub, 0x7f0000, 0x80000]];
+    const { fetchImpl } = makeEnv({ app, parts });
+    const out = await makeAnalyzer(fetchImpl).analyze(563);
+    assert.equal(out.supported, true, `${label}: 数据分区不阻断安装`);
+    assert.equal(out.reason, "custom-partitions");
+    assert.equal(out.detail, label, "警告透传首个分区名(设备 NOTE 行用)");
+    assert.equal(out.suggestedSlot, 0);
+    const ex = await makeAnalyzer(fetchImpl).extracted(563);
+    assert.equal(ex.error, undefined, `${label}: extracted 可用`);
+  }
+  console.log("PASS 5c: any non-whitelist data partition -> warn & allow (easter/legacy_cardid/voicefs)");
+}
 }
 
 // ---- 6. not-found:元数据 404 → reason=not-found(不触碰固件下载) ----
