@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createStoreAnalyzer, SLOT_GEOMETRY, listPartitions, mapExtractError } from "./store-analyze.js";
+import { createStoreAnalyzer, SLOT_GEOMETRY, listPartitions, mapExtractError } from "../../install-slot/store-analyze.js";
 import { packNameBlobTail } from "../../install-slot/name-blob.js";
 
 const sha256 = async (buf) => createHash("sha256").update(buf).digest("hex");

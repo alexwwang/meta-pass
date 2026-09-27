@@ -13,7 +13,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { createStoreAnalyzer } from "./store-analyze.js";
+import { createStoreAnalyzer } from "../../install-slot/store-analyze.js";
 
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";

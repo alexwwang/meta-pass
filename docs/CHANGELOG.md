@@ -28,8 +28,12 @@
   `detail=<label>`; hard reject only when subtype != 0x40), the analyze contract
   gains a `detail` string, and the slot page renders "NOTE: custom 'rec' part /
   not installed; some features may lack it" while still offering CONFIRM.
-  **Requires redeploying `server.mjs` to metapass.chuanxilu.net** (the deployed
-  copy predates all of this). Follow-up contract fix in the same cycle: the
+  **Deployment**: the production worker (`install-slot/_worker.js`) now implements
+  the full device channel (analyze/extracted via the same `store-analyze.js` +
+  WebCrypto SHA-256, which moved from `tools/install-slot/` into the Pages deploy
+  root per the BUG-03 single-canonical-copy rule); deploying = pushing main
+  (`wrangler pages deploy` in CI). The previously deployed worker predates the
+  store channel entirely — it 404s every `/api/analyze`. Follow-up contract fix in the same cycle: the
   server answers unsupported plays with `name:null` / `extracted:null` (sha256 is
   computed lazily), but the firmware parser treated `name`/`extracted` as always
   required, so too-large/wrong-chip/not-found were swallowed into "format" on

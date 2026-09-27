@@ -97,6 +97,7 @@ PY
     if [[ -n "${node_bin}" ]]; then
         "${node_bin}" tools/install-slot/test-extract.mjs
         "${node_bin}" tools/install-slot/test-store-analyze.mjs
+        "${node_bin}" tests/worker_contract.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs

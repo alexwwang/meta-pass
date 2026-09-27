@@ -13,8 +13,8 @@
 // 且 analyze/extracted 复用同一份缓存:按 play id 缓存 {merged, ext, storeFw, play},
 // revisionId 变化时缓存失效回源重取(方案 §1.2 缓存策略)。
 
-import { isFullImage, extractAppImage } from "../../install-slot/extract-app-image.js";
-import { unpackNameBlobTail } from "../../install-slot/name-blob.js";
+import { isFullImage, extractAppImage } from "./extract-app-image.js";
+import { unpackNameBlobTail } from "./name-blob.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
 //   factory 0x170000 | ota_0 0x1D6000 | cardid 0x4000 | ota_1 0x200000 | ota_2 0x29E000(兼 littlefs)

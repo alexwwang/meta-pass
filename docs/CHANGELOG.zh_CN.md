@@ -21,8 +21,11 @@
   subtype 0x40 自定义数据区**警告放行**(`supported=true`,reason=custom-partitions,
   `detail=<label>`;subtype ≠ 0x40 才硬拒),analyze 契约新增 `detail` 字段,槽位页
   渲染 "NOTE: custom 'rec' part / not installed; some features may lack it" 且仍可
-  CONFIRM 安装。**需将 `server.mjs` 重新部署到 metapass.chuanxilu.net**(线上版本
-  早于以上全部修复)。同周期追加契约修复:服务端对不可装玩法回
+  CONFIRM 安装。  **部署**:生产 worker(`install-slot/_worker.js`)现实现完整设备通道
+  （analyze/extracted 走同一份 `store-analyze.js` + WebCrypto SHA-256；该模块
+  依 BUG-03 单一副本原则从 `tools/install-slot/` 移入 Pages 部署根），发布方式 =
+  推送 main（CI `wrangler pages deploy`）。此前线上 worker 完全没有商店通道 ——
+  `/api/analyze` 全量 404。同周期追加契约修复:服务端对不可装玩法回
   `name:null`/`extracted:null`(sha256 惰性计算),而固件解析器把 `name`/`extracted`
   当恒必填,too-large/wrong-chip/not-found 会被吞成 "format" 上屏;现改为仅
   `supported=true` 时才要求 `name`/`extracted`(新增 host 合同测试
