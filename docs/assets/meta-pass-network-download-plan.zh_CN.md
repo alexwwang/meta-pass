@@ -341,6 +341,15 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r7（2026-09-27）配网易用性：扫描列表 + Captive Portal**：① SoftAP 热点改为开放
+  （无密码），免去"小屏抄密码→手机输入"的环节；SSID 仍随机化（`metapass-XXXX`）避免多台
+  设备同场冲突。② 扫描列表：AP 存活期间网络任务每 3 秒 `esp_wifi_scan_start`；配网页新增
+  "Scan networks" 按钮，请求新增的 `/api/scan` 端点（只读缓存结果，最多 20 条，SSID 经 JSON
+  转义，结果以 textContent 渲染成点选回填按钮——无 innerHTML 注入面）。③ Captive Portal：
+  UDP/53 DNS 劫持把所有 A 查询应答为 AP 网关 IP，手机/电脑后台探测自动弹出配网页（自动弹出的
+  系统零输入；不弹的手动访问 `http://192.168.4.1` 依旧可用），兜底 302 保证杂散探测不离开
+  门户。④ `/api/wifi` 拒绝空密码（上游开放网络不在范围内，页面文案同口径）。r7 后 factory
+  预算：已用 0x1178d0，约 24% 余量。
 - **v3.2-r6（2026-09-25）取消权与超时配置**：① 会话超时改为"到期问用户"：到期不强制
   关网络回列表，屏上出浮层 "Session timeout. OK = continue / LONG = exit store"，冻结
   其他按键语义直到用户决策（OK=继续当前操作并续期 / OK LONG=退出，teardown 照旧停

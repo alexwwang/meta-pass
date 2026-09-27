@@ -359,6 +359,18 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r7 (2026-09-27) Provisioning usability: scan list + captive portal**: ① The SoftAP
+  hotspot drops its password — an open AP removes the "read the password off the tiny screen,
+  type it on the phone" dance; the SSID stays randomized (`metapass-XXXX`) to avoid multi-device
+  collisions. ② Scan list: the network task runs `esp_wifi_scan_start` every 3s while the AP is
+  up; the provisioning page gains a "Scan networks" button hitting the new `/api/scan` endpoint
+  (cached results only, max 20, SSIDs JSON-escaped, results rendered as pick-to-fill buttons via
+  textContent — no innerHTML injection surface). ③ Captive portal: a UDP/53 DNS hijack answers
+  every A query with the AP gateway IP so phone/PC background probes redirect to the setup page
+  automatically (zero typing on systems that auto-open it; others still reach
+  `http://192.168.4.1` manually), and a catch-all 302 keeps stray probes on the portal. ④
+  `/api/wifi` rejects an empty password (open upstream networks are out of scope; page copy
+  matches). Factory budget after r7: 0x1178d0 used, ~24% free.
 - **v3.2-r6 (2026-09-25) Cancel authority and timeout configuration**: ① Session timeout changed
   to "ask the user on expiry": no forced network teardown back to the list; an overlay
   "Session timeout. OK = continue / LONG = exit store" freezes other key semantics until the

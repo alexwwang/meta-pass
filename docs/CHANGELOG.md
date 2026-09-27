@@ -23,7 +23,15 @@
   Root R4 + ISRG Root X1) replaces the default Mozilla bundle. Host checks: `test_meta_store_json`
   (bounded JSON extractor), 12 store-analyzer node cases, IDF 5.x-signature stub `-fsyntax-only`
   for `meta_store_net`/`meta_store_api`; `validate.sh --static` green. Remaining acceptance
-  (plan §5 Phase 4/5): esp_emu end-to-end and real-device build/`idf.py size`/on-device OTA.
+  (plan §5 Phase 4/5): esp_emu end-to-end and on-device OTA. Real-device build re-verified:
+  factory budget 0x115d20 (r6) → 0x1178d0 (r7), ~24% free.
+- **Provisioning usability (r7)**: the SoftAP hotspot is now open (no password — no more
+  copying an 8-char key off the tiny screen) with the SSID still randomized (`metapass-XXXX`);
+  the provisioning page gains a "Scan networks" button backed by a new `/api/scan` endpoint
+  (periodic background scan, cached results, max 20, JSON-escaped SSIDs, textContent-only
+  rendering); a UDP/53 DNS hijack plus catch-all 302 turn it into a captive portal so phones
+  auto-open the setup page on connect. `/api/wifi` rejects empty passwords. Plan doc r7 entry
+  documents the rationale.
 
 ## v1.0.0 (2026-09-18)
 

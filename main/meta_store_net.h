@@ -1,11 +1,12 @@
 // main/meta_store_net.h —— 商店下载通道的网络管理层:
-//   SoftAP 配网页(只收 WiFi 凭证,无配对码) → STA 连接 → SNTP 同步 → 作业队列。
+//   SoftAP 配网页(扫描点选 + 手输,无配对码)→ STA 连接 → SNTP 同步 → 作业队列。
+//   配网热点为开放网络 + DNS 劫持(Captive Portal 自动弹配置页;302 兜底),
+//   APSTA 后台周期扫 AP 供 /api/scan 点选;凭证到手即关热点转 STA。
 // analyze/install 的 HTTP+OTA 细节在 meta_store_api;本模块只管"让 API 调用可行"
 // 以及"在专用网络任务里执行 API 调用",UI 永不直接触碰阻塞网络调用。
 //
 // 资源纪律沿用 meta_net(docs/reference/phoenixzhc/softap-provisioning-and-resource-budget):
-// AP-only、max_connection=1、进出完整启停;凭证存自有 NVS 命名空间(复用上次配网,
-// 连接失败自动回落配网页)。
+// 进出完整启停;凭证存自有 NVS 命名空间(复用上次配网,连接失败自动回落配网页)。
 //
 // 线程模型:网络任务是唯一调用 meta_store_api_* 的上下文;UI(LVGL/按键任务)通过
 // meta_store_net_poll()/meta_store_net_job_poll() 读快照,通过 meta_store_net_cmd_*()
@@ -39,8 +40,7 @@ typedef enum {
 // 网络状态快照(UI 轮询)。
 typedef struct {
     sn_state_t state;
-    char ssid[20];         // 配网 SoftAP SSID(仅 AP_UP 时有效)
-    char password[12];     // 配网 SoftAP WPA2 随机密码(仅 AP_UP 时有效)
+    char ssid[20];         // 配网 SoftAP SSID(仅 AP_UP 时有效;热点已无密码)
     char sta_ssid[33];     // 当前使用的路由器 SSID(ONLINE/CONNECTING 时有效)
     char message[48];      // 英文状态短句,直接上屏
 } meta_store_net_status_t;

@@ -352,8 +352,8 @@ static void page_store_net_build(void)
     char text[200];
     if (st.state == SN_STATE_AP_UP) {
         snprintf(text, sizeof(text),
-                 "WiFi setup:\nSSID: %s\npass: %s\n\nopen http://192.168.4.1\nsubmit your WiFi",
-                 st.ssid, st.password);
+                 "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
+                 st.ssid);
     } else {
         snprintf(text, sizeof(text), "%s", st.message);
     }
@@ -634,8 +634,8 @@ static void store_tick(lv_timer_t *t)
             if (s_info) {
                 char text[200];
                 snprintf(text, sizeof(text),
-                         "WiFi setup:\nSSID: %s\npass: %s\n\nopen http://192.168.4.1\nsubmit your WiFi",
-                         st.ssid, st.password);
+                         "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
+                         st.ssid);
                 lv_label_set_text(s_info, text);
             }
         }

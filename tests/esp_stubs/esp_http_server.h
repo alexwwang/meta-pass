@@ -98,8 +98,15 @@ static inline esp_err_t httpd_register_uri_handler(httpd_handle_t hd, const http
 static inline esp_err_t httpd_resp_set_type(httpd_req_t *r, const char *type) {
     (void)r; (void)type; return ESP_OK;
 }
+static inline esp_err_t httpd_resp_set_hdr(httpd_req_t *r, const char *field, const char *value) {
+    (void)r; (void)field; (void)value; return ESP_OK;
+}
 static inline esp_err_t httpd_resp_send(httpd_req_t *r, const char *buf, size_t len) {
     (void)r; (void)buf; (void)len; return ESP_OK;
+}
+static inline esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *field,
+                                                    char *val, size_t val_size) {
+    (void)r; (void)field; (void)val; (void)val_size; return ESP_ERR_NOT_FOUND;
 }
 
 /* 以下函数由 h_upload/h_session 直接调用,在测试文件中定义(非 inline) */

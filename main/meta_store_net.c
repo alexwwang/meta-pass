@@ -1,10 +1,12 @@
 // main/meta_store_net.c —— 实现见头文件注释。
 // 事件流:begin() → [有凭证] STA 连接等 IP_EVENT_STA_GOT_IP → SNTP 同步 → ONLINE;
-//         begin() → [无凭证/连接失败] SoftAP + httpd 表单 → POST /api/wifi →
-//         停 AP/启 STA(同上)。作业经队列进网络任务执行。
+//         begin() → [无凭证/连接失败] SoftAP(APSTA,后台周期扫 AP)+ httpd
+//         (页面/扫描列表/凭证提交 + 302 兜底)+ DNS 劫持(Captive Portal 弹窗)→
+//         POST /api/wifi → 停 AP/启 STA(同上)。作业经队列进网络任务执行。
 #include "meta_store_net.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_event.h"
@@ -18,6 +20,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "lwip/sockets.h"   // Captive Portal 的 DNS 劫持用 BSD socket API
 #include "nvs_flash.h"
 #include "nvs.h"
 
@@ -144,21 +147,45 @@ static esp_err_t net_prepare(void)
 
 // ---- SoftAP 配网(httpd 仅两个路由:表单 + 凭证提交) ----
 
+// 配网页(方案 v3.2-r7):手机连上热点后多数被 Captive Portal 自动弹到本页,
+// 不弹的系统手动访问 http://192.168.4.1。页面能力:
+//   「Scan networks」→ GET /api/scan 渲染点选列表(选完只输密码);
+//   手输 SSID 仍保留(扫描未就绪/隐藏网络兜底)。
+// 提交成功后设备关热点切 STA,页面提示手机重连路由器等待设备上线。
+// 所有动态文本经 textContent 注入(非 innerHTML),SSID 不可注入页面。
 static const char PROV_HTML[] =
-    "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<title>meta-pass wifi setup</title>"
+    "<!doctype html><html><head><meta charset=utf-8>"
+    "<meta name=viewport content='width=device-width,initial-scale=1'>"
+    "<title>meta-pass WiFi setup</title></head>"
     "<body style='font-family:sans-serif;max-width:24em;margin:2em auto'>"
     "<h3>meta-pass WiFi setup</h3>"
+    "<button onclick='scan()'>Scan networks</button> <span id=hint></span><br><br>"
+    "<div id=list></div>"
     "<form onsubmit='event.preventDefault();save()'>"
     "WiFi name (SSID):<br><input id=s required maxlength=32><br><br>"
     "Password:<br><input id=p type=password maxlength=64><br><br>"
     "<button>Connect</button> <b id=st></b></form>"
     "<script>"
+    "function scan(){hint.textContent='scanning...';list.innerHTML='';"
+    "fetch('/api/scan').then(function(r){return r.json();}).then(function(j){"
+    "if(!j.networks||!j.networks.length){"
+    "hint.textContent='no networks yet - tap scan again, or type SSID below.';return;}"
+    "hint.textContent='pick your network:';"
+    "j.networks.forEach(function(n){var b=document.createElement('button');"
+    "b.textContent=n.ssid+'  ('+n.rssi+'dBm, '+(n.auth?'secured':'open')+')';"
+    "b.style.display='block';b.style.margin='4px 0';"
+    "b.onclick=function(){s.value=n.ssid;p.focus();};"
+    "list.appendChild(b);});"
+    "}).catch(function(){hint.textContent='scan failed; type SSID manually.';});}"
     "function save(){st.textContent='saving...';"
     "fetch('/api/wifi?ssid='+encodeURIComponent(s.value)"
     "+'&pass='+encodeURIComponent(p.value),{method:'POST'})"
-    ".then(r=>{st.textContent=r.ok?'saved, device connecting...':'failed ('+r.status+')';});}"
-    "</script>";
+    ".then(function(r){return r.text().then(function(t){return [r.ok,t];});})"
+    ".then(function(ok){st.textContent=ok[0]"
+    "?'saved! Device is connecting to '+s.value"
+    "+'. Reconnect your phone to that WiFi to continue.'"
+    ":'failed ('+ok[1]+')';});}"
+    "</script></body></html>";
 
 static int url_hex_nib(char c)
 {
@@ -189,6 +216,90 @@ static void copy_field(void *dst, size_t dst_size, const char *src)
     memcpy(dst, src, n);
 }
 
+// ---- Captive Portal:DNS 劫持(UDP 53 把所有 A 查询以无应答应答包回给 AP 侧设备)----
+// 手机连上热点后,系统后台探测判定"存在 captive portal"即自动弹出配置页;
+// 不弹的系统仍可手动访问 http://192.168.4.1(302 兜底见 h_prov_catchall)。
+#define DNS_PORT        53
+#define DNS_TASK_STACK  3072
+#define DNS_TASK_PRIO   3
+static TaskHandle_t s_dns_task;
+static volatile bool s_dns_run;
+static int s_dns_sock = -1;
+
+// 解析 DNS 查询报文,返回 question section 结束偏移(可整体回发);不合法返回 0。
+static size_t dns_query_end(const uint8_t *pkt, size_t len)
+{
+    if (len < 17) return 0;                    // 12B 头 + 最短 QNAME(1) + QTYPE(2) + QCLASS(2)
+    if ((pkt[2] & 0x80) != 0) return 0;        // QR=1:不是查询
+    if (pkt[4] != 0 || pkt[5] != 1) return 0;  // QDCOUNT 必须为 1
+    size_t off = 12;
+    while (off < len) {                        // QNAME:label 序列
+        const uint8_t l = pkt[off];
+        if (l == 0) return (off + 1 + 4 <= len) ? off + 1 : 0;
+        off += 1u + l;
+    }
+    return 0;
+}
+
+static void dns_task_main(void *arg)
+{
+    (void)arg;
+    uint8_t pkt[512];
+    struct sockaddr_storage from;
+    socklen_t fromlen;
+    while (s_dns_run) {
+        fromlen = sizeof(from);
+        const ssize_t n = recvfrom(s_dns_sock, pkt, sizeof(pkt), 0,
+                                   (struct sockaddr *)&from, &fromlen);
+        if (n <= 0) continue;
+        const size_t end = dns_query_end(pkt, (size_t)n);
+        if (end == 0) continue;
+        pkt[2] |= 0x80;      // QR=1(响应);RA=1
+        pkt[3] |= 0x80;
+        pkt[6] = pkt[7] = 0; // ANCOUNT/NSCOUNT/ARCOUNT = 0:无应答记录,
+        pkt[8] = pkt[9] = 0; // 手机只能把它当"captive portal"判定信号
+        pkt[10] = pkt[11] = 0;
+        (void)sendto(s_dns_sock, pkt, end, 0, (struct sockaddr *)&from, fromlen);
+    }
+    vTaskDelete(NULL);       // 任务自清理
+}
+
+static esp_err_t dns_relay_start(void)
+{
+    s_dns_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s_dns_sock < 0) return ESP_FAIL;
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(DNS_PORT),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(s_dns_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(s_dns_sock);
+        s_dns_sock = -1;
+        return ESP_FAIL;
+    }
+    s_dns_run = true;
+    if (xTaskCreate(dns_task_main, "store_dns", DNS_TASK_STACK, NULL,
+                    DNS_TASK_PRIO, &s_dns_task) != pdPASS) {
+        s_dns_run = false;
+        close(s_dns_sock);
+        s_dns_sock = -1;
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "Captive Portal DNS ready (UDP 53)");
+    return ESP_OK;
+}
+
+static void dns_relay_stop(void)
+{
+    s_dns_run = false;
+    if (s_dns_sock >= 0) {
+        shutdown(s_dns_sock, 0);
+        close(s_dns_sock);   // 唤醒阻塞 recvfrom,任务见 !s_dns_run 自行退出
+        s_dns_sock = -1;
+    }
+}
+
 static void url_decode_inplace(char *s)
 {
     size_t w = 0;
@@ -212,10 +323,128 @@ static void url_decode_inplace(char *s)
     s[w] = '\0';
 }
 
+// 手机系统的 captive portal 探测请求带运营商/厂商 Host(如 captive.apple.com);
+// 设备自配网页入口固定是 192.168.4.1。见非本机 Host → 302 弹配置页。
+static esp_err_t h_prov_catchall(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+    httpd_resp_set_hdr(req, "Content-Length", "0");
+    return httpd_resp_send(req, "", 0);
+}
+
 static esp_err_t h_prov_index(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
+    char host[64] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK
+        && strncmp(host, "192.168.4.1", sizeof("192.168.4.1")) != 0) {
+        return h_prov_catchall(req);   // 探测请求:302 弹窗
+    }
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, PROV_HTML, HTTPD_RESP_USE_STRLEN);
+}
+
+// GET /api/scan → 最近一次后台扫描的 APSTA 结果 JSON:
+// {"networks":[{"ssid":"...","rssi":-52,"auth":true},...]}
+// 只读缓存不阻塞(handler 纪律);配网任务每 3s 触发一次扫描,首拍可能为空。
+#define PROV_SCAN_MAX       20
+#define PROV_SCAN_PERIOD_MS 3000
+
+// SSID 原始字节转 JSON 字符串体:" 与 \ 转义,控制字符 \u00XX;
+// 高位字节(非 ASCII SSID)原样输出,页面按 UTF-8 显示,乱码可接受(仍可手输)。
+static void json_escaped_ssid(const uint8_t *ssid, char *out, size_t out_sz)
+{
+    size_t w = 0;
+    for (size_t i = 0; i < 32 && ssid[i] != 0; i++) {
+        char one[8];
+        const uint8_t ch = ssid[i];
+        if (ch == '"' || ch == '\\') {
+            one[0] = '\\'; one[1] = (char)ch; one[2] = '\0';
+        } else if (ch < 0x20) {
+            snprintf(one, sizeof(one), "\\u%04x", ch);
+        } else {
+            one[0] = (char)ch; one[1] = '\0';
+        }
+        const size_t n = strlen(one);
+        if (w + n >= out_sz) break;   // 上限 32×6+1 ≤ out_sz(97),正常不会触达
+        memcpy(out + w, one, n + 1);
+        w += n;
+    }
+    out[w] = '\0';
+}
+
+// 有界 JSON 组装器:溢出即停止写入(页面把残缺列表按空处理,无危害)。
+typedef struct {
+    char  *buf;
+    size_t cap;
+    size_t len;
+} json_buf_t;
+
+static void jb_add(json_buf_t *jb, const char *s)
+{
+    if (jb->len + 1 >= jb->cap) return;
+    size_t n = strlen(s);
+    if (n > jb->cap - jb->len - 1) n = jb->cap - jb->len - 1;
+    memcpy(jb->buf + jb->len, s, n);
+    jb->len += n;
+    jb->buf[jb->len] = '\0';
+}
+
+static void jb_add_int(json_buf_t *jb, int v)
+{
+    char tmp[12];
+    snprintf(tmp, sizeof(tmp), "%d", v);
+    jb_add(jb, tmp);
+}
+
+static esp_err_t h_prov_scan(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    uint16_t count = 0;
+    esp_wifi_scan_get_ap_num(&count);
+    if (count == 0) {
+        return httpd_resp_sendstr(req, "{\"networks\":[]}");
+    }
+    if (count > PROV_SCAN_MAX) count = PROV_SCAN_MAX;
+
+    wifi_ap_record_t *records = malloc((size_t)count * sizeof(wifi_ap_record_t));
+    // 每条上界:转义 ssid(96)+固定 JSON(~48);外加首尾包装。
+    const size_t cap = 32 + (size_t)count * (96 + 48);
+    char *json = malloc(cap);
+    if (!records || !json) {
+        free(records);
+        free(json);
+        return httpd_resp_sendstr(req, "{\"networks\":[]}");
+    }
+    if (esp_wifi_scan_get_ap_records(&count, records) != ESP_OK) {
+        free(records);
+        free(json);
+        return httpd_resp_sendstr(req, "{\"networks\":[]}");
+    }
+
+    json_buf_t jb = { .buf = json, .cap = cap, .len = 0 };
+    json[0] = '\0';
+    jb_add(&jb, "{\"networks\":[");
+    for (uint16_t i = 0; i < count; i++) {
+        if (i) jb_add(&jb, ",");
+        char esc[97];
+        json_escaped_ssid(records[i].ssid, esc, sizeof(esc));
+        jb_add(&jb, "{\"ssid\":\"");
+        jb_add(&jb, esc);
+        jb_add(&jb, "\",\"rssi\":");
+        jb_add_int(&jb, records[i].rssi);
+        jb_add(&jb, ",\"auth\":");
+        jb_add(&jb, records[i].authmode != WIFI_AUTH_OPEN ? "true" : "false");
+        jb_add(&jb, "}");
+    }
+    jb_add(&jb, "]}");
+    free(records);
+    const esp_err_t ret = httpd_resp_send(req, json, jb.len);
+    free(json);
+    return ret;
 }
 
 // POST /api/wifi?ssid=..&pass=.. :表单提交 → 复制凭证 → 置位,由网络任务切换 STA。
@@ -239,6 +468,8 @@ static esp_err_t h_prov_wifi(httpd_req_t *req)
     copy_capped(pass, sizeof(pass), raw);
     if (ssid[0] == '\0') goto bad;
 
+    if (pass[0] == '\0') goto bad;   // 开放网络极不安全且极少见,要求密码(页面同口径)
+
     snprintf(s_prov_ssid, sizeof(s_prov_ssid), "%s", ssid);
     snprintf(s_prov_pass, sizeof(s_prov_pass), "%s", pass);
     xEventGroupSetBits(s_events, EV_CREDENTIALS);
@@ -251,17 +482,14 @@ bad:
 
 static void gen_ap_credentials(void)
 {
-    static const char k_set[] = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-    for (int i = 0; i < 8; i++) {
-        s_status.password[i] = k_set[esp_random() % (sizeof(k_set) - 1)];
-    }
-    s_status.password[8] = '\0';
+    // r7:开放热点(无密码),降低配网门槛;SSID 仍随机化避免多台设备互扰。
     snprintf(s_status.ssid, sizeof(s_status.ssid), "metapass-%04lX",
              (unsigned long)(esp_random() & 0xFFFF));
 }
 
 static void wifi_teardown(void)
 {
+    dns_relay_stop();
     if (s_httpd) {
         httpd_stop(s_httpd);
         s_httpd = NULL;
@@ -290,19 +518,22 @@ static esp_err_t ap_start(void)
     if (err != ESP_OK) goto fail;
     err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
     if (err != ESP_OK) goto fail;
-    err = esp_wifi_set_mode(WIFI_MODE_AP);
+    // APSTA:纯 AP 模式无法扫描;station 接口仅服务于后台扫 AP,从不设置 sta
+    // 配置也从不 connect,不影响 SoftAP 本身。
+    err = esp_wifi_set_mode(WIFI_MODE_APSTA);
     if (err != ESP_OK) goto fail;
     wifi_config_t ap = {
         .ap = {
             .channel = 1,
-            .authmode = WIFI_AUTH_WPA2_PSK,
+            // 开放网络:Captive Portal 靠"不加密 + 劫持"自动弹窗;WPA2 密码会
+            // 阻断多数系统的 portal 探测与自动弹窗。旧版随机密码机制移除,
+            // 防蹭网面 = AP_MAX_CONN=1 + 配网时长有限(凭证到手即关 AP)。
             .max_connection = AP_MAX_CONN,
             .beacon_interval = 100,
         },
     };
-    snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "%s", s_status.ssid);
+    copy_field(ap.ap.ssid, sizeof(ap.ap.ssid), s_status.ssid);
     ap.ap.ssid_len = strlen(s_status.ssid);
-    snprintf((char *)ap.ap.password, sizeof(ap.ap.password), "%s", s_status.password);
     err = esp_wifi_set_config(WIFI_IF_AP, &ap);
     if (err != ESP_OK) goto fail;
     err = esp_wifi_start();
@@ -320,12 +551,21 @@ static esp_err_t ap_start(void)
     err = httpd_start(&s_httpd, &hcfg);
     if (err != ESP_OK) goto fail;
     const httpd_uri_t uri_index = { "/", HTTP_GET,  h_prov_index, NULL };
+    const httpd_uri_t uri_scan  = { "/api/scan", HTTP_GET,  h_prov_scan,  NULL };
     const httpd_uri_t uri_wifi  = { "/api/wifi", HTTP_POST, h_prov_wifi, NULL };
+    const httpd_uri_t uri_any   = { "*", HTTP_GET,  h_prov_catchall, NULL };
     httpd_register_uri_handler(s_httpd, &uri_index);
+    httpd_register_uri_handler(s_httpd, &uri_scan);
     httpd_register_uri_handler(s_httpd, &uri_wifi);
+    httpd_register_uri_handler(s_httpd, &uri_any);
+
+    // DNS 劫持失败只损失"自动弹窗",页面仍可手动访问,不视为致命。
+    if (dns_relay_start() != ESP_OK) {
+        ESP_LOGW(TAG, "DNS 劫持启动失败:仅能手动访问 192.168.4.1");
+    }
 
     set_state(SN_STATE_AP_UP, "WiFi setup AP ready.");
-    ESP_LOGI(TAG, "配网 AP 就绪: %s(%s)", s_status.ssid, s_status.password);
+    ESP_LOGI(TAG, "配网 AP 就绪(开放热点): %s", s_status.ssid);
     return ESP_OK;
 
 fail:
@@ -476,6 +716,14 @@ static void job_task_main(void *arg)
                 ESP_LOGW(TAG, "STA 连接失败,回落配网页");
                 ap_start();   // 失败回落:重新开配网 AP
             }
+            continue;
+        }
+
+        // 配网页存活:周期触发 AP 扫描,保证 /api/scan 有缓存可读(handler
+        // 不阻塞,只取最近一次结果;首拍为空,页面提示再按一次 Scan)。
+        if (s_status.state == SN_STATE_AP_UP) {
+            esp_wifi_scan_start(NULL, false);
+            vTaskDelay(pdMS_TO_TICKS(PROV_SCAN_PERIOD_MS));
             continue;
         }
 

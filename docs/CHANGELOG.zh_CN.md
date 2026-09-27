@@ -19,7 +19,13 @@
   双根证书包(`main/certs/`,GTS Root R4 + ISRG Root X1)替代默认 Mozilla 全量包。host 检查:
   `test_meta_store_json`(有界 JSON 提取器)、12 个 store-analyzer node 用例、IDF 5.x 签名桩
   `-fsyntax-only` 检查 `meta_store_net`/`meta_store_api`;`validate.sh --static` 全绿。剩余验收
-  (方案 §5 Phase 4/5):esp_emu 端到端与真机构建/`idf.py size`/真机 OTA。
+  (方案 §5 Phase 4/5):esp_emu 端到端与真机 OTA。真机构建已复验:factory 预算 0x115d20
+  (r6)→ 0x1178d0(r7),余量约 24%。
+- **配网易用性(r7)**:SoftAP 热点改为开放(无密码——不用再对着小屏抄 8 位密钥),SSID
+  仍随机化(`metapass-XXXX`);配网页新增 "Scan networks" 按钮,走新增的 `/api/scan` 端点
+  (后台周期扫描、只读缓存、最多 20 条、SSID JSON 转义、仅 textContent 渲染);UDP/53 DNS
+  劫持 + 兜底 302 构成 Captive Portal,手机连上热点自动弹配网页。`/api/wifi` 拒绝空密码。
+  方案文档 r7 条目记录设计动机。
 
 ## v1.0.0 (2026-09-18)
 
