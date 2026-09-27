@@ -6,7 +6,20 @@
 
 ## Unreleased
 
-(无)
+- **商店下载通道(feat/ota,方案 v3.2-r6)**:SoftAP 上传导入通道退役(`meta_net`/`meta_import`
+  及其测试删除),设备经 metapass.chuanxilu.net(唯一 TLS 信任锚)直接从应用商店 OTA。流程:
+  配网(SoftAP 表单,凭证存 NVS)或已存凭证直连 → SNTP → 数字键盘输玩法 ID → 一次
+  `/api/analyze`(名称/可装性/最小可装槽位;业务结果一律 200 + 原因码)→ 选槽 → 流式
+  `/api/extracted` 刷写,边下边算 SHA-256 与 analyze 摘要、`x-image-sha256` 响应头双重比对,
+  再经 `esp_ota_end`/`esp_image_verify` 权威校验后槽位置 VALID 并写 MNAM 显示名 blob。解包在
+  服务端完成(`tools/install-slot/store-analyze.js`,纯 ESM,与安装页同一算法;analyze/extracted
+  共享同一份按 play id 缓存、revisionId 回源复核的已验证字节)。取消经确认页(CANCEL/RETRY/
+  BACK);会话超时问用户而非强关(可用 `CONFIG_META_STORE_SESSION_TIMEOUT_MS` /
+  `CONFIG_META_STORE_HTTP_TIMEOUT_MS` 或 `meta_store_session_set_timeout_ms()` 配置)。自定义
+  双根证书包(`main/certs/`,GTS Root R4 + ISRG Root X1)替代默认 Mozilla 全量包。host 检查:
+  `test_meta_store_json`(有界 JSON 提取器)、12 个 store-analyzer node 用例、IDF 5.x 签名桩
+  `-fsyntax-only` 检查 `meta_store_net`/`meta_store_api`;`validate.sh --static` 全绿。剩余验收
+  (方案 §5 Phase 4/5):esp_emu 端到端与真机构建/`idf.py size`/真机 OTA。
 
 ## v1.0.0 (2026-09-18)
 

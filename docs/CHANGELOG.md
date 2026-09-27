@@ -6,7 +6,24 @@
 
 ## Unreleased
 
-(nothing)
+- **Store download channel (feat/ota, plan v3.2-r6)**: replaces the SoftAP upload import
+  (`meta_net`/`meta_import` and their tests retired) with on-device OTA from the app store via
+  metapass.chuanxilu.net — the device's single TLS trust anchor. Flow: WiFi provisioning (SoftAP
+  form, credentials persisted in NVS) or saved-credential reconnect → SNTP → numeric play-ID
+  keypad → one `/api/analyze` (name / installability / smallest fitting slot; business results
+  always 200 + reason codes) → slot select → streamed `/api/extracted` flashed with rolling
+  SHA-256 compared against both the analyze summary and the `x-image-sha256` response header,
+  then `esp_ota_end`/`esp_image_verify` before the slot is marked valid and the MNAM display-name
+  blob written. Unpacking happens server-side (`tools/install-slot/store-analyze.js`, pure ESM,
+  byte-identical algorithm to the install page; analyze/extracted share one verified-bytes cache
+  keyed by play id with revisionId re-check). Cancel goes through a confirm page (CANCEL / RETRY /
+  BACK); the session timeout asks instead of closing (configurable via
+  `CONFIG_META_STORE_SESSION_TIMEOUT_MS` / `CONFIG_META_STORE_HTTP_TIMEOUT_MS` or
+  `meta_store_session_set_timeout_ms()`). Custom two-root certificate bundle (`main/certs/`, GTS
+  Root R4 + ISRG Root X1) replaces the default Mozilla bundle. Host checks: `test_meta_store_json`
+  (bounded JSON extractor), 12 store-analyzer node cases, IDF 5.x-signature stub `-fsyntax-only`
+  for `meta_store_net`/`meta_store_api`; `validate.sh --static` green. Remaining acceptance
+  (plan §5 Phase 4/5): esp_emu end-to-end and real-device build/`idf.py size`/on-device OTA.
 
 ## v1.0.0 (2026-09-18)
 

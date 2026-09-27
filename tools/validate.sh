@@ -57,37 +57,30 @@ PY
         -o "${test_dir}/test_meta_name"
     "${test_dir}/test_meta_name"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_meta_import.c main/meta_import.c \
-        -o "${test_dir}/test_meta_import"
-    "${test_dir}/test_meta_import"
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_seq.c main/meta_seq.c \
         -o "${test_dir}/test_meta_seq"
     "${test_dir}/test_meta_seq"
+    # 商店通道 analyze 响应的有界 JSON 提取器(纯逻辑)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_store_json.c main/meta_store_json.c \
+        -o "${test_dir}/test_meta_store_json"
+    "${test_dir}/test_meta_store_json"
+    # 商店通道 ESP-IDF 模块 host 语法检查(桩头在 tests/esp_stubs,对齐 IDF 5.x
+    # 签名;不链接,只验证类型/声明/警告级问题,真机构建仍由 --firmware 负责)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
+        -Itests/esp_stubs -Imain -DHOST_TEST \
+        main/meta_store_net.c main/meta_store_api.c
     # 开机策略纯逻辑(单次会话模型规则引擎,bootloader hook 与宿主共享)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_boot_policy.c \
         -o "${test_dir}/test_meta_boot_policy"
     "${test_dir}/test_meta_boot_policy"
-    # 上传链路集成测试:桩化 ESP-IDF(tests/esp_stubs),主机编译真实 meta_net.c
-    # 死代码剥离 flag 平台相关:macOS ld 用 -dead_strip,GNU ld 用 --gc-sections
-    local gc_flag="-Wl,--gc-sections"
-    if [ "$(uname)" = "Darwin" ]; then
-        gc_flag="-Wl,-dead_strip"
-    fi
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain -DHOST_TEST \
-        tests/test_meta_net_upload.c \
-        main/meta_import.c main/meta_image.c main/meta_name.c main/meta_slots.c main/meta_sign.c \
-        -ffunction-sections -fdata-sections ${gc_flag} \
-        -o "${test_dir}/test_meta_net_upload"
-    "${test_dir}/test_meta_net_upload"
     # 签名段格式解析测试(stub 化 RSA 验签,只测格式)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
         tests/test_meta_sign.c tests/esp_stubs/meta_sign_stub.c \
         -o "${test_dir}/test_meta_sign"
     "${test_dir}/test_meta_sign"
     python3 tests/test_verify_firmware.py
-    python3 tests/test_meta_net_contract.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin
     node_bin="$(command -v node || true)"
@@ -96,6 +89,7 @@ PY
     fi
     if [[ -n "${node_bin}" ]]; then
         "${node_bin}" tools/install-slot/test-extract.mjs
+        "${node_bin}" tools/install-slot/test-store-analyze.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs

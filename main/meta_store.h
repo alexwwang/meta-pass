@@ -20,7 +20,7 @@ esp_err_t meta_store_erase_slot(int slot);
 // 前置:槽位 meta_slot_bootable() 必须为真。
 esp_err_t meta_store_boot_slot(int slot);
 
-// 槽位分区句柄(供 meta_net 流式写入与容量查询)。失败返回 NULL。
+// 槽位分区句柄(供 meta_store_api 流式写入与容量查询)。失败返回 NULL。
 const esp_partition_t *meta_store_slot_partition(int slot);
 
 // 清空 otadata(单次会话模型):启动器每次开机调用,保证下次上电 bootloader

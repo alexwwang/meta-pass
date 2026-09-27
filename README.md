@@ -44,12 +44,20 @@ switch. No custom bootloader changes.
   for a future recording firmware); the launcher detects the absence of a valid image
   and mounts the FS instead.
 - **Two install channels**:
-  - **USB serial install page** (recommended): open a local page in Chrome, hold UP
-    while powering on to enter ROM download mode, write straight into a slot; accepts
-    a local `.bin` (Full Flash images are unpacked in-page) or a plays marketplace
-    link (auto-downloaded and verified against the store's published SHA-256);
-  - **Device hotspot + web import**: the device starts a SoftAP and shows a pairing
-    code; upload from a phone or computer browser.
+  - **USB serial install page** (recommended for local files): open a local page in
+    Chrome, hold UP while powering on to enter ROM download mode, write straight
+    into a slot; accepts a local `.bin` (Full Flash images are unpacked in-page) or
+    a plays marketplace link (auto-downloaded and verified against the store's
+    published SHA-256);
+  - **Store download on-device** (no computer at all): pick STORE DOWNLOAD in the
+    main list → the device either reuses saved WiFi credentials or starts a setup
+    hotspot (`192.168.4.1`, random WPA2 password on screen) → enter the numeric ID
+    of any play from ai-passport.folotoy.cn → the device asks
+    metapass.chuanxilu.net for an unpack analysis (name / supported / smallest
+    fitting slot), streams the extracted app image over TLS and flashes it into the
+    chosen slot, verifying the SHA-256 against the store-published value while
+    downloading. Unpacking never happens on-device (server-side, same algorithm as
+    the install page).
 - **Integrity checks**: magic, chip id, size and segment structure, with
   `esp_ota_end()` as the authoritative recheck; the SHA-256 is shown on the detail
   page for comparison with the store's value.
@@ -103,11 +111,15 @@ Hold UP while powering on → Connect in the page → pick a slot → choose a l
 or paste a plays link → Install → power-cycle. Full guide:
 [install-slot/README.md](install-slot/README.md).
 
-**Option B: device hotspot import** (no Chrome required):
+**Option B: store download on-device** (no Chrome required):
 
-Pick IMPORT FIRMWARE in the main list → the device starts a hotspot and shows a pairing
-code → connect from a phone/computer, open `192.168.4.1` → enter the code, pick a
-slot, upload a `.bin`.
+Pick STORE DOWNLOAD in the main list → WiFi setup hotspot (or auto-reconnect with
+saved credentials; the setup page only collects WiFi name/password, no pairing
+code) → once online the screen advances automatically → enter the play ID with
+UP/DOWN (digit ±1) and OK (next position; the 6th OK submits) → the detail page
+shows the play name, size and smallest fitting slot (or the reason it cannot be
+installed) → CONFIRM → pick a target slot → the device downloads and flashes it,
+then prompts to power-cycle.
 
 ### 3. Boot
 
@@ -118,11 +130,29 @@ warning page: UP/DOWN to choose BOOT / CANCEL, OK click to confirm (defaults to 
 
 | Page | UP/DOWN | OK click | OK LONG (1.5 s) |
 | --- | --- | --- | --- |
-| Main list | select slot | open details / import page | — |
+| Main list | select slot | open details / store download | — |
 | Slot detail | BOOT/DELETE/BACK | confirm | back to list |
 | Unsigned warning | BOOT/CANCEL | confirm selection | cancel (back to detail) |
 | Delete confirm | — | cancel | confirm delete |
-| Import page | — | — | exit import, back to list |
+| Store: WiFi setup | — | — | exit store, back to list |
+| Store: enter ID | digit ±1 | next digit / submit | back to WiFi setup |
+| Store: detail | CONFIRM/BACK | confirm | back to ID entry |
+| Store: pick slot | select slot | install to selected | back to detail |
+| Store: progress | — | back after failure | open cancel confirm (while running); else back to detail |
+| Store: cancel confirm | CANCEL / RETRY / BACK | execute selection | no cancel — keep waiting |
+| Store: done | — | back to list | — |
+| Store: any page (session-expired prompt) | — | continue current activity (extend) | exit store, back to list |
+
+Cancel confirm (OK LONG while downloading; the download keeps running in the
+background): **CANCEL** = proceed with cancel, half-written slot invalidated;
+**RETRY** = cancel the current download and automatically start the install again;
+**BACK** = no cancel, back to the progress page.
+
+The store session timeout (default 5 min, auto-extended while a job is running)
+never closes the session by force: when it expires the screen shows
+"Session timeout. OK = continue / LONG = exit store" and the user decides. The
+timeout is configurable via `CONFIG_META_STORE_SESSION_TIMEOUT_MS` (menuconfig) or
+at runtime with `meta_store_session_set_timeout_ms()` (clamped to 30 s – 24 h).
 
 Inside an adapted child firmware: OK LONG = return to launcher (wired by the child,
 see below).
@@ -151,7 +181,7 @@ publisher — third-party developers submit binaries for signing rather than sel
 
 | Path | Content |
 | --- | --- |
-| `main/` | Launcher UI (`main.c`), storage layer (`meta_store`), Wi-Fi import (`meta_net`), pure-logic modules (`meta_image`/`meta_slots`/`meta_import`/`meta_name`), child-firmware hook (`metapass_hook.h`) |
+| `main/` | Launcher UI (`main.c`), storage layer (`meta_store`), store-download channel (`meta_store_net` WiFi/provisioning/task + `meta_store_api` HTTPS/OTA + `meta_store_json` bounded JSON parser), pure-logic modules (`meta_image`/`meta_slots`/`meta_name`), child-firmware hook (`metapass_hook.h`) |
 | `components/bsp/` | Board support package (stock + explicit `BSP_BTN_LONG` 1.5 s threshold) |
 | `install-slot/` | USB serial install page, live at https://meta-pass.pages.dev/ (Cloudflare Pages: static assets + `_worker.js` API proxy) |
 | `tools/install-slot/` | `server.mjs` localhost server (serves the canonical `install-slot/` page directly — single source, zero dependencies) |
@@ -235,7 +265,7 @@ are pure-logic modules with no ESP-IDF dependency.
 | Category | Result (2026-09-13) |
 | --- | --- |
 | Build | Full `validate.sh` gate PASS; app 1,024,880 / 1,507,328 B (32% free); merged image 8 MB; `cardid` untouched |
-| Host tests | `meta_image`/`meta_slots`/`meta_import`/`meta_name` suites all pass; installer node tests 7/7; **new** `test_meta_net_contract.py` pins JS↔C HTTP route consistency; **new** `test_meta_net_upload.c` (21 cases) drives the full pair→upload→flash→verify→blob flow with real SHA-256, stubbing ESP-IDF — zero hardware required |
+| Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json` suites all pass; installer + store-analyzer node tests all pass; store-channel ESP-IDF modules (`meta_store_net`/`meta_store_api`) are syntax-checked against IDF 5.x-signature stubs (`-fsyntax-only`, zero hardware) — *the SoftAP-upload-era `meta_net`/`meta_import` suites were retired with the upload channel itself* |
 | Simulator (passport-sim) | 3-slot list with real names via dynamic blob offsets (ota_0→0x355000, ota_1→0x55f000); navigation; detail metadata (`name: Pocket Walkie`, ver 1, 1262 KB, sha prefix); empty-slot BOOT no-op; unsigned warning page; LONG2 boot ota_0; hard-reset rollback to launcher; ota_1 Passport Radar boot + rollback; DELETE→LONG2 erase persists across reboot; IMPORT page (credentials/pair code/countdown); two observations judged non-firmware bugs (confirm-page residual rows = emulator canvas dirty-region artifact; import-page long-press exit needs longer hold = emulator timing model) — *recorded 2026-09-13, before LONG2 removal and the BOOT/CANCEL boot menu; those two interactions need a re-run* |
 | GitHub Actions | Static checks (Linux/GCC), firmware gate (ESPIDF Docker) — both green |
 | CI artifact SHA-256 | `b86ca4fe…1b28e773` (canonical reference for marketplace publishing; local builds differ in embedded compile timestamp) |

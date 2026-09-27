@@ -11,12 +11,37 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { createStoreAnalyzer } from "./store-analyze.js";
 
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PAGE_DIR = path.resolve(DIR, "..", "..", "install-slot");
+
+// 设备端 OTA 通道(store-analyze 纯逻辑 + Node sha256,后端与代理同一源站)。
+// 分析/已验证镜像按 play id 进程内缓存(store-analyze 内部);设备流量 =
+// 一次 analyze + 一次 extracted 流式下载。
+const sha256 = async (buf) => createHash("sha256").update(buf).digest("hex");
+const storeAnalyzer = createStoreAnalyzer({ fetchImpl: fetch, backend: BACKEND, sha256 });
+
+// analyze/extracted 按 IP 固定窗口限速(方案 §1.2 服务端安全约束;生产为 CF Pages
+// KV token bucket,本地 dev 用进程内计数近似对齐行为)。
+const RATE_LIMIT = 60;            // 每窗口请求数
+const RATE_WINDOW_MS = 60_000;    // 窗口时长
+const rateBuckets = new Map();    // ip -> {windowStart, count}
+function rateLimited(ip) {
+  const now = Date.now();
+  const b = rateBuckets.get(ip);
+  if (!b || now - b.windowStart >= RATE_WINDOW_MS) {
+    if (rateBuckets.size > 10_000) rateBuckets.clear(); // 防表无限增长
+    rateBuckets.set(ip, { windowStart: now, count: 1 });
+    return false;
+  }
+  b.count += 1;
+  return b.count > RATE_LIMIT;
+}
 
 // 页面版本占位符替换(本地 dev):与 CI 部署管线同一占位符 __PAGE_VERSION__。
 // 取 git describe(如 dev-v0.2.2-83-g71724a8),让日志页标可追溯到具体源码;
@@ -151,6 +176,58 @@ const server = http.createServer((req, res) => {
       return;
     }
     proxyFetch(`/api/plays/id/${id}`, res);
+    return;
+  }
+
+  // GET /api/analyze?id=N → 设备 P2 详情页信息源(名称/可装性/最小槽位)。
+  // 业务结果(含 supported=false 的原因码)一律 200 + 契约 JSON——设备端对非 200
+  // 不读体,422 会把 too-large/wrong-chip 等真实原因吞成 unavailable。
+  if (pathname === "/api/analyze") {
+    if (rateLimited(res.socket.remoteAddress ?? "?")) {
+      sendError(res, 429, "rate limited");
+      return;
+    }
+    const id = urlObj.searchParams.get("id");
+    if (id == null || !/^\d{1,7}$/.test(id)) {
+      sendError(res, 400, "missing or invalid id parameter");
+      return;
+    }
+    storeAnalyzer.analyze(Number(id)).then(
+      (out) => sendJson(res, 200, out),
+      (err) => sendError(res, 502, `analyze failed: ${err.message}`),
+    );
+    return;
+  }
+
+  // GET /api/extracted?id=N → 已验证的 factory 应用镜像(二进制流式下发,
+  // 头携带 x-image-len / x-image-sha256,设备边下边算与此比对;字节直接来自
+  // analyze 阶段已校验合并镜像的解包缓存,不重复回源/解包)。
+  if (pathname === "/api/extracted") {
+    if (rateLimited(res.socket.remoteAddress ?? "?")) {
+      sendError(res, 429, "rate limited");
+      return;
+    }
+    const id = urlObj.searchParams.get("id");
+    if (id == null || !/^\d{1,7}$/.test(id)) {
+      sendError(res, 400, "missing or invalid id parameter");
+      return;
+    }
+    storeAnalyzer.extractedStream(Number(id)).then(
+      (out) => {
+        if (out.error) {
+          sendError(res, out.error === "not-found" ? 404 : 502, out.error);
+          return;
+        }
+        res.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-length": out.imageLen,
+          "x-image-len": String(out.imageLen),
+          "x-image-sha256": out.sha256,
+        });
+        res.end(Buffer.from(out.stream));
+      },
+      (err) => sendError(res, 502, `extracted failed: ${err.message}`),
+    );
     return;
   }
 

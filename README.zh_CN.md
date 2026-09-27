@@ -39,10 +39,15 @@ bootloader 改动。
 - **双用槽位 2**：为空时可当作 littlefs 存储（如录音固件）；启动器检测到槽内无
   合法镜像后自动挂载 FS，不再浪费 Flash。
 - **两种安装通道**：
-  - **USB 串口安装页**（推荐）：Chrome 打开本地页面，按住 UP 开机进 ROM 下载模式，
-    直接写槽位；支持本地 `.bin`（Full 镜像自动解包）和 plays 市场链接
+  - **USB 串口安装页**（本地文件推荐）：Chrome 打开本地页面，按住 UP 开机进 ROM
+    下载模式，直接写槽位；支持本地 `.bin`（Full 镜像自动解包）和 plays 市场链接
     （自动下载并按商店公布的 SHA-256 校验）；
-  - **设备热点 + 网页导入**：设备开 SoftAP 显示配对码，手机/电脑连上后网页上传。
+  - **设备端商店下载**（完全不需要电脑）：主列表选 STORE DOWNLOAD → 设备复用已存
+    WiFi 凭证直连，或开配网热点（`192.168.4.1`，屏幕显示随机 WPA2 密码，网页只收
+    WiFi 名/密码，无配对码）→ 用数字键盘输入市场玩法编号 → 设备向
+    metapass.chuanxilu.net 请求解包分析（名称/可装性/最小可装槽位）→ 确认后流式
+    下载已分离的固件镜像刷入所选槽位，边下边按商店公布的 SHA-256 校验。解包不在
+    设备上做（服务端复用与安装页同一套算法）。
 - **完整性校验**：magic、chip id、尺寸、segment 结构逐层校验，`esp_ota_end()` 权威
   复核；SHA-256 在详情页可见，可与商店公布值对照。
 - **未签名警告**：未签名固件启动前弹出警告页，UP/DOWN 选择 BOOT / CANCEL，OK 单击
@@ -91,10 +96,12 @@ python -m esptool --chip esp32c3 -p <串口> -b 460800 \
 设备按住 UP 键开机 → 页面 Connect → 选槽位 → 选本地文件或粘贴 plays 链接 →
 Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install-slot/README.zh_CN.md)。
 
-**方式 B：设备热点导入**（不需要电脑有 Chrome）：
+**方式 B：设备端商店下载**（不需要电脑有 Chrome）：
 
-主列表选 IMPORT FIRMWARE → 设备开热点并显示配对码 → 手机/电脑连上访问
-`192.168.4.1` → 输入配对码、选槽位、上传 `.bin`。
+主列表选 STORE DOWNLOAD → 配网热点（或已存凭证自动直连；配网页只收 WiFi
+名/密码，无配对码）→ 联网后自动翻页 → 数字键盘输玩法编号（UP/DOWN 调数字，
+OK 跳下一位，第 6 位 OK 提交）→ 详情页显示名称、尺寸、建议最小槽位（不支持时
+显示原因码）→ CONFIRM → 选目标槽位 → 下载刷写完成后提示断电重启。
 
 ### 3. 启动
 
@@ -105,11 +112,27 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 
 | 页面 | UP/DOWN | OK 单击 | OK LONG（1.5 秒） |
 | --- | --- | --- | --- |
-| 主列表 | 选择槽位 | 进入详情 / 进导入页 | — |
+| 主列表 | 选择槽位 | 进入详情 / 进商店下载 | — |
 | 槽位详情 | 选 BOOT/DELETE/BACK | 确认 | 返回主列表 |
 | 未签名警告 | 选 BOOT/CANCEL | 确认所选 | 取消（回详情页） |
 | 删除确认 | — | 取消 | 确认删除 |
-| 导入页 | — | — | 退出导入、回主列表 |
+| 商店：配网 | — | — | 退出商店、回主列表 |
+| 商店：输编号 | 数字 ±1 | 跳下一位 / 提交 | 回配网页 |
+| 商店：详情 | CONFIRM/BACK | 确认 | 回输编号 |
+| 商店：选槽 | 选择槽位 | 安装到所选槽 | 回详情 |
+| 商店：进度 | — | 失败后返回 | 下载中=进取消确认页；否则回详情 |
+| 商店：取消确认 | 选 CANCEL/RETRY/BACK | 执行所选 | 不作取消，继续等下载 |
+| 商店：完成 | — | 回主列表 | — |
+| 商店：任意页（会话到期提示时） | — | 继续当前操作（续期） | 退出商店、回主列表 |
+
+取消确认页（下载中按 OK LONG 进入，后台下载不停）：**CANCEL** = 继续取消，
+半成品槽位作废；**RETRY** = 取消当前下载并自动重新开始安装；**BACK** = 不取消，
+回到进度页继续等。
+
+会话超时（默认 5 分钟，作业进行中自动延续）到期不强制关闭：屏上提示
+"Session timeout. OK = continue / LONG = exit store"，由用户选择继续或退出。
+超时时长可用 `CONFIG_META_STORE_SESSION_TIMEOUT_MS`（menuconfig）或运行时
+`meta_store_session_set_timeout_ms()` 配置（范围 30 秒～24 小时）。
 
 适配过的子固件内：OK LONG = 返回启动器（子固件自行挂接，见下节）。
 
@@ -134,7 +157,7 @@ Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install
 
 | 路径 | 内容 |
 | --- | --- |
-| `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、Wi-Fi 导入（`meta_net`）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_import`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
+| `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、商店下载通道（`meta_store_net` WiFi/配网/网络任务 + `meta_store_api` HTTPS/OTA + `meta_store_json` 有界 JSON 提取器）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
 | `components/bsp/` | 板级支持包（官方原样 + 显式 `BSP_BTN_LONG` 1.5 秒阈值） |
 | `install-slot/` | USB 串口安装页，线上地址 https://meta-pass.pages.dev/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
 | `tools/install-slot/` | `server.mjs` 本地服务器（直接服务规范的 `install-slot/` 页面——单一来源，零依赖） |
@@ -208,7 +231,7 @@ node tools/install-slot/test-extract.mjs   # 安装页解包/名字 blob 测试
 | 类别 | 结果（2026-09-13） |
 | --- | --- |
 | 构建 | `validate.sh` 全门禁 PASS；应用 1,024,880 / 1,507,328 B（32% 余量）；合并镜像 8 MB；`cardid` 不动 |
-| Host tests | `meta_image`/`meta_slots`/`meta_import`/`meta_name` 四套件全过；安装页 node 测试 7/7；**新增** `test_meta_net_contract.py` 钉住 JS↔C 路由契约（方法+路径一致性）；**新增** `test_meta_net_upload.c`（21 用例）用真实 FIPS 180-4 SHA-256 驱动完整的配对→上传→刷入→校验→blob 流程，ESP-IDF 桩替换，零硬件可测 |
+| Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json` 套件全过；安装页与商店分析 node 测试全过；商店通道 ESP-IDF 模块（`meta_store_net`/`meta_store_api`）经 IDF 5.x 签名桩头做 host 语法检查（`-fsyntax-only`，零硬件）——*SoftAP 上传时代的 `meta_net`/`meta_import` 测试随上传通道一并退役* |
 | 模拟器（passport-sim） | 三槽列表（含动态 blob 偏移的真名：ota_0→0x355000，ota_1→0x55f000）；导航；详情元数据（`name: Pocket Walkie`，ver 1，1262 KB，sha 前缀）；空槽 BOOT 无操作；未签名警告页；LONG2 启动 ota_0；硬重启回滚到启动器；ota_1 Passport Radar 启动 + 回滚；DELETE→LONG2 擦除（SLOT 1→empty，重启后持久）；IMPORT 页（凭证/配对码/倒计时）；两项观察到判定为非固件 bug：确认页残留行 = 模拟器画布脏区伪影；导入页长按退出需更长按住 = 模拟器时序模型 — *记录于 2026-09-13，早于 LONG2 移除与 BOOT/CANCEL 启动菜单；这两项交互需重测* |
 | GitHub Actions | 静态检查（Linux/GCC）✅、固件门禁（ESP-IDF Docker）✅ |
 | CI artifact SHA-256 | `b86ca4fe…1b28e773`（分发包权威参考；本地编译因嵌入时间戳哈希不同） |

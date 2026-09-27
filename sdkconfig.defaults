@@ -99,3 +99,15 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # 子固件在各自分支自行配置。
 # CONFIG_BT_ENABLED is not set
 # CONFIG_BT_NIMBLE_ENABLED is not set
+
+# --- 商店下载通道(TLS + SNTP) ---
+# 设备只连 metapass.chuanxilu.net(Cloudflare,GTS Root R4 ← 链)与其可能的
+# ISRG 备用链,故用自定义证书包(main/certs/*.pem,双根 ~2.3KB),替代默认
+# Mozilla 全量包(省 ~60KB+ 固件体积)。
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL is not set
+# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN is not set
+CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH="main/certs"
+# 证书链校验 mbedTLS 默认开;mbedTLS_HAVE_TIME_DATE 默认启用 = 校验证书有效期,
+# 所以 SNTP 必须先于任何 TLS(meta_store_net.c 强制该顺序)。

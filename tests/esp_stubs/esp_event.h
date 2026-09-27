@@ -3,8 +3,8 @@
 extern "C" {
 #endif
 typedef void esp_event_handler_instance_t;
-typedef int esp_event_base_t;
-#define ESP_EVENT_ANY_BASE ((esp_event_base_t)-1)
+typedef const char *esp_event_base_t;
+#define ESP_EVENT_ANY_BASE ((esp_event_base_t)0)
 #define ESP_EVENT_ANY_ID   ((int)-1)
 static inline esp_err_t esp_event_handler_register(const esp_event_base_t base,
                                                     const int event_id,
