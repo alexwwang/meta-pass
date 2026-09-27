@@ -1,15 +1,15 @@
 // main/meta_store_idedit.h —— P1 玩法 ID 编辑模型(纯逻辑,零 LVGL/IDF 依赖)。
-// 真机(main.c)与 host 测试(tests/test_meta_store_idedit.c)链接同一份代码:
-// 交互正确性由测试钉死,不再依赖"真机上看一眼"。
+// 真机(main.c)与 host 测试(tests/test_meta_store_idedit.c)链接同一份代码。
 //
-// 键盘布局(屏上 15 键):
-//   1 2 3
-//   4 5 6
-//   7 8 9
-//   CLR 0 OK      (第四行)
-//   DEL ◀  ▶     (第五行,编辑操作)
-// 物理键映射(由 main.c 完成):UP/DOWN 短按 = ◀▶(行内),UP/DOWN 长按 = 换行
-// (上一行/下一行),OK = 按下选中键。
+// 键盘布局(r9.1,4×4 网格,15 键;OK 占第四列下部两行):
+//   1   2   3   DEL
+//   4   5   6   CLR
+//   7   8   9   OK(纵跨 r2-r3)
+//   ◀   0   ▶   (OK 下半)
+// ◀ ▶ 分列 0 的两侧(r9.1 用户指定);DEL/CLR/OK 独占第四列。
+// 物理键映射(main.c):UP/DOWN 短按 = ◀▶ 移光标;长按 = 换行(列保持,
+// 同列无键则停住 —— 第四列 row3 是 OK 的下半,换行到那里即停在 OK)。
+// ◀ ▶ 屏上键等效物理键;DEL 退格;CLR 全清;OK 显式提交。
 #pragma once
 
 #include <stdbool.h>
@@ -20,16 +20,15 @@
                            // 用户可能输错,由 OK 显式提交,DEL 可退格修正)
 
 // 键索引(与网格位置一致;main.c 据此摆放控件)。
-enum {
-    MPD_KEY_1 = 0, MPD_KEY_2, MPD_KEY_3,
-    MPD_KEY_4, MPD_KEY_5, MPD_KEY_6,
-    MPD_KEY_7, MPD_KEY_8, MPD_KEY_9,
-    MPD_KEY_CLR, MPD_KEY_0, MPD_KEY_OK,   // 第四行
-    MPD_KEY_DEL, MPD_KEY_LEFT, MPD_KEY_RIGHT,  // 第五行(编辑)
+enum {   // 行主序,与网格一一对应(4×4,OK 占 (2,3) 与 (3,3) 两格)
+    MPD_KEY_1 = 0, MPD_KEY_2, MPD_KEY_3, MPD_KEY_DEL,
+    MPD_KEY_4, MPD_KEY_5, MPD_KEY_6, MPD_KEY_CLR,
+    MPD_KEY_7, MPD_KEY_8, MPD_KEY_9, MPD_KEY_OK,
+    MPD_KEY_LEFT, MPD_KEY_0, MPD_KEY_RIGHT,
     MPD_KEY_COUNT,
 };
 
-// 网格几何:行/列(用于长按换行的落点判定)。
+// 网格几何:行/列(0..3;OK 返回其上格 (2,3))。
 void mpd_key_row_col(int key, int *row, int *col);
 
 typedef struct {

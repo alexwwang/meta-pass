@@ -63,25 +63,36 @@ static void test_row_navigation(void)
     mpd_idedit_t e;
     mpd_idedit_init(&e);   // sel = 1 (row0,col0)
 
-    // 长按 DOWN ×3 → 第四行 CLR;再 ×1 → 第五行 DEL;环绕回 1。
+    // 第一列换行:1 → 4 → 7 → ◀ → 环绕回 1。
     mpd_idedit_move_row(&e, +1);
     assert(e.sel == MPD_KEY_4);
     mpd_idedit_move_row(&e, +1);
     assert(e.sel == MPD_KEY_7);
     mpd_idedit_move_row(&e, +1);
-    assert(e.sel == MPD_KEY_CLR);
-    mpd_idedit_move_row(&e, +1);
-    assert(e.sel == MPD_KEY_DEL);
+    assert(e.sel == MPD_KEY_LEFT);
     mpd_idedit_move_row(&e, +1);
     assert(e.sel == MPD_KEY_1);
 
-    // 长按 UP 从首行环绕到末行,列保持。
-    mpd_idedit_move_row(&e, -1);
-    assert(e.sel == MPD_KEY_DEL);
-    // 列保持:从 OK(row3,col2) 上移 → 9(row2,col2)。
+    // 第四列:DEL → CLR → OK →(OK 下半无键,停住)。
+    e.sel = MPD_KEY_DEL;
+    mpd_idedit_move_row(&e, +1);
+    assert(e.sel == MPD_KEY_CLR);
+    mpd_idedit_move_row(&e, +1);
+    assert(e.sel == MPD_KEY_OK);
+    mpd_idedit_move_row(&e, +1);
+    assert(e.sel == MPD_KEY_OK);
+
+    // 列保持上移:OK 上格(row2,col3) → CLR(row1,col3);环绕 0(col1) 上移 → 8。
     e.sel = MPD_KEY_OK;
     mpd_idedit_move_row(&e, -1);
-    assert(e.sel == MPD_KEY_9);
+    assert(e.sel == MPD_KEY_CLR);
+    e.sel = MPD_KEY_0;
+    mpd_idedit_move_row(&e, -1);
+    assert(e.sel == MPD_KEY_8);
+    // 环绕:0(row3) 下移 → 2(row0,col1)。
+    e.sel = MPD_KEY_0;
+    mpd_idedit_move_row(&e, +1);
+    assert(e.sel == MPD_KEY_2);
     printf("PASS: row navigation wraps and preserves column\n");
 }
 

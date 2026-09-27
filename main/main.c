@@ -449,20 +449,26 @@ static void page_store_id_build(void)
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
     lv_label_set_text(s_status_line, "UP/DOWN move - OK pick");
 
-    // 屏上键盘 15 键(r9):3×3 数字 + 第四行 CLR 0 OK + 第五行 DEL ◀ ▶。
-    // 键 40x30,列距 46,行距 34;UP/DOWN 短按=◀▶ 移光标,长按=换行。
+    // 屏上键盘 15 键(r9.1):4×4 —— 1 2 3 DEL / 4 5 6 CLR / 7 8 9 OK(纵跨
+    // 两行) / ◀ 0 ▶。键 44x30,列距 50,行距 34;UP/DOWN 短按=◀▶ 移光标,
+    // 长按=换行(同列无键停住)。
     static const char *const k_labels[MPD_KEY_COUNT] = {
-        "1", "2", "3", "4", "5", "6", "7", "8", "9",
-        "CLR", "0", "OK", "DEL", "<", ">",
+        "1", "2", "3", "DEL",
+        "4", "5", "6", "CLR",
+        "7", "8", "9", "OK",
+        "<", "0", ">",
     };
     for (int i = 0; i < MPD_KEY_COUNT; i++) {
-        const int col = i % 3, row = i / 3;
+        int row, col;
+        mpd_key_row_col(i, &row, &col);
         const uint32_t base = (i == MPD_KEY_OK) ? UI_YELLOW
                             : (i == MPD_KEY_CLR || i == MPD_KEY_DEL
                                || i == MPD_KEY_LEFT || i == MPD_KEY_RIGHT) ? UI_MUTED
                             : UI_PAPER;
-        s_keys[i] = ui_pixel_panel_create(s_scr, 12 + col * 46, 150 + row * 34,
-                                          40, 30, base);
+        // OK 纵跨 row2-row3(高 30+34-6 补两行间距)。
+        const int h = (i == MPD_KEY_OK) ? (30 + 34 - 6) : 30;
+        s_keys[i] = ui_pixel_panel_create(s_scr, 12 + col * 50, 142 + row * 34,
+                                          44, h, base);
         lv_obj_t *lbl = ui_pixel_label(s_keys[i], k_labels[i],
                                        &lv_font_montserrat_14, UI_INK);
         lv_obj_center(lbl);
