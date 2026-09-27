@@ -17,6 +17,111 @@ listed at the end, with evidence.
 
 ---
 
+## Store OTA / provisioning failure chains (r9 cycle, 2026-09-27/28)
+
+Found during real-device bring-up of the store download channel. Each entry:
+symptom → root cause → fix → lesson. All five chains were invisible to the
+simulator (no RF bridging) and to the existing host tests; the fixes that
+apply are pinned by new host tests, and `tools/e2e-production.mjs` now guards
+the data plane against the production site.
+
+### BUG-05 (High) — scan residue state froze scanning *and* connecting
+
+- **Symptom**: after one empty scan result, the phone never saw the target
+  network again; submitting credentials then stalled in "Connecting to WiFi…"
+  for the full 30s deadline and fell back to the AP.
+- **Root cause**: `/api/scan` split "start scan" (network task) from "read
+  results" (HTTP handler), and the handler returned **without calling
+  `esp_wifi_scan_get_ap_records` whenever count == 0**. In ESP-IDF, a finished
+  but un-drained scan leaves the driver in a residue state that blocks the
+  next `esp_wifi_scan_start` **and** `esp_wifi_connect`.
+- **Fix**: scan start → bounded wait → **unconditional** drain moved into one
+  handler-synchronous step; cross-task handoff removed.
+- **Lesson**: with IDF WiFi, *reading the results is part of finishing the
+  scan* — every scan path must drain, including (especially) the empty one.
+
+### BUG-06 (Critical) — a "fallback" retry that prevented association
+
+- **Symptom**: (predicted by static review, confirmed on device) reconnect
+  attempts never converged while the per-second retry loop was active.
+- **Root cause**: self-inflicted. A per-second `esp_wifi_connect()` was added
+  as a "lost-event fallback"; IDF treats re-entry while connecting as
+  disconnect + reconnect, and each call restarts connect's internal channel
+  scan — the retry loop *was* the reason association never completed. Event
+  group bits are sticky, so the scenario the fallback guarded against does
+  not exist.
+- **Fix**: removed; disconnect events are trusted (sticky bits) and reasons
+  are surfaced on screen via `meta_store_wifi_fail_text` (15/201/202/204/205).
+- **Lesson**: never paper over event-delivery doubts with repeated side-
+  effectful calls; check the API's re-entry semantics first (`esp_wifi_connect`
+  is not idempotent) and the primitive's memory model (sticky bits) second.
+
+### BUG-07 (High) — the 300s session overlay froze the provisioning panel
+
+- **Symptom**: screen stuck on "Syncing clock…" for 200+ seconds while the
+  `timeout in Ns` label kept counting; after reboot the device worked (the
+  credentials had been saved all along).
+- **Root cause**: the session-timeout overlay armed during provisioning (the
+  job queue is idle then, `busy=false`) and, once shown, `store_tick` returned
+  early every tick — the panel froze at its last frame. The running timeout
+  label was the disproof of the first (wrong) "overlay freezes everything"
+  theory; the correct chain is "tick alive → only `s_info` updates stale →
+  overlay armed → early return".
+- **Fix**: overlay suppressed during AP_UP/CONNECTING/ERROR; panel refreshes
+  live with elapsed seconds ("Syncing clock… (7s)"); provisioning webpage no
+  longer claims "saved!" ("Received…" + point at the device screen).
+- **Lesson**: a stuck label with a *live* sibling label localizes the freeze
+  to the update path of the stuck one — use that differential before
+  theorizing. Time-factor check ("can any timeout in the code produce 200s?")
+  would have falsified the first theory immediately.
+
+### BUG-08 (High) — ONLINE transition never detected → no auto-advance
+
+- **Symptom**: panel froze at "Syncing clock… (3s)" with the timeout label
+  counting; the device never left the provisioning page although WiFi was up.
+- **Root cause**: the 2s auto-advance timer was anchored at **page build time**
+  (`s_net_online_at` captured once; 0 when the page was built during
+  CONNECTING), so `s_net_online_at != 0` never became true; ONLINE also had no
+  panel-refresh branch, so the last CONNECTING frame persisted.
+- **Fix**: the tick detects the ONLINE *transition* itself (first sight →
+  record timestamp + repaint panel), making the advance independent of when
+  the page was built.
+- **Lesson**: anchor timers to **state transitions**, not to page-build
+  moments; every reachable state needs a render branch (a missing branch is a
+  frozen frame, not a rare cosmetic gap).
+
+### BUG-09 (High) — hard-reject policy locked out half the marketplace
+
+- **Symptom**: five plays all showed unsupported on device within one day of
+  r8 shipping.
+- **Root cause**: market data changed under us — plays started shipping extra
+  data partitions (`easter` subtype 0x82, voicefs-type 0x81) and the r8 rule
+  hard-rejected any non-whitelisted data partition with subtype != 0x40. The
+  policy premise ("installing would corrupt the device") was wrong: only the
+  extracted factory app is written; partition payloads never enter the device.
+- **Fix**: all non-whitelisted *data* partitions warn-and-allow with
+  `detail=<label>` (pinned by analyzer PASS 5/5b/5c + firmware contract test);
+  production baseline re-verified 563/675/200 the same day.
+- **Lesson**: accept/reject policies must be re-validated against **live
+  production data**, not last week's samples — the production baseline check
+  (E2E-1/2 over golden IDs) is what caught this within hours.
+
+### Process lessons (r9)
+
+1. **E2E must target the production site** — local server.mjs proves the
+   code, not the deployment. `tools/e2e-production.mjs` (14 checks) is the
+   acceptance gate for the data plane; re-run it before any device flash.
+2. **Device-only paths get static review + screen diagnostics** — RF, task
+   lifecycles, and UI state machines cannot be host-tested; each F1–F4
+   finding came from a checklist against known IDF failure modes, and every
+   remaining failure now prints its layer and reason code on screen.
+3. **Extract device decision logic into pure modules** (`meta_store_idedit`,
+   `meta_store_prov`, `meta_store_analysis`) so the host tests run the same
+   code the device runs — "verified on the simulator" claims died here twice
+   before this rule was adopted.
+
+---
+
 ## PASS-RADAR "still unsigned" — root cause and resolution
 
 Symptom reported on-device: the pass-radar firmware signed with the *fixed*

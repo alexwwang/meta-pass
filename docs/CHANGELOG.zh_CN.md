@@ -6,6 +6,38 @@
 
 ## Unreleased
 
+- **商店配网加固 + 政策修正(r9,v1.0.0-14..18)**:六条真机失效链逐一定根因并修复,
+  外加正式站 E2E 证据工装。① **配网扫描/连接死锁**:`/api/scan` 原本把「起扫」(网络
+  任务)与「取结果」(HTTP handler)拆在两处,且结果为空时 handler 不调
+  `esp_wifi_scan_get_ap_records` 就返回——ESP-IDF 中「扫描完成但记录未取」会让驱动
+  停在残留态,同时卡死下一次扫描与 `esp_wifi_connect()`,表现为扫描列表冻结、凭证
+  提交后吃满 30s 死线。现改为 handler 内同步完成(起扫→有界等待→无条件取记录),
+  `pmf_cfg.capable=true`(兼容 WPA2/WPA3 混合路由),断连原因码上屏(`密码错误? /
+  AP 未找到,重扫 / 认证失败:密码/PMF? / 握手超时`,新 `meta_store_wifi_fail_text`)。
+  ② **清除一个自伤回归**:同周期加过的「每秒兜底重发 `esp_wifi_connect()`」反而阻断
+  关联——IDF 对连接中重调的处理是断开重连,每次重调都会重启 connect 的内部信道扫描;
+  事件位是粘性的,重试纯属伤害。由延迟执行的静态分析轮(F1–F4)抓到,同轮还把作业栈
+  6144→8192(mbedTLS 峰值)、WiFi teardown/start 收敛到作业任务单点、P0 RESET 预选
+  收窄到 ERROR 态。③ **面板冻结根因**:300s 会话浮层在配网期间上弦(此时
+  `busy=false`)且触发后 `store_tick` 直接 return——面板冻在 "Syncing clock..." 而
+  timeout 标签照常倒数;现配网 AP_UP/CONNECTING/ERROR 期间不再触发浮层,面板实时
+  刷新已耗时秒数,SNTP 主服务器改 `ntp.aliyun.com`(5s 上限)。④ **ONLINE 自动翻页
+  重新锚定**:`s_net_online_at` 在建页时取样(建页发生在 CONNECTING 时为 0),2s 翻页
+  永不触发且 ONLINE 无刷新分支;tick 现在自己检测 ONLINE 跳变。配网页文案不再谎称
+  "saved!"(改为 "Received…" 并指向设备屏幕)。⑤ **自定义分区政策修正**:市场玩法
+  开始携带额外数据分区(`easter` 0x82、voicefs 类 0x81),r8 的硬拒规则把半个市场
+  锁在门外(一天内即被生产基线检查抓到);现所有白名单外的*数据*分区一律警告放行
+  并带 `detail=<label>`(实际只装解包出的 factory 应用——分区载荷从不进设备),由
+  分析器 PASS 5/5b/5c 与固件合同测试钉死。⑥ **P1 键盘按 TDD 重建**:编辑模型抽出为
+  纯逻辑 `main/meta_store_idedit.{c,h}`(host 测试,真机同一份代码),4×4 布局——
+  1-9/0 数字、DEL/CLR 独立列、`◀ 0 ▶`、OK 纵跨两行——插入光标编辑带退格,长按=
+  换行,显式提交;测试当场抓到首次布局引入的数字映射错误。**证据工装**:
+  `tools/e2e-production.mjs` 对正式站跑 14 项检查(analyze 契约、extracted
+  大小/sha/magic 三重校验、真实响应字节反喂设备 C 解析器、叶子证书 issuer 对设备
+  GTS Root R4 锚、服务端↔固件 reason 码对齐)——正是抓到政策回归的那套检查;
+  `tests/worker_contract.mjs` 钉住 Pages worker API 面。factory 预算
+  ~1,147,000/1,507,328 B(约 24% 余量);产物 `meta-pass_v1.0.0-18-g0fd6194.bin`
+  及后续。
 - **商店体验 + 自定义分区策略(r8)**:四项真机修复。① **按需扫描**:r7 的 3s 周期后台
   扫描在 SoftAP 期间反复切信道,配网 beacon 出现空窗,手机根本搜不到热点;`/api/scan`
   改为触发一次扫描并等待至多 2.5s(`PROV_SCAN_WAIT_MS`),其余时间 AP beacon 不被打断。

@@ -341,6 +341,27 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r9（2026-09-28）真机加固、政策修正、TDD 键盘、正式站 E2E 门**：真机 bring-up
+  的六条失效链，逐条定根因并以测试钉死。① 配网扫描改为 handler 内同步且**无条件**
+  取结果——IDF 中「扫完未取」的残留态会同时卡死下一次扫描与 `esp_wifi_connect`
+  （BUG-05）；PMF capable；断连原因码上屏。② WiFi 生命周期单属主（作业任务）：
+  stop/reset 只是任务串行执行的请求——不存在跨任务 teardown/start 竞态；作业栈
+  6144→8192 B（mbedTLS 峰值）；删除每秒 `esp_wifi_connect` 兜底（非幂等重入 =
+  断开重连；粘性事件位下纯属伤害）。③ 会话浮层在 AP_UP/CONNECTING/ERROR 期间解除
+  （它冻结面板而 timeout 标签照走）；实时已耗时显示；SNTP 主服务器
+  `ntp.aliyun.com`，5s 上限。④ ONLINE 自动翻页改锚在 tick 侧的状态跳变检测，不再锚
+  建页时刻（CONNECTING 期间建的页永不翻页）。⑤ custom-partitions 政策修正为**白名单
+  外数据分区一律警告放行**（`detail=<label>`）：实际只写解包出的 factory 应用，分区
+  载荷从不进设备——r8 硬拒把携带 `easter`（0x82）/voicefs（0x81）分区的玩法锁在
+  门外，一天内即被生产基线抓到。⑥ P1 ID 输入按 TDD 重建为纯逻辑 `meta_store_idedit`
+  模块（真机与测试同一份实现）：4×4 网格——1-9/0、DEL/CLR 独立列、`◀ 0 ▶`、OK 纵跨
+  两行——插入光标带退格，长按 = 换行，显式提交；测试在任何刷机之前抓到数字映射错误。
+  **验收**：`tools/e2e-production.mjs`——对正式站 14 项检查（analyze 契约、extracted
+  长度/sha/magic 三重校验、生产响应字节反喂设备 C 解析器、叶子证书 issuer 对 GTS
+  Root R4 锚、服务端↔固件 reason 对齐）；`tests/worker_contract.mjs` 钉住 Pages
+  worker API；`validate.sh` 全绿。产物 `meta-pass_v1.0.0-14..18-*.bin`，factory 预算
+  约 24% 余量。
+
 - **v3.2-r8（2026-09-27）真机修复：按需扫描、屏上键盘、重置 WiFi、自定义分区警告放行**：
   四个真机/真实市场数据暴露的问题。① **按需扫描**：r7 的 3s 周期后台扫描在 SoftAP 期间
   反复 `esp_wifi_scan_start` 切离 AP 信道，beacon 出现空窗，手机完全搜不到

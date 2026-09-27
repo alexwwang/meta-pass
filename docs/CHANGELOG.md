@@ -6,6 +6,48 @@
 
 ## Unreleased
 
+- **Store provisioning hardening + policy fix (r9, v1.0.0-14..18)**: six real-device
+  failure chains root-caused and fixed, plus a production E2E evidence harness. ①
+  **Provisioning scan/connect deadlock**: `/api/scan` used to split "start scan" (network
+  task) and "read results" (HTTP handler), and the handler returned without calling
+  `esp_wifi_scan_get_ap_records` whenever the result set was empty — in ESP-IDF an
+  un-drained finished scan leaves the driver in a residue state that blocks both the next
+  scan and `esp_wifi_connect()`, freezing the scan list and stalling credential connects
+  for their full 30s deadline. Scanning is now handler-synchronous (start → bounded wait →
+  unconditional drain), `pmf_cfg.capable=true` (WPA2/WPA3 mixed routers), and disconnect
+  reasons surface on screen (`Wrong password? / AP not found. Re-scan. / Auth failed:
+  password/PMF? / Handshake timeout.`, new `meta_store_wifi_fail_text`). ② **A
+  self-inflicted regression removed**: a per-second "fallback" `esp_wifi_connect()` added
+  in the same cycle prevented association — IDF treats re-entry while connecting as
+  disconnect+reconnect and each call restarts connect's internal channel scan; event bits
+  are sticky so the retry was pure harm. Found by the deferred static-analysis pass
+  (F1–F4), which also raised the job stack 6144→8192 (mbedTLS peak), unified WiFi
+  teardown/start into the job task, and restricted the P0 RESET preselection to ERROR. ③
+  **Frozen panel root cause**: the 300s session overlay armed during provisioning (there
+  `busy=false`) and `store_tick` returned early — the panel froze at "Syncing clock..."
+  while the timeout label kept counting; the overlay is now suppressed during
+  AP_UP/CONNECTING/ERROR, the panel refreshes live with elapsed seconds, and SNTP uses
+  `ntp.aliyun.com` primary (5s cap). ④ **ONLINE auto-advance re-anchored**:
+  `s_net_online_at` was captured at page build (0 when built during CONNECTING) so the 2s
+  advance never fired and ONLINE had no refresh branch; the tick now detects the ONLINE
+  transition itself. The provisioning web page no longer claims "saved!" (it says
+  "Received…" and points at the device screen). ⑤ **Custom-partition policy corrected**:
+  market plays started shipping extra data partitions (`easter` 0x82, voicefs-type 0x81)
+  and the r8 hard-reject rule locked out half the marketplace (caught by the production
+  baseline check within a day); all non-whitelisted *data* partitions now warn-and-allow
+  with `detail=<label>` (only the extracted factory app is installed — partition payloads
+  never enter the device), pinned by analyzer PASS 5/5b/5c and the firmware contract test.
+  ⑥ **P1 keypad rebuilt TDD**: editing extracted into pure-logic
+  `main/meta_store_idedit.{c,h}` (host-tested, same code on device), 4×4 layout — 1-9/0
+  digits, DEL/CLR column, `◀ 0 ▶`, OK spanning two rows — insert-cursor editing with
+  backspace, long-press = row wrap, explicit commit; the tests caught a digit-mapping bug
+  the first layout pass introduced. **Evidence harness**: `tools/e2e-production.mjs` runs
+  14 checks against the production site (analyze contract, extracted size/sha/magic
+  tri-check, real response bytes fed to the device's C parser, leaf-cert issuer vs the
+  device's GTS Root R4 anchor, server↔firmware reason-code alignment) — the same checks
+  that caught the policy regression; `tests/worker_contract.mjs` pins the Pages worker API
+  surface. Factory budget ~1,147,000/1,507,328 B (~24% free); artifacts
+  `meta-pass_v1.0.0-18-g0fd6194.bin` and later.
 - **Store UX + custom-partition policy (r8)**: four real-device fixes. ① **Scan on
   demand**: the r7 3s periodic background scan kept switching the radio channel
   while the SoftAP was up, so the provisioning beacon had gaps and phones could

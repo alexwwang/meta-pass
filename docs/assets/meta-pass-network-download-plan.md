@@ -359,6 +359,31 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r9 (2026-09-28) Real-device hardening, policy correction, TDD keypad, production E2E
+  gate**: six failure chains from device bring-up, each root-caused and pinned by tests. ①
+  Provisioning scan made handler-synchronous with an **unconditional** result drain — a
+  finished-but-undrained IDF scan blocks the next scan *and* `esp_wifi_connect` (BUG-05);
+  PMF capable; disconnect reasons rendered on screen. ② WiFi lifecycle single-owner (the job
+  task): stop/reset are requests the task serializes — no cross-task teardown/start races;
+  job stack 6144→8192 B for the mbedTLS peak; the per-second `esp_wifi_connect` fallback
+  removed (non-idempotent re-entry = disconnect+reconnect; sticky event bits make it pure
+  harm). ③ Session overlay disarmed during AP_UP/CONNECTING/ERROR (it froze the panel while
+  the timeout label kept counting); live elapsed-seconds display; SNTP `ntp.aliyun.com`
+  primary, 5s cap. ④ ONLINE auto-advance re-anchored to a tick-side state-transition detect
+  instead of page-build time (a page built during CONNECTING never advanced). ⑤
+  Custom-partitions policy corrected to **warn-and-allow for every non-whitelisted data
+  partition** (`detail=<label>`): only the extracted factory app is written, partition
+  payloads never enter the device — the r8 hard-reject locked out plays shipping `easter`
+  (0x82)/voicefs (0x81) partitions, caught by the production baseline within a day. ⑥ P1 ID
+  entry rebuilt TDD as the pure-logic `meta_store_idedit` module (device and tests share one
+  implementation): 4×4 grid — 1-9/0, DEL/CLR column, `◀ 0 ▶`, OK spanning two rows — insert
+  cursor with backspace, long-press = row wrap, explicit commit; tests caught a digit-mapping
+  error before any flash. **Acceptance**: `tools/e2e-production.mjs` — 14 checks against the
+  production site (analyze contract, extracted len/sha/magic tri-check, production response
+  bytes fed back through the device's C parser, leaf-cert issuer vs the GTS Root R4 anchor,
+  server↔firmware reason alignment); `tests/worker_contract.mjs` pins the Pages worker API;
+  `validate.sh` all green. Artifacts `meta-pass_v1.0.0-14..18-*.bin`, factory budget ~24%
+  free.
 - **v3.2-r8 (2026-09-27) Real-device fixes: scan-on-demand, on-screen keypad, reset-WiFi,
   custom-partition warn-and-allow**: four issues surfaced on real hardware or real market
   data. ① **Scan-on-demand**: the r7 periodic 3s background scan runs `esp_wifi_scan_start`,
