@@ -191,8 +191,8 @@ static const char PROV_HTML[] =
     "+'&pass='+encodeURIComponent(p.value),{method:'POST'})"
     ".then(function(r){return r.text().then(function(t){return [r.ok,t];});})"
     ".then(function(ok){st.textContent=ok[0]"
-    "?'saved! Device is connecting to '+s.value"
-    "+'. Reconnect your phone to that WiFi to continue.'"
+    "?'Received. Device is connecting to '+s.value"
+    "+' — WATCH THE DEVICE SCREEN: it shows progress, and the reason if it fails. Reconnect your phone to '+s.value+' after the device goes online.'"
     ":'failed ('+ok[1]+')';});}"
     "</script></body></html>";
 

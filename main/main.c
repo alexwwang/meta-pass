@@ -356,6 +356,10 @@ static bool s_info_filled;
 // ONLINE 停留 2s 后自动进 P1(给足"已连上 XX"的可见时间,再快也能看清 SSID)。
 static bool     s_net_reset_sel;   // P0 RESET WIFI 行是否高亮
 static int64_t  s_net_online_at;   // 进入 ONLINE 的时刻(自动进 P1 用;0=未在线)
+// 连接失败原因的粘滞显示:失败 → ap_start 回到 AP_UP 只在一拍之间,ERROR 文案
+// 会闪没;记下最近一次失败,配网页顶部展示 8s,让"提交后没反应"有因可读。
+static char     s_net_last_fail[40];
+static int64_t  s_net_fail_at;
 static bool st_is_credentialed(void)
 {
     meta_store_net_status_t st;
@@ -738,14 +742,36 @@ static void store_tick(lv_timer_t *t)
                 store_goto(PAGE_STORE_ID);
             }
         } else if (st.state == SN_STATE_AP_UP) {
-            // ERROR 是过渡态(网络任务随即回落 AP),AP_UP 才刷新配网信息
-            // (用保存凭证直连失败的第一次轮询也会走这里)。
+            // AP_UP:配网信息。若 8s 内发生过连接失败,顶部加一行原因 ——
+            // 失败回落 AP 只在一拍之间,不粘滞显示用户只会看到"没反应"。
+            if (s_info) {
+                char text[240];
+                if (s_net_fail_at
+                    && esp_timer_get_time() / 1000 - s_net_fail_at < 8000
+                    && s_net_last_fail[0]) {
+                    snprintf(text, sizeof(text),
+                             "Last try: %s\n\nWiFi setup:\nhotspot: %s\n\nhttp://192.168.4.1\nPick network + password",
+                             s_net_last_fail, st.ssid);
+                } else {
+                    snprintf(text, sizeof(text),
+                             "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
+                             st.ssid);
+                }
+                lv_label_set_text(s_info, text);
+            }
+        } else {
+            // CONNECTING/ERROR:凭证已到手,实时刷新状态(此前这两态没有任何
+            // 显示分支,屏钉死在配网文字上 —— 真机"提交后设备像死了"的直接
+            // 原因)。ERROR 同时记入粘滞横幅,回落 AP 后仍可见 8s。
             if (s_info) {
                 char text[200];
-                snprintf(text, sizeof(text),
-                         "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
-                         st.ssid);
+                snprintf(text, sizeof(text), "%s\n\nWiFi: %s",
+                         st.message, st.sta_ssid[0] ? st.sta_ssid : "-");
                 lv_label_set_text(s_info, text);
+            }
+            if (st.state == SN_STATE_ERROR && st.message[0]) {
+                snprintf(s_net_last_fail, sizeof(s_net_last_fail), "%.39s", st.message);
+                s_net_fail_at = esp_timer_get_time() / 1000;
             }
         }
         break;
