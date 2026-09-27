@@ -360,6 +360,9 @@ static int64_t  s_net_online_at;   // 进入 ONLINE 的时刻(自动进 P1 用;0
 // 会闪没;记下最近一次失败,配网页顶部展示 8s,让"提交后没反应"有因可读。
 static char     s_net_last_fail[40];
 static int64_t  s_net_fail_at;
+// CONNECTING 已耗时(屏显 "Connecting... Ns"):任务侧上限 30s 连接 + 5s 时钟,
+// 超过 60s 还在 CONNECTING = 任务挂死,屏上数字直接暴露,不用猜。
+static int64_t  s_net_connecting_at;
 static bool st_is_credentialed(void)
 {
     meta_store_net_status_t st;
@@ -723,6 +726,14 @@ static void store_tick(lv_timer_t *t)
     case PAGE_STORE_NET: {
         meta_store_net_status_t st;
         meta_store_net_poll(&st);
+        // 配网/连接是显式用户活动:每拍续期,300s 超时浮层不得在此触发 ——
+        // 浮层会冻结面板在最后一帧(v13 真机"Syncing clock 卡 200s"的根因:
+        // 凭证路径 busy=false,浮层照常触发,画面停在旧文字,任务其实早已
+        // 结束)。超时语义保留给 P1 之后的闲置(输入页/进度页照旧问用户)。
+        if (st.state == SN_STATE_AP_UP || st.state == SN_STATE_CONNECTING
+            || st.state == SN_STATE_ERROR) {
+            store_touch();
+        }
         if (s_status_line) {
             const int left = (int)((s_store_deadline - esp_timer_get_time() / 1000) / 1000);
             char line[96];
@@ -762,11 +773,28 @@ static void store_tick(lv_timer_t *t)
         } else {
             // CONNECTING/ERROR:凭证已到手,实时刷新状态(此前这两态没有任何
             // 显示分支,屏钉死在配网文字上 —— 真机"提交后设备像死了"的直接
-            // 原因)。ERROR 同时记入粘滞横幅,回落 AP 后仍可见 8s。
+            // 原因)。CONNECTING 附带已耗时:任务侧上限 ~35s(30s 连接 + 5s 时钟),
+            // 数字继续涨 = 任务挂死,一眼可判;归零/跳变 = 状态在走。ERROR 记入
+            // 粘滞横幅,回落 AP 后仍可见 8s。
+            if (st.state == SN_STATE_CONNECTING) {
+                if (!s_net_connecting_at) {
+                    s_net_connecting_at = esp_timer_get_time() / 1000;
+                }
+            } else {
+                s_net_connecting_at = 0;
+            }
             if (s_info) {
                 char text[200];
-                snprintf(text, sizeof(text), "%s\n\nWiFi: %s",
-                         st.message, st.sta_ssid[0] ? st.sta_ssid : "-");
+                if (st.state == SN_STATE_CONNECTING) {
+                    const int secs = (int)((esp_timer_get_time() / 1000
+                                            - s_net_connecting_at) / 1000);
+                    snprintf(text, sizeof(text), "%s (%ds)\n\nWiFi: %s",
+                             st.message, secs,
+                             st.sta_ssid[0] ? st.sta_ssid : "-");
+                } else {
+                    snprintf(text, sizeof(text), "%s\n\nWiFi: %s",
+                             st.message, st.sta_ssid[0] ? st.sta_ssid : "-");
+                }
                 lv_label_set_text(s_info, text);
             }
             if (st.state == SN_STATE_ERROR && st.message[0]) {

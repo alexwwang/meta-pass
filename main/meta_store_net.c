@@ -30,7 +30,7 @@ static const char *TAG = "store_net";
 
 #define AP_MAX_CONN        1
 #define STA_CONNECT_MS     30000
-#define SNTP_SYNC_MS       15000
+#define SNTP_SYNC_MS       5000    // 死等上限:可达时<1s,不可达时不陪葬(旧 15s)
 #define JOB_QUEUE_LEN      2
 #define JOB_STACK          8192   // analyze/install(TLS+mbedTLS 握手峰值 ~8KB)在此任务内跑
 #define JOB_PRIO           5
@@ -580,17 +580,23 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
 
     // SNTP:mbedTLS 默认开启证书时间校验(MBEDTLS_HAVE_TIME_DATE),不同步会先
     // 撞 BADCERT_FUTURE——TLS 之前必须拿到真实时间。
+    // 服务器:ntp.aliyun.com 为主(国内 <1s;pool.ntp.org 全球轮询,国内常 2-10s
+    // 甚至丢包),pool.ntp.org 备份;LWIP_SNTP_MAX_SERVERS 需 >=2(sdkconfig)。
     set_state(SN_STATE_CONNECTING, "Syncing clock...");
-    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    // 双服务器:主 ntp.aliyun.com(国内 <1s),备 pool.ntp.org。不走 MULTIPLE
+    // 宏 —— 花括号内的逗号会被预处理器当宏参数分隔,是坑;直接字段赋值。
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
+    sntp_cfg.servers[1] = "pool.ntp.org";   // CONFIG_LWIP_SNTP_MAX_SERVERS=2
+    sntp_cfg.num_of_servers = 2;
     err = esp_netif_sntp_init(&sntp_cfg);
     if (err != ESP_OK) goto fail;
     err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_SYNC_MS));
     esp_netif_sntp_deinit();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "SNTP 同步超时(%s),仍以已同步度最高的本地时钟继续",
-                 esp_err_to_name(err));
-        // 不视为致命:多数网络环境 SNTP 可达;失败时 TLS 时间校验可能拒绝证书,
-        // 错误会经 analyze/install 的 ESP_FAIL 上屏,用户可重试。
+        // 超时不致命,但要诚实上屏:时钟停在 1970 时下一步 analyze 的 TLS 会以
+        // BADCERT_FUTURE 失败,用户需要知道因果,而不是看到莫名 unavailable。
+        ESP_LOGW(TAG, "SNTP 同步超时(%s),时钟可能未同步", esp_err_to_name(err));
+        set_state(SN_STATE_CONNECTING, "Clock unsynced (TLS may fail).");
     }
 
     creds_save(ssid, pass);

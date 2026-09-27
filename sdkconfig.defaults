@@ -101,6 +101,8 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # CONFIG_BT_NIMBLE_ENABLED is not set
 
 # --- 商店下载通道(TLS + SNTP) ---
+# SNTP 双服务器(ntp.aliyun.com 主 + pool.ntp.org 备)需要 >=2。
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
 # 设备只连 metapass.chuanxilu.net(Cloudflare,GTS Root R4 ← 链)与其可能的
 # ISRG 备用链,故用自定义证书包(main/certs/*.pem,双根 ~2.3KB),替代默认
 # Mozilla 全量包(省 ~60KB+ 固件体积)。
