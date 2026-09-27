@@ -78,6 +78,7 @@ static bool               s_analysis_valid;
 
 static char s_prov_ssid[33];
 static char s_prov_pass[65];
+static volatile bool s_scan_req;   // /api/scan 置位:作业任务在 AP_UP 态同步扫一次
 
 static void set_state(sn_state_t st, const char *msg)
 {
@@ -349,7 +350,7 @@ static esp_err_t h_prov_index(httpd_req_t *req)
 // {"networks":[{"ssid":"...","rssi":-52,"auth":true},...]}
 // 只读缓存不阻塞(handler 纪律);配网任务每 3s 触发一次扫描,首拍可能为空。
 #define PROV_SCAN_MAX       20
-#define PROV_SCAN_PERIOD_MS 3000
+#define PROV_SCAN_WAIT_MS   2500   // handler 等作业任务完成按需扫描的上限
 
 // SSID 原始字节转 JSON 字符串体:" 与 \ 转义,控制字符 \u00XX;
 // 高位字节(非 ASCII SSID)原样输出,页面按 UTF-8 显示,乱码可接受(仍可手输)。
@@ -402,6 +403,14 @@ static esp_err_t h_prov_scan(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    // 按需扫描:置位请求后等作业任务完成一次全信道扫描(上限 PROV_SCAN_WAIT_MS);
+    // 手机已连热点,等待期 beacon 暂停不影响已建立的连接。
+    s_scan_req = true;
+    for (int waited = 0; waited < PROV_SCAN_WAIT_MS / 100; waited++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        if (!s_scan_req) break;
+    }
 
     uint16_t count = 0;
     esp_wifi_scan_get_ap_num(&count);
@@ -719,13 +728,20 @@ static void job_task_main(void *arg)
             continue;
         }
 
-        // 配网页存活:周期触发 AP 扫描,保证 /api/scan 有缓存可读(handler
-        // 不阻塞,只取最近一次结果;首拍为空,页面提示再按一次 Scan)。
-        if (s_status.state == SN_STATE_AP_UP) {
+        // 配网页:扫描按需。不再周期后台扫——真机上 AP 信道与扫描互斥,
+        // 周期扫描会暂停 beacon 数秒,手机端表现为热点时有时无、iOS 更是
+        // 直接找不到(r7 实机踩雷)。改为:/api/scan handler 收到请求时
+        // 置位请求,此处同步扫一次(此时手机已连上热点,少一次 beacon
+        // 中断也无所谓);首拍为空,页面提示再按一次 Scan。未连设备时
+        // 完全不扫,beacon 稳定,热点可见性最佳。
+        if (s_status.state == SN_STATE_AP_UP && s_scan_req) {
+            s_scan_req = false;
             esp_wifi_scan_start(NULL, false);
-            vTaskDelay(pdMS_TO_TICKS(PROV_SCAN_PERIOD_MS));
-            continue;
+            // 阻塞等扫描完成(默认全信道 ~1.5-2s);此时 httpd 在另一任务,
+            // 页面请求不致超时(30s)。
+            vTaskDelay(pdMS_TO_TICKS(2000));
         }
+        vTaskDelay(pdMS_TO_TICKS(200));
 
         if (s_status.state != SN_STATE_ONLINE) continue;
 
@@ -840,4 +856,33 @@ void meta_store_net_poll(meta_store_net_status_t *out)
 void meta_store_net_job_poll(meta_store_net_job_t *out)
 {
     if (out) *out = s_job;
+}
+
+esp_err_t meta_store_net_reset_wifi(void)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    if (s_status.state == SN_STATE_AP_UP) return ESP_OK;   // 已在配网态,幂等
+
+    // 拆旧连接(可能正在 STA/CONNECTING/ONLINE):teardown 同步完成后重开 AP。
+    // 与 job_task 的互同由事件组保证:先置 STOP 位让任务循环空转,teardown 后
+    // 清位恢复任务(任务侧 EV_STOP 分支只 continue,不做资源操作)。
+    xEventGroupSetBits(s_events, EV_STOP);
+    wifi_teardown();
+    xEventGroupClearBits(s_events, EV_STOP | EV_CREDENTIALS | EV_GOT_IP | EV_DISCONNECT);
+
+    // 擦凭证:nvs_open RW 失败不致命(可能分区刚初始化),下次配网保存时自然建。
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "sta_ssid");
+        nvs_erase_key(h, "sta_pass");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+
+    const esp_err_t err = ap_start();
+    if (err != ESP_OK) {
+        set_state(SN_STATE_ERROR, "Setup AP failed.");
+        return err;
+    }
+    return ESP_OK;
 }

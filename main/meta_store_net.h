@@ -63,6 +63,11 @@ esp_err_t meta_store_net_begin(void);
 // 离开商店页时完整释放:配网 httpd → WiFi → 取消未完成作业。可重复调用。
 void meta_store_net_stop(void);
 
+// 清除已存 WiFi 凭证并重新开配网 AP(改 WiFi 入口)。要求已初始化;内部
+// 完成旧连接 teardown → 凭证擦除 → ap_start,状态经 meta_store_net_poll 反映。
+// 返回 ESP_OK 表示 AP 已就绪(或已在配网态);错误时状态为 ERROR + message。
+esp_err_t meta_store_net_reset_wifi(void);
+
 // 投递 analyze 作业(要求当前 ONLINE)。ESP_OK = 已入队,结果经作业轮询取。
 esp_err_t meta_store_net_cmd_analyze(uint32_t play_id);
 

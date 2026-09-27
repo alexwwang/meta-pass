@@ -6,6 +6,25 @@
 
 ## Unreleased
 
+- **商店体验 + 自定义分区策略(r8)**:四项真机修复。① **按需扫描**:r7 的 3s 周期后台
+  扫描在 SoftAP 期间反复切信道,配网 beacon 出现空窗,手机根本搜不到热点;`/api/scan`
+  改为触发一次扫描并等待至多 2.5s(`PROV_SCAN_WAIT_MS`),其余时间 AP beacon 不被打断。
+  ② **P1 ID 输入重建为屏上数字键盘**,ID 变长(1–7 位,与服务端 `\d{1,7}` 一致):
+  0–9 两行键 + 高个 GO 键 + CLR 条,UP/DOWN 移动选择,OK 追加,第 7 位自动提交,
+  GO 在 ≥1 位时提交;固定位数高位补零废弃(空时显示 "ID: -")。③ **P0 新增
+  "Reset WiFi"**:NVS 凭证自动重连是预期默认,但存错网络原本无解——UP/DOWN 选中
+  "> RESET WIFI (OK=confirm)",OK 擦除 `sta_ssid`/`sta_pass` 并重启热点(新接口
+  `meta_store_net_reset_wifi()`);ONLINE 后停留 2s 自动进 P1。④ **玩法 675
+  "unavailable" 根因**:其 `rec` 分区是 subtype 0x40 的自定义数据分区(type=1),
+  被分析器硬拒规则判为不可装,且线上部署的服务端仍是旧版(`/api/analyze` 全量 404,
+  设备把一切非契约响应渲染成 "unavailable"——本次排查的可见触发点)。分析器改为对
+  subtype 0x40 自定义数据区**警告放行**(`supported=true`,reason=custom-partitions,
+  `detail=<label>`;subtype ≠ 0x40 才硬拒),analyze 契约新增 `detail` 字段,槽位页
+  渲染 "NOTE: custom 'rec' part / not installed; some features may lack it" 且仍可
+  CONFIRM 安装。**需将 `server.mjs` 重新部署到 metapass.chuanxilu.net**(线上版本
+  早于以上全部修复)。r8 后 factory 预算:1,146,480/1,507,328 B(约 24% 余量);
+  发布产物 `meta-pass_v1.0.0-7-g6f9ff18.bin`(1,212,060 B 含 MPUPV2 尾段),校验门
+  4/4 PASS。
 - **商店下载通道(feat/ota,方案 v3.2-r6)**:SoftAP 上传导入通道退役(`meta_net`/`meta_import`
   及其测试删除),设备经 metapass.chuanxilu.net(唯一 TLS 信任锚)直接从应用商店 OTA。流程:
   配网(SoftAP 表单,凭证存 NVS)或已存凭证直连 → SNTP → 数字键盘输玩法 ID → 一次

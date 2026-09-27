@@ -6,6 +6,32 @@
 
 ## Unreleased
 
+- **Store UX + custom-partition policy (r8)**: four real-device fixes. ① **Scan on
+  demand**: the r7 3s periodic background scan kept switching the radio channel
+  while the SoftAP was up, so the provisioning beacon had gaps and phones could
+  not see the hotspot at all; `/api/scan` now triggers exactly one scan and waits
+  up to 2.5s for it (`PROV_SCAN_WAIT_MS`), leaving the AP beacon untouched the
+  rest of the time. ② **P1 ID entry rebuilt as an on-screen keypad** with
+  variable-length IDs (1–7 digits, matching the server's `\d{1,7}`): 0–9 keys in
+  two rows plus a tall GO key and a CLR bar, UP/DOWN move the selection, OK
+  appends, the 7th digit auto-commits, GO commits with ≥1 digit; fixed-width
+  zero-padded IDs are gone ("ID: -" shows while empty). ③ **"Reset WiFi" on P0**:
+  auto-reconnect from NVS is the intended default, but a wrong saved network had
+  no way out — UP/DOWN now selects "> RESET WIFI (OK=confirm)" and OK erases
+  `sta_ssid`/`sta_pass` and restarts the AP (new `meta_store_net_reset_wifi()`);
+  ONLINE auto-advances to P1 after 2s. ④ **Play 675 "unavailable" root cause**:
+  its `rec` partition is a data partition (type=1) with subtype 0x40 (custom),
+  which the analyzer's hard-reject rule made uninstallable, and the stale deployed
+  server 404s every `/api/analyze` (the firmware renders any non-contract reply
+  as "unavailable" — the visible trigger). The analyzer now warns and allows
+  subtype-0x40 custom data partitions (`supported=true`, reason=custom-partitions,
+  `detail=<label>`; hard reject only when subtype != 0x40), the analyze contract
+  gains a `detail` string, and the slot page renders "NOTE: custom 'rec' part /
+  not installed; some features may lack it" while still offering CONFIRM.
+  **Requires redeploying `server.mjs` to metapass.chuanxilu.net** (the deployed
+  copy predates all of this). Factory budget after r8: 1,146,480/1,507,328 B
+  (~24% free); release artifact `meta-pass_v1.0.0-7-g6f9ff18.bin` (1,212,060 B
+  incl. MPUPV2 footer), verify gates 4/4 PASS.
 - **Store download channel (feat/ota, plan v3.2-r6)**: replaces the SoftAP upload import
   (`meta_net`/`meta_import` and their tests retired) with on-device OTA from the app store via
   metapass.chuanxilu.net — the device's single TLS trust anchor. Flow: WiFi provisioning (SoftAP

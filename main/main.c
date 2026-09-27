@@ -59,7 +59,7 @@ typedef enum {
 
 #define LIST_ITEMS   4                   // Slot 0 / Slot 1 / Slot 2 / Store
 #define DETAIL_ITEMS 3                   // Boot / Delete / Back
-#define STORE_ID_DIGITS 6                // 玩法编号输入位数(市场编号 ≤ 999999)
+#define ID_MAX_DIGITS 7                  // 玩法编号上限位数(市场 id 校验 \d{1,7});实际位数由用户输入决定,不补零
 // 商店会话超时不再"到点即关":到期提示用户决策(OK=保留 / LONG=退出),见 store_tick。
 // 超时时长默认 CONFIG_META_STORE_SESSION_TIMEOUT_MS,运行时可用
 // meta_store_session_set_timeout_ms 覆盖(见 meta_store_net.h)。
@@ -82,10 +82,15 @@ static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(�
 
 // ---- 商店会话状态(UI 上下文;网络侧状态在 meta_store_net 快照里) ----
 static uint32_t s_play_id;                       // P1 确认的玩法编号
-static char     s_id_digits[STORE_ID_DIGITS];    // P1 数字缓冲
-static int      s_id_pos;                        // P1 当前编辑位 0..DIGITS-1
+static char     s_id_digits[ID_MAX_DIGITS];      // P1 已录数字(变长,无补零)
+static int      s_id_len;                        // P1 已录位数 0..ID_MAX_DIGITS
+static int      s_key_sel;                       // P1 键盘高亮索引 0..11(0-9 数字,10=GO,11=CLR)
+static lv_obj_t *s_keys[10];                     // P1 数字键面板(屏上键盘)
+static lv_obj_t *s_key_go;                       // P1 GO 键(变长:位数 >=1 即可提交)
+static lv_obj_t *s_key_clr;                      // P1 CLR 键(清空重输)
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
 static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
+static char     s_store_warn_detail[24];         // 警告型 reason 的 detail(如自定义分区名 rec)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
@@ -346,7 +351,19 @@ static void page_store_done_build(void);
 // P2 详情内容是否已填充(防轮询定时器每拍重复填充/重复加行)。
 static bool s_info_filled;
 
-// P0 配网页:显示 AP 名/密码(配网页模式)或连接状态;ONLINE 自动进 P1。
+// P0 配网页:AP 态显示热点信息;已存凭证(CONNECTING/ONLINE)态显示当前 SSID
+// 与 RESET WIFI 行 —— 选中并 OK 确认后擦凭证重开配网 AP(改 WiFi 入口)。
+// ONLINE 停留 2s 后自动进 P1(给足"已连上 XX"的可见时间,再快也能看清 SSID)。
+static bool     s_net_reset_sel;   // P0 RESET WIFI 行是否高亮
+static int64_t  s_net_online_at;   // 进入 ONLINE 的时刻(自动进 P1 用;0=未在线)
+static bool st_is_credentialed(void)
+{
+    meta_store_net_status_t st;
+    meta_store_net_poll(&st);
+    return st.state == SN_STATE_CONNECTING || st.state == SN_STATE_ONLINE
+        || st.state == SN_STATE_ERROR;
+}
+
 static void page_store_net_build(void)
 {
     s_scr = ui_pixel_screen_create("STORE");
@@ -365,16 +382,30 @@ static void page_store_net_build(void)
         snprintf(text, sizeof(text),
                  "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
                  st.ssid);
+        lv_label_set_text(s_info, text);
+        s_net_reset_sel = false;
+        s_net_online_at = 0;
     } else {
-        snprintf(text, sizeof(text), "%s", st.message);
+        snprintf(text, sizeof(text), "%s\n\nWiFi: %s", st.message,
+                 st.sta_ssid[0] ? st.sta_ssid : "-");
+        lv_label_set_text(s_info, text);
+        // 已存凭证路径:给 RESET WIFI 行;AP 态没有(热点本身就是改网入口)。
+        s_net_reset_sel = (st.state != SN_STATE_ONLINE);
+        s_net_online_at = (st.state == SN_STATE_ONLINE) ? esp_timer_get_time() / 1000 : 0;
     }
-    lv_label_set_text(s_info, text);
 
     s_status_line = lv_label_create(panel);
     lv_obj_set_width(s_status_line, 196);
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
+    if (st.state != SN_STATE_AP_UP) {
+        lv_label_set_text(s_status_line, s_net_reset_sel
+                          ? "> RESET WIFI  (OK=confirm)"
+                          : "OK = change WiFi");
+    } else {
+        lv_label_set_text(s_status_line, "");
+    }
 
     add_battery(s_scr);
     store_touch();
@@ -382,25 +413,30 @@ static void page_store_net_build(void)
     lv_screen_load(s_scr);
 }
 
-// P1 数字键盘:UP/DOWN 调当前位,OK 跳下一位,6 位齐后自动发 analyze。
+// P1 屏上数字键盘:0-9 十键两行 + GO/CLR,UP/DOWN 移动高亮,OK = 按下。
+// 输入变长:已录数字实时上屏,GO 提交,CLR 清空;位数 = 用户实际输入位数
+// (市场无固定位数补零约定,禁止误导性补零)。ID_MAX_DIGITS 位满自动提交。
+static void id_key_refresh(void);
+
 static void id_refresh_text(void)
 {
-    char line[32];
-    char caret[32];
+    char line[40];
     int w = snprintf(line, sizeof(line), "ID: ");
-    int c = snprintf(caret, sizeof(caret), "    ");
-    for (int i = 0; i < STORE_ID_DIGITS; i++) {
-        w += snprintf(line + w, sizeof(line) - w, "%c ", s_id_digits[i]);
-        c += snprintf(caret + c, sizeof(caret) - c, "%s", (i == s_id_pos) ? "^ " : "  ");
+    if (s_id_len == 0) {
+        snprintf(line + w, sizeof(line) - w, "-");
+    } else {
+        for (int i = 0; i < s_id_len; i++) {
+            w += snprintf(line + w, sizeof(line) - w, "%c", s_id_digits[i]);
+        }
     }
     lv_label_set_text(s_info, line);
-    lv_label_set_text(s_status_line, caret);
+    id_key_refresh();
 }
 
 static void page_store_id_build(void)
 {
     s_scr = ui_pixel_screen_create("PLAY ID");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 120, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 100, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
@@ -412,9 +448,29 @@ static void page_store_id_build(void)
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
+    lv_label_set_text(s_status_line, "UP/DOWN move - OK pick");
 
-    memset(s_id_digits, '0', sizeof(s_id_digits));
-    s_id_pos = 0;
+    // 屏上键盘:0-9 十个数字键两行 + 右列 GO(提交)/CLR(清空),共 12 键。
+    // 键 32x32,列距 38,行距 40;CLR 与第二行数字同排(9 键下方收尾,不出草地);
+    // GO 纵跨两行(主操作,黄底)。选中键由 id_key_refresh 涂黄(白底 → 亮青更醒目)。
+    char digit[2] = {0, 0};
+    for (int i = 0; i < 10; i++) {
+        const int col = i % 5, row = i / 5;
+        s_keys[i] = ui_pixel_panel_create(s_scr, 12 + col * 38, 158 + row * 40,
+                                          32, 32, UI_PAPER);
+        digit[0] = (char)('0' + i);
+        lv_obj_t *lbl = ui_pixel_label(s_keys[i], digit, &lv_font_montserrat_14, UI_INK);
+        lv_obj_center(lbl);
+    }
+    s_key_go  = ui_pixel_panel_create(s_scr, 12 + 5 * 38, 158, 32, 72, UI_YELLOW);
+    lv_obj_t *go_lbl = ui_pixel_label(s_key_go, "GO", &lv_font_montserrat_14, UI_INK);
+    lv_obj_center(go_lbl);
+    s_key_clr = ui_pixel_panel_create(s_scr, 12, 238, 152, 30, UI_MUTED);
+    lv_obj_t *clr_lbl = ui_pixel_label(s_key_clr, "CLR (clear)", &lv_font_montserrat_14, UI_INK);
+    lv_obj_center(clr_lbl);
+
+    s_id_len = 0;
+    s_key_sel = 0;
     id_refresh_text();
     add_battery(s_scr);
     store_touch();
@@ -422,11 +478,31 @@ static void page_store_id_build(void)
     lv_screen_load(s_scr);
 }
 
-// P1 → 组装编号并发 analyze,切到 P2 轮询。
+// P1 键盘高亮刷新:选中键黄底,其余原色;0-9/GO/CLR 共 12 键。
+// 布局(6 列 2 行,索引):行1 0 1 2 3 4 GO  行2 5 6 7 8 9 CLR。
+static lv_obj_t *k_key_obj(int idx)
+{
+    if (idx <= 9) return s_keys[idx];
+    return idx == 10 ? s_key_go : s_key_clr;
+}
+
+static void id_key_refresh(void)
+{
+    if (!s_scr) return;
+    for (int i = 0; i < 12; i++) {
+        const bool sel = (i == s_key_sel);
+        // 选中 = 亮青;GO 平时黄(主操作),CLR 平时灰;数字键平时纸白。
+        uint32_t base = (i == 10) ? UI_YELLOW : (i == 11 ? UI_MUTED : UI_PAPER);
+        lv_obj_set_style_bg_color(k_key_obj(i),
+                                  lv_color_hex(sel ? 0x35C4E8 : base), 0);
+    }
+}
+
+// P1 → 组装编号并发 analyze,切到 P2 轮询。变长:至少 1 位。
 static void id_commit(void)
 {
     uint32_t id = 0;
-    for (int i = 0; i < STORE_ID_DIGITS; i++) {
+    for (int i = 0; i < s_id_len; i++) {
         id = id * 10u + (uint32_t)(s_id_digits[i] - '0');
     }
     s_play_id = id;
@@ -459,15 +535,25 @@ static void page_store_info_build(void)
     lv_screen_load(s_scr);
 }
 
-// analyze 成功后填充详情内容(行 0 = CONFIRM,行 1 = BACK)。
+// analyze 成功后填充详情内容。supported 时行 0 = CONFIRM、行 1 = BACK;
+// 带 custom-partitions 警告时,详情里插一行警告文案(subtype 0x40 自定义数据
+// 分区不随镜像进设备,运行时可能缺该存储,由用户决定是否继续)。
 static void store_info_fill(const meta_store_analysis_t *a)
 {
     s_info_filled = true;
+    snprintf(s_store_warn_detail, sizeof(s_store_warn_detail), "%s", a->detail);
     char text[220];
     if (a->supported) {
-        snprintf(text, sizeof(text),
-                 "%.24s\nsize: %lu KB\nmin slot: %d",
-                 a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot);
+        if (strcmp(a->reason, "custom-partitions") == 0) {
+            snprintf(text, sizeof(text),
+                     "%.24s\nsize: %lu KB\nmin slot: %d\nNOTE: custom '%.24s' part\nnot installed;\nsome features may lack it",
+                     a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot,
+                     s_store_warn_detail);
+        } else {
+            snprintf(text, sizeof(text),
+                     "%.24s\nsize: %lu KB\nmin slot: %d",
+                     a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot);
+        }
     } else {
         snprintf(text, sizeof(text),
                  "Not supported:\n%.24s", a->reason);
@@ -634,11 +720,21 @@ static void store_tick(lv_timer_t *t)
         if (s_status_line) {
             const int left = (int)((s_store_deadline - esp_timer_get_time() / 1000) / 1000);
             char line[96];
-            snprintf(line, sizeof(line), "%s\ntimeout in %ds", st.message, left > 0 ? left : 0);
+            if (st.state == SN_STATE_AP_UP) {
+                snprintf(line, sizeof(line), "%s\ntimeout in %ds", st.message, left > 0 ? left : 0);
+            } else {
+                // 非配网态状态行留给 RESET WIFI 提示(build 里已写);只补倒计时。
+                snprintf(line, sizeof(line), "timeout in %ds", left > 0 ? left : 0);
+            }
             lv_label_set_text(s_status_line, line);
         }
         if (st.state == SN_STATE_ONLINE) {
-            store_goto(PAGE_STORE_ID);   // 联网成功:配网页自动翻页到输 ID
+            // 在线后停留 2s(让用户看清连的哪个网),期间可 OK 进 RESET 确认;
+            // 无操作才自动进 P1。s_net_online_at 由 build 设置,0 = 不自动翻页。
+            if (s_net_online_at
+                && esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
+                store_goto(PAGE_STORE_ID);
+            }
         } else if (st.state == SN_STATE_AP_UP) {
             // ERROR 是过渡态(网络任务随即回落 AP),AP_UP 才刷新配网信息
             // (用保存凭证直连失败的第一次轮询也会走这里)。
@@ -934,6 +1030,30 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
 
     case PAGE_STORE_NET:
+        if (ev == BSP_BTN_CLICK) {
+            if (st_is_credentialed()) {
+                // 已存凭证态:UP/DOWN 在 "继续(什么都不做)/ RESET WIFI" 间切换。
+                // 简化为单行提示:OK CLICK = 进 P1;OK LONG = 退出商店;RESET 走
+                // OK 在 "重置确认" 子态 —— s_net_reset_sel 为真时 OK 才真正擦除。
+                if (btn == BSP_BTN_OK && s_net_reset_sel) {
+                    const esp_err_t err = meta_store_net_reset_wifi();
+                    if (err == ESP_OK) {
+                        // reset 内部已 ap_start;重建页面显示热点信息。
+                        store_goto(PAGE_STORE_NET);
+                    }
+                    // 失败:状态行已是 ERROR message,轮询会刷新。
+                } else if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+                    s_net_reset_sel = !s_net_reset_sel;
+                    if (s_status_line) {
+                        lv_label_set_text(s_status_line, s_net_reset_sel
+                                          ? "> RESET WIFI  (OK=confirm)"
+                                          : "OK = continue");
+                    }
+                } else if (btn == BSP_BTN_OK && !s_net_reset_sel) {
+                    store_goto(PAGE_STORE_ID);   // 网络就绪,直接去输 ID
+                }
+            }
+        }
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             goto_page(PAGE_LIST);   // teardown 中 meta_store_net_stop()
         }
@@ -942,19 +1062,27 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_STORE_ID:
         if (ev == BSP_BTN_CLICK) {
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                const int d = (btn == BSP_BTN_UP) ? 1 : 9;   // +1 / -1(模 10)
-                s_id_digits[s_id_pos] = (char)('0' + (s_id_digits[s_id_pos] - '0' + d) % 10);
-                id_refresh_text();
+                // 屏上键盘移动:12 键单向环绕(UP=逆时针,DOWN=顺时针),语义可预期。
+                s_key_sel = (s_key_sel + (btn == BSP_BTN_DOWN ? 1 : 11)) % 12;
+                id_key_refresh();
             } else if (btn == BSP_BTN_OK) {
-                if (s_id_pos < STORE_ID_DIGITS - 1) {
-                    s_id_pos++;
+                if (s_key_sel <= 9) {
+                    // 数字键:追加一位;满 7 位自动提交(市场 id ≤ 7 位)。
+                    s_id_digits[s_id_len++] = (char)('0' + s_key_sel);
+                    if (s_id_len >= ID_MAX_DIGITS) {
+                        id_commit();
+                    } else {
+                        id_refresh_text();
+                    }
+                } else if (s_key_sel == 10) {   // GO
+                    if (s_id_len > 0) id_commit();
+                } else {                        // CLR
+                    s_id_len = 0;
                     id_refresh_text();
-                } else {
-                    id_commit();   // 6 位输完:发 analyze,进 P2
                 }
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            store_goto(PAGE_STORE_NET);   // 回 P0 看网络状态(不动网络栈)
+            store_goto(PAGE_STORE_NET);   // 回 P0(改 WiFi 入口见 P0 新增行)
         }
         break;
 

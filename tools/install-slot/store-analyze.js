@@ -27,15 +27,22 @@ export const SLOT_GEOMETRY = [
 
 const TAIL_SECTOR = 0x1000;
 
-// 合并镜像分区表允许出现的「数据类型」分区(type=1)标签:超出此白名单即
-// reason='custom-partitions'。数据分区是风险所在——槽位应用运行时按标签查找它们,
-// 目标布局没有的标签(如 spiffs)意味着应用缺存储不可用。
-// 应用类型分区(type=0,含 factory/ota_*/recovery)不检查:解包只取 factory 应用
-// 镜像写入槽位,其余应用分区内容在目标布局中完全惰性(play 563 自带 recovery
-// 回退分区,正是本项目的旗舰安装对象)。
+// 合并镜像分区表检查(两级):
+//   硬拒(type=1 数据分区 + 白名单外 label,且 subtype 不是 0x40)→
+//     reason='custom-partitions',镜像不可装:目标布局没有该存储,应用运行时
+//     按标签查找会失败,装了必坏。
+//   警告(type=1 + subtype 0x40 自定义数据区,如 play 675 的 rec 512KB 回退区)→
+//     supported=true 照常可装,reason='custom-partitions' + detail=<label> 作
+//     警告透传:解包只取 factory 应用,该分区内容不会随镜像进入设备,若应用
+//     运行时真读写它,会缺存储而部分功能降级(用户在设备端看到警告后自决)。
+// 应用类型分区(type=0,含 factory/ota_*/recovery 等)一律不检查:解包只取
+// factory 应用镜像写入槽位,其余应用分区内容在目标布局中完全惰性(563 的
+// recovery 即此类)。
 export const ALLOWED_PARTITION_LABELS = new Set([
   "nvs", "phy_init", "otadata", "cardid", "store", "coredump",
 ]);
+// subtype 0x40:ESP-IDF 预留给“任意自定义数据用途”的数据分区 subtype。
+const CUSTOM_DATA_SUBTYPE = 0x40;
 
 const REASON_NOT_FOUND = "not-found";
 const REASON_UNAVAILABLE = "unavailable";
@@ -168,10 +175,17 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
 
     if (!isFullImage(got.buf)) return { error: REASON_FORMAT };
     const parts = listPartitions(got.buf);
+    let partitionWarning = null;
     if (parts) {
       for (const p of parts) {
         if (p.type !== 0x01) continue; // 应用分区惰性,见 ALLOWED_PARTITION_LABELS 注释
-        if (!ALLOWED_PARTITION_LABELS.has(p.label)) return { error: REASON_CUSTOM_PARTITIONS, detail: p.label };
+        if (ALLOWED_PARTITION_LABELS.has(p.label)) continue;
+        if (p.subtype === CUSTOM_DATA_SUBTYPE) {
+          // 自定义数据区:可装但警告(首次出现即记,继续扫完确认没有更严重者)。
+          if (!partitionWarning) partitionWarning = p.label;
+          continue;
+        }
+        return { error: REASON_CUSTOM_PARTITIONS, detail: p.label };
       }
     }
 
@@ -204,7 +218,10 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       slots,
       suggestedSlot: supported ? fitSlots[0].slot : -1,
       supported,
-      reason: supported ? "ok" : REASON_TOO_LARGE,
+      // 警告可继续:subtype 0x40 自定义数据分区不阻断安装,reason 透传分区名,
+      // 设备端详情页显示警告后由用户决定;reason='ok' 表示无任何警告。
+      reason: supported ? (partitionWarning ? REASON_CUSTOM_PARTITIONS : "ok") : REASON_TOO_LARGE,
+      ...(partitionWarning ? { detail: partitionWarning } : {}),
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
     };
     doCache.set(cacheKey, entry);
@@ -223,6 +240,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       suggestedSlot: entry.suggestedSlot,
       supported: entry.supported,
       reason: entry.reason,
+      ...(entry.detail ? { detail: entry.detail } : {}),
     };
   }
 

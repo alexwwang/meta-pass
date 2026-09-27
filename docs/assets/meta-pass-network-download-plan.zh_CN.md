@@ -341,6 +341,29 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r8（2026-09-27）真机修复：按需扫描、屏上键盘、重置 WiFi、自定义分区警告放行**：
+  四个真机/真实市场数据暴露的问题。① **按需扫描**：r7 的 3s 周期后台扫描在 SoftAP 期间
+  反复 `esp_wifi_scan_start` 切离 AP 信道，beacon 出现空窗，手机完全搜不到
+  `metapass-XXXX`（beacon 劫持）。扫描改为仅在请求时执行：`/api/scan` 处理器置请求标志并
+  以 100ms 步进轮询至多 `PROV_SCAN_WAIT_MS`（2.5s），网络任务在 AP_UP 态见标志后只扫一次；
+  无 AP 时作业循环 200ms 空转。② **P1 ID 输入重建为屏上数字键盘**：固定位数高位补零的
+  设想是错的——市场玩法 ID 是变长的（服务端 `\d{1,7}`；"玩法市场里没有固定位数高位补零
+  的说法"）。P1 渲染 0–9 两行键 + 高个 GO 键 + CLR 条（UP/DOWN 在 12 键间移动选择并回绕，
+  OK 追加一位，第 7 位经 `ID_MAX_DIGITS` 自动提交，GO 在 ≥1 位时提交，CLR 清空；空时显示
+  "ID: -"）。③ **P0 新增 "Reset WiFi"**：凭证存 NVS 自动重连是预期设计，存错网络即无解；
+  P0 页新增 "> RESET WIFI (OK=confirm)"（UP/DOWN 切换选中），OK 调用新的
+  `meta_store_net_reset_wifi()`——停站、擦 NVS `sta_ssid`/`sta_pass`、重启热点。ONLINE
+  依旧停留 2s 后自动进 P1。④ **玩法 675 "unavailable" 根因**：该市场条目合并镜像含 `rec`
+  ——一个 subtype 0x40 的**数据**分区（type=1，ESP-IDF 自定义数据 subtype，作 512KB 回退
+  存储），被分析器硬拒规则判为不可装；叠加线上服务端陈旧（`/api/analyze` 全量 404），设备
+  把一切非契约响应渲染成 "unavailable"——复合可见症状。策略变更：subtype 0x40 自定义数据
+  分区改为**警告放行**（`supported=true`，reason=custom-partitions，`detail=<label>` 随
+  analyze 响应透传）——解包安装只取 factory 应用，该分区内容不会进入设备；subtype ≠ 0x40
+  仍硬拒（应用运行时按标签查找会失败）。analyze 契约新增 `detail` 字符串（缺省为空）；
+  固件互锁检查将 custom-partitions 特判为双态，槽位页渲染两行说明（"NOTE: custom 'rec'
+  part / not installed; some features may lack it"）且仍可 CONFIRM。**部署闸门**：④ 的
+  修复需将 `server.mjs` 重新部署到 metapass.chuanxilu.net；在此之前所有玩法均显示
+  "unavailable"。r8 后 factory 预算：1,146,480/1,507,328 B（约 24% 余量）。
 - **v3.2-r7（2026-09-27）配网易用性：扫描列表 + Captive Portal**：① SoftAP 热点改为开放
   （无密码），免去"小屏抄密码→手机输入"的环节；SSID 仍随机化（`metapass-XXXX`）避免多台
   设备同场冲突。② 扫描列表：AP 存活期间网络任务每 3 秒 `esp_wifi_scan_start`；配网页新增

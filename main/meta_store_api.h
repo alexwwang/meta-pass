@@ -30,7 +30,11 @@ typedef struct {
     bool     supported;
     char     reason[24];                     // not-found / unavailable / format /
                                              // no-factory / wrong-chip /
-                                             // custom-partitions / too-large / ok
+                                             // custom-partitions / too-large / ok;
+                                             // supported=true 时 custom-partitions
+                                             // 表示警告可继续(见 detail)
+    char     detail[24];                     // reason 的补充参数(警告分区名等);
+                                             // 空串 = 无补充
 } meta_store_analysis_t;
 
 // UI 轮询用的下载进度快照(纯数据)。

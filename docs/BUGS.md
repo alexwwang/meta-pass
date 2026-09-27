@@ -295,6 +295,55 @@ inconsistent with the `%u`-style handling elsewhere. Use
 
 ---
 
+## BUG-05 (High) — Periodic WiFi scan while the SoftAP is up makes the hotspot invisible
+
+**File:** `main/meta_store_net.c` (r7 provisioning scan)
+**Status: FIXED in r8** — scan-on-demand (`s_scan_req` + `PROV_SCAN_WAIT_MS` 2.5s
+wait in the `/api/scan` handler; one scan per request, no periodic timer).
+
+Symptom on real hardware: with the provisioning hotspot up, phones could not
+see `metapass-XXXX` in their network list at all — while the same radio had no
+trouble joining the saved home network moments earlier.
+
+Root cause: r7 scanned every 3s from a background task to keep the provisioning
+page's network list fresh. `esp_wifi_scan_start` must hop the radio to each
+channel to listen for beacons, and while it does so the SoftAP stops
+transmitting its own. A 3s cycle means the beacon is dark a large fraction of
+every cycle; phone scans (themselves a few seconds apart) kept landing in the
+gaps. On the bench this read as "page loads fine" because the QEMU/simulator
+covers only the HTTP layer — the RF interaction is invisible to every host
+test.
+
+Lesson: **anything on the air shares one radio.** A co-located periodic RF
+operation (scan, BLE activity, SNMP-ish polling) must be treated as a suspect
+when an AP "isn't visible" — and AP-visible-ness can only be verified with a
+real phone against real hardware. Event-driven, on-request execution is the
+default; "periodic refresh" for UI convenience is not free.
+
+## BUG-06 (High) — Fixed six-digit zero-padded play ID did not match the market's ID space
+
+**File:** `main/main.c` (P1 ID entry, r7 and earlier)
+**Status: FIXED in r8** — P1 rebuilt as an on-screen keypad with variable-length
+IDs (1–7 digits, `ID_MAX_DIGITS`; the 7th digit auto-commits), matching the
+server's `\d{1,7}` id validation.
+
+Symptom: entering a short play ID on the numeric page could only produce exactly
+six characters; anything shorter had to be imagined with leading zeros, and a
+5-digit play like 563 was awkward while 4-digit IDs were simply impossible.
+
+Root cause: the entry UI was built around a fixed-width format that exists
+nowhere in the product it talks to — the market identifies plays by
+variable-length numeric IDs (`\d{1,7}` server-side). The fixed width wasn't a
+tightened validation, it was an invented constraint.
+
+Lesson: **input formats must mirror the authoritative ID space, not a UI
+convenience.** When a display can't show an input field, the on-screen keypad is
+the fix — not a reinterpretation of the user's data. Zero-padding a numeric ID
+silently addresses a *different* resource (01 ≠ 1 on this market), so it was a
+correctness bug, not a cosmetic one.
+
+---
+
 ## Investigated and cleared (evidence)
 
 - **LVGL 9.5 timer self-delete in UI teardown paths** — `lv_timer.c` guards

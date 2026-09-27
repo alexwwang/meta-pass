@@ -175,7 +175,7 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 4: wrong chip id -> reason=wrong-chip");
 }
 
-// ---- 5. custom-partitions:未知分区标签 → reason=custom-partitions + detail ----
+// ---- 5. custom-partitions 硬拒:陌生 subtype 数据分区 → supported=false + detail ----
 {
   const app = buildAppImage([64]);
   const parts = [...META_PARTS, ["spiffs", 1, 130, 0x7f0000, 0x10000]];
@@ -184,7 +184,22 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   assert.equal(out.supported, false);
   assert.equal(out.reason, "custom-partitions");
   assert.equal(out.detail, "spiffs");
-  console.log("PASS 5: unknown partition label -> reason=custom-partitions");
+  console.log("PASS 5: unknown data partition (subtype!=0x40) -> hard reject");
+}
+
+// ---- 5b. 警告可继续:subtype 0x40 自定义数据分区(play 675 的 rec)→ supported=true + 警告 ----
+{
+  const app = buildAppImage([64]);
+  const parts = [...META_PARTS, ["rec", 1, 0x40, 0x7f0000, 0x80000]];
+  const { fetchImpl } = makeEnv({ app, parts });
+  const out = await makeAnalyzer(fetchImpl).analyze(563);
+  assert.equal(out.supported, true, "0x40 自定义数据区不阻断安装");
+  assert.equal(out.reason, "custom-partitions");
+  assert.equal(out.detail, "rec");
+  assert.equal(out.suggestedSlot, 0, "警告路径仍给出建议槽位");
+  const ex = await makeAnalyzer(fetchImpl).extracted(563);
+  assert.equal(ex.error, undefined, "警告路径 extracted 可用");
+  console.log("PASS 5b: custom data partition subtype 0x40 -> warn & allow (play 675 rec)");
 }
 
 // ---- 6. not-found:元数据 404 → reason=not-found(不触碰固件下载) ----

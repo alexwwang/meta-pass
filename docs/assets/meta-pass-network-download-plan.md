@@ -359,6 +359,38 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r8 (2026-09-27) Real-device fixes: scan-on-demand, on-screen keypad, reset-WiFi,
+  custom-partition warn-and-allow**: four issues surfaced on real hardware or real market
+  data. ① **Scan-on-demand**: the r7 periodic 3s background scan runs `esp_wifi_scan_start`,
+  which hops the radio off the AP channel for each sweep — the SoftAP beacon develops gaps
+  and phones cannot see `metapass-XXXX` at all (beacon hijack). The scan now runs only when
+  asked: the `/api/scan` handler sets a request flag and polls up to `PROV_SCAN_WAIT_MS`
+  (2.5s) while the network task scans once in the AP_UP state; with no AP, the job loop idles
+  at 200ms. ② **P1 ID entry rebuilt as an on-screen keypad**: the fixed six-digit
+  zero-padded concept was wrong — market play IDs are variable-length (`\d{1,7}` server-side;
+  "nowhere does the market say fixed-width, zero-padded"). P1 renders 0–9 as two key rows
+  plus a tall GO key and a CLR bar (UP/DOWN move the 12-key selection with wraparound, OK
+  appends a digit, the 7th digit auto-commits via `ID_MAX_DIGITS`, GO commits with ≥1 digit,
+  CLR clears; empty shows "ID: -"). ③ **"Reset WiFi" on P0**: saved credentials auto-reconnect
+  by design, so a wrong saved network locked the user out of provisioning; the P0 page now
+  offers "> RESET WIFI (OK=confirm)" (UP/DOWN toggles it) which calls the new
+  `meta_store_net_reset_wifi()` — stop station, erase `sta_ssid`/`sta_pass` from NVS, restart
+  the AP. ONLINE still auto-advances to P1 after 2s. ④ **Play 675 "unavailable" root cause**:
+  the market entry's merged image contains `rec`, a **data** partition (type=1) with subtype
+  0x40 (the ESP-IDF "custom data" subtype, used as a 512KB fallback store), which the analyzer's
+  hard-reject rule made uninstallable; the deployed server additionally 404s every
+  `/api/analyze` (stale build), and the firmware renders any non-contract reply as
+  "unavailable" — the compound visible symptom. Policy change: subtype-0x40 custom data
+  partitions are now **warned and allowed** (`supported=true`, reason=custom-partitions,
+  `detail=<label>` transmitted in the analyze response), because unpack installs only the
+  factory app — the partition's content never reaches the device; hard reject stays for
+  type=1 whitelisted-label violations with subtype != 0x40 (the app would look its label up
+  at runtime and fail). The analyze contract gains a `detail` string (empty when absent); the
+  firmware's interlock check special-cases custom-partitions as dual-state, and the slot page
+  renders a two-line note ("NOTE: custom 'rec' part / not installed; some features may lack
+  it") while still offering CONFIRM. **Deployment gate**: all of ④ requires redeploying
+  `server.mjs` to metapass.chuanxilu.net; until then every play shows "unavailable".
+  Factory budget after r8: 1,146,480/1,507,328 B (~24% free).
 - **v3.2-r7 (2026-09-27) Provisioning usability: scan list + captive portal**: ① The SoftAP
   hotspot drops its password — an open AP removes the "read the password off the tiny screen,
   type it on the phone" dance; the SSID stays randomized (`metapass-XXXX`) to avoid multi-device

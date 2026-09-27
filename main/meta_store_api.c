@@ -34,6 +34,9 @@ static const char *TAG = "store_api";
 #endif
 
 // 服务端下发的原因码(与 tools/install-slot/store-analyze.js 契约一致)。
+// custom-partitions 双态:supported=false = 硬拒(陌生数据分区,装了必坏);
+// supported=true  = 警告可继续(subtype 0x40 自定义区,镜像不含该分区内容,
+// 运行时若真读写会缺存储 —— P2 页显示警告,由用户决定)。
 static const struct {
     const char *reason;
     bool        supported;
@@ -44,7 +47,7 @@ static const struct {
     { "format",            false },
     { "no-factory",        false },
     { "wrong-chip",        false },
-    { "custom-partitions", false },
+    { "custom-partitions", false },   // supported 值仅约束硬拒分支;警告分支 true 也合法
     { "too-large",         false },
 };
 
@@ -124,13 +127,24 @@ static bool parse_analysis(const char *json, size_t len, meta_store_analysis_t *
     if (meta_store_json_get_string(json, len, "reason", reason, sizeof(reason))) {
         snprintf(out->reason, sizeof(out->reason), "%s", reason);
     }
+    // 警告补充参数(如 custom-partitions 警告的自定义分区名);缺席 = 空串。
+    // supported=true + custom-partitions = 警告可继续(方案 r8;见头文件注释)。
+    char detail[24] = {0};
+    if (meta_store_json_get_string(json, len, "detail", detail, sizeof(detail))) {
+        snprintf(out->detail, sizeof(out->detail), "%s", detail);
+    }
     // reason 字符串必须在已知集合内(防服务端契约漂移被静默吞掉)。
     bool known = false;
     for (size_t i = 0; i < sizeof(k_reasons) / sizeof(k_reasons[0]); i++) {
         if (strcmp(reason, k_reasons[i].reason) == 0) {
             known = true;
-            // supported 标志与 reason 必须互洽(契约不变量)。
-            if (out->supported != k_reasons[i].supported) return false;
+            // supported 标志与 reason 必须互洽(契约不变量)。例外:
+            // custom-partitions 是双态码(硬拒 false / 警告可继续 true),两种
+            // supported 值都合法,由 detail 有无与 UI 分支区分。
+            if (strcmp(reason, "custom-partitions") != 0
+                && out->supported != k_reasons[i].supported) {
+                return false;
+            }
             break;
         }
     }
