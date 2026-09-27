@@ -87,7 +87,8 @@ static int      s_id_pos;                        // P1 当前编辑位 0..DIGITS
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
 static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
-static lv_obj_t *s_timeout_lbl;                  // 到期提示浮层(s_scr 子对象,随屏销毁)
+static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
+static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
 static bool     s_store_retry;                   // P4b 选了 RETRY:当前下载取消后自动重新安装
 
 // ---------- 公共小部件 ----------
@@ -141,6 +142,7 @@ static void page_teardown(void)
         s_status_line = NULL;
         s_egg_panel = NULL;
         s_mascot = NULL;
+        s_timeout_panel = NULL;   // 浮层与影子都是 s_scr 子对象,随屏一起销毁
         s_timeout_lbl = NULL;
         for (int i = 0; i < LIST_ITEMS; i++) s_rows[i] = NULL;
     }
@@ -301,21 +303,30 @@ static void store_touch(void)
 static void store_show_timeout_prompt(void)
 {
     if (s_timeout_lbl || !s_scr) return;
-    s_timeout_lbl = lv_label_create(s_scr);
-    lv_obj_set_width(s_timeout_lbl, 216);
+    // 与页面其它框同一像素立体风格:墨色错位阴影 + 纸底 + 4px 墨线边框
+    // (ui_pixel_panel_create),浮层压在内容之上。ui_pixel_panel_create 会在
+    // 父对象下先铺一块影子再放面板(两个兄弟对象),清理时要一起删。
+    s_timeout_panel = ui_pixel_panel_create(s_scr, 32, 196, 176, 78, UI_PAPER);
+    s_timeout_lbl = lv_label_create(s_timeout_panel);
+    lv_obj_set_width(s_timeout_lbl, 148);
     lv_obj_set_style_text_font(s_timeout_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_timeout_lbl, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_text_align(s_timeout_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_bg_color(s_timeout_lbl, lv_color_hex(UI_PAPER), 0);
-    lv_obj_set_style_bg_opa(s_timeout_lbl, LV_OPA_COVER, 0);
     lv_label_set_text(s_timeout_lbl, "Session timeout.\nOK = continue\nLONG = exit store");
-    lv_obj_align(s_timeout_lbl, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_center(s_timeout_lbl);
 }
 
 static void store_clear_timeout_prompt(void)
 {
-    if (s_timeout_lbl) {
-        lv_obj_delete(s_timeout_lbl);
+    // 只删面板会留下孤儿影子块(ui_pixel_panel_create 先铺影子再放面板,
+    // 两个兄弟对象),按子索引把前一个兄弟一起拆;防御性判断防误删。
+    if (s_timeout_panel) {
+        lv_obj_t *parent = lv_obj_get_parent(s_timeout_panel);
+        const int32_t idx = (int32_t)lv_obj_get_index(s_timeout_panel);
+        lv_obj_t *shadow = (parent && idx > 0) ? lv_obj_get_child(parent, idx - 1) : NULL;
+        if (shadow) lv_obj_delete(shadow);
+        lv_obj_delete(s_timeout_panel);
+        s_timeout_panel = NULL;
         s_timeout_lbl = NULL;
     }
 }
