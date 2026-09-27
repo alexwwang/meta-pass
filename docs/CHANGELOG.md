@@ -29,8 +29,15 @@
   gains a `detail` string, and the slot page renders "NOTE: custom 'rec' part /
   not installed; some features may lack it" while still offering CONFIRM.
   **Requires redeploying `server.mjs` to metapass.chuanxilu.net** (the deployed
-  copy predates all of this). Factory budget after r8: 1,146,480/1,507,328 B
-  (~24% free); release artifact `meta-pass_v1.0.0-7-g6f9ff18.bin` (1,212,060 B
+  copy predates all of this). Follow-up contract fix in the same cycle: the
+  server answers unsupported plays with `name:null` / `extracted:null` (sha256 is
+  computed lazily), but the firmware parser treated `name`/`extracted` as always
+  required, so too-large/wrong-chip/not-found were swallowed into "format" on
+  screen; parsing now requires `name`/`extracted` only when `supported=true`
+  (pinned by a new host contract test, `tests/test_store_analyze_contract.c`,
+  linked against the same `meta_store_analysis.c` the device runs and fed real
+  local-server responses). Factory budget after r8: 1,146,544/1,507,328 B
+  (~24% free); release artifact `meta-pass_v1.0.0-8-g2595d26.bin` (1,212,124 B
   incl. MPUPV2 footer), verify gates 4/4 PASS.
 - **Store download channel (feat/ota, plan v3.2-r6)**: replaces the SoftAP upload import
   (`meta_net`/`meta_import` and their tests retired) with on-device OTA from the app store via

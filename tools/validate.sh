@@ -65,6 +65,13 @@ PY
         tests/test_meta_store_json.c main/meta_store_json.c \
         -o "${test_dir}/test_meta_store_json"
     "${test_dir}/test_meta_store_json"
+    # 商店通道 analyze 响应合同测试(解析器 = 真机同一份 meta_store_analysis.c;
+    # 样本锁定本地 server.mjs 真实响应形态与契约漂移拒收)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_store_analyze_contract.c main/meta_store_analysis.c \
+        main/meta_store_json.c \
+        -o "${test_dir}/test_store_analyze_contract"
+    "${test_dir}/test_store_analyze_contract"
     # 商店通道 ESP-IDF 模块 host 语法检查(桩头在 tests/esp_stubs,对齐 IDF 5.x
     # 签名;不链接,只验证类型/声明/警告级问题,真机构建仍由 --firmware 负责)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -fsyntax-only \

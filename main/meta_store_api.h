@@ -37,6 +37,9 @@ typedef struct {
                                              // 空串 = 无补充
 } meta_store_analysis_t;
 
+// analyze 响应体解析在独立编译单元 main/meta_store_analysis.{h,c}(纯逻辑,
+// 与 meta_store_json 同模式,host 合同测试可直接链接同一份代码)。
+
 // UI 轮询用的下载进度快照(纯数据)。
 typedef struct {
     bool     active;          // 有下载任务进行中

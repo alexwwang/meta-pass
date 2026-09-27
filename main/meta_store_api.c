@@ -17,6 +17,7 @@
 #include "meta_name.h"
 #include "meta_sign.h"
 #include "meta_store.h"
+#include "meta_store_analysis.h"
 #include "meta_store_json.h"
 
 static const char *TAG = "store_api";
@@ -32,24 +33,6 @@ static const char *TAG = "store_api";
 #else
 #define HTTP_TIMEOUT_MS  30000
 #endif
-
-// 服务端下发的原因码(与 tools/install-slot/store-analyze.js 契约一致)。
-// custom-partitions 双态:supported=false = 硬拒(陌生数据分区,装了必坏);
-// supported=true  = 警告可继续(subtype 0x40 自定义区,镜像不含该分区内容,
-// 运行时若真读写会缺存储 —— P2 页显示警告,由用户决定)。
-static const struct {
-    const char *reason;
-    bool        supported;
-} k_reasons[] = {
-    { "ok",                true  },
-    { "not-found",         false },
-    { "unavailable",       false },
-    { "format",            false },
-    { "no-factory",        false },
-    { "wrong-chip",        false },
-    { "custom-partitions", false },   // supported 值仅约束硬拒分支;警告分支 true 也合法
-    { "too-large",         false },
-};
 
 // ---- 进度快照(网络任务写,UI 轮询读) ----
 
@@ -83,74 +66,6 @@ void meta_store_api_request_cancel(void)
 }
 
 // ---- analyze ----
-
-// 从响应 JSON 填充 analysis;任一契约字段缺失/越界返回 false。
-static bool parse_analysis(const char *json, size_t len, meta_store_analysis_t *out)
-{
-    int64_t v;
-    char sha_hex[META_SHA256_HEX_LEN + 1];
-
-    memset(out, 0, sizeof(*out));
-    out->suggested_slot = -1;
-    snprintf(out->reason, sizeof(out->reason), "%s", "format");
-
-    if (!meta_store_json_get_string(json, len, "name", out->name, sizeof(out->name))) {
-        return false;
-    }
-    // MNAM blob 只收 META_NAME_MAX(32) 字节;超长名称即使 image 校验全过,也会让
-    // meta_slot_set_valid 静默失败 → 闪存已写但槽位注册表不一致。契约超限即拒绝,
-    // 不写入半途而废的镜像。
-    if (strlen(out->name) > META_NAME_MAX) {
-        return false;
-    }
-    if (!meta_store_json_get_int(json, len, "extracted/imageLen", &v)
-        || v <= 0 || v > UINT32_MAX) {
-        return false;
-    }
-    out->image_len = (uint32_t)v;
-    if (!meta_store_json_get_string(json, len, "extracted/sha256",
-                                    sha_hex, sizeof(sha_hex))) {
-        return false;
-    }
-    if (!meta_store_json_parse_sha256(sha_hex, strlen(sha_hex), out->sha256)) {
-        return false;
-    }
-    if (!meta_store_json_get_int(json, len, "suggestedSlot", &v)
-        || v < -1 || v > META_SLOT_COUNT - 1) {
-        return false;
-    }
-    out->suggested_slot = (int8_t)v;
-    if (!meta_store_json_get_bool(json, len, "supported", &out->supported)) {
-        return false;
-    }
-    char reason[24] = {0};
-    if (meta_store_json_get_string(json, len, "reason", reason, sizeof(reason))) {
-        snprintf(out->reason, sizeof(out->reason), "%s", reason);
-    }
-    // 警告补充参数(如 custom-partitions 警告的自定义分区名);缺席 = 空串。
-    // supported=true + custom-partitions = 警告可继续(方案 r8;见头文件注释)。
-    char detail[24] = {0};
-    if (meta_store_json_get_string(json, len, "detail", detail, sizeof(detail))) {
-        snprintf(out->detail, sizeof(out->detail), "%s", detail);
-    }
-    // reason 字符串必须在已知集合内(防服务端契约漂移被静默吞掉)。
-    bool known = false;
-    for (size_t i = 0; i < sizeof(k_reasons) / sizeof(k_reasons[0]); i++) {
-        if (strcmp(reason, k_reasons[i].reason) == 0) {
-            known = true;
-            // supported 标志与 reason 必须互洽(契约不变量)。例外:
-            // custom-partitions 是双态码(硬拒 false / 警告可继续 true),两种
-            // supported 值都合法,由 detail 有无与 UI 分支区分。
-            if (strcmp(reason, "custom-partitions") != 0
-                && out->supported != k_reasons[i].supported) {
-                return false;
-            }
-            break;
-        }
-    }
-    if (!known) return false;
-    return true;
-}
 
 esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
 {
@@ -209,7 +124,7 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     }
     s_buf[total] = '\0';
     ESP_LOGI(TAG, "analyze %lu: %d B", (unsigned long)play_id, total);
-    if (!parse_analysis(s_buf, (size_t)total, out)) {
+    if (!meta_store_analysis_parse(s_buf, (size_t)total, out)) {
         err = ESP_FAIL;
         goto fail_close;
     }

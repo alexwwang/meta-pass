@@ -363,7 +363,12 @@ app.get("/api/extracted", async (req, res) => {
   固件互锁检查将 custom-partitions 特判为双态，槽位页渲染两行说明（"NOTE: custom 'rec'
   part / not installed; some features may lack it"）且仍可 CONFIRM。**部署闸门**：④ 的
   修复需将 `server.mjs` 重新部署到 metapass.chuanxilu.net；在此之前所有玩法均显示
-  "unavailable"。r8 后 factory 预算：1,146,480/1,507,328 B（约 24% 余量）。
+  "unavailable"。r8 后 factory 预算：1,146,544/1,507,328 B（约 24% 余量）。同周期
+  追加契约修复：服务端对不可装玩法回 `name:null`/`extracted:null`（sha256 惰性计算、
+  错误路径 `extracted` 直接为 null），而设备端解析器把 `name`/`extracted` 当恒必填 ——
+  所有不可装响应在屏上都会退化为 "format"。现改为仅 `supported=true` 时要求这两组
+  字段；解析器独立成编译单元（`main/meta_store_analysis.c`），由新增 host 合同测试
+  （`tests/test_store_analyze_contract.c`）锁定真实响应形态（含不可装变体与漂移拒收）。
 - **v3.2-r7（2026-09-27）配网易用性：扫描列表 + Captive Portal**：① SoftAP 热点改为开放
   （无密码），免去"小屏抄密码→手机输入"的环节；SSID 仍随机化（`metapass-XXXX`）避免多台
   设备同场冲突。② 扫描列表：AP 存活期间网络任务每 3 秒 `esp_wifi_scan_start`；配网页新增

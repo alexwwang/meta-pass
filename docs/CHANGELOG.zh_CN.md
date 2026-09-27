@@ -22,8 +22,14 @@
   `detail=<label>`;subtype ≠ 0x40 才硬拒),analyze 契约新增 `detail` 字段,槽位页
   渲染 "NOTE: custom 'rec' part / not installed; some features may lack it" 且仍可
   CONFIRM 安装。**需将 `server.mjs` 重新部署到 metapass.chuanxilu.net**(线上版本
-  早于以上全部修复)。r8 后 factory 预算:1,146,480/1,507,328 B(约 24% 余量);
-  发布产物 `meta-pass_v1.0.0-7-g6f9ff18.bin`(1,212,060 B 含 MPUPV2 尾段),校验门
+  早于以上全部修复)。同周期追加契约修复:服务端对不可装玩法回
+  `name:null`/`extracted:null`(sha256 惰性计算),而固件解析器把 `name`/`extracted`
+  当恒必填,too-large/wrong-chip/not-found 会被吞成 "format" 上屏;现改为仅
+  `supported=true` 时才要求 `name`/`extracted`(新增 host 合同测试
+  `tests/test_store_analyze_contract.c` 锁定 —— 与真机链接同一份
+  `meta_store_analysis.c`,并以本地服务端真实响应喂入验证)。r8 后 factory 预算:
+  1,146,544/1,507,328 B(约 24% 余量);发布产物 `meta-pass_v1.0.0-8-g2595d26.bin`
+  (1,212,124 B 含 MPUPV2 尾段),校验门
   4/4 PASS。
 - **商店下载通道(feat/ota,方案 v3.2-r6)**:SoftAP 上传导入通道退役(`meta_net`/`meta_import`
   及其测试删除),设备经 metapass.chuanxilu.net(唯一 TLS 信任锚)直接从应用商店 OTA。流程:

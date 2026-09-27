@@ -390,7 +390,15 @@ app.get("/api/extracted", async (req, res) => {
   renders a two-line note ("NOTE: custom 'rec' part / not installed; some features may lack
   it") while still offering CONFIRM. **Deployment gate**: all of ④ requires redeploying
   `server.mjs` to metapass.chuanxilu.net; until then every play shows "unavailable".
-  Factory budget after r8: 1,146,480/1,507,328 B (~24% free).
+  Factory budget after r8: 1,146,544/1,507,328 B (~24% free). A follow-up contract
+  fix in the same cycle: for unsupported plays the server sends `name:null` /
+  `extracted:null` (sha256 is computed lazily and `extracted` is null on the error
+  path), but the device parser required `name`/`extracted` unconditionally — every
+  unsupported reply fell back to "format" on screen. Parsing now requires them only
+  when `supported=true`; the analyzer lives in its own translation unit
+  (`main/meta_store_analysis.c`) linked by a new host contract test
+  (`tests/test_store_analyze_contract.c`) that pins the real response shapes,
+  including the unsupported variants and drift rejection.
 - **v3.2-r7 (2026-09-27) Provisioning usability: scan list + captive portal**: ① The SoftAP
   hotspot drops its password — an open AP removes the "read the password off the tiny screen,
   type it on the phone" dance; the SSID stays randomized (`metapass-XXXX`) to avoid multi-device
