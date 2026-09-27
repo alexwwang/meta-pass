@@ -78,7 +78,7 @@ static bool               s_analysis_valid;
 
 static char s_prov_ssid[33];
 static char s_prov_pass[65];
-static volatile bool s_scan_req;   // /api/scan 置位:作业任务在 AP_UP 态同步扫一次
+static volatile int  s_last_disconnect_reason;   // 最近一次 STA 断连原因码(诊断上屏)
 
 static void set_state(sn_state_t st, const char *msg)
 {
@@ -96,10 +96,15 @@ static void set_job(sn_job_state_t st, const char *msg)
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    (void)arg; (void)data;
+    (void)arg;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        // 记录断连原因码(密码错=15 等),sta_online 失败上屏用。
+        if (data) {
+            const wifi_event_sta_disconnected_t *d = data;
+            s_last_disconnect_reason = d ? d->reason : 0;
+        }
         xEventGroupSetBits(s_events, EV_DISCONNECT);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(s_events, EV_GOT_IP);
@@ -346,11 +351,11 @@ static esp_err_t h_prov_index(httpd_req_t *req)
     return httpd_resp_send(req, PROV_HTML, HTTPD_RESP_USE_STRLEN);
 }
 
-// GET /api/scan → 最近一次后台扫描的 APSTA 结果 JSON:
+// GET /api/scan → 同步扫一轮的 APSTA 结果 JSON:
 // {"networks":[{"ssid":"...","rssi":-52,"auth":true},...]}
-// 只读缓存不阻塞(handler 纪律);配网任务每 3s 触发一次扫描,首拍可能为空。
+// handler 内同步完成 起扫→等→取(收尾语义见 h_prov_scan 注释;残留扫描态
+// 会卡死下一次扫描与 STA 连接,故 get_ap_records 必须无条件执行)。
 #define PROV_SCAN_MAX       20
-#define PROV_SCAN_WAIT_MS   2500   // handler 等作业任务完成按需扫描的上限
 
 // SSID 原始字节转 JSON 字符串体:" 与 \ 转义,控制字符 \u00XX;
 // 高位字节(非 ASCII SSID)原样输出,页面按 UTF-8 显示,乱码可接受(仍可手输)。
@@ -404,33 +409,39 @@ static esp_err_t h_prov_scan(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
 
-    // 按需扫描:置位请求后等作业任务完成一次全信道扫描(上限 PROV_SCAN_WAIT_MS);
-    // 手机已连热点,等待期 beacon 暂停不影响已建立的连接。
-    s_scan_req = true;
-    for (int waited = 0; waited < PROV_SCAN_WAIT_MS / 100; waited++) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        if (!s_scan_req) break;
-    }
+    // 同步扫描:在本 handler 内完成 起扫→等→取 的全流程。IDF 里"扫描完成但
+    // 记录未取"的残留态会同时卡死下一次扫描与 STA 连接 —— r8 真机踩雷:
+    // 旧的跨任务按需方案(job 任务扫、handler 取)在空结果分支不取记录,热点
+    // 列表从此永远空白,提交凭证后 connect 又被残留扫描态拖住,表现为
+    // "目标网络长时间找不到 / 长时间连不上"。收尾必须与起扫在同一处。
+    esp_wifi_scan_start(NULL, false);
+    // 阻塞等扫描完成(全信道 ~1.5-2s)。httpd 在独立任务,页面 fetch 无超时,
+    // 配网门户单用途,期间阻塞可接受;手机已连热点,beacon 暂停不断开已建链。
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
-    uint16_t count = 0;
-    esp_wifi_scan_get_ap_num(&count);
-    if (count == 0) {
+    uint16_t count = PROV_SCAN_MAX;
+    wifi_ap_record_t *records = malloc((size_t)count * sizeof(wifi_ap_record_t));
+    if (!records) {
         return httpd_resp_sendstr(req, "{\"networks\":[]}");
     }
-    if (count > PROV_SCAN_MAX) count = PROV_SCAN_MAX;
+    // 无论扫到多少条(含 0),get_ap_records 成功返回即完成清态 —— 不给后续
+    // 扫描/连接留残态(这是本次修复的核心语义,勿改回 count==0 提前返回)。
+    const esp_err_t fetch = esp_wifi_scan_get_ap_records(&count, records);
+    if (fetch != ESP_OK) {
+        ESP_LOGW(TAG, "scan fetch failed: %s", esp_err_to_name(fetch));
+        free(records);
+        return httpd_resp_sendstr(req, "{\"networks\":[]}");
+    }
+    if (count == 0) {
+        free(records);
+        return httpd_resp_sendstr(req, "{\"networks\":[]}");
+    }
 
-    wifi_ap_record_t *records = malloc((size_t)count * sizeof(wifi_ap_record_t));
     // 每条上界:转义 ssid(96)+固定 JSON(~48);外加首尾包装。
     const size_t cap = 32 + (size_t)count * (96 + 48);
     char *json = malloc(cap);
-    if (!records || !json) {
+    if (!json) {
         free(records);
-        free(json);
-        return httpd_resp_sendstr(req, "{\"networks\":[]}");
-    }
-    if (esp_wifi_scan_get_ap_records(&count, records) != ESP_OK) {
-        free(records);
-        free(json);
         return httpd_resp_sendstr(req, "{\"networks\":[]}");
     }
 
@@ -602,6 +613,12 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
     copy_field(sta.sta.ssid, sizeof(sta.sta.ssid), ssid);
     copy_field(sta.sta.password, sizeof(sta.sta.password), pass);
     sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    // PMF capable:家用路由器普遍默认"WPA2/WPA3 混合 + 强制/可选 PMF"。
+    // wifi_config_t 零初始化时 pmf_cfg.capable=false,对开启 PMF 的 BSS 一律
+    // 4-way 握手超时(reason 201/202),外在表现正是"长时间连不上"。capable=
+    // true 表示"对方要求才用",required=false 仍兼容纯 WPA2 老路由。
+    sta.sta.pmf_cfg.capable = true;
+    sta.sta.pmf_cfg.required = false;
     err = esp_wifi_set_config(WIFI_IF_STA, &sta);
     if (err != ESP_OK) goto fail;
 
@@ -626,7 +643,13 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
             break;
         }
         if (bits & EV_DISCONNECT) {
-            ESP_LOGW(TAG, "STA 断连,重试...");
+            ESP_LOGW(TAG, "STA 断连(reason=%d),重试...", s_last_disconnect_reason);
+            esp_wifi_connect();
+        } else {
+            // 兜底:断连事件可能在 start/connect 之前就位、被上面的清位吞掉,
+            // 此后永远收不到新事件 → 连接死等 30s(r8 真机现象之一)。每秒
+            // 重发 connect:已连接时调用仅返回 ESP_ERR_WIFI_CONN 内部错误,
+            // 无副作用。
             esp_wifi_connect();
         }
     }
@@ -658,6 +681,28 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
 fail:
     wifi_teardown();
     return err;
+}
+
+// ---- 断连原因码 → 用户可行动的短句 ----
+
+// 常见 IDF 断连原因码(v5.x esp_wifi_types.h):15=四步握手超时(密码错最常见),
+// 201=NO_AP_FOUND,202=AUTH_FAIL(WPA3/SAE 密码错或 PMF 拒绝),
+// 204=HANDSHAKE_TIMEOUT,205=CONNECTION_FAIL。未列出的走默认句 + 码号。
+static const char *wifi_fail_text(int reason);
+static const char *wifi_fail_text(int reason)
+{
+    switch (reason) {
+    case 15:  return "Wrong password?";
+    case 201: return "AP not found. Re-scan.";
+    case 202: return "Auth failed: password/PMF?";
+    case 204: return "Handshake timeout.";
+    case 205: return "Router refused (PMF/RSN).";
+    default:  break;
+    }
+    if (reason == 0) return "WiFi connect failed.";
+    static char buf[32];
+    snprintf(buf, sizeof(buf), "WiFi failed (code %d).", reason);
+    return buf;
 }
 
 // ---- 网络任务:凭证处理 + 作业队列 ----
@@ -721,26 +766,17 @@ static void job_task_main(void *arg)
             if (sta_online(ssid, pass) == ESP_OK) {
                 xQueueReset(s_job_queue);   // 换网络后旧作业作废
             } else {
-                set_state(SN_STATE_ERROR, "WiFi connect failed.");
-                ESP_LOGW(TAG, "STA 连接失败,回落配网页");
+                set_state(SN_STATE_ERROR, wifi_fail_text(s_last_disconnect_reason));
+                ESP_LOGW(TAG, "STA 连接失败(reason=%d),回落配网页",
+                         s_last_disconnect_reason);
                 ap_start();   // 失败回落:重新开配网 AP
             }
             continue;
         }
 
-        // 配网页:扫描按需。不再周期后台扫——真机上 AP 信道与扫描互斥,
-        // 周期扫描会暂停 beacon 数秒,手机端表现为热点时有时无、iOS 更是
-        // 直接找不到(r7 实机踩雷)。改为:/api/scan handler 收到请求时
-        // 置位请求,此处同步扫一次(此时手机已连上热点,少一次 beacon
-        // 中断也无所谓);首拍为空,页面提示再按一次 Scan。未连设备时
-        // 完全不扫,beacon 稳定,热点可见性最佳。
-        if (s_status.state == SN_STATE_AP_UP && s_scan_req) {
-            s_scan_req = false;
-            esp_wifi_scan_start(NULL, false);
-            // 阻塞等扫描完成(默认全信道 ~1.5-2s);此时 httpd 在另一任务,
-            // 页面请求不致超时(30s)。
-            vTaskDelay(pdMS_TO_TICKS(2000));
-        }
+        // 配网页:扫描已收进 h_prov_scan(handler 内同步 起扫→等→取)。
+        // r8 教训:跨任务接力 + 空结果分支不取记录,残留扫描态既冻结节后
+        // 所有扫描,也卡死 STA 连接;收尾与起扫必须在同一处。
         vTaskDelay(pdMS_TO_TICKS(200));
 
         if (s_status.state != SN_STATE_ONLINE) continue;

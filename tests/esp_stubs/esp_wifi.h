@@ -18,7 +18,14 @@ typedef struct {
     struct {
         uint8_t authmode;
     } threshold;
+    struct {
+        bool capable;
+        bool required;
+    } pmf_cfg;
 } wifi_sta_config_t;
+typedef struct {
+    uint8_t reason;
+} wifi_event_sta_disconnected_t;
 typedef struct {
     union {
         wifi_ap_config_t ap;
