@@ -400,6 +400,7 @@ static void page_store_net_build(void)
         // 重连窗口内误触 OK 会擦掉正确凭证,把可自愈的状态变成必配网(F4)。
         // 连接失败(ERROR,凭证可能错)时才默认选中 RESET。
         s_net_reset_sel = (st.state == SN_STATE_ERROR);
+        // build 时的初始值仅作 tick 跳变检测的种子;真正的进入时刻由 tick 记录。
         s_net_online_at = (st.state == SN_STATE_ONLINE) ? esp_timer_get_time() / 1000 : 0;
     }
 
@@ -746,10 +747,21 @@ static void store_tick(lv_timer_t *t)
             lv_label_set_text(s_status_line, line);
         }
         if (st.state == SN_STATE_ONLINE) {
-            // 在线后停留 2s(让用户看清连的哪个网),期间可 OK 进 RESET 确认;
-            // 无操作才自动进 P1。s_net_online_at 由 build 设置,0 = 不自动翻页。
-            if (s_net_online_at
-                && esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
+            // ONLINE 进入时刻在 tick 里做跳变检测,不用 build 时的旧值 ——
+            // 页面在 CONNECTING 态构建时 online_at=0,任务随后真连上了,
+            // 旧逻辑永远不翻页、面板冻在最后一帧(真机卡死主因)。首次见到
+            // ONLINE:记时刻 + 刷面板(ONLINE 此前没有任何 s_info 分支)。
+            if (!s_net_online_at) {
+                s_net_online_at = esp_timer_get_time() / 1000;
+                if (s_info) {
+                    char text[200];
+                    snprintf(text, sizeof(text), "Online.\n\nWiFi: %s",
+                             st.sta_ssid[0] ? st.sta_ssid : "-");
+                    lv_label_set_text(s_info, text);
+                }
+            }
+            // 停留 2s 让用户看清连的哪个网,然后自动进 P1。
+            if (esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
                 store_goto(PAGE_STORE_ID);
             }
         } else if (st.state == SN_STATE_AP_UP) {
