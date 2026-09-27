@@ -71,6 +71,11 @@ PY
         tests/test_meta_store_prov.c main/meta_store_prov.c \
         -o "${test_dir}/test_meta_store_prov"
     "${test_dir}/test_meta_store_prov"
+    # P1 玩法 ID 编辑模型(插入光标/退格/换行;真机同一份 meta_store_idedit.c)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_store_idedit.c main/meta_store_idedit.c \
+        -o "${test_dir}/test_meta_store_idedit"
+    "${test_dir}/test_meta_store_idedit"
     # 商店通道 analyze 响应合同测试(解析器 = 真机同一份 meta_store_analysis.c;
     # 样本锁定本地 server.mjs 真实响应形态与契约漂移拒收)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
