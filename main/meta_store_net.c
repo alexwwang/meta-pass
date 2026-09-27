@@ -168,6 +168,27 @@ static int url_hex_nib(char c)
     return -1;
 }
 
+// 有界字符串拷贝,永远 NUL 结尾(超出 dst_size-1 即截断)。用于把 URL 解码结果
+// 收进定长缓冲——正常表单不会超长,截断是纵深防御。
+static void copy_capped(char *dst, size_t dst_size, const char *src)
+{
+    size_t n = strlen(src);
+    if (n >= dst_size) n = dst_size - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+// 定长字段拷贝(esp wifi_config_t ssid/password 语义):最多拷满 dst_size 字节、
+// 不强制 NUL(IDF 允许 32/64 字节满长无终止符;短输入依赖 wifi_config_t 零初始化
+// 保证剩余字节为 0)。显式 memcpy 而非 snprintf:满长输入对 snprintf 是截断,
+// 对本字段却是合法完整拷贝。
+static void copy_field(void *dst, size_t dst_size, const char *src)
+{
+    size_t n = strlen(src);
+    if (n > dst_size) n = dst_size;
+    memcpy(dst, src, n);
+}
+
 static void url_decode_inplace(char *s)
 {
     size_t w = 0;
@@ -211,11 +232,11 @@ static esp_err_t h_prov_wifi(httpd_req_t *req)
     char raw[208] = {0};
     if (httpd_query_key_value(arg, "ssid", raw, sizeof(raw)) != ESP_OK) goto bad;
     url_decode_inplace(raw);
-    snprintf(ssid, sizeof(ssid), "%s", raw);
+    copy_capped(ssid, sizeof(ssid), raw);
     raw[0] = '\0';
     if (httpd_query_key_value(arg, "pass", raw, sizeof(raw)) != ESP_OK) goto bad;
     url_decode_inplace(raw);
-    snprintf(pass, sizeof(pass), "%s", raw);
+    copy_capped(pass, sizeof(pass), raw);
     if (ssid[0] == '\0') goto bad;
 
     snprintf(s_prov_ssid, sizeof(s_prov_ssid), "%s", ssid);
@@ -329,8 +350,8 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
     err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) goto fail;
     wifi_config_t sta = {0};
-    snprintf((char *)sta.sta.ssid, sizeof(sta.sta.ssid), "%s", ssid);
-    snprintf((char *)sta.sta.password, sizeof(sta.sta.password), "%s", pass);
+    copy_field(sta.sta.ssid, sizeof(sta.sta.ssid), ssid);
+    copy_field(sta.sta.password, sizeof(sta.sta.password), pass);
     sta.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     err = esp_wifi_set_config(WIFI_IF_STA, &sta);
     if (err != ESP_OK) goto fail;

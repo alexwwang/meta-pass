@@ -291,9 +291,11 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
         goto fail;
     }
     char hdr_sha[META_SHA256_HEX_LEN + 1] = {0};
-    if (esp_http_client_get_header(client, "x-image-sha256",
-                                   hdr_sha, sizeof(hdr_sha)) == ESP_OK
-        && hdr_sha[0] != '\0') {
+    // IDF 5.x 签名:成功时 *value 指向 client 内部缓冲(响应头生命周期内有效)。
+    const char *hdr_value = NULL;
+    if (esp_http_client_get_header(client, "x-image-sha256", (char **)&hdr_value) == ESP_OK
+        && hdr_value != NULL && hdr_value[0] != '\0') {
+        snprintf(hdr_sha, sizeof(hdr_sha), "%s", hdr_value);
         uint8_t hdr_digest[32];
         if (!meta_store_json_parse_sha256(hdr_sha, strlen(hdr_sha), hdr_digest)
             || memcmp(hdr_digest, analysis->sha256, 32) != 0) {
