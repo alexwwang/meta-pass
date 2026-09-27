@@ -5,6 +5,8 @@
 //         POST /api/wifi → 停 AP/启 STA(同上)。作业经队列进网络任务执行。
 #include "meta_store_net.h"
 
+#include "meta_store_prov.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -193,35 +195,6 @@ static const char PROV_HTML[] =
     ":'failed ('+ok[1]+')';});}"
     "</script></body></html>";
 
-static int url_hex_nib(char c)
-{
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-// 有界字符串拷贝,永远 NUL 结尾(超出 dst_size-1 即截断)。用于把 URL 解码结果
-// 收进定长缓冲——正常表单不会超长,截断是纵深防御。
-static void copy_capped(char *dst, size_t dst_size, const char *src)
-{
-    size_t n = strlen(src);
-    if (n >= dst_size) n = dst_size - 1;
-    memcpy(dst, src, n);
-    dst[n] = '\0';
-}
-
-// 定长字段拷贝(esp wifi_config_t ssid/password 语义):最多拷满 dst_size 字节、
-// 不强制 NUL(IDF 允许 32/64 字节满长无终止符;短输入依赖 wifi_config_t 零初始化
-// 保证剩余字节为 0)。显式 memcpy 而非 snprintf:满长输入对 snprintf 是截断,
-// 对本字段却是合法完整拷贝。
-static void copy_field(void *dst, size_t dst_size, const char *src)
-{
-    size_t n = strlen(src);
-    if (n > dst_size) n = dst_size;
-    memcpy(dst, src, n);
-}
-
 // ---- Captive Portal:DNS 劫持(UDP 53 把所有 A 查询以无应答应答包回给 AP 侧设备)----
 // 手机连上热点后,系统后台探测判定"存在 captive portal"即自动弹出配置页;
 // 不弹的系统仍可手动访问 http://192.168.4.1(302 兜底见 h_prov_catchall)。
@@ -231,21 +204,6 @@ static void copy_field(void *dst, size_t dst_size, const char *src)
 static TaskHandle_t s_dns_task;
 static volatile bool s_dns_run;
 static int s_dns_sock = -1;
-
-// 解析 DNS 查询报文,返回 question section 结束偏移(可整体回发);不合法返回 0。
-static size_t dns_query_end(const uint8_t *pkt, size_t len)
-{
-    if (len < 17) return 0;                    // 12B 头 + 最短 QNAME(1) + QTYPE(2) + QCLASS(2)
-    if ((pkt[2] & 0x80) != 0) return 0;        // QR=1:不是查询
-    if (pkt[4] != 0 || pkt[5] != 1) return 0;  // QDCOUNT 必须为 1
-    size_t off = 12;
-    while (off < len) {                        // QNAME:label 序列
-        const uint8_t l = pkt[off];
-        if (l == 0) return (off + 1 + 4 <= len) ? off + 1 : 0;
-        off += 1u + l;
-    }
-    return 0;
-}
 
 static void dns_task_main(void *arg)
 {
@@ -258,7 +216,7 @@ static void dns_task_main(void *arg)
         const ssize_t n = recvfrom(s_dns_sock, pkt, sizeof(pkt), 0,
                                    (struct sockaddr *)&from, &fromlen);
         if (n <= 0) continue;
-        const size_t end = dns_query_end(pkt, (size_t)n);
+        const size_t end = meta_store_dns_query_end(pkt, (size_t)n);
         if (end == 0) continue;
         pkt[2] |= 0x80;      // QR=1(响应);RA=1
         pkt[3] |= 0x80;
@@ -306,27 +264,15 @@ static void dns_relay_stop(void)
     }
 }
 
-static void url_decode_inplace(char *s)
+// 定长字段拷贝(esp wifi_config_t ssid/password 语义):最多拷满 dst_size 字节、
+// 不强制 NUL(IDF 允许 32/64 字节满长无终止符;短输入依赖 wifi_config_t 零初始化
+// 保证剩余字节为 0)。显式 memcpy 而非 snprintf:满长输入对 snprintf 是截断,
+// 对本字段却是合法完整拷贝。
+static void copy_field(void *dst, size_t dst_size, const char *src)
 {
-    size_t w = 0;
-    for (size_t r = 0; s[r] != '\0';) {
-        if (s[r] == '%') {
-            const int hi = url_hex_nib(s[r + 1]);
-            const int lo = (hi >= 0) ? url_hex_nib(s[r + 2]) : -1;
-            if (hi >= 0 && lo >= 0) {
-                s[w++] = (char)((hi << 4) | lo);
-                r += 3;
-                continue;
-            }
-        }
-        if (s[r] == '+') {
-            s[w++] = ' ';
-            r++;
-            continue;
-        }
-        s[w++] = s[r++];
-    }
-    s[w] = '\0';
+    size_t n = strlen(src);
+    if (n > dst_size) n = dst_size;
+    memcpy(dst, src, n);
 }
 
 // 手机系统的 captive portal 探测请求带运营商/厂商 Host(如 captive.apple.com);
@@ -356,29 +302,6 @@ static esp_err_t h_prov_index(httpd_req_t *req)
 // handler 内同步完成 起扫→等→取(收尾语义见 h_prov_scan 注释;残留扫描态
 // 会卡死下一次扫描与 STA 连接,故 get_ap_records 必须无条件执行)。
 #define PROV_SCAN_MAX       20
-
-// SSID 原始字节转 JSON 字符串体:" 与 \ 转义,控制字符 \u00XX;
-// 高位字节(非 ASCII SSID)原样输出,页面按 UTF-8 显示,乱码可接受(仍可手输)。
-static void json_escaped_ssid(const uint8_t *ssid, char *out, size_t out_sz)
-{
-    size_t w = 0;
-    for (size_t i = 0; i < 32 && ssid[i] != 0; i++) {
-        char one[8];
-        const uint8_t ch = ssid[i];
-        if (ch == '"' || ch == '\\') {
-            one[0] = '\\'; one[1] = (char)ch; one[2] = '\0';
-        } else if (ch < 0x20) {
-            snprintf(one, sizeof(one), "\\u%04x", ch);
-        } else {
-            one[0] = (char)ch; one[1] = '\0';
-        }
-        const size_t n = strlen(one);
-        if (w + n >= out_sz) break;   // 上限 32×6+1 ≤ out_sz(97),正常不会触达
-        memcpy(out + w, one, n + 1);
-        w += n;
-    }
-    out[w] = '\0';
-}
 
 // 有界 JSON 组装器:溢出即停止写入(页面把残缺列表按空处理,无危害)。
 typedef struct {
@@ -451,7 +374,7 @@ static esp_err_t h_prov_scan(httpd_req_t *req)
     for (uint16_t i = 0; i < count; i++) {
         if (i) jb_add(&jb, ",");
         char esc[97];
-        json_escaped_ssid(records[i].ssid, esc, sizeof(esc));
+        meta_store_prov_json_escaped_ssid(records[i].ssid, esc, sizeof(esc));
         jb_add(&jb, "{\"ssid\":\"");
         jb_add(&jb, esc);
         jb_add(&jb, "\",\"rssi\":");
@@ -471,22 +394,18 @@ static esp_err_t h_prov_scan(httpd_req_t *req)
 // 不在 handler 里动 WiFi(httpd 任务栈与全局状态纪律:handler 只做参数搬运)。
 static esp_err_t h_prov_wifi(httpd_req_t *req)
 {
-    // 容量核算:ssid ≤32 → encode ≤96;pass ≤64 → encode ≤192;加 key 与 '&' 余量。
+    // 表单解析/校验在 meta_store_prov(共享纯逻辑,host 单测覆盖):
+    // 键缺失/空值/重复键/解码后超容量一律拒绝(超限拒绝而非截断 —— 截断会把
+    // 长 SSID 悄悄改写成连不上的另一个名字)。
     char arg[340] = {0};
     char ssid[33] = {0};
     char pass[65] = {0};
     if (httpd_req_get_url_query_str(req, arg, sizeof(arg)) != ESP_OK) {
         goto bad;
     }
-    char raw[208] = {0};
-    if (httpd_query_key_value(arg, "ssid", raw, sizeof(raw)) != ESP_OK) goto bad;
-    url_decode_inplace(raw);
-    copy_capped(ssid, sizeof(ssid), raw);
-    raw[0] = '\0';
-    if (httpd_query_key_value(arg, "pass", raw, sizeof(raw)) != ESP_OK) goto bad;
-    url_decode_inplace(raw);
-    copy_capped(pass, sizeof(pass), raw);
-    if (ssid[0] == '\0') goto bad;
+    if (!meta_store_prov_parse_wifi_query(arg, ssid, sizeof(ssid), pass, sizeof(pass))) {
+        goto bad;
+    }
 
     if (pass[0] == '\0') goto bad;   // 开放网络极不安全且极少见,要求密码(页面同口径)
 
@@ -683,28 +602,6 @@ fail:
     return err;
 }
 
-// ---- 断连原因码 → 用户可行动的短句 ----
-
-// 常见 IDF 断连原因码(v5.x esp_wifi_types.h):15=四步握手超时(密码错最常见),
-// 201=NO_AP_FOUND,202=AUTH_FAIL(WPA3/SAE 密码错或 PMF 拒绝),
-// 204=HANDSHAKE_TIMEOUT,205=CONNECTION_FAIL。未列出的走默认句 + 码号。
-static const char *wifi_fail_text(int reason);
-static const char *wifi_fail_text(int reason)
-{
-    switch (reason) {
-    case 15:  return "Wrong password?";
-    case 201: return "AP not found. Re-scan.";
-    case 202: return "Auth failed: password/PMF?";
-    case 204: return "Handshake timeout.";
-    case 205: return "Router refused (PMF/RSN).";
-    default:  break;
-    }
-    if (reason == 0) return "WiFi connect failed.";
-    static char buf[32];
-    snprintf(buf, sizeof(buf), "WiFi failed (code %d).", reason);
-    return buf;
-}
-
 // ---- 网络任务:凭证处理 + 作业队列 ----
 
 typedef struct {
@@ -766,7 +663,8 @@ static void job_task_main(void *arg)
             if (sta_online(ssid, pass) == ESP_OK) {
                 xQueueReset(s_job_queue);   // 换网络后旧作业作废
             } else {
-                set_state(SN_STATE_ERROR, wifi_fail_text(s_last_disconnect_reason));
+                char fail_buf[32];   // 未知原因码的格式化缓冲
+                set_state(SN_STATE_ERROR, meta_store_wifi_fail_text(s_last_disconnect_reason, fail_buf, sizeof(fail_buf)));
                 ESP_LOGW(TAG, "STA 连接失败(reason=%d),回落配网页",
                          s_last_disconnect_reason);
                 ap_start();   // 失败回落:重新开配网 AP

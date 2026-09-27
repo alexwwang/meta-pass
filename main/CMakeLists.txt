@@ -10,6 +10,7 @@ idf_component_register(
          "meta_sign.c"
          "meta_store_json.c"
          "meta_store_analysis.c"
+         "meta_store_prov.c"
          "meta_store_api.c"
          "meta_store_net.c"
     INCLUDE_DIRS "."
