@@ -183,22 +183,61 @@ for (const id of [563, 675]) {
     fail("E2E-8", `s_client failed: ${e.message.slice(0, 120)}`);
   }
 
-  // ---- E2E-8b 证书包卫生:每张锚必须自签(self-signed)。cross-signed 根在
-  // mbedTLS 锚语义下不可用(锚下还有 issuer → unable to get issuer certificate)。
+  // ---- E2E-8b 证书包卫生(BUG-18 后拆成两条精确规则):
+  // ① 至少一张自签根(mbedTLS 锚语义:根不能再指向缺失的 issuer);
+  // ② 包内每张非自签证书(中间证书)的 issuer 也必须在包内 —— 链上可达,
+  //    否则验证在中间这一跳就断(旧断言"全部自签"错把中间证书当根排除)。
   const certsDir = path.join(ROOT, "main/certs");
   const pems = readdirSync(certsDir).filter((f) => f.endsWith(".pem"));
-  const bad = [];
+  const info = [];
   for (const f of pems) {
     const pem = readFileSync(path.join(certsDir, f), "utf8");
-    const out = execSync(`openssl x509 -noout -subject -issuer`,
+    const out = execSync(`openssl x509 -noout -subject -issuer -nameopt RFC2253`,
       { input: pem, encoding: "utf8", timeout: 10000 });
-    const subject = (out.match(/subject=(.*)/) ?? [])[1] ?? "";
-    const issuer = (out.match(/issuer=(.*)/) ?? [])[1] ?? "";
-    if (subject !== issuer) bad.push(`${f} (cross-signed, issuer=${issuer.trim()})`);
+    info.push({ f,
+      subject: (out.match(/subject=(.*)/) ?? [])[1]?.trim() ?? "",
+      issuer: (out.match(/issuer=(.*)/) ?? [])[1]?.trim() ?? "" });
   }
-  if (pems.length === 0) fail("E2E-8b", "no .pem anchors in main/certs");
-  else if (bad.length === 0) pass("E2E-8b", `all ${pems.length} anchors self-signed: ${pems.join(", ")}`);
-  else fail("E2E-8b", `non-self-signed anchors unusable as mbedTLS trust anchors: ${bad.join("; ")}`);
+  const roots = info.filter((c) => c.subject === c.issuer);
+  const inters = info.filter((c) => c.subject !== c.issuer);
+  const orphanInters = inters.filter(
+    (c) => !roots.some((r) => r.subject === c.issuer)
+       && !inters.some((o) => o !== c && o.subject === c.issuer));
+  if (pems.length === 0) fail("E2E-8b", "no .pem certs in main/certs");
+  else if (roots.length === 0) fail("E2E-8b", "no self-signed root in bundle (mbedTLS anchor semantics)");
+  else if (orphanInters.length > 0) fail("E2E-8b", `intermediate cert(s) with issuer missing from bundle: ${orphanInters.map((c) => c.f).join(", ")}`);
+  else pass("E2E-8b", `bundle ok: ${roots.length} self-signed root(s) [${roots.map((r) => r.f).join(", ")}] + ${inters.length} chained intermediate(s) [${inters.map((c) => c.f).join(", ")}]`);
+}
+
+// ---- E2E-8c 设备语义链验证(BUG-18):线上 leaf 的 issuer DER 名必须逐字节
+// 出现在 main/certs 的任一证书(subject 或 issuer)中 —— esp_crt_bundle_find_cert
+// 按 DER 名 memcmp,openssl 的路径构造能力救不了包内缺失的中间证书。
+// 实测教训:仅两张根时设备报 "No matching trusted root certificate found"。
+{
+  try {
+    const host = new URL(HOST).hostname;
+    const pem = execSync(
+      `echo | openssl s_client -connect ${host}:443 -servername ${host} -showcerts 2>/dev/null`,
+      { shell: "/bin/bash", timeout: 30_000, encoding: "utf8" });
+    const chain = [...pem.matchAll(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g)]
+      .map((m) => m[0]);
+    if (chain.length < 2) { fail("E2E-8c", `server sent only ${chain.length} cert(s)`); }
+    else {
+      const leafIssuerDer = execSync(
+        `openssl x509 -noout -issuer -nameopt RFC2253`, { input: chain[0], encoding: "utf8", timeout: 10_000 });
+      const bundleSubjects = [];
+      for (const f of readdirSync(path.join(ROOT, "main/certs")).filter((f) => f.endsWith(".pem"))) {
+        const out = execSync(`openssl x509 -noout -subject -nameopt RFC2253`,
+          { input: readFileSync(path.join(ROOT, "main/certs", f)), encoding: "utf8", timeout: 10_000 });
+        bundleSubjects.push(out.replace("subject=", "").trim());
+      }
+      // RFC2253 文本比对是 DER 逐字节比对的可靠代理(同 openssl 规范化,两边同参)。
+      const leafIssuer = leafIssuerDer.replace("issuer=", "").trim();
+      const hit = bundleSubjects.some((s) => s === leafIssuer);
+      if (hit) pass("E2E-8c", `device-semantic lookup: leaf issuer (${leafIssuer}) present in main/certs bundle input`);
+      else fail("E2E-8c", `leaf issuer ${leafIssuer} NOT in bundle subjects [${bundleSubjects.join(" | ")}] — device handshake WILL fail (BUG-18)`);
+    }
+  } catch (e) { fail("E2E-8c", `chain fetch/compare: ${e.message.slice(0, 100)}`); }
 }
 
 console.log(failed === 0
