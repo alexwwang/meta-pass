@@ -34,6 +34,26 @@ void mpd_idedit_init(mpd_idedit_t *e)
     e->sel = MPD_KEY_1;
 }
 
+// r10.7:预填(RETRY 失败页回 P1 时不丢用户已输的 ID)。语义:
+//   空/非法字符/超长 → 拒绝且不动原状态;
+//   合法 → 覆盖数字,光标落末尾(续输追加),选中键复位 '1'。
+// digits 存的是字符('0'..'9'),与按键路径同一存储,渲染/导出零特例。
+bool mpd_idedit_set_digits(mpd_idedit_t *e, const char *digits)
+{
+    if (!e || !digits || digits[0] == '\0') return false;
+    const size_t n = strlen(digits);
+    if (n > MPD_MAX_DIGITS) return false;
+    for (size_t i = 0; i < n; i++) {
+        if (digits[i] < '0' || digits[i] > '9') return false;
+    }
+    memcpy(e->digits, digits, n);
+    e->len = (int)n;
+    e->cursor = (int)n;
+    e->sel = MPD_KEY_1;
+    e->commit_req = false;
+    return true;
+}
+
 // 数字键按下:光标处插入(右侧有空位时)。len==7 时拒绝(不自动提交)。
 static bool press_digit(mpd_idedit_t *e, char d)
 {

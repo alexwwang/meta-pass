@@ -59,6 +59,39 @@ static void test_http_prefixed(void)
     printf("PASS: http-<n> prefixed passthrough\n");
 }
 
+// r10.7:OPEN 阶段底层死因上屏(DNS/超时/拒连/证书 × 时钟)。
+static void test_open_causes(void)
+{
+    char buf[64];
+
+    // 无死因:回落原阶段句(向后兼容)。
+    meta_store_api_fail_set_cause(MSAF_CAUSE_NONE);
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "TLS/DNS failed. Retry.") == 0);
+
+    meta_store_api_fail_set_cause(MSAF_CAUSE_DNS);
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "DNS failed.\nCheck WiFi/router.") == 0);
+
+    meta_store_api_fail_set_cause(MSAF_CAUSE_TIMEOUT);
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "Connect timeout.\nCheck network.") == 0);
+    meta_store_api_fail_open_text(true, buf, sizeof(buf));
+    assert(strcmp(buf, "Connect timeout (clock unsynced).") == 0);
+
+    meta_store_api_fail_set_cause(MSAF_CAUSE_REFUSED);
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "Connection refused.") == 0);
+
+    meta_store_api_fail_set_cause(MSAF_CAUSE_CERT);
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "Cert check failed.") == 0);
+    meta_store_api_fail_open_text(true, buf, sizeof(buf));
+    assert(strcmp(buf, "Cert check failed (clock unsynced).") == 0);
+
+    printf("PASS: OPEN cause attribution (DNS/timeout/refused/cert)\n");
+}
+
 static void test_business_reason_passthrough(void)
 {
     char buf[64];
@@ -94,6 +127,7 @@ int main(void)
 {
     test_matrix();
     test_http_prefixed();
+    test_open_causes();
     test_business_reason_passthrough();
     test_buffer_safety();
     printf("ALL META_STORE_API_FAIL TESTS PASSED\n");

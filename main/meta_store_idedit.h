@@ -43,6 +43,10 @@ typedef struct {
 // 初始化:空输入,光标在 0,选中 '1'。
 void mpd_idedit_init(mpd_idedit_t *e);
 
+// r10.7:预填数字(RETRY 回 P1 保留输入)。digits 仅 '0'..'9',1..7 位;
+// 空/非法/超长返回 false 且不改变状态。成功后光标在末尾、选中键复位。
+bool mpd_idedit_set_digits(mpd_idedit_t *e, const char *digits);
+
 // 按下当前选中键。返回 true = 状态有变化(调用方刷新 UI);
 // e->commit_req 置位后由调用方执行提交并调 mpd_idedit_clear。
 bool mpd_idedit_press(mpd_idedit_t *e);
