@@ -359,6 +359,15 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10.5 (2026-09-28) TLS trust anchor fixed (BUG-13)**: the on-device failure "every
+  play → `TLS/DNS failed. Retry.`" was two defects: ① the HTTP client configs never attached
+  any certificate source (zero trust anchors → every handshake fails); ② the bundle's
+  GTS Root R4 was the cross-signed variant (issuer=GlobalSign) — invalid as an mbedTLS
+  anchor. Fix: self-signed GTS Root R4 in `main/certs`, `crt_bundle_attach` on both analyze
+  and install, `esp-tls` dependency. Host-verified: `openssl s_client -CAfile main/certs/gtsr4.pem`
+  → code 0. Permanent gates: E2E-8 (full production handshake with the device's real anchor
+  bundle — the missing test that let this ship through five versions), E2E-8b (rejects
+  cross-signed anchors). E2E count 15→17.
 - **v3.2-r10.1 (2026-09-28) P0 change-WiFi intent = double-press UP**: the r10 rule "any
   keypress cancels ONLINE auto-advance" traded one ambiguity for another (a mis-press
   stranded the user on P0). Now a **double-press UP within 600ms** is the only cancel —

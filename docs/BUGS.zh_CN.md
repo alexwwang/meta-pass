@@ -133,6 +133,30 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
   必须上屏;且"host 上正常"只证明服务端,永远证明不了设备的 TLS/时钟栈
   (host 上根本不跑这两样)。
 
+### BUG-13(致命)—— 设备从来没有过 TLS 信任锚
+
+- **现象**:v25 真机:输任何玩法 id 都显示 `TLS/DNS failed. Retry.`,而同一个站
+  在 host 上分析全部正常、生产 E2E 15 项全过。
+- **根因,两层**:① `esp_http_client_config_t` 从未挂接任何证书源 —— 没有
+  `crt_bundle_attach` 也没有 `cert_pem`,mbedTLS 会话零信任锚,无论网络什么
+  状态所有握手必败(SNTP 正常工作,证明 DNS 与路由都通 —— 这正是分类器的
+  阶段归因足够可信、可以把目光收窄到 TLS 层的原因)。② 打包的
+  `main/certs/gtsr4.pem` 是 **cross-signed** 版 GTS Root R4(issuer =
+  GlobalSign Root CA),作为 mbedTLS 信任锚不可用:锚自身还要链到缺失的
+  issuer(`unable to get issuer certificate`),host 上用 `openssl s_client
+  -CAfile main/certs/gtsr4.pem` 复现返回 code 2。cross-signed 根只有在
+  其 issuer 同时在场时才可用,而设备包里什么都没有。
+- **修复**:换成自签版 GTS Root R4(issuer == subject,指纹
+  `71:CC:A5:39:…:A4:BD`);analyze 与 install 两处配置都挂
+  `esp_crt_bundle_attach`(main/certs 包,REQUIRES 加 esp-tls)。host 端到端
+  验证:用设备锚对正式站握手返回 **code 0 (ok)**。
+- **永久门**:E2E-8 用设备的真实锚包对正式站跑完整握手 —— 正是缺失的这个
+  测试让坏链穿过了五个固件版本;E2E-8b 拒绝包内任何 cross-signed 锚
+  (subject != issuer)。
+- **教训**:"E2E 全过"必须包含设备真实的密码学材料 —— issuer 字符串比对
+  (旧 E2E-6)不是链验证。任何信任锚变更都必须对生产端点做一次完整握手,
+  和设备将要做的完全一样。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音

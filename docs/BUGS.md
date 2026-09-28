@@ -169,6 +169,37 @@ the data plane against the production site.
   "works from the host" proves the server, never the device's TLS/clock
   stack (the host never runs either).
 
+### BUG-13 (Critical) — the device never had a TLS trust anchor
+
+- **Symptom**: v25 on device: entering a play id shows `TLS/DNS failed.
+  Retry.` for every play, while the same site analyzes fine from the host
+  and passes all 15 production E2E checks.
+- **Root cause, two layers**: ① `esp_http_client_config_t` never attached
+  any certificate source — no `crt_bundle_attach`, no `cert_pem` — so the
+  mbedTLS session had zero trust anchors and every handshake failed no
+  matter what the network was doing (SNTP worked, proving DNS and routing
+  were fine, which is what made the classifier's stage attribution
+  trustworthy enough to look at the TLS layer specifically). ② The
+  bundled `main/certs/gtsr4.pem` was the **cross-signed** GTS Root R4
+  (issuer = GlobalSign Root CA), unusable as an mbedTLS trust anchor: the
+  anchor itself chains to a missing issuer (`unable to get issuer
+  certificate`), reproduced on host with `openssl s_client -CAfile
+  main/certs/gtsr4.pem` returning code 2. A cross-signed root only works
+  when its issuer is also present; a device bundle ships nothing else.
+- **Fix**: replaced with the self-signed GTS Root R4 (issuer == subject,
+  fp `71:CC:A5:39:…:A4:BD`); both analyze and install configs attach
+  `esp_crt_bundle_attach` (main/certs bundle, `esp-tls` in REQUIRES).
+  Verified end-to-end on host: `openssl s_client` with the device anchor
+  against the production site returns **code 0 (ok)**.
+- **Permanent gates**: E2E-8 runs the full production handshake against
+  the device's actual anchor bundle — this is the test whose absence let
+  the chain ship broken through five firmware versions; E2E-8b rejects
+  any cross-signed anchor in the bundle (subject != issuer).
+- **Lesson**: "the E2E checks pass" must include the device's real crypto
+  material — issuer-string matching (old E2E-6) is not chain verification.
+  Any trust-anchor change must be validated with a full handshake against
+  the production endpoint, exactly the way the device will do it.
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is

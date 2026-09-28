@@ -341,6 +341,15 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r10.5（2026-09-28）修复 TLS 信任锚（BUG-13）**：真机"任何玩法 →
+  `TLS/DNS failed. Retry.`"是两个缺陷叠加：① HTTP client 配置从未挂接任何
+  证书源（零信任锚 → 所有握手必败）；② 证书包里的 GTS Root R4 是
+  cross-signed 变体（issuer=GlobalSign）—— 作为 mbedTLS 锚无效。修复：
+  `main/certs` 换自签版 GTS Root R4，analyze/install 两处挂
+  `crt_bundle_attach`，REQUIRES 加 esp-tls。host 验证：
+  `openssl s_client -CAfile main/certs/gtsr4.pem` → code 0。永久门：E2E-8
+  （用设备真实锚包对生产站完整握手 —— 缺失的这个测试让坏链穿了五个版本）、
+  E2E-8b（拒绝 cross-signed 锚）。E2E 计数 15→17。
 - **v3.2-r10.1（2026-09-28）P0 改网意图 = 双击 UP**：r10 的「任意键取消自动翻页」是拿
   一个新歧义换旧歧义（误按把用户困在 P0）。现在唯一取消方式 = **600ms 内双击 UP** ——
   它同时就是显式改网动作（擦凭证重开热点）；单击/OK/DOWN 全部无动作（误按安全，
