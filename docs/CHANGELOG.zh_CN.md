@@ -6,6 +6,15 @@
 
 ## Unreleased
 
+- **链尾 issuer 缺失已修(r10.7.2,BUG-18)**:v35 已加 GTS WE1 中间证书,真机却仍以
+  一字不差的 `No matching trusted root certificate found` / `-0x3000` 握手日志失败。
+  新的静态复现(`tools/verify-crt-bundle-match.py`)用裸 ASN.1 解析器对实发链逐字节
+  重演 `esp_crt_verify_callback` 的逐层 issuer 查找,钉死真因:服务器实发 3 张链,
+  末尾是 cross-signed 的 GTS Root R4,其 issuer(GlobalSign Root CA)不在包里 ——
+  mbedTLS 走每一层,不只 leaf。修复:`main/certs/globalsign-root-ca.pem`(subject
+  与链尾 `issuer_raw` 逐字节相等;`openssl verify` 闭环全链)。新增 E2E-8d 每次运行
+  跑字节级设备查找模拟 + 陈旧镜像守卫(最新 `build/meta-pass_v*.bin` 必须原样内嵌
+  当前 bundle);E2E 计数 17→19。三层现已全部命中:chain would VALIDATE on device。
 - **真机轮 r10.7(v1.0.0-33)**:RETRY 不再把用户踢回清空的输 ID 页(BUG-15:
   忙/离线时只提示并停留;键盘用 host 测试过的 `mpd_idedit_set_digits` 预填
   上次确认的玩法 ID);P0 冻结的 "timeout in 300s" 换成真实状态句(BUG-16);

@@ -266,6 +266,42 @@ the data plane against the production site.
   back to the old stage sentence. Host-tested; the next device failure names its layer
   on screen instead of guessing from a Mac behind a proxy.
 
+### BUG-18 (Critical) — handshake still failed after WE1 was added: the chain tail's issuer was never in the bundle
+
+- **Symptom (v34 and v35 devices, byte-identical logs)**: `esp-x509-crt-bundle: No
+  matching trusted root certificate found` → `mbedtls_ssl_handshake returned -0x3000`
+  → screen `TLS failed [esp=0x801a]`. v35 added the GTS WE1 intermediate; nothing changed.
+- **Static reproduction (no device needed)** — `tools/verify-crt-bundle-match.py`
+  re-derives the device lookup byte-for-byte with a raw ASN.1 parser (no cryptography
+  re-encoding): parse `build/esp-idf/mbedtls/x509_crt_bundle`, walk the live chain
+  captured from `metapass.chuanxilu.net`, and for each depth run the exact
+  `esp_crt_find_cert` binary search (memcmp over the DER issuer name, prefix semantics).
+  Result on the v35 bundle: depth 0 (leaf → WE1) FOUND, depth 1 (WE1 → GTS Root R4)
+  FOUND, **depth 2 (cross-signed GTS Root R4 → GlobalSign Root CA) NOT FOUND** —
+  precisely the device's failure line.
+- **Root cause**: the server presents a 3-cert chain ending in the cross-signed GTS Root
+  R4 (issuer = GlobalSign Root CA). `esp_crt_verify_callback` runs the
+  issuer-must-be-in-bundle lookup for *every* chain depth, not just the leaf: the walk
+  dies at the tail, whose issuer is not in the bundle. The earlier hypotheses —
+  bundle name-encoding drift, unsorted binary search — were disproven by the same run:
+  WE1's stored name is byte-exact against the PEM's raw subject DER, and the offset
+  table is correctly sorted.
+- **Why every earlier gate passed**: E2E-8 (openssl handshake with the device anchor)
+  succeeds because openssl builds paths to the self-signed R4 it already holds; E2E-8b
+  only required intermediates' issuers to be present, and the cross-signed R4 is in the
+  bundle *as a subject* even though its issuer is not; E2E-8c compared only the leaf's
+  issuer, as RFC2253 text. Nothing replayed the per-depth lookup over the full presented
+  chain.
+- **Fix**: `main/certs/globalsign-root-ca.pem` — self-signed root, subject byte-equal to
+  the chain tail's `issuer_raw` (89 B), SHA-256 fingerprint
+  `EB:D4:10:40:E4:BB:3E:C7:42:C9:E3:81:D3:1E:F2:A4:1A:48:B6:68:5C:96:E7:CE:F3:C1:DF:6C:D4:33:1C:99`;
+  `openssl verify` closes the full chain through it. Device-lookup simulation now reports
+  all three depths FOUND and "chain would VALIDATE on device".
+- **Gates added**: E2E-8d runs the byte-level device-lookup reproduction in every E2E run
+  against the live chain; the same tool verifies bundle structure/sort order/name bytes
+  and that the newest `build/meta-pass_v*.bin` embeds the current bundle verbatim
+  (stale-image guard — the v35 bin correctly fails this check). E2E count 17→19.
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is
@@ -324,6 +360,14 @@ host tests so it cannot drift silently.
    three versions while sdkconfig.defaults claimed otherwise. `rm -rf build`
    before every release artifact, then verify the effective sdkconfig (and
    the artifact itself), never assume.
+11. **Replay the device's failure surface, not a proxy for it** (BUG-18) — three
+   green gates coexisted with a device that could not complete one handshake,
+   because each checked a simplified slice: openssl's path-building instead of
+   the bundle's per-depth issuer lookup, an intermediate-hygiene rule that
+   stopped one hop short, an RFC2253 text compare where the device compares DER
+   bytes. When a device failure is deterministic, first reproduce it statically
+   and byte-exactly (`tools/verify-crt-bundle-match.py`), then let any fix be
+   judged by that reproduction.
 
 ---
 

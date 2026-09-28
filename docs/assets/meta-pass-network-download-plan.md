@@ -377,6 +377,17 @@ app.get("/api/extracted", async (req, res) => {
   → code 0. Permanent gates: E2E-8 (full production handshake with the device's real anchor
   bundle — the missing test that let this ship through five versions), E2E-8b (rejects
   cross-signed anchors). E2E count 15→17.
+- **v3.2-r10.7.2 (2026-09-29) chain-tail issuer fixed (BUG-18)**: adding the WE1
+  intermediate (r10.7.1, v35) did not clear the device handshake failure — the log was
+  byte-identical. A static reproduction (`tools/verify-crt-bundle-match.py`, raw ASN.1,
+  no cryptography re-encoding) replays `esp_crt_verify_callback`'s per-depth issuer
+  lookup over the live chain: the presented chain ends in the cross-signed GTS Root R4,
+  whose issuer is GlobalSign Root CA — not in the bundle, so the walk dies at depth 2
+  exactly as the device reports. Fix: `main/certs/globalsign-root-ca.pem` (subject
+  byte-equal to the chain tail's `issuer_raw`; full chain closes via `openssl verify`).
+  Gates: E2E-8d byte-level device-lookup simulation per depth + bundle
+  structure/sort/name-byte checks + stale-image guard (newest `build/meta-pass_v*.bin`
+  must embed the current bundle verbatim). E2E count 17→19.
 - **v3.2-r10.1 (2026-09-28) P0 change-WiFi intent = double-press UP**: the r10 rule "any
   keypress cancels ONLINE auto-advance" traded one ambiguity for another (a mis-press
   stranded the user on P0). Now a **double-press UP within 600ms** is the only cancel —

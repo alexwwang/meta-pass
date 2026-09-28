@@ -212,6 +212,37 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
   `Cert check failed[(clock unsynced)].`。未知死因回落原阶段句。host 测试覆盖;
   下次真机失败屏上直接报层位,不用再隔着一台挂代理的 Mac 猜。
 
+### BUG-18(严重)—— 加入 WE1 后握手照败:链尾的 issuer 从来不在包里
+
+- **症状(v34 与 v35 真机,日志逐字节相同)**:`esp-x509-crt-bundle: No matching
+  trusted root certificate found` → `mbedtls_ssl_handshake returned -0x3000` →
+  屏显 `TLS failed [esp=0x801a]`。v35 已加 GTS WE1 中间证书,毫无变化。
+- **静态复现(无需真机)** —— `tools/verify-crt-bundle-match.py` 用裸 ASN.1 解析器
+  (不经 cryptography 再编码)逐字节重推设备查找:解析
+  `build/esp-idf/mbedtls/x509_crt_bundle`,走一遍从 `metapass.chuanxilu.net`
+  抓的实发链,对每一层跑精确的 `esp_crt_find_cert` 二分查找(DER issuer 名上
+  memcmp、前缀语义)。v35 包上的结果:第 0 层(leaf → WE1)FOUND,第 1 层
+  (WE1 → GTS Root R4)FOUND,**第 2 层(cross-signed GTS Root R4 →
+  GlobalSign Root CA)NOT FOUND** —— 与设备报错行完全一致。
+- **根因**:服务器实发 3 张链,末尾是 cross-signed 的 GTS Root R4(issuer =
+  GlobalSign Root CA)。`esp_crt_verify_callback` 对链上**每一层**都做
+  issuer 必须在包内的查找,不只 leaf:链走到尾张时,它的 issuer 不在包里。
+  此前的两个假说 —— 包内名字编码漂移、二分排序错 —— 被同一次运行否定:
+  WE1 存的名字与 PEM 原始 subject DER 逐字节一致,offset 表排序正确。
+- **为何此前每道门都绿**:E2E-8(用设备锚做 openssl 握手)能过,是因为
+  openssl 会自建到它已持有的自签 R4 的路径;E2E-8b 只要求中间证书的 issuer
+  在包内,而 cross-signed R4 作为 subject 在包内、issuer 不在;E2E-8c 只比了
+  leaf 的 issuer,且是 RFC2253 文本。没有任何一道门把逐层查找放到完整实发链
+  上重演。
+- **修复**:`main/certs/globalsign-root-ca.pem` —— 自签根,subject 与链尾的
+  `issuer_raw` 逐字节相等(89 B),SHA-256 指纹
+  `EB:D4:10:40:E4:BB:3E:C7:42:C9:E3:81:D3:1E:F2:A4:1A:48:B6:68:5C:96:E7:CE:F3:C1:DF:6C:D4:33:1C:99`;
+  `openssl verify` 经它闭环全链。设备查找模拟现在三层全 FOUND,报
+  "chain would VALIDATE on device"。
+- **新增门**:E2E-8d 在每次 E2E 中对实发链跑字节级设备查找复现;同一工具核验
+  bundle 结构/排序/名字字节,并验证最新 `build/meta-pass_v*.bin` 原样内嵌当前
+  bundle(陈旧镜像守卫 —— v35 旧 bin 正确地在该项失败)。E2E 计数 17→19。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音
@@ -256,6 +287,12 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
    陈旧的全量 Mozilla 证书包穿过了三个版本,而 sdkconfig.defaults 声称
    相反。每次出发布产物前 `rm -rf build`,然后核验生效的 sdkconfig(与
    产物本身),绝不假设。
+11. **重演设备的失败面,而不是它的代理物**(BUG-18)——三道绿门与一台握不了
+   手的设备并存,因为每道门检查的都是简化切片:openssl 的路径构建代替了
+   bundle 的逐层 issuer 查找;中间证书卫生规则少走了一跳;RFC2253 文本比对
+   代替了设备真正在做的 DER 字节比对。真机失败一旦可确定地复现,先用静态
+   字节级手段复现它(`tools/verify-crt-bundle-match.py`),再让一切修复接受
+   该复现的检验。
 
 ---
 

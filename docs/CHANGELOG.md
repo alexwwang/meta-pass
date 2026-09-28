@@ -6,6 +6,18 @@
 
 ## Unreleased
 
+- **Chain-tail issuer missing from bundle fixed (r10.7.2, BUG-18)**: v35 added the GTS
+  WE1 intermediate yet the device kept failing with the identical
+  `No matching trusted root certificate found` / `-0x3000` handshake log. A new static
+  reproduction (`tools/verify-crt-bundle-match.py`) replays `esp_crt_verify_callback`'s
+  per-depth issuer lookup byte-for-byte over the live chain with a raw ASN.1 parser and
+  pins the real cause: the server presents a 3-cert chain ending in the cross-signed
+  GTS Root R4, whose issuer (GlobalSign Root CA) is not in the bundle — mbedTLS walks
+  every depth, not just the leaf. Fix: `main/certs/globalsign-root-ca.pem` (subject
+  byte-equal to the chain tail's `issuer_raw`; `openssl verify` closes the full chain).
+  New E2E-8d runs the byte-level device-lookup simulation plus a stale-image guard
+  (newest `build/meta-pass_v*.bin` must embed the current bundle verbatim) on every run;
+  E2E count 17→19. All three depths now resolve: chain would VALIDATE on device.
 - **Device round r10.7 (v1.0.0-33)**: RETRY no longer kicks the user back to an emptied
   id page (BUG-15: busy/offline retry shows a hint and stays; the keypad is preset with
   the last confirmed play id via host-tested `mpd_idedit_set_digits`); the frozen

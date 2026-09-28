@@ -5,7 +5,8 @@
 // 用法:node tools/e2e-production.mjs [host]   (默认正式站;不进 validate.sh —— 依赖外网)
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync, readFileSync, mkdtempSync, readdirSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, readdirSync, existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import tls from "node:tls";
@@ -213,6 +214,8 @@ for (const id of [563, 675]) {
 // 出现在 main/certs 的任一证书(subject 或 issuer)中 —— esp_crt_bundle_find_cert
 // 按 DER 名 memcmp,openssl 的路径构造能力救不了包内缺失的中间证书。
 // 实测教训:仅两张根时设备报 "No matching trusted root certificate found"。
+// (抓到的链同时落盘,E2E-8d 做字节级全链复现。)
+let chainArgs = [];
 {
   try {
     const host = new URL(HOST).hostname;
@@ -223,6 +226,9 @@ for (const id of [563, 675]) {
       .map((m) => m[0]);
     if (chain.length < 2) { fail("E2E-8c", `server sent only ${chain.length} cert(s)`); }
     else {
+      const tmpDir = mkdtempSync(path.join(os.tmpdir(), "e2e-chain-"));
+      chain.forEach((c, i) => writeFileSync(path.join(tmpDir, `chain_${i + 1}.pem`), c + "\n"));
+      chainArgs = chain.map((_, i) => path.join(tmpDir, `chain_${i + 1}.pem`));
       const leafIssuerDer = execSync(
         `openssl x509 -noout -issuer -nameopt RFC2253`, { input: chain[0], encoding: "utf8", timeout: 10_000 });
       const bundleSubjects = [];
@@ -238,6 +244,36 @@ for (const id of [563, 675]) {
       else fail("E2E-8c", `leaf issuer ${leafIssuer} NOT in bundle subjects [${bundleSubjects.join(" | ")}] — device handshake WILL fail (BUG-18)`);
     }
   } catch (e) { fail("E2E-8c", `chain fetch/compare: ${e.message.slice(0, 100)}`); }
+}
+
+// ---- E2E-8d 设备查找字节级全链复现(BUG-18 终版):调用 tools/verify-crt-bundle-match.py,
+// 用裸 ASN.1(无 cryptography 再编码)逐层复现 esp_crt_verify_callback 的 issuer_raw 查找,
+// 并验证 bundle 结构/排序/name 字节/嵌入。教训:8c 的 RFC2253 文本比对只覆盖 leaf 一跳,
+// 2026-09-29 链尾 cross-signed GTS Root R4(issuer=GlobalSign Root CA)缺失时 8c 依旧
+// PASS 而真机照败 —— 只有对服务器实发链的每一跳做字节级复现才能抓住。
+{
+  const script = path.join(ROOT, "tools/verify-crt-bundle-match.py");
+  const bundlePath = path.join(ROOT, "build/esp-idf/mbedtls/x509_crt_bundle");
+  if (!existsSync(script) || !existsSync(bundlePath)) {
+    fail("E2E-8d", "missing tools/verify-crt-bundle-match.py or build/esp-idf/mbedtls/x509_crt_bundle (run idf.py build first)");
+  } else if (chainArgs.length === 0) {
+    fail("E2E-8d", "no live chain captured by E2E-8c");
+  } else {
+    try {
+      const out = execSync(
+        `python3 ${script} ${bundlePath} ${path.join(ROOT, "main/certs")} ${chainArgs.join(" ")}`,
+        { encoding: "utf8", timeout: 60_000 });
+      const hits = (out.match(/FOUND \(idx/g) ?? []).length;
+      if (out.includes("chain would VALIDATE on device") && !out.includes("RESULT: FAIL")) {
+        pass("E2E-8d", `byte-exact device lookup: all ${hits} depth(s) issuer FOUND, bundle embedded in newest app bin (verify-crt-bundle-match)`);
+      } else {
+        fail("E2E-8d", `device-lookup simulation FAILED: ${out.split("\n").filter((l) => l.includes("FAIL:")).join(" ; ")}`);
+      }
+    } catch (e) {
+      const tail = String(e.stdout ?? "").split("\n").filter((l) => l.includes("FAIL:")).join(" ; ");
+      fail("E2E-8d", `verify-crt-bundle-match: ${tail || e.message.slice(0, 200)}`);
+    }
+  }
 }
 
 console.log(failed === 0

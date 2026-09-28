@@ -358,6 +358,15 @@ app.get("/api/extracted", async (req, res) => {
   `openssl s_client -CAfile main/certs/gtsr4.pem` → code 0。永久门：E2E-8
   （用设备真实锚包对生产站完整握手 —— 缺失的这个测试让坏链穿了五个版本）、
   E2E-8b（拒绝 cross-signed 锚）。E2E 计数 15→17。
+- **v3.2-r10.7.2（2026-09-29）修复链尾 issuer 缺失（BUG-18）**：加入 WE1 中间证书
+  （r10.7.1，v35）并未消除真机握手失败 —— 日志逐字节相同。静态复现
+  （`tools/verify-crt-bundle-match.py`，裸 ASN.1，不经 cryptography 再编码）对实发链
+  重演 `esp_crt_verify_callback` 的逐层 issuer 查找：实发链末尾是 cross-signed 的
+  GTS Root R4，其 issuer 为 GlobalSign Root CA —— 不在包里，链在第 2 层断掉，与
+  设备报错完全一致。修复：`main/certs/globalsign-root-ca.pem`（subject 与链尾
+  `issuer_raw` 逐字节相等；`openssl verify` 闭环全链）。门禁：E2E-8d 逐层字节级
+  设备查找模拟 + bundle 结构/排序/名字字节核验 + 陈旧镜像守卫（最新
+  `build/meta-pass_v*.bin` 必须原样内嵌当前 bundle）。E2E 计数 17→19。
 - **v3.2-r10.1（2026-09-28）P0 改网意图 = 双击 UP**：r10 的「任意键取消自动翻页」是拿
   一个新歧义换旧歧义（误按把用户困在 P0）。现在唯一取消方式 = **600ms 内双击 UP** ——
   它同时就是显式改网动作（擦凭证重开热点）；单击/OK/DOWN 全部无动作（误按安全，
