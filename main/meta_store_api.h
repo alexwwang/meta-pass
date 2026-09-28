@@ -33,8 +33,9 @@ typedef struct {
                                              // custom-partitions / too-large / ok;
                                              // supported=true 时 custom-partitions
                                              // 表示警告可继续(见 detail)
-    char     detail[24];                     // reason 的补充参数(警告分区名等);
-                                             // 空串 = 无补充
+    char     detail[48];                     // reason 的补充参数:警告分区名(r9)
+                                             // 或失败层位("upstream 503 (metadata)" 等诊断句,
+                                             // r10.4 服务端所有错误都携带);空串 = 无补充
 } meta_store_analysis_t;
 
 // analyze 响应体解析在独立编译单元 main/meta_store_analysis.{h,c}(纯逻辑,

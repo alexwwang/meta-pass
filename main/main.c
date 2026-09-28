@@ -86,7 +86,7 @@ static uint32_t s_play_id;                       // P1 确认的玩法编号
 static lv_obj_t *s_keys[10];                     // P1 数字键面板(屏上键盘)
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
 static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
-static char     s_store_warn_detail[24];         // 警告型 reason 的 detail(如自定义分区名 rec)
+static char     s_store_warn_detail[48];         // reason 的 detail:分区名(r9)或失败层位句(r10.4)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
@@ -566,6 +566,19 @@ static void page_store_info_build(void)
 // analyze 成功后填充详情内容。supported 时行 0 = CONFIRM、行 1 = BACK;
 // 带 custom-partitions 警告时,详情里插一行警告文案(subtype 0x40 自定义数据
 // 分区不随镜像进设备,运行时可能缺该存储,由用户决定是否继续)。
+// r10.4:P2 是否渲染为"可重试失败页"(RETRY/BACK)。判定单一事实源:
+//   - a == NULL:analyze 作业失败,结果未产出;
+//   - 服务端失败码 unavailable(上游 5xx/回源失败,重试可能成功);
+//   - 设备传输分类文案(含空格:"TLS failed (clock unsynced)." 等)。
+// 其余 unsupported(not-found/too-large/wrong-chip/...)是终态,只给 BACK。
+static bool store_info_is_retry_page(const meta_store_analysis_t *a)
+{
+    if (!a) return true;
+    if (a->supported) return false;
+    if (strcmp(a->reason, "unavailable") == 0) return true;
+    return strchr(a->reason, ' ') != NULL;
+}
+
 static void store_info_fill(const meta_store_analysis_t *a)
 {
     s_info_filled = true;
@@ -582,31 +595,32 @@ static void store_info_fill(const meta_store_analysis_t *a)
                      "%.24s\nsize: %lu KB\nmin slot: %d",
                      a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot);
         }
-    } else if (strchr(a->reason, ' ') != NULL) {
-        // r10.2:传输类分类文案("TLS failed (clock unsynced)." 等,含空格)
-        // 直接展示 —— 不是"玩法不支持",套 Not supported 会误导。
-        snprintf(text, sizeof(text), "%.40s", a->reason);
+    } else if (store_info_is_retry_page(a)) {
+        // r10.4:可重试失败 —— reason + 层位 detail 都上屏,一次定位失败层。
+        if (a->detail[0]) {
+            snprintf(text, sizeof(text), "Failed: %.40s\n%.47s",
+                     a->reason, a->detail);
+        } else {
+            snprintf(text, sizeof(text), "Failed: %.40s", a->reason);
+        }
     } else {
         snprintf(text, sizeof(text),
                  "Not supported:\n%.24s", a->reason);
     }
     lv_label_set_text(s_info, text);
 
-    // 传输失败页只给 RETRY/BACK;业务不支持页只有 BACK(原逻辑:items=1)。
-    const bool transport_fail = (a && !a->supported
-                                 && strchr(a->reason, ' ') != NULL);
-    if (transport_fail) {
+    if (store_info_is_retry_page(a)) {
         lv_obj_t *retry_lbl = lv_obj_get_child(s_rows[0], 0);
         lv_label_set_text(retry_lbl, "RETRY");
         add_row(s_scr, 1, 240, "BACK");
         rows_refresh(2, s_sel);
         return;
     }
-
-    lv_obj_t *confirm_lbl = lv_obj_get_child(s_rows[0], 0);
-    lv_label_set_text(confirm_lbl, "CONFIRM");
-    add_row(s_scr, 1, 240, "BACK");
-    rows_refresh(2, s_sel);
+    // 终态不支持:仅 BACK(行 0 标签直接写 BACK —— 旧版渲染 CONFIRM 却响应
+    // BACK 行为,标签与行为不一致)。
+    lv_obj_t *back_lbl = lv_obj_get_child(s_rows[0], 0);
+    lv_label_set_text(back_lbl, "BACK");
+    rows_refresh(1, s_sel);
 }
 
 // P3 槽位选择:行 = 3 槽,本地分区上限判 fit;仅 fit 行可确认。
@@ -862,11 +876,22 @@ static void store_tick(lv_timer_t *t)
             // 分析结果仍有效,直接展示,不被失败态覆盖)。
             store_info_fill(a);
         } else if (j.state == SN_JOB_DONE_FAIL && s_info) {
+            // r10.4:analyze 失败页(a==NULL 的真路径)—— reason 码 + 层位
+            // detail 都上屏,行 0 = RETRY(重新 analyze)、行 1 = BACK。
             s_info_filled = true;   // 失败也是终态:填充一次后停手
-            char text[96];
-            snprintf(text, sizeof(text), "Failed:\n%.40s", j.message);
+            char text[160];
+            if (j.detail[0]) {
+                snprintf(text, sizeof(text), "Failed: %.47s\n%.63s",
+                         j.message, j.detail);
+            } else {
+                snprintf(text, sizeof(text), "Failed:\n%.47s", j.message);
+            }
             lv_label_set_text(s_info, text);
-            s_sel = 0;              // 保持单行 BACK(items=1 分支)
+            lv_obj_t *retry_lbl = lv_obj_get_child(s_rows[0], 0);
+            lv_label_set_text(retry_lbl, "RETRY");
+            add_row(s_scr, 1, 240, "BACK");
+            s_sel = 0;
+            rows_refresh(2, s_sel);
         }
         break;
     }
@@ -1181,16 +1206,15 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_STORE_INFO:
         if (ev == BSP_BTN_CLICK) {
             const meta_store_analysis_t *a = meta_store_net_analysis();
-            // r10.2:传输失败页(RETRY/BACK)/不支持页(仅 BACK)/正常页
-            // (CONFIRM/BACK)三形态;传输失败 = reason 含空格的分类文案。
-            const bool transport_fail = (a && !a->supported
-                                         && strchr(a->reason, ' ') != NULL);
-            const int items = (a && a->supported) ? 2 : (transport_fail ? 2 : 1);
+            // 三形态:正常页(CONFIRM/BACK)、可重试失败页(RETRY/BACK)、
+            // 终态不支持页(仅 BACK)。判定单一事实源 = store_info_is_retry_page。
+            const bool retry_page = store_info_is_retry_page(a);
+            const int items = (a && a->supported) ? 2 : (retry_page ? 2 : 1);
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                 s_sel = (s_sel + 1) % items;
                 rows_refresh(items, s_sel);
             } else if (btn == BSP_BTN_OK) {
-                if (transport_fail && s_sel == 0) {
+                if (retry_page && s_sel == 0) {
                     s_info_filled = false;   // RETRY:重新 analyze 同一玩法
                     if (meta_store_net_cmd_analyze(s_play_id) != ESP_OK) {
                         store_goto(PAGE_STORE_ID);

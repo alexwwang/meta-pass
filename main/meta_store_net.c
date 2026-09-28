@@ -93,6 +93,15 @@ static void set_job(sn_job_state_t st, const char *msg)
 {
     s_job.state = st;
     snprintf(s_job.message, sizeof(s_job.message), "%s", msg);
+    s_job.detail[0] = '\0';   // 默认清空;失败带层位时由调用方紧跟 set_job_detail
+}
+
+// r10.4:失败层位入快照(msg = reason 码,detail = 服务端诊断句/分类文案)。
+static void set_job_detail(sn_job_state_t st, const char *msg, const char *detail)
+{
+    s_job.state = st;
+    snprintf(s_job.message, sizeof(s_job.message), "%s", msg);
+    snprintf(s_job.detail, sizeof(s_job.detail), "%s", detail ? detail : "");
 }
 
 // ---- WiFi 事件 ----
@@ -627,8 +636,10 @@ static void job_run_analyze(uint32_t play_id)
         set_job(SN_JOB_DONE_OK, "OK");
     } else {
         s_analysis_valid = false;
-        // analyze 失败时 reason 字段已是可展示的原因码(not-found/format/...)。
-        set_job(SN_JOB_DONE_FAIL, out.reason);
+        // r10.4:失败原因 + 层位 detail 都入快照 —— 服务端诊断句
+        // ("upstream 503 (metadata)")或设备分类文案("TLS failed (clock
+        // unsynced).")不再被丢弃,UI 能一次定位失败层。
+        set_job_detail(SN_JOB_DONE_FAIL, out.reason, out.detail);
     }
 }
 

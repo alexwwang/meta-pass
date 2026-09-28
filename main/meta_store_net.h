@@ -49,6 +49,8 @@ typedef struct {
 typedef struct {
     sn_job_state_t state;
     char message[48];      // 失败原因 / 进行提示(INSTALL 进度另见 meta_store_api_poll)
+    char detail[64];       // r10.4:失败层位(analyze 服务端 detail:"upstream 503
+                           // (metadata)" 等);成功/安装作业为空串
 } meta_store_net_job_t;
 
 // 一次性初始化:NVS/netif/event loop/网络任务/作业队列。幂等。失败返回 esp_err_t。

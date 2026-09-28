@@ -115,19 +115,24 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
   if (typeof doFetch !== "function") throw new Error("createStoreAnalyzer: fetchImpl required");
   if (typeof doSha256 !== "function") throw new Error("createStoreAnalyzer: sha256 required");
 
+  // 错误对象统一携带 detail(r10.4):设备与调试者需要知道是哪一层失败
+  // (metadata/image download 阶段 × 上游状态码),而不是一个孤零零的
+  // unavailable。detail 走既有契约字段(设备端 parse 已支持)。
   async function fetchJson(path) {
     let res;
     try {
       res = await doFetch(store + path, { redirect: "follow" });
     } catch {
-      return { error: REASON_UNAVAILABLE };
+      return { error: REASON_UNAVAILABLE, detail: "upstream unreachable (metadata)" };
     }
     if (res.status === 404) return { error: REASON_NOT_FOUND };
-    if (!res.ok) return { error: REASON_UNAVAILABLE };
+    if (!res.ok) {
+      return { error: REASON_UNAVAILABLE, detail: `upstream ${res.status} (metadata)` };
+    }
     try {
       return { json: await res.json() };
     } catch {
-      return { error: REASON_UNAVAILABLE };
+      return { error: REASON_UNAVAILABLE, detail: "upstream returned non-JSON metadata" };
     }
   }
 
@@ -136,9 +141,13 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     try {
       res = await doFetch(store + path, { redirect: "follow" });
     } catch {
-      return { error: REASON_UNAVAILABLE };
+      return { error: REASON_UNAVAILABLE, detail: "upstream unreachable (image download)" };
     }
-    if (!res.ok) return { error: res.status === 404 ? REASON_NOT_FOUND : REASON_UNAVAILABLE };
+    if (!res.ok) {
+      return res.status === 404
+        ? { error: REASON_NOT_FOUND }
+        : { error: REASON_UNAVAILABLE, detail: `upstream ${res.status} (image download)` };
+    }
     const buf = new Uint8Array(await res.arrayBuffer());
     return { buf };
   }
@@ -150,7 +159,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     if (!Number.isInteger(id) || id <= 0) return { error: REASON_NOT_FOUND };
 
     const meta = await fetchJson(`/api/plays/id/${id}`);
-    if (meta.error) return { error: meta.error };
+    if (meta.error) return { error: meta.error, ...(meta.detail ? { detail: meta.detail } : {}) };
     const play = meta.json && meta.json.play;
     if (!play || typeof play !== "object") return { error: REASON_NOT_FOUND };
 
@@ -164,12 +173,14 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     }
 
     const fw = pickFirmwareFields(play);
-    if (!fw) return { error: REASON_UNAVAILABLE };
-    if (!fw.available) return { error: REASON_UNAVAILABLE };
+    if (!fw) return { error: REASON_UNAVAILABLE, detail: "play metadata missing firmware fields (url/size/sha256)" };
+    if (!fw.available) return { error: REASON_UNAVAILABLE, detail: "play marked unavailable by marketplace" };
 
     const got = await fetchBytes(fw.url);
-    if (got.error) return { error: got.error };
-    if (got.buf.length !== fw.size) return { error: REASON_FORMAT };
+    if (got.error) return { error: got.error, ...(got.detail ? { detail: got.detail } : {}) };
+    if (got.buf.length !== fw.size) {
+      return { error: REASON_FORMAT, detail: `size mismatch: store=${fw.size} got=${got.buf.length}` };
+    }
     // 信任链第一步:商店公布哈希校验一致后才解包。
     const digest = await doSha256(got.buf);
     if (digest !== fw.sha256.toLowerCase()) return { error: REASON_FORMAT };

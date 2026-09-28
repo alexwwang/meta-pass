@@ -581,3 +581,40 @@ app.get("/api/extracted", async (req, res) => {
   `asciiName` short label, since the device screen has no CJK fonts);
 - Known category keys: must-play / multi-device / child-friendly / games / productivity /
   social / learning / information / developer / media.
+
+---
+
+## Appendix B: On-Device Acceptance Script (r10.4) — Expected Screens and Failure-Layer Table
+
+Flash `build/meta-pass_v1.0.0-<n>-*.bin` (v23 or later). Walk the steps in order; on any
+failure the screen shows the failing layer — match it against the table, no guessing.
+
+| Step | Action | Expected screen |
+|---|---|---|
+| 1 | Hold UP, plug USB, web upgrade | Upgrade progress, device reboots into launcher |
+| 2 | Enter STORE | P0: hotspot name or `WiFi: <saved>` + `double-UP = change WiFi / hold OK = exit` |
+| 3 | (saved credentials) wait | `Connecting to WiFi… (Ns)` → `Syncing clock… (Ns)` → `Online. WiFi: …` → auto to P1 in 2s |
+| 4 | Type 563 on keypad, OK | `Fetching info…` then name/size/`min slot: 0` + `NOTE: custom 'easter' part…` |
+| 5 | CONFIRM → pick slot 0 | `SLOT 0 OK`, then download %, `Installed.` |
+| 6 | OK LONG anywhere | Back to the launcher list (single stable exit) |
+
+Failure-layer table (screen text → layer → action):
+
+| Screen | Layer | Meaning / next step |
+|---|---|---|
+| `TLS failed (clock unsynced).` | Device: SNTP | Clock not synced → certificate time check cannot pass. Retry once; if persistent, capture serial log (`store_net`) |
+| `TLS/DNS failed. Retry.` | Device: TCP/TLS/DNS | DNS or TLS handshake failed while WiFi shows online → retry; persistent = router blocks the CDN |
+| `No response. Retry.` | Device: HTTP | Connection up but no headers → server-side stall, retry |
+| `Connection lost. Retry.` | Device: HTTP | Body read interrupted → retry |
+| `Bad response from server.` | Server: contract | Response not contract-shaped → capture timestamp, check deployment |
+| `Server error <code>` | Server: 5xx | Worker/upstream error; code tells which side, retry |
+| `unavailable` + `upstream 503 (metadata/image download)` | Server→market | CF worker could not reach the marketplace; transient, RETRY |
+| `unavailable` + `play metadata missing firmware fields…` | Marketplace data | Play record incomplete server-side; report the play id |
+| `unavailable` + `worker exception: …` / `server exception: …` | Deployment bug | Exception escaped the analyzer; report the detail line verbatim |
+| `Not supported: not-found` | Marketplace data | Play does not exist; check the id |
+| `Not supported: too-large` | Policy (final) | App larger than every slot; no retry |
+| `Last try: Wrong password? / AP not found…` | Provisioning | Credentials wrong or router hidden/PMF; re-provision |
+
+Data-plane evidence gate before any flash: `node tools/e2e-production.mjs` — 15 checks, all
+must PASS (analyze contract, extracted len/sha/magic, device-parser re-feed, cert anchor,
+reason alignment, unknown-id error contract).

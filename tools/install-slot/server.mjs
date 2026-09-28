@@ -194,7 +194,21 @@ const server = http.createServer((req, res) => {
     }
     storeAnalyzer.analyze(Number(id)).then(
       (out) => sendJson(res, 200, out),
-      (err) => sendError(res, 502, `analyze failed: ${err.message}`),
+      // r10.4:内部异常也回完整契约 JSON(reason+detail),不回裸 502 ——
+      // 设备端对非 200 不读体,会把真实异常吞成传输失败。
+      (err) => sendJson(res, 200, {
+        ok: false,
+        id: Number(id),
+        revisionId: null,
+        name: null,
+        store: null,
+        extracted: null,
+        slots: null,
+        suggestedSlot: -1,
+        supported: false,
+        reason: "unavailable",
+        detail: `server exception: ${String(err && err.message ? err.message : err).slice(0, 80)}`,
+      }),
     );
     return;
   }
@@ -215,7 +229,26 @@ const server = http.createServer((req, res) => {
     storeAnalyzer.extractedStream(Number(id)).then(
       (out) => {
         if (out.error) {
-          sendError(res, out.error === "not-found" ? 404 : 502, out.error);
+          // r10.4:失败也回契约 JSON + x-debug-detail 头(层位可见)。
+          res.writeHead(out.error === "not-found" ? 404 : 502, {
+            "content-type": "application/json; charset=utf-8",
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+            ...(out.detail ? { "x-debug-detail": String(out.detail).slice(0, 120) } : {}),
+          });
+          res.end(JSON.stringify({
+            ok: false,
+            id: Number(id),
+            revisionId: null,
+            name: null,
+            store: null,
+            extracted: null,
+            slots: null,
+            suggestedSlot: -1,
+            supported: false,
+            reason: out.error,
+            ...(out.detail ? { detail: out.detail } : {}),
+          }));
           return;
         }
         res.writeHead(200, {

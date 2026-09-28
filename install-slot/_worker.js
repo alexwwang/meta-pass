@@ -99,7 +99,28 @@ export default {
           },
         });
       } catch (e) {
-        return err(502, `analyze failed: ${e.message}`);
+        // r10.4:内部异常也必须回完整契约 JSON(reason=unavailable + detail=异常
+        // 摘要),不回裸 502 —— 设备端对非 200 不读体,会把真实原因吞成传输失败。
+        return new Response(JSON.stringify({
+          ok: false,
+          id: Number(id),
+          revisionId: null,
+          name: null,
+          store: null,
+          extracted: null,
+          slots: null,
+          suggestedSlot: -1,
+          supported: false,
+          reason: "unavailable",
+          detail: `worker exception: ${String(e && e.message ? e.message : e).slice(0, 80)}`,
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+          },
+        });
       }
     }
 
@@ -111,7 +132,26 @@ export default {
       try {
         const out = await storeAnalyzer.extractedStream(Number(id));
         if (out.error) {
-          return err(out.error === "not-found" ? 404 : 502, out.error);
+          // r10.4:失败带 detail 头(x-debug-detail),curl/设备日志可见层位。
+          const hdrs = {
+            "content-type": "application/json; charset=utf-8",
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+          };
+          if (out.detail) hdrs["x-debug-detail"] = String(out.detail).slice(0, 120);
+          return new Response(JSON.stringify({
+            ok: false,
+            id: Number(id),
+            revisionId: null,
+            name: null,
+            store: null,
+            extracted: null,
+            slots: null,
+            suggestedSlot: -1,
+            supported: false,
+            reason: out.error,
+            ...(out.detail ? { detail: out.detail } : {}),
+          }), { status: out.error === "not-found" ? 404 : 502, headers: hdrs });
         }
         return new Response(out.stream, {
           status: 200,
@@ -124,7 +164,7 @@ export default {
           },
         });
       } catch (e) {
-        return err(502, `extracted failed: ${e.message}`);
+        return err(502, `extracted failed: ${e && e.message ? e.message : e}`);
       }
     }
 

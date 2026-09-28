@@ -353,4 +353,92 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 12: extracted() refuses unsupported play with same reason");
 }
 
+// ---- 13. 错误路径的可观测性(r10.4):所有 reason=unavailable 都必须携带 ----
+// ---- detail,说明是哪一层失败(上游状态码/缺失字段),设备屏上可直接显示 ----
+{
+  // 13a: 元数据回源 503 → unavailable + detail="upstream 503 (metadata)"。
+  {
+    const fetchImpl = mockFetch(new Map([
+      ["/api/plays/id/563", { json: { oops: true }, status: 503 }],
+    ]));
+    const a = makeAnalyzer(fetchImpl);
+    const out = await a.analyze(563);
+    assert.equal(out.ok, false);
+    assert.equal(out.reason, "unavailable");
+    assert.match(out.detail, /upstream 503/);
+    assert.match(out.detail, /metadata/);
+  }
+  // 13b: 元数据网络异常(fetch reject)→ unavailable + detail="upstream unreachable (metadata)"。
+  {
+    const fetchImpl = async () => { throw new Error("socket hangup"); };
+    const a = makeAnalyzer(fetchImpl);
+    const out = await a.analyze(563);
+    assert.equal(out.reason, "unavailable");
+    assert.match(out.detail, /unreachable/);
+    assert.match(out.detail, /metadata/);
+  }
+  // 13c: 固件字段缺失(fw=null)→ unavailable + detail 指明缺什么。
+  {
+    const { fetchImpl } = makeEnv({
+      app: buildAppImage([1024]),
+      metaOver: { firmware: undefined, downloadUrl: undefined, firmwareSize: undefined, firmwareSha256: undefined },
+    });
+    const a = makeAnalyzer(fetchImpl);
+    const out = await a.analyze(563);
+    assert.equal(out.reason, "unavailable");
+    assert.match(out.detail, /firmware fields/);
+  }
+  // 13d: firmware.available=false → unavailable + detail="play marked unavailable"。
+  {
+    const { fetchImpl } = makeEnv({
+      app: buildAppImage([1024]),
+      metaOver: { firmware: { available: false, size: 1, sha256: "x", url: "/u" } },
+    });
+    const a = makeAnalyzer(fetchImpl);
+    const out = await a.analyze(563);
+    assert.equal(out.reason, "unavailable");
+    assert.match(out.detail, /marked unavailable/);
+  }
+  // 13e: 合并镜像回源 503 → unavailable + detail="upstream 503 (image download)"。
+  {
+    // 正常元数据 + 503 的下载路由。
+    const env = makeEnv({ app: buildAppImage([1024]) });
+    const fetch3 = async (url) => {
+      if (url.includes("/api/plays/id/")) return env.fetchImpl(url);
+      return new Response("boom", { status: 503 });
+    };
+    const b = makeAnalyzer(fetch3);
+    const out = await b.analyze(563);
+    assert.equal(out.reason, "unavailable");
+    assert.match(out.detail, /upstream 503/);
+    assert.match(out.detail, /image download/);
+  }
+  // 13f: size 不匹配 → 仍是 format,但 detail 指明期望/实际。
+  {
+    const env = makeEnv({ app: buildAppImage([1024]) });
+    const wrongSize = env.merged.length + 100;
+    const play = JSON.parse(JSON.stringify(env.play));
+    play.play.firmware.size = wrongSize;
+    play.play.firmwareSize = wrongSize;
+    const fetch4 = mockFetch(new Map([
+      ["/api/plays/id/563", { json: play }],
+      ["/api/download/community/ai-passport-9", { bytes: env.merged }],
+    ]));
+    const c = makeAnalyzer(fetch4);
+    const out = await c.analyze(563);
+    assert.equal(out.reason, "format");
+    assert.match(out.detail, /size mismatch/);
+    assert.ok(out.detail.includes(String(wrongSize)), "detail 必须含期望字节数");
+  }
+  // 13g: 成功路径不得带 error-detail(避免误导)。
+  {
+    const { fetchImpl } = makeEnv({ app: buildAppImage([1024]) });
+    const a = makeAnalyzer(fetchImpl);
+    const out = await a.analyze(563);
+    assert.equal(out.ok, true);
+    assert.equal(out.detail, undefined);
+  }
+  console.log("PASS 13: every unavailable/format carries a debug detail (upstream status/phase)");
+}
+
 console.log("\nALL store-analyze TESTS PASSED");

@@ -519,3 +519,40 @@ app.get("/api/extracted", async (req, res) => {
   **丢弃这两个字段**，做浏览时需补齐透传（建议附加 `asciiName` 短标签，因设备屏无 CJK 字体）；
 - 已知分类 key：must-play / multi-device / child-friendly / games / productivity /
   social / learning / information / developer / media。
+
+---
+
+## 附录 B:真机验收剧本(r10.4)—— 预期屏显与失败层位表
+
+刷 `build/meta-pass_v1.0.0-<n>-*.bin`(v23 或更新),按序走;任何一步失败,屏幕
+直接显示失败层位,对照下表即可,不用猜。
+
+| 步骤 | 操作 | 预期屏显 |
+|---|---|---|
+| 1 | 按住 UP 插 USB,网页升级 | 升级进度,设备重启回启动器 |
+| 2 | 进 STORE | P0:热点名或 `WiFi: <已存>` + `double-UP = change WiFi / hold OK = exit` |
+| 3 | (已存凭证)等待 | `Connecting to WiFi… (Ns)` → `Syncing clock… (Ns)` → `Online. WiFi: …` → 2s 后自动进 P1 |
+| 4 | 键盘输 563,OK | `Fetching info…` → 名称/size/`min slot: 0` + `NOTE: custom 'easter' part…` |
+| 5 | CONFIRM → 选槽 0 | `SLOT 0 OK` → 下载 % → `Installed.` |
+| 6 | 任意页 OK 长按 | 回启动器列表页(唯一稳定出口) |
+
+失败层位表(屏显 → 层 → 含义/下一步):
+
+| 屏显 | 层 | 含义 / 下一步 |
+|---|---|---|
+| `TLS failed (clock unsynced).` | 设备:SNTP | 时钟未同步 → 证书时间校验必败。重试一次;仍出现抓串口日志(`store_net`) |
+| `TLS/DNS failed. Retry.` | 设备:TCP/TLS/DNS | WiFi 在线但 DNS/TLS 握手失败 → 重试;持续 = 路由器拦 CDN |
+| `No response. Retry.` | 设备:HTTP | 连接建立但无响应头 → 服务端停滞,重试 |
+| `Connection lost. Retry.` | 设备:HTTP | 读体中断 → 重试 |
+| `Bad response from server.` | 服务端:契约 | 响应不是契约形态 → 记录时间点,查部署 |
+| `Server error <码号>` | 服务端:5xx | worker/上游错误;码号指明哪侧,重试 |
+| `unavailable` + `upstream 503 (metadata/image download)` | 服务端→市场 | worker 回源市场失败;瞬时,RETRY |
+| `unavailable` + `play metadata missing firmware fields…` | 市场数据 | 玩法记录不完整;报玩法 id |
+| `unavailable` + `worker exception: …` / `server exception: …` | 部署 bug | 异常逃出分析器;逐字报 detail 行 |
+| `Not supported: not-found` | 市场数据 | 玩法不存在;核对 id |
+| `Not supported: too-large` | 政策(终态) | 应用大于所有槽位;不可重试 |
+| `Last try: Wrong password? / AP not found…` | 配网 | 密码错或路由器隐藏/PMF;重新配网 |
+
+每次刷机前的数据面证据门:`node tools/e2e-production.mjs` —— 15 项全 PASS
+(analyze 契约、extracted 长度/sha/magic、设备解析器反喂、证书锚、reason 对齐、
+未知 id 错误契约)。

@@ -72,7 +72,7 @@ bool meta_store_analysis_parse(const char *json, size_t len, meta_store_analysis
     }
     // 警告补充参数(如 custom-partitions 警告的自定义分区名);缺席 = 空串。
     // supported=true + custom-partitions = 警告可继续(方案 r8;见头文件注释)。
-    char detail[24] = {0};
+    char detail[48] = {0};   // r10.4:诊断句形态("upstream 503 (metadata)"),48B
     if (meta_store_json_get_string(json, len, "detail", detail, sizeof(detail))) {
         snprintf(out->detail, sizeof(out->detail), "%s", detail);
     }

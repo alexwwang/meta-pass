@@ -84,6 +84,18 @@ for (const id of [563, 675]) {
   }
 }
 
+// ---- E2E-5b 错误路径契约:未知 id 必须回 200 + 完整契约 JSON ----
+// (设备端对非 200 不读体;任何裸 4xx/5xx 都会把真实原因吞成传输失败)
+{
+  const an = await httpGet(`${HOST}/api/analyze?id=999999`);
+  let j = null;
+  try { j = JSON.parse(an.buf.toString("utf8")); } catch {}
+  const ok = an.status === 200 && j && j.ok === false && typeof j.reason === "string" && j.reason.length > 0
+    && "supported" in j && "suggestedSlot" in j && "slots" in j;
+  if (ok) pass("E2E-5b", `unknown id -> 200 contract JSON, reason=${j.reason}${j.detail ? `, detail=${j.detail}` : ""}`);
+  else fail("E2E-5b", `unknown id malformed: status=${an.status} body=${an.buf.toString("utf8").slice(0, 120)}`);
+}
+
 // ---- E2E-6 证书链:正式站叶子证书必须由 GTS Root R4(设备打包的根)签发 ----
 {
   const tmp = mkdtempSync("/tmp/e2e-cert-");

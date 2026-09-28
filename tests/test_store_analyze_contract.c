@@ -164,12 +164,37 @@ static void test_drift_rejected(void)
     printf("PASS: contract drift rejected without partial trust\n");
 }
 
+// r10.4:服务端诊断句 detail(upstream 503 等)必须完整解析 —— 48B 缓冲,
+// 47 字符句子不被截断(24B 旧契约会把层位句斩半)。
+static void test_server_diag_detail_48b(void)
+{
+    // "upstream 503 (metadata)" = 23 字符;再验一个 47 字符满长句子。
+    static const char SHORT[] =
+        "{\"supported\":false,\"suggestedSlot\":-1,\"reason\":\"unavailable\","
+        "\"detail\":\"upstream 503 (metadata)\"}";
+    meta_store_analysis_t a;
+    assert(meta_store_analysis_parse(SHORT, sizeof(SHORT) - 1, &a));
+    assert(!a.supported);
+    assert(strcmp(a.reason, "unavailable") == 0);
+    assert(strcmp(a.detail, "upstream 503 (metadata)") == 0);
+
+    // 47 字符满长句(48B 缓冲恰好容纳含 NUL;24B 旧契约必截断)。
+    static const char LONG47[] =
+        "{\"supported\":false,\"suggestedSlot\":-1,\"reason\":\"unavailable\","
+        "\"detail\":\"play metadata missing firmware fields (url/size\"";
+    assert(strlen("play metadata missing firmware fields (url/size") == 47);
+    assert(meta_store_analysis_parse(LONG47, sizeof(LONG47) - 1, &a));
+    assert(strlen(a.detail) == 47);
+    printf("PASS: server diag detail survives 48B buffer (23 & 47 chars)\n");
+}
+
 int main(void)
 {
     test_supported_ok();
     test_supported_warn_custom_partitions();
     test_unsupported_keeps_reason();
     test_drift_rejected();
+    test_server_diag_detail_48b();
     printf("ALL store-analyze CONTRACT TESTS PASSED\n");
     return 0;
 }
