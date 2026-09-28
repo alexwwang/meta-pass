@@ -78,6 +78,14 @@ void mpd_idedit_move_horiz(mpd_idedit_t *e, int dir)
     e->cursor = c;
 }
 
+// 环移 = 物理短按 UP/DOWN 的可视导航:沿枚举序(= 网格行主序)±1,环绕。
+// 与 move_row 的区别:环移保证每按必动(列保持语义在第四列 row3 会卡死在
+// OK —— 对短按导航太惩罚);换行(长按)仍用 move_row。
+void mpd_idedit_move_ring(mpd_idedit_t *e, int dir)
+{
+    e->sel = (e->sel + dir + MPD_KEY_COUNT) % MPD_KEY_COUNT;
+}
+
 void mpd_idedit_move_row(mpd_idedit_t *e, int dir)
 {
     int row, col;

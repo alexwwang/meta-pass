@@ -61,6 +61,29 @@ void meta_slot_mark_invalid(meta_slot_info_t *slot)
     slot->state = META_SLOT_INVALID;
 }
 
+// r10 措辞单一事实源。语义:EMPTY = 已擦除(全 0xFF);INVALID = 槽内有数据
+// 但不是可引导的 ESP 应用镜像(典型:ota_2 双用途区被用作 littlefs 录音存储,
+// 或写坏了一半的镜像)。两种槽位对用户都完全可用 —— 商店安装 esp_ota_begin
+// 先擦除目标槽,覆盖即可,不需要任何 "删除/抢救" 步骤。措辞刻意避开
+// "invalid"(歧义:暗示设备/槽位损坏,而实际是"这槽没装固件")。
+const char *meta_slot_list_word(meta_slot_state_t state)
+{
+    switch (state) {
+    case META_SLOT_VALID:   return "";              // 列表页 VALID 显示固件名,不用词
+    case META_SLOT_INVALID: return "(no firmware)";
+    default:                return "(empty)";
+    }
+}
+
+const char *meta_slot_detail_word(meta_slot_state_t state)
+{
+    switch (state) {
+    case META_SLOT_VALID:   return "";
+    case META_SLOT_INVALID: return "(no firmware)\nInstall overwrites it.";
+    default:                return "(empty)\nInstall from Store.";
+    }
+}
+
 const char *meta_slot_core_name(const meta_slot_info_t *slot)
 {
     if (!slot) return "";

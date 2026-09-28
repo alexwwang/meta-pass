@@ -7,9 +7,10 @@
 //   7   8   9   OK(纵跨 r2-r3)
 //   ◀   0   ▶   (OK 下半)
 // ◀ ▶ 分列 0 的两侧(r9.1 用户指定);DEL/CLR/OK 独占第四列。
-// 物理键映射(main.c):UP/DOWN 短按 = ◀▶ 移光标;长按 = 换行(列保持,
-// 同列无键则停住 —— 第四列 row3 是 OK 的下半,换行到那里即停在 OK)。
-// ◀ ▶ 屏上键等效物理键;DEL 退格;CLR 全清;OK 显式提交。
+// 物理键映射(r10,main.c):UP/DOWN 短按 = 选中键沿环 ±1(可见高亮移动,
+// 环绕可达全部 15 键);长按 = 换行(列保持,同列无键则停住 —— 第四列 row3
+// 是 OK 的下半,换行到那里即停在 OK)。◀ ▶ 屏上键 = 移插入光标;DEL 退格;
+// CLR 全清;OK 显式提交。
 #pragma once
 
 #include <stdbool.h>
@@ -52,6 +53,10 @@ void mpd_idedit_move_horiz(mpd_idedit_t *e, int dir);
 
 // 换行:dir=+1 下一行/-1 上一行(环绕),列位置尽量保持。
 void mpd_idedit_move_row(mpd_idedit_t *e, int dir);
+
+// 环移:选中键沿环 ±1(环序 = 枚举序 = 网格行主序),环绕可达全部 15 键。
+// 物理短按 UP/DOWN 的可视导航;每按必动(不受第四列 row3 空格卡键影响)。
+void mpd_idedit_move_ring(mpd_idedit_t *e, int dir);
 
 // 语义动作(main.c 可直接绑定,测试全路径覆盖)。
 void mpd_idedit_backspace(mpd_idedit_t *e);   // DEL:删光标前一格,光标左移

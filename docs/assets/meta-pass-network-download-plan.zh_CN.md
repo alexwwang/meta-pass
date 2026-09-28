@@ -341,6 +341,26 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r10（2026-09-28）商店页面流修正、P1 几何/导航修正、槽位措辞诚实化**：
+  ① **页面流转图（自此为规范流）**：`LIST ⇄ STORE(P0) ⇄ ID(P1) ⇄ INFO(P2) ⇄
+  SLOT(P3) ⇄ DL(P4) → DONE(P5)`；短按 OK 前进（输 ID → 分析 → 选槽 → 安装），
+  OK LONG 从**每个**商店页（P0..P5）退出到列表页（唯一稳定出口）；BACK 类迁移
+  （P3→P2→P1 经 OK LONG）保持网络会话。r9 缺陷：P1 的 OK LONG 回 P0，而 P0 在
+  ONLINE 后 2s 自动进 P1 —— 死循环，真正的出口（P0 OK LONG）只有 2s 窗口。现：
+  P1 OK LONG = 退出商店；P0 自动翻页被**任何按键取消**（用户接管决策：停留/
+  CHANGE WIFI），P0 的 UP/DOWN 行显示 `> CHANGE WIFI (OK=confirm)` /
+  `OK = enter ID entry` —— 显式屏上改网入口，不再是只顾重置的暗示。② **P1 短按
+  修复**：UP/DOWN 短按 = 选中键环移 ±1（高亮可见移动；r9 错映射到移光标——
+  移的是看不见的插入点，键盘短按完全够不着，只有长按换行有效；审查抓到的
+  回归，`test_ring_navigation` 双向覆盖全部 15 键钉死）。屏上 ◀▶ 保持移光标
+  语义。③ **几何**：ID 面板 100→84（旧值被键盘首行压进 10px），OK 高度
+  58→64 使下缘与 0 键精确对齐（同为 y=274）；两条不变式在 main.c
+  `_Static_assert` —— 几何回归从此构建期失败。④ **槽位措辞**：`(invalid)` →
+  `(no firmware)`，单一事实源（`meta_slot_list_word`/`meta_slot_detail_word`，
+  host 测试 test_meta_slots 钉死）：EMPTY = 已擦除（全 0xFF）；NO FIRMWARE =
+  有数据但非可引导镜像（典型：ota_2 双用途 littlefs 录音）；两者都可直接覆盖
+  安装（esp_ota_begin 先擦除）——措辞不再暗示损坏或需要先删除。详情页改
+  `Install overwrites it.`（原 `Delete it and re-install.`）。
 - **v3.2-r9（2026-09-28）真机加固、政策修正、TDD 键盘、正式站 E2E 门**：真机 bring-up
   的六条失效链，逐条定根因并以测试钉死。① 配网扫描改为 handler 内同步且**无条件**
   取结果——IDF 中「扫完未取」的残留态会同时卡死下一次扫描与 `esp_wifi_connect`

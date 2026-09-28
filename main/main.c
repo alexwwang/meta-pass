@@ -160,10 +160,14 @@ static void list_refresh(void)
             snprintf(text, sizeof(text), "SLOT %d: %.20s", i, meta_slot_core_name(&s_slots[i]));
             break;
         case META_SLOT_INVALID:
-            snprintf(text, sizeof(text), "SLOT %d: (invalid)", i);
+            // r10 措辞:有数据但非可引导固件 —— 单一事实源 meta_slots.c
+            // (host 测试钉死;安装 esp_ota_begin 先擦除,槽位完全可复用)。
+            snprintf(text, sizeof(text), "SLOT %d: %s", i,
+                     meta_slot_list_word(s_slots[i].state));
             break;
         default:
-            snprintf(text, sizeof(text), "SLOT %d: (empty)", i);
+            snprintf(text, sizeof(text), "SLOT %d: %s", i,
+                     meta_slot_list_word(s_slots[i].state));
             break;
         }
         lv_label_set_text(lbl, text);
@@ -206,8 +210,9 @@ static void page_detail_build(int slot)
                  s->signed_fw ? "SIGNED\n" : "",
                  s->name, s->version, (unsigned long)(s->size / 1024), s->sha256_hex);
      } else {
-         snprintf(text, sizeof(text), "%s", s->state == META_SLOT_EMPTY
-                  ? "(empty)\nInstall from Store." : "(invalid)\nDelete it and re-install.");
+         // r10:措辞单一事实源 meta_slots.c(empty=已擦除 / no firmware=有
+         // 数据但非可引导镜像;两者都可覆盖安装,安装先擦除)。
+         snprintf(text, sizeof(text), "%s", meta_slot_detail_word(s->state));
      }
      lv_label_set_text(s_info, text);
 
@@ -349,7 +354,8 @@ static bool s_info_filled;
 // P0 配网页:AP 态显示热点信息;已存凭证(CONNECTING/ONLINE)态显示当前 SSID
 // 与 RESET WIFI 行 —— 选中并 OK 确认后擦凭证重开配网 AP(改 WiFi 入口)。
 // ONLINE 停留 2s 后自动进 P1(给足"已连上 XX"的可见时间,再快也能看清 SSID)。
-static bool     s_net_reset_sel;   // P0 RESET WIFI 行是否高亮
+static bool     s_net_reset_sel;   // P0 CHANGE WIFI 行是否高亮
+static bool     s_net_user_stay;   // r10:用户在 P0 按过键 → 取消 ONLINE 自动进 P1
 static int64_t  s_net_online_at;   // 进入 ONLINE 的时刻(自动进 P1 用;0=未在线)
 // 连接失败原因的粘滞显示:失败 → ap_start 回到 AP_UP 只在一拍之间,ERROR 文案
 // 会闪没;记下最近一次失败,配网页顶部展示 8s,让"提交后没反应"有因可读。
@@ -386,15 +392,17 @@ static void page_store_net_build(void)
                  st.ssid);
         lv_label_set_text(s_info, text);
         s_net_reset_sel = false;
+        s_net_user_stay = false;
         s_net_online_at = 0;
     } else {
         snprintf(text, sizeof(text), "%s\n\nWiFi: %s", st.message,
                  st.sta_ssid[0] ? st.sta_ssid : "-");
         lv_label_set_text(s_info, text);
-        // 已存凭证路径:CONNECTING 态(自动重连进行中)不提供 RESET 选中 ——
+        // 已存凭证路径:CONNECTING 态(自动重连进行中)不提供 CHANGE 选中 ——
         // 重连窗口内误触 OK 会擦掉正确凭证,把可自愈的状态变成必配网(F4)。
-        // 连接失败(ERROR,凭证可能错)时才默认选中 RESET。
+        // 连接失败(ERROR,凭证可能错)时才默认选中 CHANGE。
         s_net_reset_sel = (st.state == SN_STATE_ERROR);
+        s_net_user_stay = false;
         // build 时的初始值仅作 tick 跳变检测的种子;真正的进入时刻由 tick 记录。
         s_net_online_at = (st.state == SN_STATE_ONLINE) ? esp_timer_get_time() / 1000 : 0;
     }
@@ -406,8 +414,8 @@ static void page_store_net_build(void)
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
     if (st.state != SN_STATE_AP_UP) {
         lv_label_set_text(s_status_line, s_net_reset_sel
-                          ? "> RESET WIFI  (OK=confirm)"
-                          : "OK = change WiFi");
+                          ? "> CHANGE WIFI  (OK=confirm)"
+                          : "OK = enter ID entry\nUP/DOWN = CHANGE WIFI");
     } else {
         lv_label_set_text(s_status_line, "");
     }
@@ -418,9 +426,22 @@ static void page_store_net_build(void)
     lv_screen_load(s_scr);
 }
 
-// P1 屏上键盘(r9):15 键 3×3 数字 + CLR 0 OK + DEL ◀ ▶。
-// 编辑模型在 meta_store_idedit.c(纯逻辑,host 测试同一份):插入光标、
-// 退格、显式 OK 提交(第 7 位不再自动提交)、UP/DOWN 短按移光标、长按换行。
+// P1 屏上键盘(r9,r10 修正几何):15 键 4×4 —— 1 2 3 DEL / 4 5 6 CLR /
+// 7 8 9 OK(纵跨两行) / ◀ 0 ▶。编辑模型在 meta_store_idedit.c(纯逻辑,
+// host 测试同一份):插入光标、退格、显式 OK 提交、UP/DOWN 短按环移选中键、
+// 长按换行、◀▶ 屏上键移光标。
+// 几何契约(编译期锁死,几何回归在构建期直接失败):
+//   - 面板底 52+84=136 < 键盘首行顶 142 → 键盘永不压进 ID 面板;
+//   - OK 高 30+34=64,下缘 142+2*34+64=274 与 0 键下缘 142+3*34+30=274 对齐。
+#define P1_PANEL_H       84
+#define P1_KEY_H         30
+#define P1_ROW_PITCH     34
+#define P1_KEY_TOP       142
+#define P1_OK_H          (P1_KEY_H + P1_ROW_PITCH)
+_Static_assert(52 + P1_PANEL_H <= P1_KEY_TOP, "P1 panel must not overlap keypad");
+_Static_assert(P1_KEY_TOP + 2 * P1_ROW_PITCH + P1_OK_H
+               == P1_KEY_TOP + 3 * P1_ROW_PITCH + P1_KEY_H,
+               "P1 OK bottom must align with 0-key bottom");
 static mpd_idedit_t s_idedit;   // P1 编辑模型(纯逻辑,host 测试同一份;真实声明见键盘区)
 static void id_key_refresh(void);
 
@@ -435,7 +456,10 @@ static void id_refresh_text(void)
 static void page_store_id_build(void)
 {
     s_scr = ui_pixel_screen_create("PLAY ID");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 100, UI_PAPER);
+    // 面板 84 高(52..136):一行 ID + 两行提示,键盘首行 142 之上留 6px
+    // (旧值 100 使键盘第一行压进面板 10px —— r10 修复,几何由上方
+    // _Static_assert 锁死)。
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, P1_PANEL_H, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
@@ -447,11 +471,11 @@ static void page_store_id_build(void)
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, "UP/DOWN move - OK pick");
+    lv_label_set_text(s_status_line, "UP/DOWN move - OK press\nhold UP/DOWN row - hold OK exit");
 
     // 屏上键盘 15 键(r9.1):4×4 —— 1 2 3 DEL / 4 5 6 CLR / 7 8 9 OK(纵跨
-    // 两行) / ◀ 0 ▶。键 44x30,列距 50,行距 34;UP/DOWN 短按=◀▶ 移光标,
-    // 长按=换行(同列无键停住)。
+    // 两行) / ◀ 0 ▶。键 44x30,列距 50,行距 34;UP/DOWN 短按=环移选中键,
+    // 长按=换行(同列无键停住);◀▶ 屏上键=移光标。
     static const char *const k_labels[MPD_KEY_COUNT] = {
         "1", "2", "3", "DEL",
         "4", "5", "6", "CLR",
@@ -465,9 +489,11 @@ static void page_store_id_build(void)
                             : (i == MPD_KEY_CLR || i == MPD_KEY_DEL
                                || i == MPD_KEY_LEFT || i == MPD_KEY_RIGHT) ? UI_MUTED
                             : UI_PAPER;
-        // OK 纵跨 row2-row3(高 30+34-6 补两行间距)。
-        const int h = (i == MPD_KEY_OK) ? (30 + 34 - 6) : 30;
-        s_keys[i] = ui_pixel_panel_create(s_scr, 12 + col * 50, 142 + row * 34,
+        // OK 纵跨 row2-row3:高 64,下缘与第三行数字键(0)下缘精确对齐
+        // (等式由 _Static_assert 锁死;旧值 58 差 6px,r10 修复)。
+        const int h = (i == MPD_KEY_OK) ? P1_OK_H : P1_KEY_H;
+        s_keys[i] = ui_pixel_panel_create(s_scr, 12 + col * 50,
+                                          P1_KEY_TOP + row * P1_ROW_PITCH,
                                           44, h, base);
         lv_obj_t *lbl = ui_pixel_label(s_keys[i], k_labels[i],
                                        &lv_font_montserrat_14, UI_INK);
@@ -752,8 +778,11 @@ static void store_tick(lv_timer_t *t)
                     lv_label_set_text(s_info, text);
                 }
             }
-            // 停留 2s 让用户看清连的哪个网,然后自动进 P1。
-            if (esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
+            // 停留 2s 让用户看清连的哪个网,然后自动进 P1;r10:用户在 P0 按
+            // 过键(s_net_user_stay) = 想自己决策(改网/停留),自动翻页取消,
+            // 面板保持 "Online" 文案与 CHANGE WIFI 提示。
+            if (!s_net_user_stay
+                && esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
                 store_goto(PAGE_STORE_ID);
             }
         } else if (st.state == SN_STATE_AP_UP) {
@@ -1092,9 +1121,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_STORE_NET:
         if (ev == BSP_BTN_CLICK) {
             if (st_is_credentialed()) {
-                // 已存凭证态:UP/DOWN 在 "继续(什么都不做)/ RESET WIFI" 间切换。
-                // 简化为单行提示:OK CLICK = 进 P1;OK LONG = 退出商店;RESET 走
-                // OK 在 "重置确认" 子态 —— s_net_reset_sel 为真时 OK 才真正擦除。
+                // 已存凭证态:UP/DOWN 在 "继续 / CHANGE WIFI" 间切换,OK 确认。
+                // r10:按任何键 = 用户接管决策,自动翻页取消(s_net_user_stay)。
                 if (btn == BSP_BTN_OK && s_net_reset_sel) {
                     const esp_err_t err = meta_store_net_reset_wifi();
                     if (err == ESP_OK) {
@@ -1104,10 +1132,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                     // 失败:状态行已是 ERROR message,轮询会刷新。
                 } else if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                     s_net_reset_sel = !s_net_reset_sel;
+                    s_net_user_stay = true;   // 用户接管:取消 ONLINE 自动进 P1
                     if (s_status_line) {
                         lv_label_set_text(s_status_line, s_net_reset_sel
-                                          ? "> RESET WIFI  (OK=confirm)"
-                                          : "OK = continue");
+                                          ? "> CHANGE WIFI  (OK=confirm)"
+                                          : "OK = enter ID entry");
                     }
                 } else if (btn == BSP_BTN_OK && !s_net_reset_sel) {
                     store_goto(PAGE_STORE_ID);   // 网络就绪,直接去输 ID
@@ -1115,7 +1144,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             }
         }
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            goto_page(PAGE_LIST);   // teardown 中 meta_store_net_stop()
+            goto_page(PAGE_LIST);   // 退出商店(商店统一出口,见 P1 同款)
         }
         break;
 
@@ -1123,10 +1152,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         if (ev == BSP_BTN_CLICK) {
             bool changed = false;
             if (btn == BSP_BTN_UP) {
-                mpd_idedit_move_horiz(&s_idedit, -1);   // 短按 UP = ◀ 移光标
+                mpd_idedit_move_ring(&s_idedit, -1);   // 短按 UP = 选中键环上逆行(高亮可见移动)
                 changed = true;
             } else if (btn == BSP_BTN_DOWN) {
-                mpd_idedit_move_horiz(&s_idedit, +1);   // 短按 DOWN = ▶
+                mpd_idedit_move_ring(&s_idedit, +1);   // 短按 DOWN = 环上顺行
                 changed = true;
             } else if (btn == BSP_BTN_OK) {
                 changed = mpd_idedit_press(&s_idedit);
@@ -1143,7 +1172,8 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             mpd_idedit_move_row(&s_idedit, btn == BSP_BTN_DOWN ? +1 : -1);
             id_refresh_text();
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            store_goto(PAGE_STORE_NET);   // 回 P0(改 WiFi 入口见 P0 新增行)
+            goto_page(PAGE_LIST);   // 退出商店(r10:不再是回 P0 —— P0 在线会自动
+            // 回 P1,曾经死循环;商店唯一稳定出口统一为 OK LONG → 列表页)
         }
         break;
 

@@ -106,6 +106,49 @@ the data plane against the production site.
   production data**, not last week's samples — the production baseline check
   (E2E-1/2 over golden IDs) is what caught this within hours.
 
+### BUG-10 (High) — store page-flow contained an inescapable loop
+
+- **Symptom**: from P1 there was no way out of the store: OK LONG went to P0,
+  and ONLINE auto-advanced P0→P1 after 2s. The only real exit (P0 OK LONG →
+  list) had a 2-second window.
+- **Root cause**: the page flow was never drawn. Each transition was designed
+  locally ("P1 long-press should go somewhere sensible" → P0), and the
+  composition of P0's auto-advance with P1's exit created the cycle.
+- **Fix**: canonical flow graph documented in plan §8-r10; OK LONG exits the
+  store from every page; P0 auto-advance is cancelled by any keypress; P0
+  shows an explicit `> CHANGE WIFI` row so changing networks does not require
+  a connect failure first.
+- **Lesson**: for any multi-page UI, **draw the transition graph before
+  wiring keys** and check it for (a) an exit reachable from every node and
+  (b) no cycle that traps the user. A composed flow is a property of the
+  whole graph, not of individual edges.
+
+### BUG-11 (High) — short-press navigation mapped to an invisible cursor
+
+- **Symptom**: on the P1 keypad, short UP/DOWN presses appeared dead; only
+  long-press row-wraps moved anything.
+- **Root cause**: the r9 key-mapping change (short = move cursor) moved the
+  *insert caret*, which does not render on an empty input — the visible key
+  selection had no short-press path at all.
+- **Fix**: short UP/DOWN = selection ring ±1 (`mpd_idedit_move_ring`,
+  host-tested over all 15 keys both directions); on-screen ◀▶ keep cursor
+  semantics. Also fixed in the same pass: P1 panel height 100→84 (keypad
+  overlapped it by 10px) and OK key 58→64 so its bottom aligns with the 0 key
+  — both locked with `_Static_assert` so geometry regressions fail the build.
+- **Lesson**: key → action mappings must be reviewed against **what is
+  visible on screen**, not against the model's internal state; and layout
+  invariants (no overlap, edge alignment) belong in compile-time assertions,
+  not in code review.
+
+### Wording (r10, not a bug but a contract) — slot states speak plainly
+
+`(invalid)` was ambiguous (it suggested a broken device/slot) for what is
+usually ota_2 holding littlefs recordings — user data, not corruption. The
+states now read `(empty)` (erased) and `(no firmware)` (data present, not a
+bootable image), both installable over directly (esp_ota_begin erases first);
+wording lives in `meta_slot_list_word`/`meta_slot_detail_word`, pinned by
+host tests so it cannot drift silently.
+
 ### Process lessons (r9)
 
 1. **E2E must target the production site** — local server.mjs proves the

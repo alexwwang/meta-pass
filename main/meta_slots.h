@@ -40,6 +40,13 @@ bool meta_slot_set_valid(meta_slot_info_t *slot, const char *name, const char *v
 // 标记 INVALID(保留元数据供界面展示"坏固件",但禁止启动)。
 void meta_slot_mark_invalid(meta_slot_info_t *slot);
 
+// r10:槽位状态的 UI 措辞单一事实源(main.c 直接渲染,host 测试钉死)。
+// "(empty)" = 全 0xFF 已擦除;"(no firmware)" = 有数据但非可引导镜像
+// (典型:ota_2 双用途区装过 littlefs 录音)。不用 "invalid" —— 歧义暗示
+// 槽位损坏;安装路径 esp_ota_begin 先擦除,两种槽位都可直接覆盖安装。
+const char *meta_slot_list_word(meta_slot_state_t state);   // 列表页单词形态
+const char *meta_slot_detail_word(meta_slot_state_t state); // 详情页两行形态
+
 // 派生槽位列表用的"核心名":剥掉常见 "FoloToy-"/"FoloToy_"/"FoloToy " 前缀
 // (固件编译期 project_name 普遍带此前缀,小屏列表显示不下)。无前缀或剥完为空
 // → 返回原名;slot 为 NULL → 返回空串。返回 slot->name 内部指针,零拷贝。

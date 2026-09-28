@@ -359,6 +359,30 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10 (2026-09-28) Store page-flow fixed, P1 geometry/navigation corrected, honest slot
+  wording**: ① **Page-flow graph (this is the canonical flow now)**:
+  `LIST ⇄ STORE(P0) ⇄ ID(P1) ⇄ INFO(P2) ⇄ SLOT(P3) ⇄ DL(P4) → DONE(P5)`; short-press OK
+  moves forward (ID entry → analyze → slot select → install), OK LONG exits the store to LIST
+  from **every** store page (P0..P5 — the single stable exit), BACK-type transitions
+  (P3→P2→P1 via OK LONG on P3/P2, P1 short-circuit) keep the network session alive. The r9
+  defect: P1's OK LONG went to P0, and ONLINE auto-advanced P0→P1 after 2s — an inescapable
+  loop with a 2s window for the real exit (P0 OK LONG). Now P1 OK LONG = exit store; P0
+  auto-advance is **cancelled by any keypress** (user takes over the decision: stay/CHANGE
+  WIFI), and P0's UP/DOWN row reads `> CHANGE WIFI (OK=confirm)` / `OK = enter ID entry` —
+  an explicit on-screen change-WiFi entry instead of a reset-only affordance. ② **P1 short
+  presses fixed**: UP/DOWN short = selection ring ±1 (visible highlight; the r9 mapping to
+  cursor moves left/right moved an invisible caret — the keypad was unreachable by short
+  presses, only long-press row-wraps worked; regression caught in review, pinned by
+  `test_ring_navigation` covering all 15 keys both directions). On-screen ◀▶ keep the
+  cursor-move semantics. ③ **Geometry**: ID panel 100→84 (was overlapped by the keypad's
+  first row by 10px), OK height 58→64 so its bottom edge aligns exactly with the 0-key
+  (both y=274); both invariants are `_Static_assert`ed in main.c — a geometry regression
+  now fails the build. ④ **Slot wording**: `(invalid)` → `(no firmware)` as a single source
+  of truth (`meta_slot_list_word`/`meta_slot_detail_word`, host-tested in test_meta_slots):
+  EMPTY = erased (all 0xFF); NO FIRMWARE = data present but not a bootable image (typical:
+  ota_2 dual-use littlefs recordings); both install cleanly over (esp_ota_begin erases
+  first) — no wording implying damage or a required delete step. Detail page now says
+  `Install overwrites it.` instead of `Delete it and re-install.`
 - **v3.2-r9 (2026-09-28) Real-device hardening, policy correction, TDD keypad, production E2E
   gate**: six failure chains from device bring-up, each root-caused and pinned by tests. ①
   Provisioning scan made handler-synchronous with an **unconditional** result drain — a

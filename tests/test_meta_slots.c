@@ -1,5 +1,6 @@
 // tests/test_meta_slots.c —— meta_slots 槽位注册表的 host 测试。
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 #include "meta_slots.h"
 
@@ -16,6 +17,17 @@ int main(void)
     assert(!meta_slot_bootable(&s));
     assert(s.name[0] == '\0');
     assert(s.size == 0);
+
+    // r10 UI 措辞(单一事实源在 meta_slots,main.c 直接渲染):
+    // empty = 已擦除;no firmware = 有数据但非可引导镜像(ota_2 装过 littlefs)。
+    // 两者都可从商店安装,安装先擦除 —— 措辞不得暗示槽位损坏或需要抢救。
+    assert(strcmp(meta_slot_list_word(META_SLOT_EMPTY), "(empty)") == 0);
+    assert(strcmp(meta_slot_list_word(META_SLOT_INVALID), "(no firmware)") == 0);
+    assert(strcmp(meta_slot_detail_word(META_SLOT_EMPTY),
+                  "(empty)\nInstall from Store.") == 0);
+    assert(strcmp(meta_slot_detail_word(META_SLOT_INVALID),
+                  "(no firmware)\nInstall overwrites it.") == 0);
+    printf("PASS: slot wording unambiguous (empty vs no firmware)\n");
 
     // 写入合法元数据 → VALID,可启动
     assert(meta_slot_set_valid(&s, "tetris-game", "v1.0.0", 1513760, SHA));

@@ -6,6 +6,17 @@
 
 ## Unreleased
 
+- **商店页面流修复 + P1 键盘打磨(r10,v1.0.0-19..21)**:① 页面流显式化且无环 ——
+  OK LONG 从每个商店页退出到列表页,P0 ONLINE 自动翻页被任何按键取消(此前 P1 的
+  OK LONG → P0 而 P0 又自动进 P1 → 死循环,真出口只有 2s 窗口);P0 新增可见的
+  `> CHANGE WIFI (OK=confirm)` 行(UP/DOWN 切换)。② P1 UP/DOWN 短按 = 选中键环移
+  (r9 错映射到移光标——移的是看不见的插入点,短按导航全废);屏上 ◀▶ 移插入光标;
+  `test_ring_navigation` 钉死。③ P1 几何修正(ID 面板 100→84,键盘不再压进面板;
+  OK 高 58→64,下缘与 0 键对齐)并以 `_Static_assert` 锁死。④ 槽位措辞:
+  `(invalid)` → `(no firmware)`,单一事实源(`meta_slot_list_word`/
+  `meta_slot_detail_word`,host 测试)——EMPTY = 已擦除,NO FIRMWARE = 有数据但非
+  可引导(ota_2 littlefs 录音);两者都可直接覆盖安装(esp_ota_begin 先擦除);
+  详情页改 `Install overwrites it.`(原 `Delete it and re-install.`)
 - **商店配网加固 + 政策修正(r9,v1.0.0-14..18)**:六条真机失效链逐一定根因并修复,
   外加正式站 E2E 证据工装。① **配网扫描/连接死锁**:`/api/scan` 原本把「起扫」(网络
   任务)与「取结果」(HTTP handler)拆在两处,且结果为空时 handler 不调

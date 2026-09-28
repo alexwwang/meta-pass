@@ -6,6 +6,20 @@
 
 ## Unreleased
 
+- **Store page-flow fix + P1 keypad polish (r10, v1.0.0-19..21)**: ① page-flow made
+  explicit and loop-free — OK LONG exits the store to the list page from every store page,
+  P0 ONLINE auto-advance is cancelled by any keypress (previously P1's OK LONG → P0 and
+  P0 auto-advanced back → inescapable loop with a 2s real exit window); P0 gains a visible
+  `> CHANGE WIFI (OK=confirm)` row (UP/DOWN toggles). ② P1 UP/DOWN short presses move the
+  key selection around a ring (r9 had mapped them to cursor moves — an invisible caret —
+  leaving short-press navigation dead); on-screen ◀▶ move the insert cursor; pinned by
+  `test_ring_navigation`. ③ P1 geometry fixed (ID panel 100→84 so the keypad no longer
+  overlaps it; OK key height 58→64 so its bottom aligns with the 0 key) and locked with
+  `_Static_assert`. ④ Slot wording: `(invalid)` → `(no firmware)` via a single source of
+  truth (`meta_slot_list_word`/`meta_slot_detail_word`, host-tested) — EMPTY = erased,
+  NO FIRMWARE = data present but not bootable (ota_2 littlefs recordings); both install
+  over cleanly (esp_ota_begin erases first); detail page says `Install overwrites it.`
+  instead of `Delete it and re-install.`
 - **Store provisioning hardening + policy fix (r9, v1.0.0-14..18)**: six real-device
   failure chains root-caused and fixed, plus a production E2E evidence harness. ①
   **Provisioning scan/connect deadlock**: `/api/scan` used to split "start scan" (network

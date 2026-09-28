@@ -96,6 +96,39 @@ static void test_row_navigation(void)
     printf("PASS: row navigation wraps and preserves column\n");
 }
 
+// r10:物理 UP/DOWN 短按 = 选中键沿环 ±1(环序 = 枚举序 = 网格行主序)。
+// 回归:中间版本把短按映射到移光标,键盘高亮只剩长按换行一条路,列方向
+// 永远动不了 —— 环移测试钉死"短按必须移动可见的高亮键"。
+static void test_ring_navigation(void)
+{
+    mpd_idedit_t e;
+    mpd_idedit_init(&e);   // sel = MPD_KEY_1(环首)
+
+    // 正向一整圈:+1 ×15 回到起点,途中逐键命中全部 15 键。
+    const int ring[MPD_KEY_COUNT] = {
+        MPD_KEY_1, MPD_KEY_2, MPD_KEY_3, MPD_KEY_DEL,
+        MPD_KEY_4, MPD_KEY_5, MPD_KEY_6, MPD_KEY_CLR,
+        MPD_KEY_7, MPD_KEY_8, MPD_KEY_9, MPD_KEY_OK,
+        MPD_KEY_LEFT, MPD_KEY_0, MPD_KEY_RIGHT,
+    };
+    for (int i = 0; i < MPD_KEY_COUNT; i++) {
+        assert(e.sel == ring[i]);
+        mpd_idedit_move_ring(&e, +1);
+    }
+    assert(e.sel == MPD_KEY_1);   // 环绕回环首
+
+    // 反向:先移再断言(环首 -1 = 环尾),走一整圈逐键回环首。
+    for (int i = MPD_KEY_COUNT - 1; i >= 0; i--) {
+        mpd_idedit_move_ring(&e, -1);
+        assert(e.sel == ring[i]);
+    }
+    // 环首再 -1:落在环尾(环绕无缝)。
+    mpd_idedit_move_ring(&e, -1);
+    assert(e.sel == ring[MPD_KEY_COUNT - 1]);
+
+    printf("PASS: ring navigation covers all 15 keys both directions\n");
+}
+
 static void test_horiz_bounds(void)
 {
     mpd_idedit_t e;
@@ -149,6 +182,7 @@ int main(void)
     test_insert_and_cursor();
     test_backspace();
     test_row_navigation();
+    test_ring_navigation();
     test_horiz_bounds();
     test_commit_and_capacity();
     printf("ALL META_STORE_IDEDIT TESTS PASSED\n");
