@@ -235,19 +235,55 @@ bootable image), both installable over directly (esp_ota_begin erases first);
 wording lives in `meta_slot_list_word`/`meta_slot_detail_word`, pinned by
 host tests so it cannot drift silently.
 
-### Process lessons (r9)
+### Process lessons (r9–r10.6)
 
 1. **E2E must target the production site** — local server.mjs proves the
-   code, not the deployment. `tools/e2e-production.mjs` (14 checks) is the
+   code, not the deployment. `tools/e2e-production.mjs` is the
    acceptance gate for the data plane; re-run it before any device flash.
 2. **Device-only paths get static review + screen diagnostics** — RF, task
    lifecycles, and UI state machines cannot be host-tested; each F1–F4
    finding came from a checklist against known IDF failure modes, and every
    remaining failure now prints its layer and reason code on screen.
 3. **Extract device decision logic into pure modules** (`meta_store_idedit`,
-   `meta_store_prov`, `meta_store_analysis`) so the host tests run the same
-   code the device runs — "verified on the simulator" claims died here twice
-   before this rule was adopted.
+   `meta_store_prov`, `meta_store_analysis`, `meta_store_api_fail`) so the
+   host tests run the same code the device runs — "verified on the
+   simulator" claims died here twice before this rule was adopted.
+4. **Design the page-flow graph before wiring keys** (BUG-10/11) — the
+   inescapable P0↔P1 loop and the dead short-press navigation both came
+   from writing key handlers with no transition model on paper. The flow
+   graph (plan §8 r10) is now the canonical spec; every transition exists
+   there before code does.
+5. **No failure may collapse into one word** (BUG-12, r10.4) — "unavailable"
+   told the user and the developer nothing for five versions. Device
+   transport failures now classify by stage × clock state; every server
+   error path carries a `detail` with the upstream status/phase. Debuggability
+   is a contract on both sides, not a nice-to-have.
+6. **"E2E passes" must include the device's real materials and request
+   surface** (BUG-13) — issuer-string matching is not chain verification,
+   and a host fetch is not the device's HTTP stack. E2E-8 runs a full TLS
+   handshake with the device's actual anchor bundle; contract checks replay
+   the device's exact request surface (HTTP/1.1, device UA, no extra
+   headers). What the device runs is what gets tested.
+7. **Build warnings are failures** (BUG-14) — two `iteration 10 invokes
+   undefined behavior` warnings sat in every build log since r10 while the
+   UB ate the list page; grepping warnings away to read the PASS lines is
+   the process error that let it live. The main component builds with
+   `-Werror`; warnings may not be filtered out of attention.
+8. **Single-source every array size from the constant that bounds its
+   loops** (BUG-14) — `s_keys[10]` next to `for (i < MPD_KEY_COUNT)` was a
+   bomb no device test covers and no code review caught for three versions;
+   the declaration and the loop must derive from one constant.
+9. **Test tooling must separate environment failure from service failure**
+   (2026-09-28 egress incident) — a local proxy TUN hijacked DNS to fake-ip
+   and reset TLS, a symptom shape identical to a production outage; hours
+   went to "is the service down" before the layer was found. E2E-0 now
+   prefights the egress: fake-ip + failed handshake exits 2 (environment),
+   never misreported as service failure (exit 1).
+10. **Release artifacts come from clean rebuilds** (v26–v28 Kconfig drift) —
+   incremental builds carried a stale full Mozilla cert bundle through
+   three versions while sdkconfig.defaults claimed otherwise. `rm -rf build`
+   before every release artifact, then verify the effective sdkconfig (and
+   the artifact itself), never assume.
 
 ---
 

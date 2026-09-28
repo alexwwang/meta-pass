@@ -11,10 +11,12 @@
   keypad has 15 keys, so every P1 build (which runs automatically 2s after ONLINE) overflowed
   5 pointers straight into `.bss.s_rows` and the head of `.bss.s_slots` (proven from the
   linker map), leaving the slot list page unable to highlight STORE DOWNLOAD with dead keys.
-  The size is now single-sourced from `MPD_KEY_COUNT`, and the main component builds with
+  The size is now single-sourced from `MPD_KEY_COUNT`, and  the main component builds with
   `-Werror` — the two `iteration 10 invokes undefined behavior` warnings that sat in the
   build log since r10 can never be ignored again. Clean rebuild: v1.0.0-31, both warnings
-  gone, validate 112 checks + firmware gates green.
+  gone, validate 112 checks + firmware gates green. Process lessons consolidated to ten
+  rules (r9–r10.6) in `docs/BUGS.md`; seven of them promoted to enforceable baseline
+  rules in `AGENTS.md`.
 - **Analyze transport-failure classification (r10.2, v1.0.0-23)**: the long-standing
   "every play shows unavailable on device" class of failures is now diagnosed on screen —
   analyze transport failures classify by stage x clock state via the new pure-logic

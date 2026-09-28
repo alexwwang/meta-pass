@@ -19,6 +19,12 @@ This file is the only mandatory entry point for AI-assisted work in this reposit
 - A demo must stop every task, timer, callback, and event handler that can access its UI before deleting the screen.
 - System-level policies (boot policy, otadata state, flash layout) must be enforced at an unbypassable layer (bootloader or validator), never delegated to child-firmware cooperation. Child-firmware hooks are defense-in-depth only.
 - Before delivering a firmware or bootloader change, verify the change is physically present in the built artifact (map file symbols, log strings) — a clean build is not evidence of linkage.
+- Build warnings are failures: first-party components compile with `-Werror`, and build output may never be filtered (grepping warnings away to read the PASS lines) — UB warnings shipped real corruption here for three versions (BUG-14).
+- Array/buffer declarations must derive their size from the same constant that bounds every loop indexing them; a hardcoded size beside a different loop bound is a latent overflow (BUG-14: `s_keys[10]` vs `MPD_KEY_COUNT`).
+- Every user-visible failure must name its layer (stage/phase/status code), on the device and on the server alike; collapsing distinct failures into one word ("unavailable") violates the debuggability contract (BUG-12, r10.4).
+- Contract and E2E checks must replay the device's exact request surface (HTTP/1.1, device UA, no extra headers) and use the device's real crypto material (anchor bundle); a host fetch proves nothing about the device stack (BUG-13).
+- Release artifacts come from clean rebuilds (`rm -rf build`) followed by verification of the effective sdkconfig and the artifact itself — incremental builds have shipped stale config through three versions (v26–v28 Kconfig drift).
+- Test tooling must distinguish environment failure from service failure by exit code (e.g. e2e egress preflight: hijacked DNS/proxy → exit 2, service defect → exit 1) so a local proxy or DNS issue is never misread as a production outage.
 - Tests and static gates must not depend on local uncommitted build state; when `build/` artifacts are absent (CI bare checkout), tests fall back to synthetic fixtures and keep the same assertions.
 - Keep testable state machines, protocols, timing, and layout calculations independent from ESP-IDF/LVGL and cover them with host tests.
 - Never commit credentials, device QR secrets, private keys, personal data, or unsanitized logs.
