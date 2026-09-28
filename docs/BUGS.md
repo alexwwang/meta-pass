@@ -200,6 +200,32 @@ the data plane against the production site.
   Any trust-anchor change must be validated with a full handshake against
   the production endpoint, exactly the way the device will do it.
 
+### BUG-14 (Critical) — list page dead after one store visit (s_keys[10] overflow)
+
+- **Symptom**: after visiting the store once — which always builds P1, since ONLINE
+  auto-advances into the id-entry page 2s after connecting — the slot list page could no
+  longer highlight STORE DOWNLOAD, and keys stopped doing anything. A fresh boot worked
+  until the store was entered.
+- **Root cause, proven from the linker map**: `s_keys` was still declared
+  `static lv_obj_t *s_keys[10]` — the r8 keypad had 10 keys. r10 grew the keypad to 15
+  (`MPD_KEY_COUNT`) and the build loop kept indexing the same hardcoded array: every P1
+  build wrote `s_keys[0..14]`, overflowing 5 pointers (40 bytes of .bss). The map placed
+  exactly the victims there: `.bss.s_keys 0x3fc999e0 0x28` is followed by
+  `.bss.s_rows 0x3fc99a08 0x10` (the four list-page row pointers) and the head of
+  `.bss.s_slots`. After leaving the store the screen objects are destroyed, so
+  `list_refresh`/`rows_refresh` dereferenced dangling `lv_obj_t*` written by the keypad
+  builder — list-page highlight and key dispatch corrupted, at the mercy of heap reuse.
+  The only trace in the build log: `warning: iteration 10 invokes undefined behavior`
+  (`-Waggressive-loop-optimizations`, main.c:495 and :514) — sitting there since r10
+  while the UB ate the list page.
+- **Fix**: the declaration is now `static lv_obj_t *s_keys[MPD_KEY_COUNT]` — array size
+  derives from the same source as the build loop, so the keypad can never outgrow it
+  silently again; both UB warnings are gone from a clean build.
+- **Lesson**: a hardcoded size next to a loop bounded by a different constant is a
+  time bomb no device test covers; the compiler flagged it from day one. Firmware-build
+  warnings must be treated as failures, not grepped away — `-Werror` now applies to the
+  main component.
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is

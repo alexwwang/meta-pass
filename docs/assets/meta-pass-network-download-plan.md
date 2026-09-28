@@ -359,6 +359,15 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10.6 (2026-09-28) List page corrupted by one store visit (BUG-14)**: `s_keys`
+  was still `static lv_obj_t *s_keys[10]` (r8 ten-key leftover) while the r10 keypad is 15
+  keys — every P1 build overflowed 5 pointers into `.bss.s_rows` + the head of
+  `.bss.s_slots` (linker-map proven), so after one store visit the slot list could no
+  longer highlight STORE DOWNLOAD and keys died. Fix: array size single-sourced from
+  `MPD_KEY_COUNT`; main component now builds with `-Werror` (the two
+  `iteration 10 invokes undefined behavior` warnings had sat in every build log since
+  r10 — warnings must be treated as failures). Clean rebuild v1.0.0-31, both warnings
+  gone, validate 112 + firmware gates green.
 - **v3.2-r10.5 (2026-09-28) TLS trust anchor fixed (BUG-13)**: the on-device failure "every
   play → `TLS/DNS failed. Retry.`" was two defects: ① the HTTP client configs never attached
   any certificate source (zero trust anchors → every handshake fails); ② the bundle's

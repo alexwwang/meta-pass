@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+- **进过一次商店后列表页全废已修(r10.6,BUG-14)**:P1 键盘面板数组 `s_keys`
+  仍是 r8 十键时代的硬编码 `[10]`,而 r10 键盘已是 15 键 —— 每次进入 P1
+  (ONLINE 后 2 秒自动发生)越界写 5 个指针,正好砸进 `.bss.s_rows` 与
+  `.bss.s_slots` 头部(链接 map 实证),列表页从此无法高亮 STORE DOWNLOAD、
+  按键失灵。数组尺寸改为与 `MPD_KEY_COUNT` 单源,main 组件启用 `-Werror` ——
+  自 r10 起就躺在构建日志里的两条 `iteration 10 invokes undefined behavior`
+  警告再也不可能被无视。净室重建 v1.0.0-31:两条警告消失,validate 112 项 +
+  固件门全绿。
 - **analyze 传输失败分类(r10.2,v1.0.0-23)**:长期存在的"真机一切玩法都显示
   unavailable"类失败现在屏上可诊断 —— analyze 传输失败按阶段 × 时钟状态分类,
   经新纯逻辑模块 `meta_store_api_fail`(host 测试):`TLS failed (clock
