@@ -106,9 +106,12 @@ CONFIG_LWIP_SNTP_MAX_SERVERS=2
 # 设备只连 metapass.chuanxilu.net(Cloudflare,GTS Root R4 ← 链)与其可能的
 # ISRG 备用链,故用自定义证书包(main/certs/*.pem,双根 ~2.3KB),替代默认
 # Mozilla 全量包(省 ~60KB+ 固件体积)。
+# r10.5 事实教训:"# CONFIG_..._DEFAULT_FULL is not set" 注释行压不住 Kconfig
+# choice 的默认值(FULL 是默认选中项)—— 必须显式选 DEFAULT_NONE 才能关闭
+# 默认包;否则 CUSTOM 只是"追加",v26 实际打进了全量 Mozilla 包(实测
+# sdkconfig.h 无 CUSTOM 行、app 体积多 ~70KB)。
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL is not set
-# CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN is not set
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_NONE=y
 CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH="main/certs"
 # 证书链校验 mbedTLS 默认开;mbedTLS_HAVE_TIME_DATE 默认启用 = 校验证书有效期,
