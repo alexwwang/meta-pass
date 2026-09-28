@@ -469,7 +469,9 @@ static void page_store_id_build(void)
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, "UP/DOWN move - OK press");
+    // 屏上提示只写看不见的手势:长按换行/长按退出。短按移动/按下在键盘上
+    // 一眼自明,写了是废话(r10.3:上一版删反了,把必要的删了留下了废话)。
+    lv_label_set_text(s_status_line, "hold UP/DOWN = row - hold OK = exit");
 
     // 屏上键盘 15 键(r9.1):4×4 —— 1 2 3 DEL / 4 5 6 CLR / 7 8 9 OK(纵跨
     // 两行) / ◀ 0 ▶。键 44x30,列距 50,行距 34;UP/DOWN 短按=环移选中键,
