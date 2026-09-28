@@ -341,6 +341,14 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r10.6（2026-09-28）进一次商店即损毁列表页（BUG-14）**：`s_keys`
+  仍是 `static lv_obj_t *s_keys[10]`（r8 十键遗留）而 r10 键盘已达 15 键 ——
+  每次进入 P1 越界写 5 个指针，砸进 `.bss.s_rows` + `.bss.s_slots` 头部
+  （链接 map 实证），进过一次商店后槽位列表无法高亮 STORE DOWNLOAD、按键
+  失灵。修复：数组尺寸与 `MPD_KEY_COUNT` 单源；main 组件启用 `-Werror`
+  （两条 `iteration 10 invokes undefined behavior` 警告自 r10 起躺在每次构建
+  日志里 —— 警告必须当失败处置）。净室重建 v1.0.0-31，警告消失，validate
+  112 项 + 固件门全绿。
 - **v3.2-r10.5（2026-09-28）修复 TLS 信任锚（BUG-13）**：真机"任何玩法 →
   `TLS/DNS failed. Retry.`"是两个缺陷叠加：① HTTP client 配置从未挂接任何
   证书源（零信任锚 → 所有握手必败）；② 证书包里的 GTS Root R4 是

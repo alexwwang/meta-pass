@@ -23,3 +23,7 @@ idf_component_register(
              esp_http_server esp_http_client app_update esp_partition mbedtls
              esp-tls   # r10.5:esp_crt_bundle(自定义证书包 main/certs 的构建集成)
 )
+
+# BUG-14 教训:UB 警告(越界写)在构建日志里躺了三个版本没人看 —— 本组件
+# 警告一律升级为错误,固件构建不再可能带着未处置的警告出门。
+target_compile_options(${COMPONENT_LIB} PRIVATE -Werror)

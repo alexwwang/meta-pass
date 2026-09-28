@@ -6,6 +6,15 @@
 
 ## Unreleased
 
+- **List-page corruption after one store visit fixed (r10.6, BUG-14)**: `s_keys` — the P1
+  keypad panel array — was still declared `[10]` from the r8 10-key keypad while the r10
+  keypad has 15 keys, so every P1 build (which runs automatically 2s after ONLINE) overflowed
+  5 pointers straight into `.bss.s_rows` and the head of `.bss.s_slots` (proven from the
+  linker map), leaving the slot list page unable to highlight STORE DOWNLOAD with dead keys.
+  The size is now single-sourced from `MPD_KEY_COUNT`, and the main component builds with
+  `-Werror` — the two `iteration 10 invokes undefined behavior` warnings that sat in the
+  build log since r10 can never be ignored again. Clean rebuild: v1.0.0-31, both warnings
+  gone, validate 112 checks + firmware gates green.
 - **Analyze transport-failure classification (r10.2, v1.0.0-23)**: the long-standing
   "every play shows unavailable on device" class of failures is now diagnosed on screen —
   analyze transport failures classify by stage x clock state via the new pure-logic

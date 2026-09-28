@@ -83,7 +83,11 @@ static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(�
 
 // ---- 商店会话状态(UI 上下文;网络侧状态在 meta_store_net 快照里) ----
 static uint32_t s_play_id;                       // P1 确认的玩法编号
-static lv_obj_t *s_keys[10];                     // P1 数字键面板(屏上键盘)
+static lv_obj_t *s_keys[MPD_KEY_COUNT];          // P1 键盘面板(全部 15 键)
+// BUG-14:s_keys 曾硬编码 [10](r8 十键键盘遗留),r10 键盘扩到 15 键后每入
+// P1 越界写 5 槽 —— map 实证后 20B 正好砸碎 s_rows[0..3] 与 s_slots[0]
+// 头部,退出商店后列表页高亮/按键全废。修复 = 尺寸单一事实源(声明即用
+// MPD_KEY_COUNT),键盘键数再变时数组自动跟随,不再可能静默越界。
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
 static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
 static char     s_store_warn_detail[48];         // reason 的 detail:分区名(r9)或失败层位句(r10.4)

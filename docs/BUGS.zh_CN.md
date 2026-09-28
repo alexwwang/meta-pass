@@ -157,6 +157,27 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
   (旧 E2E-6)不是链验证。任何信任锚变更都必须对生产端点做一次完整握手,
   和设备将要做的完全一样。
 
+### BUG-14(致命)—— 进过一次商店后列表页全废(s_keys[10] 越界)
+
+- **现象**:进过一次商店 —— 必然构建 P1,因为 ONLINE 后 2 秒自动进输入页 ——
+  回到槽位列表页后 STORE DOWNLOAD 无法高亮,按键全部失灵;重启后一切正常,
+  直到再次进商店。
+- **根因,链接 map 实证**:`s_keys` 仍声明为 `static lv_obj_t *s_keys[10]` ——
+  r8 的键盘是 10 键。r10 键盘扩到 15 键(`MPD_KEY_COUNT`),构建循环继续索引
+  这个硬编码数组:每次进入 P1 写 `s_keys[0..14]`,越界 5 个指针(.bss 40 字节)。
+  map 显示被砸者正在现场:`.bss.s_keys 0x3fc999e0 0x28` 紧跟
+  `.bss.s_rows 0x3fc99a08 0x10`(列表页四行的行对象指针)与 `.bss.s_slots`
+  头部。退出商店后屏幕对象已销毁,`list_refresh`/`rows_refresh` 解引用键盘
+  构建器写入的悬垂 `lv_obj_t*` —— 列表页高亮与按键分发全被砸烂,死活取决于
+  堆复用。构建日志里唯一的痕迹:`warning: iteration 10 invokes undefined
+  behavior`(`-Waggressive-loop-optimizations`,main.c:495 与 :514)—— 从 r10
+  起就在那里,而 UB 一直在吃列表页。
+- **修复**:声明改为 `static lv_obj_t *s_keys[MPD_KEY_COUNT]` —— 数组尺寸与
+  构建循环同源,键盘键数再变也不可能静默越界;净室构建两个 UB 警告消失。
+- **教训**:硬编码尺寸配另一个常量限界的循环是不需要真机测试就会爆的定时
+  炸弹;编译器第一天就在报警。固件构建警告必须当失败处置,不能 grep 掉 ——
+  main 组件现已启用 `-Werror`。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音
