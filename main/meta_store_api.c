@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_image_format.h"   // esp_image_verify / esp_image_metadata_t
 #include "esp_log.h"
@@ -99,6 +100,10 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .buffer_size = 1024,
+        // r10.5 根因修复:此前从未配置任何信任锚 —— mbedTLS 没有可用的 CA,
+        // 所有 HTTPS 握手必败,屏上只见 "TLS/DNS failed"(真机 v25 实测)。
+        // crt_bundle_attach 指向 sdkconfig 自定义证书包(main/certs,双根)。
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
@@ -224,6 +229,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .buffer_size = 1024,
+        .crt_bundle_attach = esp_crt_bundle_attach,   // r10.5:同 analyze,信任锚缺失修复
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_FAIL;

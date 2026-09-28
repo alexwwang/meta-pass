@@ -24,6 +24,9 @@ typedef struct {
     int                    buffer_size;
     const char            *cert_pem;
     bool                   skip_cert_common_name_check;
+    // r10.5:与 IDF 5.x 对齐 —— crt_bundle_attach 是信任锚首选形态
+    // (meta_store_api.c 两处使用);桩保持最小签名,真实实现在 esp-tls。
+    esp_err_t             (*crt_bundle_attach)(void *conf);
     void                  *user_data;
 } esp_http_client_config_t;
 

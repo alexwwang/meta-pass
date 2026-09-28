@@ -21,4 +21,5 @@ idf_component_register(
     # 商店下载通道新增 esp_http_client(底层 esp-tls 自动带入)。
     REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
              esp_http_server esp_http_client app_update esp_partition mbedtls
+             esp-tls   # r10.5:esp_crt_bundle(自定义证书包 main/certs 的构建集成)
 )

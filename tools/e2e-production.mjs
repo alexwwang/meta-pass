@@ -5,7 +5,7 @@
 // 用法:node tools/e2e-production.mjs [host]   (默认正式站;不进 validate.sh —— 依赖外网)
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync, readFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -128,6 +128,44 @@ for (const id of [563, 675]) {
   const cp = c.match(/\{ "custom-partitions",\s*(true|false)/);
   if (cp && cp[1] === "true") pass("E2E-7b", `custom-partitions pinned as warn-only (supported=true)`);
   else fail("E2E-7b", `custom-partitions must be single-state true in device table`);
+}
+
+// ---- E2E-8 设备信任锚全链验证(r10.5,BUG-13) ----
+// 用设备真实证书包(main/certs/*.pem)对正式站做完整 TLS 握手验证 ——
+// 之前的 E2E-6 只看 issuer 字符串,没验链:设备包里的 GTS Root R4 曾是
+// cross-signed 版(issuer=GlobalSign),mbedTLS 锚语义下不可用,真机
+// 握手必败(屏显 TLS/DNS failed),host 上却从来没人发现。
+{
+  try {
+    const chainOut = execSync(
+      `echo | openssl s_client -connect ${new URL(HOST).host}:443 -servername ${new URL(HOST).host} -CAfile main/certs/gtsr4.pem 2>/dev/null`,
+      { cwd: ROOT, encoding: "utf8", timeout: 30000 });
+    const m = chainOut.match(/Verify return code: (\d+) \(([^)]+)\)/);
+    if (m && m[1] === "0") {
+      pass("E2E-8", `device trust anchor (main/certs) verifies production chain: code 0 (ok)`);
+    } else {
+      fail("E2E-8", `device anchor fails to verify production chain: ${m ? m[2] : "no result"} — rebuild cert bundle`);
+    }
+  } catch (e) {
+    fail("E2E-8", `s_client failed: ${e.message.slice(0, 120)}`);
+  }
+
+  // ---- E2E-8b 证书包卫生:每张锚必须自签(self-signed)。cross-signed 根在
+  // mbedTLS 锚语义下不可用(锚下还有 issuer → unable to get issuer certificate)。
+  const certsDir = path.join(ROOT, "main/certs");
+  const pems = readdirSync(certsDir).filter((f) => f.endsWith(".pem"));
+  const bad = [];
+  for (const f of pems) {
+    const pem = readFileSync(path.join(certsDir, f), "utf8");
+    const out = execSync(`openssl x509 -noout -subject -issuer`,
+      { input: pem, encoding: "utf8", timeout: 10000 });
+    const subject = (out.match(/subject=(.*)/) ?? [])[1] ?? "";
+    const issuer = (out.match(/issuer=(.*)/) ?? [])[1] ?? "";
+    if (subject !== issuer) bad.push(`${f} (cross-signed, issuer=${issuer.trim()})`);
+  }
+  if (pems.length === 0) fail("E2E-8b", "no .pem anchors in main/certs");
+  else if (bad.length === 0) pass("E2E-8b", `all ${pems.length} anchors self-signed: ${pems.join(", ")}`);
+  else fail("E2E-8b", `non-self-signed anchors unusable as mbedTLS trust anchors: ${bad.join("; ")}`);
 }
 
 console.log(failed === 0
