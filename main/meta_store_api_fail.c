@@ -5,6 +5,8 @@
 
 // r10.7:OPEN 阶段底层死因(设备侧事件回调写入;读改仅在作业任务串行发生)。
 static msaf_cause_t s_open_cause;
+// 类型化死因缺失时的原始码串("esp=0x8001"/"sys=113"/"tls=-0x2700")。
+static char s_open_raw[16];
 
 void meta_store_api_fail_set_cause(msaf_cause_t cause)
 {
@@ -14,6 +16,13 @@ void meta_store_api_fail_set_cause(msaf_cause_t cause)
 msaf_cause_t meta_store_api_fail_get_cause(void)
 {
     return s_open_cause;
+}
+
+void meta_store_api_fail_set_raw(const char *code_str)
+{
+    if (s_open_raw[0] == '\0' && code_str && code_str[0]) {
+        snprintf(s_open_raw, sizeof(s_open_raw), "%s", code_str);
+    }
 }
 
 const char *meta_store_api_fail_open_text(bool clock_unsynced,
@@ -36,6 +45,15 @@ const char *meta_store_api_fail_open_text(bool clock_unsynced,
                            : "Cert check failed.";
         break;
     default:
+        if (s_open_raw[0]) {
+            // 类型化分类失败但原始码在手:屏显真实码,不猜。这行字拿回来
+            // 即可对照 IDF 错误表定位层位(真机无串口时唯一的证据出口)。
+            if (buf && cap > 0) {
+                snprintf(buf, cap, "TLS failed [%s]", s_open_raw);
+                return buf;
+            }
+            return "TLS failed";
+        }
         return meta_store_api_fail_text(MSAF_STAGE_OPEN, clock_unsynced,
                                         buf, cap);
     }

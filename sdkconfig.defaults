@@ -24,8 +24,11 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
 
 # --- 日志(瘦身) ---
 # 默认 WARN:INFO 级日志字符串占用大量 .rodata;按需用 esp_log_level_set() 临时调高。
-CONFIG_LOG_DEFAULT_LEVEL_WARN=y
-CONFIG_LOG_DEFAULT_LEVEL=2
+# r10.7:默认 INFO(3)。WARN 会把 esp_http_client/esp-tls 组件自己的连接
+# 诊断(DNS 解析目标、TLS 握手过程)编出二进制,真机排障时串口无料可用;
+# INFO 级的额外 flash 开销可忽略,排障价值远大于体积。
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
 
 # --- 控制台:USB-Serial-JTAG(C3 原生 USB,GPIO18/19)---
 # 不用 UART0:其默认 TX=GPIO21 与本板背光引脚冲突。
