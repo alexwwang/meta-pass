@@ -3,6 +3,48 @@
 
 #include <stdio.h>
 
+// r10.7:OPEN 阶段底层死因(设备侧事件回调写入;读改仅在作业任务串行发生)。
+static msaf_cause_t s_open_cause;
+
+void meta_store_api_fail_set_cause(msaf_cause_t cause)
+{
+    s_open_cause = cause;
+}
+
+msaf_cause_t meta_store_api_fail_get_cause(void)
+{
+    return s_open_cause;
+}
+
+const char *meta_store_api_fail_open_text(bool clock_unsynced,
+                                           char *buf, size_t cap)
+{
+    const char *s;
+    switch (s_open_cause) {
+    case MSAF_CAUSE_DNS:
+        s = "DNS failed.\nCheck WiFi/router.";
+        break;
+    case MSAF_CAUSE_TIMEOUT:
+        s = clock_unsynced ? "Connect timeout (clock unsynced)."
+                           : "Connect timeout.\nCheck network.";
+        break;
+    case MSAF_CAUSE_REFUSED:
+        s = "Connection refused.";
+        break;
+    case MSAF_CAUSE_CERT:
+        s = clock_unsynced ? "Cert check failed (clock unsynced)."
+                           : "Cert check failed.";
+        break;
+    default:
+        return meta_store_api_fail_text(MSAF_STAGE_OPEN, clock_unsynced,
+                                        buf, cap);
+    }
+    if (buf && cap > 0) {
+        snprintf(buf, cap, "%s", s);
+        return buf;
+    }
+    return s;
+}
 const char *meta_store_api_fail_text(int code, bool clock_unsynced,
                                      char *buf, size_t cap)
 {

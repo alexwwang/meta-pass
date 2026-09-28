@@ -38,3 +38,23 @@ enum {
 // cap=0 不写。
 const char *meta_store_api_fail_text(int code, bool clock_unsynced,
                                      char *buf, size_t cap);
+
+// r10.7:OPEN 阶段失败的底层死因(esp_http_client 事件回调捕获)。0=未知。
+typedef enum {
+    MSAF_CAUSE_NONE = 0,
+    MSAF_CAUSE_DNS,          // 域名解析失败(ESP_ERR_ESP_TLS_FAILED_RESOLVE_HOST 等)
+    MSAF_CAUSE_TIMEOUT,      // TCP/TLS 连接超时(ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT)
+    MSAF_CAUSE_REFUSED,      // 连接被拒/不可达
+    MSAF_CAUSE_CERT,         // 证书校验失败(MBEDTLS_ERR_X509* / MBEDTLS_ERR_SSL*)
+} msaf_cause_t;
+
+// 设置/清除最近一次 OPEN 死因(设备侧由事件回调调用;线程约束:仅在
+// 网络任务上下文的 httpclient 事件内发生,无需锁)。
+void meta_store_api_fail_set_cause(msaf_cause_t cause);
+msaf_cause_t meta_store_api_fail_get_cause(void);
+
+// OPEN 失败短句(阶段+时钟+死因三合一):死因已知时给出具体层
+// ("DNS failed: <host> unknown" / "Connect timeout." / "Cert check failed."),
+// 未知时回落 fail_text 的阶段句。独立入口避免影响已锁定的四阶段矩阵。
+const char *meta_store_api_fail_open_text(bool clock_unsynced,
+                                           char *buf, size_t cap);

@@ -226,6 +226,46 @@ the data plane against the production site.
   warnings must be treated as failures, not grepped away — `-Werror` now applies to the
   main component.
 
+### BUG-15 (High) — RETRY kicked the user back to an emptied id page
+
+- **Symptom (v31 device)**: on the analyze-failure page, pressing RETRY while a previous
+  analyze was still running (30s timeout window) or after going offline silently returned
+  to the id-entry page with the keypad **cleared** — after typing a 3+ digit id, the user
+  had to retype it from zero. Three RETRY presses = three silent kicks.
+- **Root cause**: `cmd_analyze` returns ESP_ERR_INVALID_STATE while a job is RUNNING;
+  the OK handler treated every failure as "goto P1", and `page_store_id_build` calls
+  `mpd_idedit_init` which zeroes the buffer. Failure had no user-visible trace.
+- **Fix**: RETRY failure now only shows `Busy/Offline. Hold OK = exit` on the page and
+  stays; `page_store_id_build` presets the keypad with the last confirmed play id via the
+  new `mpd_idedit_set_digits` (pure logic, host-tested: rejects empty/invalid/oversize,
+  cursor at end so typing appends).
+
+### BUG-16 (Low) — the "timeout in Ns" countdown never moved
+
+- **Symptom (v31 device)**: P0 showed `timeout in 300s` frozen at the same number forever.
+- **Root cause**: provisioning/connecting states call `store_touch()` every tick (the
+  BUG-07 lesson: never freeze the panel there), so the deadline is always full — but the
+  renderer still displayed it. Correct display of a meaningless number.
+- **Fix**: P0 status line now shows the real state message (`WiFi setup AP ready.` /
+  connection failure reason) and no countdown at all.
+
+### BUG-17 (High) — OPEN failures still said only "TLS/DNS failed. Retry."
+
+- **Symptom (v31 device)**: every analyze attempt failed with the same two-liner while
+  the host (behind a working proxy) reached the same site fine. Nothing distinguished
+  DNS failure from connect timeout from certificate rejection.
+- **Root cause**: `esp_http_client_open` collapses every cause into one ESP_FAIL; the
+  classifier had only the stage×clock matrix. On this network the likely causes are
+  router-level DNS hijacking or proxy/TUN interference — exactly what the screen could
+  not name.
+- **Fix**: an HTTP event handler captures the underlying error type during OPEN
+  (`esp_tls_get_and_clear_error_type`: esp-layer DNS/timeout/refused, mbedTLS cert
+  flags) and `meta_store_api_fail_open_text` renders the specific cause:
+  `DNS failed.\nCheck WiFi/router.` / `Connect timeout.\nCheck network.` /
+  `Connection refused.` / `Cert check failed[(clock unsynced)].` Unknown causes fall
+  back to the old stage sentence. Host-tested; the next device failure names its layer
+  on screen instead of guessing from a Mac behind a proxy.
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is

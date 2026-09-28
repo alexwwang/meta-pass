@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- **Device round r10.7 (v1.0.0-33)**: RETRY no longer kicks the user back to an emptied
+  id page (BUG-15: busy/offline retry shows a hint and stays; the keypad is preset with
+  the last confirmed play id via host-tested `mpd_idedit_set_digits`); the frozen
+  "timeout in 300s" on P0 is replaced by the real state message (BUG-16); OPEN transport
+  failures now name their cause on screen — DNS failed / Connect timeout / Connection
+  refused / Cert check failed (BUG-17, event-handler capture + `meta_store_api_fail_open_text`).
 - **List-page corruption after one store visit fixed (r10.6, BUG-14)**: `s_keys` — the P1
   keypad panel array — was still declared `[10]` from the r8 10-key keypad while the r10
   keypad has 15 keys, so every P1 build (which runs automatically 2s after ONLINE) overflowed

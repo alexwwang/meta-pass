@@ -177,6 +177,45 @@ static void test_commit_and_capacity(void)
     printf("PASS: explicit commit only, 7-digit capacity respected\n");
 }
 
+// r10.7:预填与导出——RETRY 不清输入的设备端语义在模型层的根据:
+// set_digits 拒绝空串/非法字符/超长(非法输入不动原状态),value 空时拒绝导出。
+static void test_preset_and_export(void)
+{
+    mpd_idedit_t e;
+    mpd_idedit_init(&e);
+
+    // 非法预填一概拒绝且不动原状态
+    assert(!mpd_idedit_set_digits(&e, ""));
+    assert(e.len == 0);
+    assert(!mpd_idedit_set_digits(&e, "12a"));
+    assert(e.len == 0);
+    assert(!mpd_idedit_set_digits(&e, "12345678"));   // 超过 7 位上限
+    assert(e.len == 0);
+
+    // 合法预填:数字落位,光标在末尾(续输追加),选中键复位到 '1'
+    assert(mpd_idedit_set_digits(&e, "563"));
+    assert(e.len == 3 && e.digits[0] == '5' && e.digits[1] == '6'
+           && e.digits[2] == '3' && e.cursor == 3 && e.sel == MPD_KEY_1);
+
+    // 续输追加:预填 563 后按 7 → 5637
+    e.sel = MPD_KEY_7;
+    assert(mpd_idedit_press(&e));
+    assert(e.len == 4 && e.digits[3] == '7');
+
+    // 重复预填覆盖(不改光标语义,仍在末尾)
+    assert(mpd_idedit_set_digits(&e, "9"));
+    assert(e.len == 1 && e.digits[0] == '9' && e.cursor == 1);
+
+    // 导出:有数字时成功;空时拒绝且不写 out
+    uint32_t v = 12345;
+    assert(mpd_idedit_value(&e, &v) && v == 9);
+    mpd_idedit_clear(&e);
+    v = 777;
+    assert(!mpd_idedit_value(&e, &v) && v == 777);
+
+    printf("PASS: preset (set_digits) + export (value) semantics\n");
+}
+
 int main(void)
 {
     test_insert_and_cursor();
@@ -185,6 +224,7 @@ int main(void)
     test_ring_navigation();
     test_horiz_bounds();
     test_commit_and_capacity();
+    test_preset_and_export();
     printf("ALL META_STORE_IDEDIT TESTS PASSED\n");
     return 0;
 }

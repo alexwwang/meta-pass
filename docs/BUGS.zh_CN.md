@@ -178,6 +178,40 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
   炸弹;编译器第一天就在报警。固件构建警告必须当失败处置,不能 grep 掉 ——
   main 组件现已启用 `-Werror`。
 
+### BUG-15(高)—— RETRY 把用户踢回清空后的输 ID 页
+
+- **现象(v31 真机)**:分析失败页上,在上一次 analyze 还在跑(30s 超时窗)或已掉线
+  时按 RETRY,静默回到输入页且键盘**被清空** —— 输了 3 位以上的 ID 得从零重打。
+  连按三次 RETRY = 三次无提示的踢回。
+- **根因**:`cmd_analyze` 在作业 RUNNING 时返回 ESP_ERR_INVALID_STATE;OK 分发把一切
+  失败都当成 "goto P1",而 `page_store_id_build` 里的 `mpd_idedit_init` 把缓冲清零。
+  失败没有任何用户可见痕迹。
+- **修复**:RETRY 失败只在页上显示 `Busy/Offline. Hold OK = exit` 并停留;
+  `page_store_id_build` 用新增的 `mpd_idedit_set_digits` 预填上次确认的玩法 ID
+  (纯逻辑 host 测试:拒空/非法/超长,光标在末尾续输即追加)。
+
+### BUG-16(低)—— "timeout in Ns" 倒计时永远不动
+
+- **现象(v31 真机)**:P0 显示 `timeout in 300s` 冻在同一个数,永远不变。
+- **根因**:配网/连接态每拍都调 `store_touch()`(BUG-07 教训:那里不能冻结面板),
+  deadline 恒为满值 —— 但渲染层还在把它显示出来。对一个无意义的数做了正确的显示。
+- **修复**:P0 状态行显示真实状态句(`WiFi setup AP ready.` / 连接失败原因),
+  不再显示任何倒计时。
+
+### BUG-17(高)—— OPEN 失败仍只说 "TLS/DNS failed. Retry."
+
+- **现象(v31 真机)**:每次 analyze 都以同一句两行文案失败,而 host(经可用代理)
+  能访问同一站点。DNS 失败/连接超时/证书被拒在屏上完全无法区分。
+- **根因**:`esp_http_client_open` 把一切死因塔缩成一个 ESP_FAIL;分类器只有
+  阶段×时钟矩阵。当前网络最可能的死因是路由器级 DNS 劫持或代理/TUN 干扰 ——
+  恰是屏上叫不出名字的东西。
+- **修复**:HTTP 事件回调在 OPEN 期间捕获底层错误类型
+  (`esp_tls_get_and_clear_error_type`:esp 系 DNS/超时/拒连,mbedTLS 证书标志),
+  `meta_store_api_fail_open_text` 渲染具体死因:`DNS failed.\nCheck WiFi/router.` /
+  `Connect timeout.\nCheck network.` / `Connection refused.` /
+  `Cert check failed[(clock unsynced)].`。未知死因回落原阶段句。host 测试覆盖;
+  下次真机失败屏上直接报层位,不用再隔着一台挂代理的 Mac 猜。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音

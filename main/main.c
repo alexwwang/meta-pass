@@ -504,6 +504,15 @@ static void page_store_id_build(void)
         lv_obj_center(lbl);
     }
     mpd_idedit_init(&s_idedit);
+    // r10.7:RETRY/BACK 回 P1 不丢输入 —— 有已确认过的 play_id 就预填,
+    // 用户只需改数字或直接 OK;首次进入仍是空键盘。
+    if (s_play_id > 0) {
+        // uint32 最大 4294967295 = 10 位,12B 覆盖任意值(8B 会被 -Werror 的
+        // format-truncation 拒绝 —— 门第一次发挥作用的正面案例)。
+        char preset[12];
+        snprintf(preset, sizeof(preset), "%lu", (unsigned long)s_play_id);
+        (void)mpd_idedit_set_digits(&s_idedit, preset);
+    }
     id_refresh_text();
     add_battery(s_scr);
     store_touch();
@@ -581,6 +590,19 @@ static bool store_info_is_retry_page(const meta_store_analysis_t *a)
     if (a->supported) return false;
     if (strcmp(a->reason, "unavailable") == 0) return true;
     return strchr(a->reason, ' ') != NULL;
+}
+
+// r10.7:RETRY 时的用户可见结果。cmd_analyze 在作业未 RUNNING 时入队成功;
+// 入队失败仅提示,绝不清输入/翻页 —— 旧实现 store_goto(PAGE_STORE_ID) 把
+// 三连按 RETRY 的用户扔回空键盘(输入清零,真机实测)。
+static void store_info_retry(void)
+{
+    if (meta_store_net_cmd_analyze(s_play_id) != ESP_OK) {
+        if (s_status_line) {
+            lv_label_set_text(s_status_line, "Busy/Offline.\nHold OK = exit");
+        }
+    }
+    // 入队成功:tick 在作业完成后重填本页(s_info_filled 已置 false)。
 }
 
 static void store_info_fill(const meta_store_analysis_t *a)
@@ -787,13 +809,17 @@ static void store_tick(lv_timer_t *t)
             store_touch();
         }
         if (s_status_line) {
-            const int left = (int)((s_store_deadline - esp_timer_get_time() / 1000) / 1000);
             char line[96];
             if (st.state == SN_STATE_AP_UP) {
-                snprintf(line, sizeof(line), "%s\ntimeout in %ds", st.message, left > 0 ? left : 0);
+                // r10.7:配网态每拍自动续期(BUG-07 教训),deadline 恒为满值 ——
+                // 显示它等于显示一个不动的假倒计时(真机实测)。热点态没有
+                // 超时压力,状态行显示真实状态句即可,不显示任何倒计时。
+                snprintf(line, sizeof(line), "%s", st.message);
             } else {
-                // 非配网态状态行留给 RESET WIFI 提示(build 里已写);只补倒计时。
-                snprintf(line, sizeof(line), "timeout in %ds", left > 0 ? left : 0);
+                // CONNECTING/ERROR:同样每拍续期,倒计时无意义;错误态把
+                // 原因句透传(比一个冻结的秒数有用得多)。
+                snprintf(line, sizeof(line), "%s", st.message[0] ? st.message
+                                        : "Connecting...");
             }
             lv_label_set_text(s_status_line, line);
         }
@@ -1220,9 +1246,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             } else if (btn == BSP_BTN_OK) {
                 if (retry_page && s_sel == 0) {
                     s_info_filled = false;   // RETRY:重新 analyze 同一玩法
-                    if (meta_store_net_cmd_analyze(s_play_id) != ESP_OK) {
-                        store_goto(PAGE_STORE_ID);
-                    }
+                    store_info_retry();      // r10.7:失败只提示,不清输入不翻页
                 } else if (a && a->supported && s_sel == 0) {
                     store_goto(PAGE_STORE_SLOT);
                 } else {

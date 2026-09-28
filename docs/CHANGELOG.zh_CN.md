@@ -6,6 +6,11 @@
 
 ## Unreleased
 
+- **真机轮 r10.7(v1.0.0-33)**:RETRY 不再把用户踢回清空的输 ID 页(BUG-15:
+  忙/离线时只提示并停留;键盘用 host 测试过的 `mpd_idedit_set_digits` 预填
+  上次确认的玩法 ID);P0 冻结的 "timeout in 300s" 换成真实状态句(BUG-16);
+  OPEN 传输失败屏上直接报死因 —— DNS failed / Connect timeout / Connection
+  refused / Cert check failed(BUG-17,事件回调捕获 + `meta_store_api_fail_open_text`)。
 - **进过一次商店后列表页全废已修(r10.6,BUG-14)**:P1 键盘面板数组 `s_keys`
   仍是 r8 十键时代的硬编码 `[10]`,而 r10 键盘已是 15 键 —— 每次进入 P1
   (ONLINE 后 2 秒自动发生)越界写 5 个指针,正好砸进 `.bss.s_rows` 与

@@ -22,6 +22,7 @@ idf_component_register(
     REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
              esp_http_server esp_http_client app_update esp_partition mbedtls
              esp-tls   # r10.5:esp_crt_bundle(自定义证书包 main/certs 的构建集成)
+             lwip      # r10.7:OPEN 死因分类的 SOCK errno(ECONNREFUSED 等)
 )
 
 # BUG-14 教训:UB 警告(越界写)在构建日志里躺了三个版本没人看 —— 本组件

@@ -13,6 +13,10 @@
 #include "esp_image_format.h"   // esp_image_verify / esp_image_metadata_t
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_tls.h"            // r10.7:OPEN 死因分类(esp/mbedtls 错误码 +
+                                // esp_tls_get_and_clear_error_type)
+#include "lwip/errno.h"         // ECONNREFUSED/EHOSTUNREACH(SOCK errno 系)
+#include "mbedtls/error.h"      // MBEDTLS_ERR_SSL_CONN_EOF
 #include "mbedtls/sha256.h"
 #include <time.h>               // time():时钟未同步判定(SNTP 前停在 1970)
 
@@ -22,6 +26,48 @@
 #include "meta_store.h"
 #include "meta_store_analysis.h"
 #include "meta_store_json.h"
+
+// r10.7:OPEN 阶段底层死因捕获 —— esp_http_client 只回一个 ESP_FAIL,
+// DNS 解析失败/连接超时/证书校验失败在屏上一个样(真机 r10.6 起实测)。
+// 事件回调在作业任务上下文同步触发,读改无需锁;HTTP_EVENT_ERROR 的
+// event->data 是 esp_tls_error_handle_t(IDF 5.x 契约)。
+static esp_err_t http_event_cb(esp_http_client_event_t *evt)
+{
+    if (evt->event_id != HTTP_EVENT_ERROR || evt->data == NULL) return ESP_OK;
+    const esp_tls_error_handle_t tls_err = (esp_tls_error_handle_t)evt->data;
+    int code = 0;
+    // 依序探测:esp 系(DNS/连接超时/拒连)→ mbedTLS 系(证书校验失败)。
+    if (esp_tls_get_and_clear_error_type(tls_err, ESP_TLS_ERR_TYPE_ESP, &code) == ESP_OK
+        && code != 0) {
+        if (code == ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME) {
+            meta_store_api_fail_set_cause(MSAF_CAUSE_DNS);
+        } else if (code == ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT
+                   || code == ESP_ERR_ESP_TLS_SERVER_HANDSHAKE_TIMEOUT) {
+            meta_store_api_fail_set_cause(MSAF_CAUSE_TIMEOUT);
+        } else if (code == ESP_ERR_ESP_TLS_FAILED_CONNECT_TO_HOST) {
+            meta_store_api_fail_set_cause(MSAF_CAUSE_REFUSED);
+        }
+        return ESP_OK;
+    }
+    if (esp_tls_get_and_clear_error_type(tls_err, ESP_TLS_ERR_TYPE_SYSTEM, &code) == ESP_OK
+        && code != 0) {
+        // SOCK errno 系:ECONNREFUSED/EHOSTUNREACH 端口不通,DNS 失败在 lwip
+        // 走 esp 系(0x8001),这里兜拒连/不可达。
+        if (code == ECONNREFUSED || code == EHOSTUNREACH || code == ENETUNREACH) {
+            meta_store_api_fail_set_cause(MSAF_CAUSE_REFUSED);
+        }
+        return ESP_OK;
+    }
+    // mbedTLS 系错误(证书校验失败落这里:X509 0x2700 系 / SSL 0x7700 系)。
+    if (esp_tls_get_and_clear_error_type(tls_err, ESP_TLS_ERR_TYPE_MBEDTLS,
+                                         &code) == ESP_OK && code != 0) {
+        if ((code & 0xFF00) == 0x2700 || (code & 0xFF00) == 0x7700
+            || code == MBEDTLS_ERR_SSL_CONN_EOF) {
+            meta_store_api_fail_set_cause(MSAF_CAUSE_CERT);
+        }
+    }
+    return ESP_OK;
+}
 
 static const char *TAG = "store_api";
 
@@ -104,6 +150,8 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
         // 所有 HTTPS 握手必败,屏上只见 "TLS/DNS failed"(真机 v25 实测)。
         // crt_bundle_attach 指向 sdkconfig 自定义证书包(main/certs,双根)。
         .crt_bundle_attach = esp_crt_bundle_attach,
+        // r10.7:OPEN 死因捕获(DNS/超时/拒连/证书),失败时屏显具体层。
+        .event_handler = http_event_cb,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
@@ -112,8 +160,16 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     }
 
     int fail_stage = MSAF_STAGE_OPEN;   // 传输失败点(open→headers→read 递进)
+    meta_store_api_fail_set_cause(MSAF_CAUSE_NONE);   // 本次作业死因归零
     esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) goto fail;
+    if (err != ESP_OK) {
+        // r10.7:OPEN 死因已知时用具体文案,未知回落阶段句。
+        snprintf(out->reason, sizeof(out->reason), "%s",
+                 meta_store_api_fail_open_text(time(NULL) < 1700000000,
+                                               s_fail_buf, sizeof(s_fail_buf)));
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
 
     const int status = esp_http_client_fetch_headers(client);
     if (status < 0) {
