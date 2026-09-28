@@ -19,6 +19,7 @@
 #include "mbedtls/error.h"      // MBEDTLS_ERR_SSL_CONN_EOF
 #include "mbedtls/sha256.h"
 #include <time.h>               // time():时钟未同步判定(SNTP 前停在 1970)
+#include <string.h>             // strerror():errno 死因串口输出
 
 #include "meta_image.h"
 #include "meta_name.h"
@@ -26,6 +27,8 @@
 #include "meta_store.h"
 #include "meta_store_analysis.h"
 #include "meta_store_json.h"
+
+static const char *TAG = "store_api";
 
 // r10.7:OPEN 阶段底层死因捕获 —— esp_http_client 只回一个 ESP_FAIL,
 // DNS 解析失败/连接超时/证书校验失败在屏上一个样(真机 r10.6 起实测)。
@@ -37,8 +40,14 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
     const esp_tls_error_handle_t tls_err = (esp_tls_error_handle_t)evt->data;
     int code = 0;
     // 依序探测:esp 系(DNS/连接超时/拒连)→ mbedTLS 系(证书校验失败)。
+    // 每层原始码都上串口(ESP_LOGE 在 WARN 默认级可见)—— 屏显死因之外,
+    // 串口保留原始错误码供对照 IDF 错误表。
     if (esp_tls_get_and_clear_error_type(tls_err, ESP_TLS_ERR_TYPE_ESP, &code) == ESP_OK
         && code != 0) {
+        ESP_LOGE(TAG, "OPEN esp-err=0x%x (%s)", code, esp_err_to_name(code));
+        char raw[16];
+        snprintf(raw, sizeof(raw), "esp=0x%x", code);
+        meta_store_api_fail_set_raw(raw);
         if (code == ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME) {
             meta_store_api_fail_set_cause(MSAF_CAUSE_DNS);
         } else if (code == ESP_ERR_ESP_TLS_CONNECTION_TIMEOUT
@@ -51,6 +60,10 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
     }
     if (esp_tls_get_and_clear_error_type(tls_err, ESP_TLS_ERR_TYPE_SYSTEM, &code) == ESP_OK
         && code != 0) {
+        ESP_LOGE(TAG, "OPEN system-errno=%d (%s)", code, strerror(code));
+        char raw[16];
+        snprintf(raw, sizeof(raw), "sys=%d", code);
+        meta_store_api_fail_set_raw(raw);
         // SOCK errno 系:ECONNREFUSED/EHOSTUNREACH 端口不通,DNS 失败在 lwip
         // 走 esp 系(0x8001),这里兜拒连/不可达。
         if (code == ECONNREFUSED || code == EHOSTUNREACH || code == ENETUNREACH) {
@@ -61,15 +74,19 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
     // mbedTLS 系错误(证书校验失败落这里:X509 0x2700 系 / SSL 0x7700 系)。
     if (esp_tls_get_and_clear_error_type(tls_err, ESP_TLS_ERR_TYPE_MBEDTLS,
                                          &code) == ESP_OK && code != 0) {
+        ESP_LOGE(TAG, "OPEN mbedtls-err=-0x%04x", code);
+        char raw[16];
+        snprintf(raw, sizeof(raw), "tls=-0x%04x", code);
+        meta_store_api_fail_set_raw(raw);
         if ((code & 0xFF00) == 0x2700 || (code & 0xFF00) == 0x7700
             || code == MBEDTLS_ERR_SSL_CONN_EOF) {
             meta_store_api_fail_set_cause(MSAF_CAUSE_CERT);
         }
+        return ESP_OK;
     }
+    ESP_LOGW(TAG, "OPEN error event without capturable code");
     return ESP_OK;
 }
-
-static const char *TAG = "store_api";
 
 // analyze 响应体上限:真实响应 ~600B,留足嵌套与数组余量;超限按格式错误处理。
 #define ANALYZE_BUF_MAX  1536
@@ -161,9 +178,12 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
 
     int fail_stage = MSAF_STAGE_OPEN;   // 传输失败点(open→headers→read 递进)
     meta_store_api_fail_set_cause(MSAF_CAUSE_NONE);   // 本次作业死因归零
+    meta_store_api_fail_set_raw("");                  // 原始码槽位同步清空
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        // r10.7:OPEN 死因已知时用具体文案,未知回落阶段句。
+        // r10.7:OPEN 死因已知时用具体文案,未知回落阶段句;串口同步留档。
+        ESP_LOGE(TAG, "analyze open failed: %s", meta_store_api_fail_get_cause()
+                 != MSAF_CAUSE_NONE ? "(cause captured above)" : "no cause captured");
         snprintf(out->reason, sizeof(out->reason), "%s",
                  meta_store_api_fail_open_text(time(NULL) < 1700000000,
                                                s_fail_buf, sizeof(s_fail_buf)));
@@ -175,14 +195,17 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     if (status < 0) {
         err = ESP_FAIL;
         fail_stage = MSAF_STAGE_HEADERS;
+        ESP_LOGE(TAG, "analyze fetch_headers failed");
         goto fail;
     }
     if (status == 404) {
+        ESP_LOGI(TAG, "analyze %lu: not-found", (unsigned long)play_id);
         snprintf(out->reason, sizeof(out->reason), "%s", "not-found");
         err = ESP_FAIL;
         goto fail_close;
     }
     if (status != 200) {
+        ESP_LOGE(TAG, "analyze HTTP %d", status);
         snprintf(out->reason, sizeof(out->reason), "%s", analyze_fail_text(-status));
         err = ESP_FAIL;
         goto fail_close;
@@ -195,6 +218,7 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
         if (got < 0) {
             err = ESP_FAIL;
             fail_stage = MSAF_STAGE_READ;
+            ESP_LOGE(TAG, "analyze read failed");
             goto fail;
         }
         if (got == 0) break;
@@ -208,6 +232,7 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     ESP_LOGI(TAG, "analyze %lu: %d B", (unsigned long)play_id, total);
     if (!meta_store_analysis_parse(s_buf, (size_t)total, out)) {
         // parser 已置 out->reason="format"(契约缺失/字段非法),保留展示。
+        ESP_LOGE(TAG, "analyze parse failed (%d B)", total);
         err = ESP_FAIL;
         goto fail_close;
     }

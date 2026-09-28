@@ -92,6 +92,37 @@ static void test_open_causes(void)
     printf("PASS: OPEN cause attribution (DNS/timeout/refused/cert)\n");
 }
 
+// r10.7:类型化死因缺失时,原始码兜底上屏("TLS failed [esp=0x8001]");
+// set_raw("") 清空槽位(每次作业开头调用),首个非空码粘滞保留。
+static void test_open_raw_fallback(void)
+{
+    char buf[64];
+
+    meta_store_api_fail_set_cause(MSAF_CAUSE_NONE);
+    meta_store_api_fail_set_raw("");
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "TLS/DNS failed. Retry.") == 0);   // 全未知:回落阶段句
+
+    meta_store_api_fail_set_raw("esp=0x8001");
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "TLS failed [esp=0x8001]") == 0);
+    meta_store_api_fail_open_text(true, buf, sizeof(buf));
+    // 有真实码时时钟提示让位(码本身就是更准的层位证据)。
+    assert(strcmp(buf, "TLS failed [esp=0x8001]") == 0);
+
+    // 首个非空码粘滞:后续不同码不覆盖。
+    meta_store_api_fail_set_raw("tls=-0x2700");
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "TLS failed [esp=0x8001]") == 0);
+
+    // set_cause 优先于 raw:类型化命中后 raw 不再展示。
+    meta_store_api_fail_set_cause(MSAF_CAUSE_DNS);
+    meta_store_api_fail_open_text(false, buf, sizeof(buf));
+    assert(strcmp(buf, "DNS failed.\nCheck WiFi/router.") == 0);
+
+    printf("PASS: OPEN raw-code fallback (screen evidence without serial)\n");
+}
+
 static void test_business_reason_passthrough(void)
 {
     char buf[64];
@@ -128,6 +159,7 @@ int main(void)
     test_matrix();
     test_http_prefixed();
     test_open_causes();
+    test_open_raw_fallback();
     test_business_reason_passthrough();
     test_buffer_safety();
     printf("ALL META_STORE_API_FAIL TESTS PASSED\n");

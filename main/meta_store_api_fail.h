@@ -53,8 +53,13 @@ typedef enum {
 void meta_store_api_fail_set_cause(msaf_cause_t cause);
 msaf_cause_t meta_store_api_fail_get_cause(void);
 
-// OPEN 失败短句(阶段+时钟+死因三合一):死因已知时给出具体层
-// ("DNS failed: <host> unknown" / "Connect timeout." / "Cert check failed."),
-// 未知时回落 fail_text 的阶段句。独立入口避免影响已锁定的四阶段矩阵。
+// r10.7:类型化死因缺失时的原始码上屏(如 "esp=0x8001"/"sys=113"/"tls=-0x2700")。
+// 设备侧在事件回调里记录首个非零码;屏显兜底句时附上,真机不接串口也有证据。
+void meta_store_api_fail_set_raw(const char *code_str);
+
+// OPEN 失败短句(阶段+时钟+死因三合一):
+//   死因已知 → 具体层("DNS failed.\nCheck WiFi/router." 等);
+//   死因未知但有原始码 → "TLS failed [<raw>]"(时钟提示让位给真实码);
+//   全部未知 → 回落 fail_text 的阶段句(含时钟分支,行为与旧版一致)。
 const char *meta_store_api_fail_open_text(bool clock_unsynced,
                                            char *buf, size_t cap);
