@@ -8,6 +8,8 @@ import { createHash } from "node:crypto";
 import { writeFileSync, readFileSync, mkdtempSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import tls from "node:tls";
+import dns from "node:dns/promises";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = process.argv[2] ?? "https://metapass.chuanxilu.net";
@@ -19,6 +21,37 @@ const httpGet = async (url, timeoutMs = 120_000) => {
   const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
   return { status: r.status, headers: r.headers, buf: Buffer.from(await r.arrayBuffer()) };
 };
+
+// ---- E2E-0 出口环境预检:先分清「本机出口被劫持」和「线上服务故障」 ----
+// 2026-09-28 实测:本机代理 TUN 把域名劫持到 198.18.0.0/15 fake-ip 且 TLS 被掐断,
+// Node/Bun fetch 报 unknown certificate verification error —— 与线上故障同形,会误报。
+// 规则:DNS 落 fake-ip 保留段 且 TLS 握手失败 → 判环境问题 exit 2(非 exit 1);
+// 握手成功(代理可正常隧道)→ 不拦截,继续正式检查。
+{
+  const host = new URL(HOST).hostname;
+  let address = null;
+  try {
+    ({ address } = await dns.lookup(host));
+  } catch {
+    console.error(`ENV-FAIL: ${host} DNS 解析失败(本机出口受限或域名不存在)——本次无法区分环境与线上问题(exit 2,非服务失败)。`);
+    process.exit(2);
+  }
+  const fakeIp = address.startsWith("198.18.") || address.startsWith("198.19.");
+  if (fakeIp) {
+    const handshake = await new Promise((resolve) => {
+      const s = tls.connect({ host, port: 443, servername: host, rejectUnauthorized: true, timeout: 15_000 },
+        () => { s.end(); resolve(true); });
+      s.on("error", () => resolve(false));
+      s.on("timeout", () => { s.destroy(); resolve(false); });
+    });
+    if (!handshake) {
+      console.error(`ENV-FAIL: ${host} 解析到 ${address}(fake-ip 保留段)且 TLS 握手失败 ——` +
+        ` 本机出口被代理劫持,本次结果无法区分环境与线上问题。关闭代理 TUN 或换出口后重跑(exit 2,非服务失败)。`);
+      process.exit(2);
+    }
+    console.log(`NOTE: ${host} 经本机代理 fake-ip 隧道,握手可用,继续。`);
+  }
+}
 
 // ---- E2E-1~4: 设备流完整重放(563 与 675,覆盖 reason=ok 与警告两形态) ----
 for (const id of [563, 675]) {
