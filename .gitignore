@@ -17,3 +17,4 @@ tools/sim/esp_emu_bg.wasm
 # QEMU 测试构建产物(仅 tools/test-bootable-qemu.mjs 本地使用)
 build-qemu/
 sdkconfig.qemu-bak
+x509_crt_bundle
