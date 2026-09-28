@@ -161,3 +161,27 @@ size_t meta_store_dns_query_end(const uint8_t *pkt, size_t len)
     }
     return 0;
 }
+
+// ---- r10.1 P0 双击 UP 意图检测(契约见 meta_store_prov.h) ----
+#include <stdint.h>
+
+void meta_prov_upclick_reset(meta_prov_upclick_t *d)
+{
+    if (!d) return;
+    d->last_ms = INT64_MIN;
+    d->fired = false;
+}
+
+bool meta_prov_upclick_feed(meta_prov_upclick_t *d, int64_t now_ms)
+{
+    if (!d) return false;
+    if (d->fired) return false;                     // 待复位:不重复触发
+    const bool have_last = (d->last_ms != INT64_MIN);
+    if (have_last && now_ms >= d->last_ms            // 时间倒退 = 新序列第一击
+        && now_ms - d->last_ms <= MPD_PROV_UPCLICK_MS) {
+        d->fired = true;                             // 窗口内第二击:触发
+        return true;
+    }
+    d->last_ms = now_ms;                             // 首击(或过期/倒退):重开序列
+    return false;
+}

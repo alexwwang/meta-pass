@@ -38,6 +38,7 @@
 #include "meta_store_api.h"
 #include "meta_store_net.h"
 #include "meta_store_idedit.h"
+#include "meta_store_prov.h"
 #include "ui_pixel.h"
 
 static const char *TAG = "meta-pass";
@@ -354,9 +355,10 @@ static bool s_info_filled;
 // P0 配网页:AP 态显示热点信息;已存凭证(CONNECTING/ONLINE)态显示当前 SSID
 // 与 RESET WIFI 行 —— 选中并 OK 确认后擦凭证重开配网 AP(改 WiFi 入口)。
 // ONLINE 停留 2s 后自动进 P1(给足"已连上 XX"的可见时间,再快也能看清 SSID)。
-static bool     s_net_reset_sel;   // P0 CHANGE WIFI 行是否高亮
-static bool     s_net_user_stay;   // r10:用户在 P0 按过键 → 取消 ONLINE 自动进 P1
 static int64_t  s_net_online_at;   // 进入 ONLINE 的时刻(自动进 P1 用;0=未在线)
+// r10.1:改网意图 = P0 双击 UP(600ms 内);单击/其它键全部无动作(误按安全,
+// 不会再把用户困在 P0)。检测器为纯逻辑(meta_store_prov,host 测试同一份)。
+static meta_prov_upclick_t s_net_upclick;
 // 连接失败原因的粘滞显示:失败 → ap_start 回到 AP_UP 只在一拍之间,ERROR 文案
 // 会闪没;记下最近一次失败,配网页顶部展示 8s,让"提交后没反应"有因可读。
 static char     s_net_last_fail[40];
@@ -391,18 +393,15 @@ static void page_store_net_build(void)
                  "WiFi setup:\nhotspot: %s\n\nSetup page opens by\nitself. If not, open\nhttp://192.168.4.1\nPick network + password",
                  st.ssid);
         lv_label_set_text(s_info, text);
-        s_net_reset_sel = false;
-        s_net_user_stay = false;
         s_net_online_at = 0;
+        meta_prov_upclick_reset(&s_net_upclick);
     } else {
         snprintf(text, sizeof(text), "%s\n\nWiFi: %s", st.message,
                  st.sta_ssid[0] ? st.sta_ssid : "-");
         lv_label_set_text(s_info, text);
-        // 已存凭证路径:CONNECTING 态(自动重连进行中)不提供 CHANGE 选中 ——
-        // 重连窗口内误触 OK 会擦掉正确凭证,把可自愈的状态变成必配网(F4)。
-        // 连接失败(ERROR,凭证可能错)时才默认选中 CHANGE。
-        s_net_reset_sel = (st.state == SN_STATE_ERROR);
-        s_net_user_stay = false;
+        // 已存凭证路径:r10.1 起改网入口 = 双击 UP(见按键分发);不再有
+        // UP/DOWN 选中行,ERROR 态同样双击 UP 即可改网。
+        meta_prov_upclick_reset(&s_net_upclick);
         // build 时的初始值仅作 tick 跳变检测的种子;真正的进入时刻由 tick 记录。
         s_net_online_at = (st.state == SN_STATE_ONLINE) ? esp_timer_get_time() / 1000 : 0;
     }
@@ -413,9 +412,8 @@ static void page_store_net_build(void)
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
     if (st.state != SN_STATE_AP_UP) {
-        lv_label_set_text(s_status_line, s_net_reset_sel
-                          ? "> CHANGE WIFI  (OK=confirm)"
-                          : "OK = enter ID entry\nUP/DOWN = CHANGE WIFI");
+        lv_label_set_text(s_status_line,
+                          "double-UP = change WiFi\nhold OK = exit");
     } else {
         lv_label_set_text(s_status_line, "");
     }
@@ -778,11 +776,9 @@ static void store_tick(lv_timer_t *t)
                     lv_label_set_text(s_info, text);
                 }
             }
-            // 停留 2s 让用户看清连的哪个网,然后自动进 P1;r10:用户在 P0 按
-            // 过键(s_net_user_stay) = 想自己决策(改网/停留),自动翻页取消,
-            // 面板保持 "Online" 文案与 CHANGE WIFI 提示。
-            if (!s_net_user_stay
-                && esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
+            // 停留 2s 让用户看清连的哪个网,然后自动进 P1;r10.1:取消自动
+            // 翻页的唯一方式是双击 UP(明确改网意图)——单击/误按不拦截。
+            if (esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
                 store_goto(PAGE_STORE_ID);
             }
         } else if (st.state == SN_STATE_AP_UP) {
@@ -1120,26 +1116,14 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
     case PAGE_STORE_NET:
         if (ev == BSP_BTN_CLICK) {
-            if (st_is_credentialed()) {
-                // 已存凭证态:UP/DOWN 在 "继续 / CHANGE WIFI" 间切换,OK 确认。
-                // r10:按任何键 = 用户接管决策,自动翻页取消(s_net_user_stay)。
-                if (btn == BSP_BTN_OK && s_net_reset_sel) {
-                    const esp_err_t err = meta_store_net_reset_wifi();
-                    if (err == ESP_OK) {
-                        // reset 内部已 ap_start;重建页面显示热点信息。
-                        store_goto(PAGE_STORE_NET);
-                    }
-                    // 失败:状态行已是 ERROR message,轮询会刷新。
-                } else if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                    s_net_reset_sel = !s_net_reset_sel;
-                    s_net_user_stay = true;   // 用户接管:取消 ONLINE 自动进 P1
-                    if (s_status_line) {
-                        lv_label_set_text(s_status_line, s_net_reset_sel
-                                          ? "> CHANGE WIFI  (OK=confirm)"
-                                          : "OK = enter ID entry");
-                    }
-                } else if (btn == BSP_BTN_OK && !s_net_reset_sel) {
-                    store_goto(PAGE_STORE_ID);   // 网络就绪,直接去输 ID
+            if (st_is_credentialed() && btn == BSP_BTN_UP
+                && meta_prov_upclick_feed(&s_net_upclick,
+                                          esp_timer_get_time() / 1000)) {
+                // 双击 UP(600ms 内)= 明确改网意图:擦凭证重开热点。
+                // 单击/OK/DOWN 全部无动作 —— 误按不擦凭证、不拦自动进 P1。
+                meta_prov_upclick_reset(&s_net_upclick);
+                if (meta_store_net_reset_wifi() == ESP_OK) {
+                    store_goto(PAGE_STORE_NET);   // reset 已 ap_start;重建显示热点
                 }
             }
         }

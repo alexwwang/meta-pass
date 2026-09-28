@@ -32,3 +32,18 @@ void meta_store_prov_json_escaped_ssid(const uint8_t *ssid, char *out, size_t ou
 // (可整体回发同一包),不合法返回 0。要求:标准 12B 头、QR=0(查询)、
 // QDCOUNT=1、QNAME 标签链完整。
 size_t meta_store_dns_query_end(const uint8_t *pkt, size_t len);
+
+// P0 网络页的"改网意图"检测(r10.1):双击 UP 才算用户要改 WiFi —— 单击/
+// 误按/其它键一律不干预 ONLINE 自动进 P1(旧版"任意键取消"让误按把用户
+// 困在 P0)。窗口 600ms;间隔 ≤ 窗口的两击 = 触发(第二击返回 true);
+// 触发后检测器进入待复位态(调用方处理意图后 reset,交接语义明确);
+// 时间倒退视为新序列第一击(对调用方时钟源鲁棒)。纯逻辑,host 可测。
+#define MPD_PROV_UPCLICK_MS 600
+
+typedef struct {
+    int64_t last_ms;   // 上一击时刻;INT64_MIN = 无待击
+    bool    fired;     // 已触发未复位
+} meta_prov_upclick_t;
+
+void meta_prov_upclick_reset(meta_prov_upclick_t *d);
+bool meta_prov_upclick_feed(meta_prov_upclick_t *d, int64_t now_ms);

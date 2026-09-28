@@ -359,6 +359,14 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10.1 (2026-09-28) P0 change-WiFi intent = double-press UP**: the r10 rule "any
+  keypress cancels ONLINE auto-advance" traded one ambiguity for another (a mis-press
+  stranded the user on P0). Now a **double-press UP within 600ms** is the only cancel —
+  it is also the explicit change-WiFi action (erases credentials, restarts the AP); single
+  presses, OK, and DOWN are inert (mis-press safe, auto-advance untouched). The detector is
+  pure logic (`meta_prov_upclick_*` in `meta_store_prov`, host-tested: single click inert,
+  600ms boundary exact, reset semantics, backwards-clock robustness). P0 status line reads
+  `double-UP = change WiFi / hold OK = exit`.
 - **v3.2-r10 (2026-09-28) Store page-flow fixed, P1 geometry/navigation corrected, honest slot
   wording**: ① **Page-flow graph (this is the canonical flow now)**:
   `LIST ⇄ STORE(P0) ⇄ ID(P1) ⇄ INFO(P2) ⇄ SLOT(P3) ⇄ DL(P4) → DONE(P5)`; short-press OK

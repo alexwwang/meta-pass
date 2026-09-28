@@ -180,12 +180,54 @@ static void test_dns_query_end(void)
     printf("PASS: dns portal packet validation\n");
 }
 
+// r10.1 P0 网络页意图检测(纯逻辑,host 测试同一份代码):
+// ONLINE 自动进 P1 只被"双击 UP"取消 —— 单击/误按/其它键全部不干预。
+// 回归钉死:单击 UP 绝不触发意图;双击窗口外不触发;窗口内才触发;
+// 检测器复位后历史清零(翻页后不可能被残留双击误触发)。
+static void test_double_up_intent(void)
+{
+    meta_prov_upclick_t d;
+    meta_prov_upclick_reset(&d);
+
+    // 单击:未触发,记为待击。
+    assert(!meta_prov_upclick_feed(&d, 1000));
+    // 窗口内第二击:触发。
+    assert(meta_prov_upclick_feed(&d, 1000 + MPD_PROV_UPCLICK_MS));
+    // 触发后第三击:不再触发(需要先 reset —— 与"进配网流程"的交接语义)。
+    assert(!meta_prov_upclick_feed(&d, 1000 + 2 * MPD_PROV_UPCLICK_MS));
+
+    // 窗口边界:间隔恰好 = 窗口值 → 算第二击(<=);超过 1ms → 过期,重新计第一击。
+    meta_prov_upclick_reset(&d);
+    assert(!meta_prov_upclick_feed(&d, 5000));
+    assert(meta_prov_upclick_feed(&d, 5000 + MPD_PROV_UPCLICK_MS));
+    meta_prov_upclick_reset(&d);
+    assert(!meta_prov_upclick_feed(&d, 5000));
+    assert(!meta_prov_upclick_feed(&d, 5000 + MPD_PROV_UPCLICK_MS + 1));   // 过期
+    assert(meta_prov_upclick_feed(&d, 5000 + MPD_PROV_UPCLICK_MS + 1
+                                  + MPD_PROV_UPCLICK_MS));                 // 新对的第一击后
+
+    // 其它按键事件不发进来(调用方职责),但检测器对乱序时间戳稳健:
+    // 时间倒退视为新序列的第一击,不崩溃不误触发。
+    meta_prov_upclick_reset(&d);
+    assert(!meta_prov_upclick_feed(&d, 9000));
+    assert(!meta_prov_upclick_feed(&d, 8000));   // 倒退:重置为第一击
+
+    // 复位后历史清零。
+    meta_prov_upclick_reset(&d);
+    assert(!meta_prov_upclick_feed(&d, 100));
+    meta_prov_upclick_reset(&d);
+    assert(!meta_prov_upclick_feed(&d, 100 + 1));   // 若未清零这里会成对触发
+
+    printf("PASS: double-up intent detector (single click inert, window exact, reset safe)\n");
+}
+
 int main(void)
 {
     test_parse_wifi_query();
     test_wifi_fail_text();
     test_json_escaped_ssid();
     test_dns_query_end();
+    test_double_up_intent();
     printf("ALL META_STORE_PROV TESTS PASSED\n");
     return 0;
 }
