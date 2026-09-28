@@ -3,6 +3,7 @@
 // 不整包入堆。下载为"读一块 → SHA-256 更新 → esp_ota_write"单遍流式,
 // 内存占用与块大小(1KB)无关固件大小。
 #include "meta_store_api.h"
+#include "meta_store_api_fail.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "mbedtls/sha256.h"
+#include <time.h>               // time():时钟未同步判定(SNTP 前停在 1970)
 
 #include "meta_image.h"
 #include "meta_name.h"
@@ -67,6 +69,22 @@ void meta_store_api_request_cancel(void)
 
 // ---- analyze ----
 
+// 分类文案的格式化缓冲(单作业任务串行调用,static 安全,48B 容纳全部文案)。
+static char s_fail_buf[48];
+
+// analyze 传输失败 → 分类文案(r10.2,BUG-12):此前一切传输失败都写死
+// "unavailable",TLS/时钟/5xx/解析失败在屏上一个样,真机无从定位。
+// 时钟判定:SDK time() 在 SNTP 未同步时停在 1970 附近 —— mbedTLS 证书
+// 时间校验(notBefore/notAfter)会因此失败,这是真机"网络通了却 unavailable"
+// 的最可能死因,必须显式点名。
+static const char *analyze_fail_text(int code)
+{
+    const time_t now = time(NULL);
+    const bool clock_unsynced = (now < 1700000000);   // ~2023-11 前视为未同步
+    return meta_store_api_fail_text(code, clock_unsynced, s_fail_buf,
+                                    sizeof(s_fail_buf));
+}
+
 esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
 {
     if (!out) return ESP_ERR_INVALID_ARG;
@@ -84,16 +102,18 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
-        snprintf(out->reason, sizeof(out->reason), "%s", "unavailable");
+        snprintf(out->reason, sizeof(out->reason), "%s", analyze_fail_text(MSAF_STAGE_OPEN));
         return ESP_FAIL;
     }
 
+    int fail_stage = MSAF_STAGE_OPEN;   // 传输失败点(open→headers→read 递进)
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) goto fail;
 
     const int status = esp_http_client_fetch_headers(client);
     if (status < 0) {
         err = ESP_FAIL;
+        fail_stage = MSAF_STAGE_HEADERS;
         goto fail;
     }
     if (status == 404) {
@@ -102,7 +122,7 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
         goto fail_close;
     }
     if (status != 200) {
-        snprintf(out->reason, sizeof(out->reason), "%s", "unavailable");
+        snprintf(out->reason, sizeof(out->reason), "%s", analyze_fail_text(-status));
         err = ESP_FAIL;
         goto fail_close;
     }
@@ -113,18 +133,20 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
                                              ANALYZE_BUF_MAX - 1 - (size_t)total);
         if (got < 0) {
             err = ESP_FAIL;
-            goto fail_close;
+            fail_stage = MSAF_STAGE_READ;
+            goto fail;
         }
         if (got == 0) break;
         total += got;
-        if (total >= (int)ANALYZE_BUF_MAX - 1) {   // 响应超上限:契约外,按格式错误
+        if (total >= (int)ANALYZE_BUF_MAX - 1) {   // 响应超上限:契约外形态
             err = ESP_FAIL;
-            goto fail_close;
+            goto fail_parse;
         }
     }
     s_buf[total] = '\0';
     ESP_LOGI(TAG, "analyze %lu: %d B", (unsigned long)play_id, total);
     if (!meta_store_analysis_parse(s_buf, (size_t)total, out)) {
+        // parser 已置 out->reason="format"(契约缺失/字段非法),保留展示。
         err = ESP_FAIL;
         goto fail_close;
     }
@@ -132,10 +154,17 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     return ESP_OK;
 
 fail:
-    snprintf(out->reason, sizeof(out->reason), "%s", "unavailable");
+    // 传输失败(open/headers/read):reason = 分类文案(时钟×阶段)。
+    snprintf(out->reason, sizeof(out->reason), "%s",
+             analyze_fail_text(fail_stage));
 fail_close:
     esp_http_client_cleanup(client);
     return err;
+
+fail_parse:
+    snprintf(out->reason, sizeof(out->reason), "%s", analyze_fail_text(MSAF_STAGE_PARSE));
+    esp_http_client_cleanup(client);
+    return ESP_FAIL;
 }
 
 // ---- install(流式下载刷槽) ----

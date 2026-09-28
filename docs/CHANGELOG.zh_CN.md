@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+- **analyze 传输失败分类(r10.2,v1.0.0-23)**:长期存在的"真机一切玩法都显示
+  unavailable"类失败现在屏上可诊断 —— analyze 传输失败按阶段 × 时钟状态分类,
+  经新纯逻辑模块 `meta_store_api_fail`(host 测试):`TLS failed (clock
+  unsynced).`(真机杀手:SNTP 未同步 → mbedTLS 证书时间校验必败)、
+  `TLS/DNS failed.`、`No response.`、`Connection lost.`、`Bad response from
+  server.`、`Server error <码号>`;业务 reason 码原样透传;P2 逐字展示并给
+  RETRY 行。另:响应超限路径不再残留旧 reason;P1 提示文字回到一行;P0 改网
+  手势 = 600ms 内双击 UP(误按安全,host 测试 `meta_prov_upclick`)。
 - **商店页面流修复 + P1 键盘打磨(r10,v1.0.0-19..21)**:① 页面流显式化且无环 ——
   OK LONG 从每个商店页退出到列表页,P0 ONLINE 自动翻页被任何按键取消(此前 P1 的
   OK LONG → P0 而 P0 又自动进 P1 → 死循环,真出口只有 2s 窗口);P0 新增可见的

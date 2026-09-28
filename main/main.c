@@ -469,7 +469,7 @@ static void page_store_id_build(void)
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, "UP/DOWN move - OK press\nhold UP/DOWN row - hold OK exit");
+    lv_label_set_text(s_status_line, "UP/DOWN move - OK press");
 
     // 屏上键盘 15 键(r9.1):4×4 —— 1 2 3 DEL / 4 5 6 CLR / 7 8 9 OK(纵跨
     // 两行) / ◀ 0 ▶。键 44x30,列距 50,行距 34;UP/DOWN 短按=环移选中键,
@@ -580,11 +580,26 @@ static void store_info_fill(const meta_store_analysis_t *a)
                      "%.24s\nsize: %lu KB\nmin slot: %d",
                      a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot);
         }
+    } else if (strchr(a->reason, ' ') != NULL) {
+        // r10.2:传输类分类文案("TLS failed (clock unsynced)." 等,含空格)
+        // 直接展示 —— 不是"玩法不支持",套 Not supported 会误导。
+        snprintf(text, sizeof(text), "%.40s", a->reason);
     } else {
         snprintf(text, sizeof(text),
                  "Not supported:\n%.24s", a->reason);
     }
     lv_label_set_text(s_info, text);
+
+    // 传输失败页只给 RETRY/BACK;业务不支持页只有 BACK(原逻辑:items=1)。
+    const bool transport_fail = (a && !a->supported
+                                 && strchr(a->reason, ' ') != NULL);
+    if (transport_fail) {
+        lv_obj_t *retry_lbl = lv_obj_get_child(s_rows[0], 0);
+        lv_label_set_text(retry_lbl, "RETRY");
+        add_row(s_scr, 1, 240, "BACK");
+        rows_refresh(2, s_sel);
+        return;
+    }
 
     lv_obj_t *confirm_lbl = lv_obj_get_child(s_rows[0], 0);
     lv_label_set_text(confirm_lbl, "CONFIRM");
@@ -1164,12 +1179,21 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_STORE_INFO:
         if (ev == BSP_BTN_CLICK) {
             const meta_store_analysis_t *a = meta_store_net_analysis();
-            const int items = (a && a->supported) ? 2 : 1;   // 不支持时只有 BACK
+            // r10.2:传输失败页(RETRY/BACK)/不支持页(仅 BACK)/正常页
+            // (CONFIRM/BACK)三形态;传输失败 = reason 含空格的分类文案。
+            const bool transport_fail = (a && !a->supported
+                                         && strchr(a->reason, ' ') != NULL);
+            const int items = (a && a->supported) ? 2 : (transport_fail ? 2 : 1);
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                 s_sel = (s_sel + 1) % items;
                 rows_refresh(items, s_sel);
             } else if (btn == BSP_BTN_OK) {
-                if (a && a->supported && s_sel == 0) {
+                if (transport_fail && s_sel == 0) {
+                    s_info_filled = false;   // RETRY:重新 analyze 同一玩法
+                    if (meta_store_net_cmd_analyze(s_play_id) != ESP_OK) {
+                        store_goto(PAGE_STORE_ID);
+                    }
+                } else if (a && a->supported && s_sel == 0) {
                     store_goto(PAGE_STORE_SLOT);
                 } else {
                     store_goto(PAGE_STORE_ID);   // BACK = 重新输 ID

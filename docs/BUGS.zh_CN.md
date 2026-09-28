@@ -112,6 +112,27 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
 - **教训**:键 → 动作映射必须对着**屏上可见的东西**审查,不能对着模型内部
   状态;布局不变式(不重叠、边缘对齐)应进编译期断言,不能靠 code review。
 
+### BUG-12(致命)—— 一切传输失败塔缩成一个词
+
+- **现象**:连续多个固件版本,真机上输任何玩法 ID 都是 "unavailable",而同样的
+  玩法在 host 上分析全部正常。服务端修复(404 覆盖、警告放行)始终治不好它,
+  因为设备自己的传输失败从来不可见。
+- **根因**:`meta_store_api_analyze` 对*所有*失败路径都写死 reason="unavailable"
+  —— TLS 握手失败、DNS 失败、读超时、非 200 状态、响应超缓冲上限。真机上
+  最关键的一条:SNTP 未同步时 `time()` 停在 1970 附近,**mbedTLS 证书时间
+  校验必然失败**,HTTPS 永远建不起来 —— 屏上与"服务器挂了"完全无法区分。
+  顺藤摸出的连带伤:响应超限路径根本不写 reason(会把上一次分析的残留
+  文案显示出来)。
+- **修复**:传输失败按**阶段 × 时钟状态**分类(`meta_store_api_fail`,纯逻辑,
+  host 测试):`TLS failed (clock unsynced).` / `TLS/DNS failed. Retry.` /
+  `No response. Retry.` / `Connection lost. Retry.` / `Bad response from
+  server.` / `Server error <码号>`;业务 reason 码(not-found/format/too-large)
+  原样透传不受影响;P2 对传输类文案逐字展示并给 RETRY 行,不再套
+  "Not supported:" 包装。reason 缓冲 24→40 容纳句子形态。
+- **教训**:一个 catch-all 错误串 = 诊断黑洞 —— 设备能区分的每一层失败都
+  必须上屏;且"host 上正常"只证明服务端,永远证明不了设备的 TLS/时钟栈
+  (host 上根本不跑这两样)。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音

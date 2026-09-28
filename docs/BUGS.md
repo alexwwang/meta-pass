@@ -140,6 +140,35 @@ the data plane against the production site.
   invariants (no overlap, edge alignment) belong in compile-time assertions,
   not in code review.
 
+### BUG-12 (Critical) — every transport failure collapsed into one word
+
+- **Symptom**: entering a play ID on the device showed "unavailable" for
+  every play across many firmware versions, while the same plays analyzed
+  fine from the host. Server-side fixes (404 coverage, warn-and-allow
+  policy) never cured it, because the device's own transport failures were
+  never visible.
+- **Root cause**: `meta_store_api_analyze` wrote the literal "unavailable"
+  into `reason` for *every* failure path — TLS handshake failure, DNS
+  failure, read timeout, non-200 status, response over the buffer limit.
+  The one that matters on real hardware: with SNTP unsynced, `time()` stays
+  near 1970 and **mbedTLS certificate time validation always fails**, so
+  HTTPS can never succeed — indistinguishable on screen from "server is
+  down". Also found on the pass: the over-limit path skipped the reason
+  assignment entirely (stale reason from a previous analysis could be
+  shown).
+- **Fix**: transport failures classified by **stage x clock state**
+  (`meta_store_api_fail`, pure logic, host-tested): `TLS failed (clock
+  unsynced).` / `TLS/DNS failed. Retry.` / `No response. Retry.` /
+  `Connection lost. Retry.` / `Bad response from server.` /
+  `Server error <code>`; business reason codes (not-found/format/too-large)
+  pass through untouched; P2 renders transport texts verbatim with a
+  RETRY row instead of wrapping them in "Not supported:". reason buffer
+  widened 24→40 for the sentence forms.
+- **Lesson**: a single catch-all error string is a diagnostic black hole —
+  every failure layer the device can distinguish, it must surface; and
+  "works from the host" proves the server, never the device's TLS/clock
+  stack (the host never runs either).
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is

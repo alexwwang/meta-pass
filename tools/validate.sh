@@ -71,6 +71,11 @@ PY
         tests/test_meta_store_prov.c main/meta_store_prov.c \
         -o "${test_dir}/test_meta_store_prov"
     "${test_dir}/test_meta_store_prov"
+    # analyze 传输失败分类(阶段×时钟矩阵;真机同一份 meta_store_api_fail.c)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_meta_store_api_fail.c main/meta_store_api_fail.c \
+        -o "${test_dir}/test_meta_store_api_fail"
+    "${test_dir}/test_meta_store_api_fail"
     # P1 玩法 ID 编辑模型(插入光标/退格/换行;真机同一份 meta_store_idedit.c)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_store_idedit.c main/meta_store_idedit.c \

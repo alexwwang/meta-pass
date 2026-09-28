@@ -6,6 +6,16 @@
 
 ## Unreleased
 
+- **Analyze transport-failure classification (r10.2, v1.0.0-23)**: the long-standing
+  "every play shows unavailable on device" class of failures is now diagnosed on screen —
+  analyze transport failures classify by stage x clock state via the new pure-logic
+  `meta_store_api_fail` module (host-tested): `TLS failed (clock unsynced).` (the real-device
+  killer: SNTP unsynced → mbedTLS certificate time validation fails), `TLS/DNS failed.`,
+  `No response.`, `Connection lost.`, `Bad response from server.`, `Server error <code>`;
+  business reason codes pass through; P2 shows the text verbatim with a RETRY row. Also: the
+  over-limit path no longer leaves a stale reason; P1 hint text back to one line; P0
+  change-WiFi gesture is a double-press of UP within 600ms (mis-press safe, host-tested
+  `meta_prov_upclick`).
 - **Store page-flow fix + P1 keypad polish (r10, v1.0.0-19..21)**: ① page-flow made
   explicit and loop-free — OK LONG exits the store to the list page from every store page,
   P0 ONLINE auto-advance is cancelled by any keypress (previously P1's OK LONG → P0 and
