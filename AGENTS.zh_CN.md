@@ -72,6 +72,8 @@ Unverified: 仍需板卡、仪器或用户确认的事项
 
 仅在用户请求或当前工作流明确要求时创建 commit 和 push。用户可见变化记录到 `docs/CHANGELOG.zh_CN.md`；内部重构、CI 维护、拼写修复和生成文件刷新无需记录。
 
+禁止用 `git add -A`/`-u`/`.` 暂存：只允许显式路径。一次整体 add 曾把无关的进行中修复卷进错误的 commit（r10.14 混进了 r10.15）；显式路径保证每个 commit 的 diff 与 message 一致。
+
 Commit 信息中禁止任何 AI/agent 署名尾注——不得出现 `Co-Authored-By:`（指名工具或
 agent）或 `Generated with ...` 行。本仓库历史曾于 2026-09-17 专门重写以清除此类
 尾注，不得再次引入。

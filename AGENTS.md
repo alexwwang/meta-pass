@@ -72,6 +72,10 @@ Unverified: remaining board, instrument, or user checks
 
 Create commits and push only when the user requests them or the active workflow explicitly requires them. Record user-visible changes in `docs/CHANGELOG.md`; internal refactors, CI maintenance, typo fixes, and generated-file refreshes do not require a changelog entry.
 
+Never stage with `git add -A`/`-u`/`.`: stage explicit paths only. A blanket add once
+swept an unrelated in-flight fix into the wrong commit (r10.14 landed inside r10.15);
+explicit paths keep each commit's diff equal to its message.
+
 Commit messages must NOT contain any AI/agent attribution footers — no `Co-Authored-By:`
 trailer naming a tool or agent, no `Generated with ...` lines. This repo's history was
 rewritten once (2026-09-17) to strip such footers; do not reintroduce them.
