@@ -359,6 +359,13 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10.12 (2026-09-29) download throughput: three stacked caps removed**: WiFi modem sleep
+  was never disabled (IDF default `WIFI_PS_MIN_MODEM` throttles downlink between DTIM beacons) —
+  now `WIFI_PS_NONE` on both STA and APSTA start paths. lwIP TCP receive window was 5760 B
+  (4*MSS default) ≈ 57 KB/s ceiling at ~100 ms RTT — now 65535 (no-scaling ceiling;
+  `LWIP_WND_SCALE` needs PSRAM, absent on C3), send buffer matched, tcpip RX mailbox 32→64.
+  Download chunk 1 KB → 4096 (flash page; sample installer's device-proven value). Gate:
+  `tests/test_download_speed_config.py`; r10.10 per-5% telemetry gives the on-device before/after.
 - **v3.2-r10.11 (2026-09-29) boot-time slot scan silenced for half-written slots (BUG-21)**: starting
   the USB monitor resets the chip — the USB-Serial-JTAG hard reset is esp-idf-monitor's default
   (`serial_reader.py:112` → esptool `USBJTAGSerialReset`; escape: `--no-reset` /

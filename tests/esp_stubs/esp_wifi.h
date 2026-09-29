@@ -3,6 +3,13 @@
 #include <stdbool.h>
 #include "esp_err.h"
 /* WiFi stubs: host 语法检查/链接用(签名对齐 IDF 5.x,实现为无害空操作)。 */
+
+/* WiFi power-save modes (esp_wifi_types.h, IDF 5.x). */
+typedef enum {
+    WIFI_PS_MIN_MODEM = 0, /* 默认:DTIM 间隔休眠,下行吞吐受限 */
+    WIFI_PS_MAX_MODEM,
+    WIFI_PS_NONE,          /* 关省电:radio 常开,吞吐优先 */
+} wifi_ps_type_t;
 typedef struct {
     char ssid[32];
     uint8_t ssid_len;
@@ -91,6 +98,7 @@ static inline esp_err_t esp_wifi_set_mode(int mode) { (void)mode; return ESP_OK;
 static inline esp_err_t esp_wifi_set_config(int interface, const wifi_config_t *config) {
     (void)interface; (void)config; return ESP_OK;
 }
+static inline esp_err_t esp_wifi_set_ps(wifi_ps_type_t ps) { (void)ps; return ESP_OK; }
 static inline esp_err_t esp_wifi_start(void) { return ESP_OK; }
 static inline esp_err_t esp_wifi_stop(void) { return ESP_OK; }
 static inline esp_err_t esp_wifi_deinit(void) { return ESP_OK; }

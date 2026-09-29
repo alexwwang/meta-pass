@@ -123,6 +123,8 @@ PY
     python3 tests/test_http_contract.py
     # 扫描静默校验门(r10.11/BUG-21;同上,IDF checkout 缺失时跳过源码事实检查)
     python3 tests/test_bug21_scan_silent.py
+    # 下载吞吐配置门(r10.12;省电关闭×2 路径/4KB 块/lwIP 窗口与邮箱,防回退)
+    python3 tests/test_download_speed_config.py
     python3 tests/test_verify_firmware.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin

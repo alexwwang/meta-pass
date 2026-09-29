@@ -6,6 +6,16 @@
 
 ## Unreleased
 
+- **商店下载提速:拆掉三个叠加的默认限制(r10.12)**:下载稳态只有几十 KB/s,是三个
+  独立上限叠加的结果,现已逐一拆除。WiFi 调制解调器省电从未关闭(IDF 默认
+  `WIFI_PS_MIN_MODEM` 在 DTIM 信标间休眠射频)—— STA 与 APSTA 两条启动路径均加
+  `esp_wifi_set_ps(WIFI_PS_NONE)`。lwIP TCP 接收窗口仅 5760B(4×MSS 默认),在到商店
+  主机 ~100ms RTT 下吞吐封顶 窗口/RTT ≈ 57KB/s —— 现改 65535(无缩放上限;
+  `LWIP_WND_SCALE` 依赖 PSRAM,C3 没有),发送缓冲同步放大,tcpip 收包邮箱 32→64。
+  下载块 1KB,每 KB 都付一次 read+sha256+`esp_ota_write` 调用开销 —— 现改 4096
+  (flash 页大小,样例参照实现真机验证值)。CPU 160MHz、flash 80MHz DIO、WiFi
+  AMPDU TX/RX、硬件 AES 原本就已就位。新门 `tests/test_download_speed_config.py`
+  全部钉死;r10.10 的每 5% 串口遥测可直接给真机前后对比。
 - **开机槽位扫描不再为半成品镜像打 bootloader 格式错误日志(r10.11,BUG-21)**:启动 USB monitor 会复位芯片(USB-Serial-JTAG 硬复位,monitor 默认行为——用 `idf.py monitor -- --no-reset` 或 `ESP_IDF_MONITOR_NO_RESET=1` 可保持设备运行),复位后的开机扫描用 `esp_image_verify(ESP_IMAGE_VERIFY, …)` 校验失败下载留下的半成品槽位——该非静默模式下,IDF 段表遍历读到擦除态 0xFFFFFFFF 段头即打 `invalid segment length 0xffffffff`(ESP_LOGE)。拒绝本身始终正确:槽位状态为 INVALID,且仍可覆盖安装。现扫描改为静默模式,并打一行写明原因与处置的 WARN。回归覆盖:`tests/test_meta_store_scan.c`(host fixture 复现 IDF 段表遍历;empty/INVALID/VALID 三态 + 擦除恢复)与 `tests/test_bug21_scan_silent.py`(静默调用静态门,对照 IDF 源码验证);`tests/test_http_contract.py` 已挂进 `tools/validate.sh`(r10.8 起一直只手动运行)。
 - **商店 UX 修正 + 下载遥测(r10.10)**:安装页行动行改标 CONTINUE(原 CONFIRM,
   语义是继续去选槽位);槽位选择页信息窗加倍高度、底色弱化,不再与按钮行混为

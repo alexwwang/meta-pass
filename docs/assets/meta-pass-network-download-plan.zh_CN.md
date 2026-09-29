@@ -341,6 +341,12 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r10.12（2026-09-29）下载吞吐：拆除三个叠加上限**：WiFi 省电从未关闭（IDF 默认
+  `WIFI_PS_MIN_MODEM` 在 DTIM 信标间节流下行）—— STA 与 APSTA 两条启动路径均改
+  `WIFI_PS_NONE`。lwIP TCP 接收窗口 5760B（4×MSS 默认）在 ~100ms RTT 下封顶 ≈57KB/s ——
+  现改 65535（无缩放上限；`LWIP_WND_SCALE` 依赖 PSRAM，C3 没有），发送缓冲同步放大，
+  tcpip 收包邮箱 32→64。下载块 1KB → 4096（flash 页；样例参照实现真机验证值）。
+  回归门：`tests/test_download_speed_config.py`；r10.10 的每 5% 遥测可直接做真机前后对比。
 - **v3.2-r10.11（2026-09-29）开机槽位扫描对半成品镜像静默化（BUG-21）**：启动 USB monitor 会复位
   芯片——USB-Serial-JTAG 硬复位是 esp-idf-monitor 的默认行为（`serial_reader.py:112` → esptool
   `USBJTAGSerialReset`；规避：`--no-reset` / `ESP_IDF_MONITOR_NO_RESET=1`）——复位后的开机扫描用

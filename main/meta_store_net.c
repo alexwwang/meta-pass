@@ -491,6 +491,11 @@ static esp_err_t ap_start(void)
     if (err != ESP_OK) goto fail;
     s_wifi_up = true;
 
+    // r10.12:APSTA 路径同样关省电 —— 该路径开完会话后 station 会重连,
+    // PS 若留在默认 MIN,进入商店下载仍被 DTIM 节流(与 STA 直连路径同因)。
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) goto fail;
+
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
     hcfg.max_uri_handlers = 4;
     hcfg.max_open_sockets = 3;
@@ -558,6 +563,12 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
     err = esp_wifi_start();
     if (err != ESP_OK) goto fail;
     s_wifi_up = true;
+
+    // r10.12:关省电。IDF 默认 WIFI_PS_MIN_MODEM,STA 在 DTIM 间隔休眠,
+    // 下行 TCP 吞吐被睡眠周期节流(快→慢抖动的元凶);启动器单次会话模型下
+    // 下载窗口短,吞吐优先于功耗。
+    err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (err != ESP_OK) goto fail;
 
     // 清掉上一轮连接残留的 GOT_IP/DISCONNECT 位,防本次等待被旧事件瞬时击穿。
     xEventGroupClearBits(s_events, EV_GOT_IP | EV_DISCONNECT);

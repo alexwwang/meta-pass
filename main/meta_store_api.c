@@ -92,7 +92,10 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 // analyze 响应体上限:真实响应 ~600B,留足嵌套与数组余量;超限按格式错误处理。
 #define ANALYZE_BUF_MAX  1536
 // 下载/摘要分块:无 PSRAM,小堆常驻。
-#define DL_CHUNK         1024
+// r10.12:1024→4096。对齐 flash 页大小,read+sha256+esp_ota_write 每字节
+// 的调用开销降为 1/4;样例参照实现(ai-passport-miniapp-installer)真机验证值。
+// s_chunk 为 static 缓冲,不占栈。
+#define DL_CHUNK         4096
 // 请求超时:构建期可用 CONFIG_META_STORE_HTTP_TIMEOUT_MS 覆盖(main/Kconfig.projbuild);
 // host 桩编译无 sdkconfig,保留同值回退。
 #ifdef CONFIG_META_STORE_HTTP_TIMEOUT_MS
