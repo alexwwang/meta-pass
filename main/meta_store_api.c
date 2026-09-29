@@ -162,13 +162,21 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
         .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = 1024,
+        // 接收缓冲即头部解析缓冲:CF 边缘会发 set-cookie/report-to 等大头部,
+        // 1KB 压线 → 解析截断风险;样例实现(真机验证)用 4096。
+        .buffer_size = 4096,
         // r10.5 根因修复:此前从未配置任何信任锚 —— mbedTLS 没有可用的 CA,
         // 所有 HTTPS 握手必败,屏上只见 "TLS/DNS failed"(真机 v25 实测)。
         // crt_bundle_attach 指向 sdkconfig 自定义证书包(main/certs,双根)。
         .crt_bundle_attach = esp_crt_bundle_attach,
         // r10.7:OPEN 死因捕获(DNS/超时/拒连/证书),失败时屏显具体层。
         .event_handler = http_event_cb,
+        // 商店请求的唯一 UA:服务端可观测设备流量;E2E 契约复演同源(meta_store_api.h)。
+        .user_agent = META_STORE_API_USER_AGENT,
+        // 禁自动重定向:301 响应本身携带 0 个 body 字节,被 IDF 静默跟随会
+        // 让 fetch_headers() 返回下跳的 CL —— 长度契约在跨源时被污染。
+        // 关掉后 301 变成显式错误上屏,域内路由策略变化不再静默。
+        .disable_auto_redirect = true,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
@@ -191,8 +199,12 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
         return ESP_FAIL;
     }
 
-    const int status = esp_http_client_fetch_headers(client);
-    if (status < 0) {
+    const int64_t content_len = esp_http_client_fetch_headers(client);
+    // r10.8(BUG-19):fetch_headers() 返回 Content-Length 而非状态码 ——
+    // 旧代码把 ~600 当 "HTTP 600" 拒掉,即使 TLS 成功 analyze 也必败(IDF
+    // esp_http_client.h:639 契约;真机宿敌)。状态码必须走 get_status_code()。
+    const int status = esp_http_client_get_status_code(client);
+    if (content_len < 0) {
         err = ESP_FAIL;
         fail_stage = MSAF_STAGE_HEADERS;
         ESP_LOGE(TAG, "analyze fetch_headers failed");
@@ -207,6 +219,13 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     if (status != 200) {
         ESP_LOGE(TAG, "analyze HTTP %d", status);
         snprintf(out->reason, sizeof(out->reason), "%s", analyze_fail_text(-status));
+        err = ESP_FAIL;
+        goto fail_close;
+    }
+    // 301 明确上屏:禁了自动跟随,它不再被静默消化(域内路由策略变化可见)。
+    if (content_len == 0) {   // 301/204 等无 body 响应:analyze 契约必失败
+        ESP_LOGE(TAG, "analyze: no body (HTTP %d, redirect or empty?)", status);
+        snprintf(out->reason, sizeof(out->reason), "%s", analyze_fail_text(MSAF_STAGE_PARSE));
         err = ESP_FAIL;
         goto fail_close;
     }
@@ -309,8 +328,10 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
         .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = 1024,
+        .buffer_size = 4096,                          // 同 analyze:头部解析缓冲防截断
         .crt_bundle_attach = esp_crt_bundle_attach,   // r10.5:同 analyze,信任锚缺失修复
+        .user_agent = META_STORE_API_USER_AGENT,      // 同 analyze:设备 UA 唯一同源
+        .disable_auto_redirect = true,                // 同 analyze:长度契约不跨源
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_FAIL;
@@ -320,9 +341,18 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) goto fail;
 
-    const int status = esp_http_client_fetch_headers(client);
+    // r10.8(BUG-19):与 analyze 同款修复 —— fetch_headers() 返回 CL 不是状态码;
+    // 旧代码把 ~1.8MB 的 CL 当 "HTTP 1882272" 直接拒,install 在真机上从未成功过。
+    const int64_t hdr_cl = esp_http_client_fetch_headers(client);
+    const int status = esp_http_client_get_status_code(client);
     if (status != 200) {
         err = (status < 0) ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE;
+        ESP_LOGE(TAG, "install HTTP %d", status);
+        goto fail;
+    }
+    if (hdr_cl < 0) {
+        err = ESP_FAIL;
+        ESP_LOGE(TAG, "install fetch_headers failed");
         goto fail;
     }
 
@@ -427,6 +457,13 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     uint8_t digest[32];
     mbedtls_sha256_finish(&sha, digest);
     mbedtls_sha256_free(&sha);
+    if (received != (uint32_t)content_len) {   // r10.8:read() 已确认 EOF,残留字节即协议错
+        ESP_LOGE(TAG, "字节流提前结束: %lu/%ld", (unsigned long)received, (long)content_len);
+        esp_ota_abort(ota);
+        meta_slot_mark_invalid(&slots[slot]);
+        set_progress(false, -1, received, (uint32_t)content_len, false, "Truncated image.");
+        return ESP_ERR_INVALID_SIZE;
+    }
     if (memcmp(digest, analysis->sha256, 32) != 0) {
         ESP_LOGE(TAG, "流式 SHA-256 与 analyze 不一致");
         esp_ota_abort(ota);

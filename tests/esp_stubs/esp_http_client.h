@@ -42,6 +42,8 @@ typedef struct {
     esp_http_client_method_t method;
     int                    timeout_ms;
     int                    buffer_size;
+    const char            *user_agent;         // r10.8:设备 UA(IDF 字段名对齐)
+    bool                   disable_auto_redirect; // r10.8:禁自动重定向(IDF 字段名对齐)
     const char            *cert_pem;
     bool                   skip_cert_common_name_check;
     // r10.5:与 IDF 5.x 对齐 —— crt_bundle_attach 是信任锚首选形态
@@ -56,7 +58,10 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
 esp_err_t esp_http_client_set_url(esp_http_client_handle_t client, const char *url);
 esp_err_t esp_http_client_set_method(esp_http_client_handle_t client, esp_http_client_method_t method);
 esp_err_t esp_http_client_open(esp_http_client_handle_t client, int write_len);
-int esp_http_client_fetch_headers(esp_http_client_handle_t client);
+// r10.8(BUG-19):IDF 5.x 真实契约 —— 返回 Content-Length(int64) 而非状态码;
+// 旧桩声明成 int 曾让 meta_store_api.c 把 CL 当 HTTP 状态码比较(真机必败)。
+int64_t esp_http_client_fetch_headers(esp_http_client_handle_t client);
+int esp_http_client_get_status_code(esp_http_client_handle_t client);
 int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len);
 int64_t esp_http_client_get_content_length(esp_http_client_handle_t client);
 esp_err_t esp_http_client_get_header(esp_http_client_handle_t client, const char *key, char **value);

@@ -243,6 +243,31 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
   bundle 结构/排序/名字字节,并验证最新 `build/meta-pass_v*.bin` 原样内嵌当前
   bundle(陈旧镜像守卫 —— v35 旧 bin 正确地在该项失败)。E2E 计数 17→19。
 
+### BUG-19(严重)—— HTTP 状态码读错了 API:analyze/install 从不可能成功,与 TLS 无关
+
+- **症状**:TLS 修好(BUG-18)后,analyze 仍会以 `Server error 600` 全灭,install
+  全部拒于长度检查 —— 代码比较的根本不是状态码。
+- **根因**:`esp_http_client_fetch_headers()` 返回的是 **Content-Length**(IDF 5.5.3
+  `esp_http_client.h:639`:"Download data length defined by content-length header"),
+  不是 HTTP 状态码。`meta_store_api.c` 把返回值赋给 `status` 再比 `status != 200`:
+  analyze 响应约 477B → "HTTP 477",extracted 响应 1 882 272B → "HTTP 1882272",
+  全部被拒。host 桩声明返回 `int`,纯语法门抓不住语义误用。发现手段:与样例
+  恢复安装器(`ai-passport-miniapp-installer`,真机验证)交叉比对 —— 它用的
+  `esp_http_client_get_status_code()` 恰是我们从未调用的 API。
+- **修复**:两个端点的状态码一律来自 `esp_http_client_get_status_code()`,
+  `fetch_headers()` 只留作 `< 0` 传输错误信号(analyze 200 为定长响应,实测
+  `content-length: 477`;301 空 body 显式拒绝)。install 在 read() 报 EOF 后追加
+  `received == content_len` 硬校验 —— 残留字节不符现在是硬错误,不再静默吞掉截断。
+- **请求面加固(同轮,样例启发)**:设备 User-Agent 单一定义点
+  (`META_STORE_API_USER_AGENT`,meta_store_api.h),E2E 复演从该源读取(过去文档
+  声称的"设备 UA"没有任何检查兜底);`disable_auto_redirect = true` 让 301 无法
+  静默把长度契约重锚到别的源;`buffer_size` 1024→4096(头部解析缓冲,样例验证值,
+  CDN 边缘头部可超 1KB);TLS 重协商显式关闭(`CONFIG_MBEDTLS_SSL_RENEGOTIATION=n`);
+  `JOB_STACK` 8192→10240(样例恢复器用真机验证过的 10K 栈跑同款 TLS 栈)。
+- **门禁**:`tests/test_http_contract.py` 钉死 IDF 契约原文(有 checkout 用原文,
+  无则用记录片段 —— CI 裸 checkout 规则)、桩签名(`int64_t`)、两个访问器、
+  BUG-19 误用模式绝迹、两项配置的全部加固字段。host 桩同步真实 `int64_t` 契约。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音

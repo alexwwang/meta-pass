@@ -377,6 +377,13 @@ app.get("/api/extracted", async (req, res) => {
   → code 0. Permanent gates: E2E-8 (full production handshake with the device's real anchor
   bundle — the missing test that let this ship through five versions), E2E-8b (rejects
   cross-signed anchors). E2E count 15→17.
+- **v3.2-r10.8 (2026-09-29) HTTP status-code contract fixed (BUG-19)**: cross-checking
+  the sample recovery installer (device-proven) exposed that `esp_http_client_fetch_headers()`
+  returns Content-Length — analyze/install had compared it against 200, so neither
+  endpoint could ever succeed on a device regardless of TLS. Status now via
+  `esp_http_client_get_status_code()`; EOF length check added; device UA single-sourced
+  and E2E-replayed; auto-redirect disabled; header buffer 4096; renegotiation off; job
+  stack 10240. Permanent gate: `tests/test_http_contract.py`.
 - **v3.2-r10.7.2 (2026-09-29) chain-tail issuer fixed (BUG-18)**: adding the WE1
   intermediate (r10.7.1, v35) did not clear the device handshake failure — the log was
   byte-identical. A static reproduction (`tools/verify-crt-bundle-match.py`, raw ASN.1,

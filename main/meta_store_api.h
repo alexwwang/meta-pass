@@ -19,6 +19,10 @@
 // 打包进自定义 mbedTLS 证书包,见 sdkconfig.defaults)。
 #define META_STORE_API_BASE "https://metapass.chuanxilu.net"
 
+// 设备 User-Agent(所有商店请求的唯一标识;E2E 契约复演以此为准 —— 请求面
+// 必须与设备逐字节一致,而非文档口头承诺)。单一定义点,固件与测试同源。
+#define META_STORE_API_USER_AGENT "meta-pass/1.0 (ESP32-C3; store)"
+
 #define META_STORE_API_NAME_MAX 48
 
 // analyze 响应的物化结构(契约见改造方案 §1:与 /api/analyze JSON 字段一一对应)。

@@ -6,6 +6,16 @@
 
 ## Unreleased
 
+- **HTTP 状态码读错 API 已修(r10.8,BUG-19)**:与样例恢复安装器
+  (ai-passport-miniapp-installer,真机验证)交叉比对暴露 ——
+  `esp_http_client_fetch_headers()` 返回的是 Content-Length 而非状态码;我们的
+  analyze/install 拿返回值与 200 比较,真机上 analyze(477B)全灭于 "HTTP 477"、
+  install(1.9MB)全拒于长度检查,与 TLS 是否修好无关。现在两处状态码一律来自
+  `esp_http_client_get_status_code()`;EOF 后强制 `received == content_len`;
+  设备 User-Agent 单源化并被 E2E 复演;禁自动重定向(301 不再能重锚长度契约);
+  接收/头部缓冲 1024→4096;TLS 重协商显式关闭;网络作业栈 8192→10240(样例
+  验证值)。新门 `tests/test_http_contract.py` 钉死 IDF 契约、桩签名与全部加固
+  字段;host 桩同步真实 `int64_t` 契约。
 - **链尾 issuer 缺失已修(r10.7.2,BUG-18)**:v35 已加 GTS WE1 中间证书,真机却仍以
   一字不差的 `No matching trusted root certificate found` / `-0x3000` 握手日志失败。
   新的静态复现(`tools/verify-crt-bundle-match.py`)用裸 ASN.1 解析器对实发链逐字节

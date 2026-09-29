@@ -14,12 +14,25 @@ import dns from "node:dns/promises";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST = process.argv[2] ?? "https://metapass.chuanxilu.net";
+
+// r10.8:设备请求面契约同源 —— UA 必须与固件唯一定义点(main/meta_store_api.h)
+// 一致,E2E 复演和文档陈述都引用同一个字符串(过去是文档口头承诺,现在可被断言)。
+const apiH = readFileSync(path.join(ROOT, "main/meta_store_api.h"), "utf8");
+const DEVICE_UA = (apiH.match(/META_STORE_API_USER_AGENT "(.+)"/) ?? [])[1];
+if (!DEVICE_UA) { console.error("E2E 前置失败: main/meta_store_api.h 缺 META_STORE_API_USER_AGENT 定义"); process.exit(1); }
 const sha256hex = (buf) => createHash("sha256").update(buf).digest("hex");
 let failed = 0;
 const pass = (id, evidence) => console.log(`PASS ${id}: ${evidence}`);
 const fail = (id, why) => { console.error(`FAIL ${id}: ${why}`); failed++; };
+// r10.8:设备请求面复演 —— UA/头与设备固件同源(DEVICE_UA 从 main/meta_store_api.h
+// 解析);redirect:"manual" 与设备 disable_auto_redirect=true 对齐,跨源跳转必须
+// 显式暴露而不是被 fetch 静默跟随。
 const httpGet = async (url, timeoutMs = 120_000) => {
-  const r = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+  const r = await fetch(url, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { "User-Agent": DEVICE_UA, "Accept": "*/*" },
+  });
   return { status: r.status, headers: r.headers, buf: Buffer.from(await r.arrayBuffer()) };
 };
 

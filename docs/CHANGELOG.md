@@ -6,6 +6,19 @@
 
 ## Unreleased
 
+- **HTTP status code misread from the wrong API fixed (r10.8, BUG-19)**: a cross-check
+  against the sample recovery installer (ai-passport-miniapp-installer, device-proven)
+  exposed that `esp_http_client_fetch_headers()` returns the Content-Length, not the
+  status code — our analyze/install compared its return value against 200, so on a real
+  device every analyze (477 B) died as "HTTP 477" and every install (1.9 MB) at the
+  length check, even with TLS fully repaired. Status now comes from
+  `esp_http_client_get_status_code()` in both endpoints; `received == content_len` is
+  enforced after EOF; device User-Agent is a single-source contract replayed by E2E;
+  auto-redirects are disabled (a 301 can no longer re-anchor the length contract);
+  receive/header buffer 1024→4096; TLS renegotiation explicitly off; network job stack
+  8192→10240 (sample-proven value). New gate `tests/test_http_contract.py` pins the IDF
+  contract, the stub signature, and every hardening field; the host stub now declares
+  the real `int64_t` contract.
 - **Chain-tail issuer missing from bundle fixed (r10.7.2, BUG-18)**: v35 added the GTS
   WE1 intermediate yet the device kept failing with the identical
   `No matching trusted root certificate found` / `-0x3000` handshake log. A new static

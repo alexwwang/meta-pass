@@ -26,6 +26,7 @@
 - 发布产物必须出自净室重建（`rm -rf build`），随后核验生效的 sdkconfig 与产物本身——增量构建曾把陈旧配置带过三个版本（v26–v28 Kconfig 漂移）。
 - 测试工具必须用退出码区分环境失败与服务失败（如 e2e 出口预检：DNS/代理劫持 → exit 2，服务缺陷 → exit 1），本机代理或 DNS 问题绝不能被误读为生产宕机。
 - 真机失败一旦可确定地复现，先做字节级静态复现再动硬件（BUG-18：`tools/verify-crt-bundle-match.py` 对实发链逐字节重演 `esp_crt_verify_callback` 的逐层 issuer 查找）；只检查简化切片的门禁（openssl 路径构建、单跳卫生规则、文本比对代替 DER 字节）可以与一台握不了手的设备并存且全绿。
+- HTTP 访问器必须按真实语义使用：`esp_http_client_fetch_headers()` 返回 Content-Length，状态码来自 `esp_http_client_get_status_code()` —— 这类契约要用静态门钉死（`tests/test_http_contract.py`），纯语法的 host 桩抓不住语义误用（BUG-19）。新代码在信任 host 门之前，先与一份真机验证过的参照实现交叉比对。
 - 测试与静态门禁不得依赖本地未提交的构建状态；`build/` 产物缺失时（CI 裸 checkout），测试回退到合成 fixture 并保持同等断言。
 - 可测试的状态机、协议、计时和布局计算应与 ESP-IDF/LVGL 解耦，并由 host tests 覆盖。
 - 禁止提交凭证、设备二维码秘密、私钥、个人数据或未脱敏日志。

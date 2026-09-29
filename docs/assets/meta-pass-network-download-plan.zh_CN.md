@@ -358,6 +358,12 @@ app.get("/api/extracted", async (req, res) => {
   `openssl s_client -CAfile main/certs/gtsr4.pem` → code 0。永久门：E2E-8
   （用设备真实锚包对生产站完整握手 —— 缺失的这个测试让坏链穿了五个版本）、
   E2E-8b（拒绝 cross-signed 锚）。E2E 计数 15→17。
+- **v3.2-r10.8（2026-09-29）修复 HTTP 状态码契约（BUG-19）**：与样例恢复安装器
+  （真机验证）交叉比对暴露 —— `esp_http_client_fetch_headers()` 返回的是
+  Content-Length，而 analyze/install 拿它与 200 比较：无论 TLS 是否修好，两个端点
+  在真机上都不可能成功。状态码现走 `esp_http_client_get_status_code()`；EOF 后加
+  长度硬校验；设备 UA 单源化并被 E2E 复演；禁自动重定向；头部缓冲 4096；重协商
+  关闭；作业栈 10240。永久门：`tests/test_http_contract.py`。
 - **v3.2-r10.7.2（2026-09-29）修复链尾 issuer 缺失（BUG-18）**：加入 WE1 中间证书
   （r10.7.1，v35）并未消除真机握手失败 —— 日志逐字节相同。静态复现
   （`tools/verify-crt-bundle-match.py`，裸 ASN.1，不经 cryptography 再编码）对实发链

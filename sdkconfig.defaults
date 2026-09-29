@@ -119,3 +119,7 @@ CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH="main/certs"
 # 证书链校验 mbedTLS 默认开;mbedTLS_HAVE_TIME_DATE 默认启用 = 校验证书有效期,
 # 所以 SNTP 必须先于任何 TLS(meta_store_net.c 强制该顺序)。
+
+# r10.8(BUG-19 加固):TLS 重协商默认就不开 —— Kconfig 括号里写"不推荐",历史
+# 版本曾因默认变量(全量 bundle)在菜单里翻到过 ON。显式钉死 = 攻击面与栈峰值可控。
+CONFIG_MBEDTLS_SSL_RENEGOTIATION=n

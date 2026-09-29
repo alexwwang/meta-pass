@@ -302,6 +302,39 @@ the data plane against the production site.
   and that the newest `build/meta-pass_v*.bin` embeds the current bundle verbatim
   (stale-image guard — the v35 bin correctly fails this check). E2E count 17→19.
 
+### BUG-19 (Critical) — the HTTP status code was read from the wrong API: analyze/install could never succeed, TLS or not
+
+- **Symptom**: with TLS fixed (BUG-18), every analyze would still fail as
+  `Server error 600` and every install would be rejected by the length check — the
+  status code was never what the code compared against.
+- **Root cause**: `esp_http_client_fetch_headers()` returns the **Content-Length**
+  (IDF 5.5.3 `esp_http_client.h:639`: "Download data length defined by content-length
+  header"), not the HTTP status code. `meta_store_api.c` assigned its return value to
+  `status` and compared `status != 200`: an analyze response of ~477 B became "HTTP 477",
+  an extracted response of 1 882 272 B became "HTTP 1882272" — both rejected. The host
+  stub declared the function as returning `int` and the syntax-only gate could not catch
+  a semantic misuse. Found by cross-checking the sample recovery installer
+  (`ai-passport-miniapp-installer`, device-proven) which uses
+  `esp_http_client_get_status_code()` — the API we never called.
+- **Fix**: status comes from `esp_http_client_get_status_code()` in both endpoints;
+  `fetch_headers()` is kept only as a `< 0` transport-error signal (analyze 200 is a
+  fixed-length response, live-verified: `content-length: 477`; the 301 no-body case is
+  rejected explicitly). Install additionally requires `received == content_len` after
+  read() reports EOF — a residual-byte mismatch is now a hard error, not a silently
+  accepted truncation.
+- **Request-surface hardening (same round, sample-informed)**: device User-Agent is a
+  single definition point (`META_STORE_API_USER_AGENT` in `meta_store_api.h`) and E2E
+  replays read it from that source (the old "device UA" doc claim was not enforced by
+  any check); `disable_auto_redirect = true` so a 301 cannot silently re-anchor the
+  length contract to another origin; `buffer_size` 1024→4096 (header-parsing buffer;
+  sample-proven value) because CDN edge headers can exceed 1 KB; TLS renegotiation
+  explicitly off (`CONFIG_MBEDTLS_SSL_RENEGOTIATION=n`); `JOB_STACK` 8192→10240 (the
+  sample recovery installer runs the same TLS stack on a device-proven 10 K stack).
+- **Gates**: `tests/test_http_contract.py` pins the IDF contract text (live checkout or
+  recorded snippet, CI bare-checkout rule), the stub signature (`int64_t`), both
+  accessors, the absence of the BUG-19 misuse pattern, and every hardening field in both
+  configs. The host stub now declares the real `int64_t` contract.
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is

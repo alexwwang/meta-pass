@@ -32,7 +32,9 @@ static const char *TAG = "store_net";
 #define STA_CONNECT_MS     30000
 #define SNTP_SYNC_MS       5000    // 死等上限:可达时<1s,不可达时不陪葬(旧 15s)
 #define JOB_QUEUE_LEN      2
-#define JOB_STACK          8192   // analyze/install(TLS+mbedTLS 握手峰值 ~8KB)在此任务内跑
+// r10.8:8192→10240 —— 样例恢复器(真机验证)用 10240 跑同款 TLS 栈,8K 在
+// 握手峰值 + 响应解析叠加时压线。F2 对齐实测值。
+#define JOB_STACK          10240  // analyze/install(TLS+mbedTLS 握手峰值 + 响应解析)在此任务内跑
 #define JOB_PRIO           5
 
 // 商店会话超时:构建期默认(Kconfig),运行时可覆盖(见头文件注释);
@@ -587,8 +589,9 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
         goto fail;
     }
 
-    // SNTP:mbedTLS 默认开启证书时间校验(MBEDTLS_HAVE_TIME_DATE),不同步会先
-    // 撞 BADCERT_FUTURE——TLS 之前必须拿到真实时间。
+    // SNTP:证书时间校验取决于 CONFIG_MBEDTLS_HAVE_TIME_DATE(Kconfig 默认 n,
+    // 本仓未开)—— 即便如此时钟仍要同步:日志时间戳、TLV 相对时间、后续策略
+    // 都依赖它。若未来开启 TIME_DATE,BADCERT_FUTURE 将由这里前置拦截。
     // 服务器:ntp.aliyun.com 为主(国内 <1s;pool.ntp.org 全球轮询,国内常 2-10s
     // 甚至丢包),pool.ntp.org 备份;LWIP_SNTP_MAX_SERVERS 需 >=2(sdkconfig)。
     set_state(SN_STATE_CONNECTING, "Syncing clock...");
