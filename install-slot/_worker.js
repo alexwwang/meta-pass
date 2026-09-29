@@ -14,10 +14,57 @@ import { createStoreAnalyzer } from "./store-analyze.js";
 
 const BACKEND = "https://ai-passport.folotoy.cn";
 
+// r10.15:回源边缘缓存 —— 真机日志证据(5% 段 28s、全程 ~4kB/s 龟速)定位到
+// Worker 每次冷启动都在现场回源 folotoy.cn 拉 3MB 合并镜像→校验→解包,回源
+// 链路本身在滴水(502/回源停顿均源于此)。参照形态:参照项目设备下载的就是
+// 静态固件 URL,不存在每次现算。把两笔回源产物放进 CF Cache API:
+//   - 合并镜像按 URL 缓存 1h:信任链(shopping 公布 sha256)在每次冷构建时
+//     仍强制校验,坏字节/陈旧字节进不了下发流;
+//   - 玩法元数据缓存 60s:revisionId 复核语义保留 ≤1 分钟陈旧窗口,换源站
+//     一场回源 RTT;
+// 设备-facing 响应仍 no-store(不改变既有契约),缓存只发生在回源层。
+// analyze(P2 详情页)与 extracted(下载)共用本 fetch 层 —— 用户浏览详情页
+// 即预热镜像,点安装时边缘已命中。
+const IMG_TTL = 3600;
+const META_TTL = 60;
+
+async function cachedOriginFetch(url) {
+  const cache = caches.default;
+  const key = new Request(url, { method: "GET" });
+  try {
+    const hit = await cache.match(key);
+    if (hit) return hit;
+  } catch { /* cache unavailable: fall through to origin */ }
+  const ttl = url.includes("/api/download/") ? IMG_TTL : META_TTL;
+  const res = await fetch(url, {
+    redirect: "follow",
+    cf: { cacheEverything: true, cacheTtl: ttl },
+  });
+  if (res.ok) {
+    try {
+      const body = await res.arrayBuffer();
+      const cached = new Response(body, {
+        status: res.status,
+        headers: {
+          "content-type": res.headers.get("content-type") || "application/octet-stream",
+          "cache-control": `public, max-age=${ttl}`,
+        },
+      });
+      await cache.put(key, cached);
+      // 重新包一层:body 已被读出,返回与原响应等价的新副本。
+      return new Response(body, {
+        status: res.status,
+        headers: res.headers,
+      });
+    } catch { /* cache.put failed: the fresh response below is still valid */ }
+  }
+  return res;
+}
+
 // store-analyze.js 契约:fetchImpl 返回 {ok,status,statusText,url,arrayBuffer},
 // sha256 接收 Uint8Array 返回 64 位小写 hex。
 const storeAnalyzer = createStoreAnalyzer({
-  fetchImpl: (url) => fetch(url, { redirect: "follow" }),
+  fetchImpl: (url) => cachedOriginFetch(url),
   backend: BACKEND,
   sha256: async (buf) => {
     const d = await crypto.subtle.digest("SHA-256", buf);

@@ -30,7 +30,7 @@ static const char *TAG = "store_net";
 
 #define AP_MAX_CONN        1
 #define STA_CONNECT_MS     30000
-#define SNTP_SYNC_MS       5000    // 死等上限:可达时<1s,不可达时不陪葬(旧 15s)
+#define SNTP_SYNC_MS       5000    // 单轮等待上限:可达时<1s;总预算 3 轮(r10.14)
 #define JOB_QUEUE_LEN      2
 // r10.8:8192→10240 —— 样例恢复器(真机验证)用 10240 跑同款 TLS 栈,8K 在
 // 握手峰值 + 响应解析叠加时压线。F2 对齐实测值。
@@ -613,11 +613,23 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
     sntp_cfg.num_of_servers = 2;
     err = esp_netif_sntp_init(&sntp_cfg);
     if (err != ESP_OK) goto fail;
-    err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_SYNC_MS));
+    // r10.14:有界重试。lwIP SNTP 客户端内部本就按退避重发请求,旧代码单轮
+    // 5s sync_wait 只等到第一次发包超时就 deinit —— 把内部重试掐死在
+    // 第一次握手(aliyun 通常 <1s,pool.ntp.org 可达需 2-10s,首包丢失偶发)。
+    // 总预算 3×5s=15s,成功即提前退出;仍失败不致命(TIME_DATE 未开,TLS 不
+    // 校验时间),只诚实上屏。
+    bool synced = false;
+    for (int i = 0; i < 3 && !synced; i++) {
+        const esp_err_t w = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_SYNC_MS));
+        if (w == ESP_OK) {
+            synced = true;
+        } else {
+            ESP_LOGW(TAG, "SNTP 等待第 %d/3 轮: %s", i + 1, esp_err_to_name(w));
+        }
+    }
     esp_netif_sntp_deinit();
-    if (err != ESP_OK) {
-        // 超时不致命,但要诚实上屏:时钟停在 1970 时下一步 analyze 的 TLS 会以
-        // BADCERT_FUTURE 失败,用户需要知道因果,而不是看到莫名 unavailable。
+    if (!synced) {
+        err = ESP_ERR_TIMEOUT;
         ESP_LOGW(TAG, "SNTP 同步超时(%s),时钟可能未同步", esp_err_to_name(err));
         set_state(SN_STATE_CONNECTING, "Clock unsynced (TLS may fail).");
     }

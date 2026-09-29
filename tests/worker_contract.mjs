@@ -60,4 +60,20 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
   console.log("PASS 7: server.mjs (local dev) matches the same id contract");
 }
 
+// 8. r10.15:回源边缘缓存 —— 真机日志(5% 段 28s、~4kB/s 龟速、502 回源失败)
+// 定位到 Worker 冷启动每次现场回源 3MB 镜像→校验→解包;参照项目形态是设备直接
+// 下静态 URL,故把回源产物放进 CF Cache API,详情页访问即预热。静态钉死:
+//   a) 回源走 cachedOriginFetch(analyze/extracted 共用,预热语义成立);
+//   b) 镜像与元数据双 TTL(镜像 1h / 元数据 60s,revisionId 复核窗口有界);
+//   c) 缓存命中后仍走信任链(sha256 校验不可跳过 —— 防"缓存层绕过校验"回退)。
+{
+  assert.ok(workerSrc.includes("cachedOriginFetch"), "origin fetch must go through the edge cache layer");
+  assert.ok(workerSrc.includes("caches.default"), "must use the Workers Cache API (caches.default)");
+  assert.ok(workerSrc.includes("cacheEverything: true"), "origin fetch must opt in to CF edge caching");
+  assert.ok(/IMG_TTL\s*=\s*3600/.test(workerSrc), "image TTL must be 3600s");
+  assert.ok(/META_TTL\s*=\s*60/.test(workerSrc), "metadata TTL must be 60s");
+  assert.ok(!/sha256[^\n]*skip|bypass.*sha256/i.test(workerSrc), "trust chain must remain unconditional");
+  console.log("PASS 8: origin fetch is edge-cached (image 1h / metadata 60s, trust chain intact)");
+}
+
 console.log("ALL WORKER CONTRACT TESTS PASSED");
