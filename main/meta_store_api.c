@@ -1,7 +1,7 @@
 // main/meta_store_api.c —— 实现见头文件注释。
 // 两个 HTTP 端点共用同一 host 与 TLS 信任根;响应体按固定上限收进 static 缓冲,
-// 不整包入堆。下载为"读一块 → SHA-256 更新 → esp_ota_write"单遍流式,
-// 内存占用与块大小(1KB)无关固件大小。
+// 不整包入堆。下载为"读一块 → SHA-256 更新 → esp_ota_write"单遍流式,断线后
+// 从 received 断点换连接续传;内存占用与块大小(4KB)无关固件大小。
 #include "meta_store_api.h"
 #include "meta_store_api_fail.h"
 
@@ -14,7 +14,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"          // r10.10:下载遥测(慢读/死因打点)
 #include "esp_ota_ops.h"
-#include "freertos/FreeRTOS.h"  // r10.13:整单重试退避 vTaskDelay/pdMS_TO_TICKS
+#include "freertos/FreeRTOS.h"  // r10.17:续传重连退避 vTaskDelay/pdMS_TO_TICKS
 #include "freertos/task.h"
 #include "esp_tls.h"            // r10.7:OPEN 死因分类(esp/mbedtls 错误码 +
                                 // esp_tls_get_and_clear_error_type)
@@ -29,9 +29,35 @@
 #include "meta_sign.h"
 #include "meta_store.h"
 #include "meta_store_analysis.h"
+#include "meta_store_range.h"
 #include "meta_store_json.h"
 
 static const char *TAG = "store_api";
+
+// HTTP_EVENT_ON_HEADER 捕获的响应头。IDF 5.5.3 的 esp_http_client_get_header()
+// 读取的是*请求*头(esp_http_client.c:370-377 查 client->request->headers),
+// 不能用它读 x-image-sha256 / Content-Range;旧实现因此从未真正比对摘要头。
+// 网络任务串行执行 HTTP 请求,两个 static 捕获槽无需锁。
+static char s_resp_sha[META_SHA256_HEX_LEN + 1];
+static char s_resp_content_range[64];
+
+static void response_headers_reset(void)
+{
+    s_resp_sha[0] = '\0';
+    s_resp_content_range[0] = '\0';
+}
+
+static bool header_name_is(const char *got, const char *expect)
+{
+    while (*got && *expect) {
+        char a = *got++;
+        char b = *expect++;
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return false;
+    }
+    return *got == '\0' && *expect == '\0';
+}
 
 // r10.7:OPEN 阶段底层死因捕获 —— esp_http_client 只回一个 ESP_FAIL,
 // DNS 解析失败/连接超时/证书校验失败在屏上一个样(真机 r10.6 起实测)。
@@ -39,6 +65,14 @@ static const char *TAG = "store_api";
 // event->data 是 esp_tls_error_handle_t(IDF 5.x 契约)。
 static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 {
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && evt->header_key && evt->header_value) {
+        if (header_name_is(evt->header_key, "x-image-sha256")) {
+            snprintf(s_resp_sha, sizeof(s_resp_sha), "%s", evt->header_value);
+        } else if (header_name_is(evt->header_key, "Content-Range")) {
+            snprintf(s_resp_content_range, sizeof(s_resp_content_range), "%s", evt->header_value);
+        }
+        return ESP_OK;
+    }
     if (evt->event_id != HTTP_EVENT_ERROR || evt->data == NULL) return ESP_OK;
     const esp_tls_error_handle_t tls_err = (esp_tls_error_handle_t)evt->data;
     int code = 0;
@@ -98,11 +132,11 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 // 的调用开销降为 1/4;样例参照实现(ai-passport-miniapp-installer)真机验证值。
 // s_chunk 为 static 缓冲,不占栈。
 #define DL_CHUNK         4096
-// r10.13:下载容错。服务端(Cloudflare DYNAMIC + no-store)偶发回源停顿
-// 10-30s(host 同端点同分钟实测 3.3s/16.3s/4.4s,ping 0% 丢包);Range 续传
-// 不支持(实测 200 全量),只能整单重试。健康路径整包仅数秒,重试成本低。
-#define DL_ATTEMPTS        3    // 整单重试上限(新 TLS 连接,退避 1s/2s)
-#define DL_STALL_EAGAIN_MAX 3  // 单轮内连续读超时上限(每次 = timeout_ms)
+// r10.17:断点续传容错。服务端冷路径(host 同端点实测 18.9s/524/33.5s)
+// 与设备链路都可能停顿;每条 HTTP 连接失败后从 received 断点重连,不再整单
+// 重下。6 条连接 + 1..5s 退避覆盖生产偶发 524,成本只按剩余字节计。
+#define DL_ATTEMPTS        6    // 续传连接上限(新 TLS 连接,退避 1..5s)
+#define DL_STALL_EAGAIN_MAX 3   // 单连接内连续读超时上限(每次 = timeout_ms)
 // 请求超时:构建期可用 CONFIG_META_STORE_HTTP_TIMEOUT_MS 覆盖(main/Kconfig.projbuild);
 // host 桩编译无 sdkconfig,保留同值回退。
 #ifdef CONFIG_META_STORE_HTTP_TIMEOUT_MS
@@ -198,6 +232,7 @@ esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out)
     int fail_stage = MSAF_STAGE_OPEN;   // 传输失败点(open→headers→read 递进)
     meta_store_api_fail_set_cause(MSAF_CAUSE_NONE);   // 本次作业死因归零
     meta_store_api_fail_set_raw("");                  // 原始码槽位同步清空
+    response_headers_reset();
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         // r10.7:OPEN 死因已知时用具体文案,未知回落阶段句;串口同步留档。
@@ -314,231 +349,368 @@ static void write_display_name(const esp_partition_t *part, uint32_t image_len,
     ESP_LOGI(TAG, "槽位显示名 %s: %s", (err == ESP_OK) ? "已写入" : "写入失败", name);
 }
 
-// 单次安装尝试:open → 下载 → 校验 → 写注册表。失败路径自清理(ota_abort/
-// 标 INVALID);整单重试由 meta_store_api_install 外层循环驱动(r10.13)。
-static esp_err_t install_once(uint32_t play_id, int slot,
-                              const meta_store_analysis_t *analysis,
-                              meta_slot_info_t *slot_info,
-                              const esp_partition_t *part)
+// 断点续传安装状态。HTTP/TLS 连接死在半途时只关闭连接,不 abort OTA:
+// esp_ota_write 已确认的字节与 SHA-256 上下文跨连接保留,下一条连接用
+// Range: bytes=<received>- 从缺口继续。只有最终放弃/取消/校验失败才 abort。
+typedef struct {
+    esp_ota_handle_t ota;
+    bool ota_open;
+    bool flash_touched;       // begin 一旦调用,即使失败也可能已擦除目标区
+    bool flash_failed;        // begin/write 层失败;屏显不得误报成网络失败
+    bool range_supported;     // 服务端对 resume 回 200 时降级为旧版整单重试
+    mbedtls_sha256_context sha;
+    uint32_t received;
+    uint8_t hdr[META_IMAGE_HEADER_LEN];
+    size_t seen;
+    bool hdr_checked;
+} install_state_t;
+
+static bool install_retryable(esp_err_t err)
+{
+    return err == ESP_FAIL || err == ESP_ERR_TIMEOUT;
+}
+
+static void install_abort_state(install_state_t *st)
+{
+    if (st->ota_open) {
+        esp_ota_abort(st->ota);
+        st->ota_open = false;
+    }
+    mbedtls_sha256_free(&st->sha);
+}
+
+
+// 服务端不支持 Range 时的兼容回退:作废当前半成品 OTA,传输状态归零,
+// 后续连接不再发 Range(等同 r10.13 的整单重试)。flash_touched 保留——
+// 目标槽位已经擦过,最终失败时仍必须作废注册表。
+static void install_restart_full(install_state_t *st)
+{
+    if (st->ota_open) {
+        esp_ota_abort(st->ota);
+        st->ota_open = false;
+    }
+    mbedtls_sha256_free(&st->sha);
+    mbedtls_sha256_init(&st->sha);
+    mbedtls_sha256_starts(&st->sha, 0);
+    st->received = 0;
+    st->seen = 0;
+    st->hdr_checked = false;
+    st->range_supported = false;
+}
+// 单条 HTTP 连接下载一个区间。received=0 请求 200 全量;received>0 请求
+// 206 Partial Content。返回 ESP_OK 表示整条镜像已收完;ESP_FAIL/ESP_ERR_TIMEOUT
+// 是可续传网络错误,外层用新 TLS 连接从 received 继续;其他错误是确定性失败。
+static esp_err_t install_segment(uint32_t play_id,
+                                 const meta_store_analysis_t *analysis,
+                                 const esp_partition_t *part,
+                                 install_state_t *st)
 {
     esp_err_t err = ESP_FAIL;
-
-    char url[96];
-    snprintf(url, sizeof(url), "%s/api/extracted?id=%lu",
-             META_STORE_API_BASE, (unsigned long)play_id);
+    // r10.18:URL 预留票据空间(sig=16hex + ts=10位 + 参数样板)。服务端下发了
+    // 票据就原样回带(→ R2 快路径);没下发就不带参(→ 老链路,服务端自动降级)。
+    char url[160];
+    if (analysis->dl_sig[0] != '\0' && analysis->dl_ts > 0) {
+        snprintf(url, sizeof(url),
+                 "%s/api/extracted?id=%lu&ts=%lu&sig=%s",
+                 META_STORE_API_BASE, (unsigned long)play_id,
+                 (unsigned long)analysis->dl_ts, analysis->dl_sig);
+    } else {
+        snprintf(url, sizeof(url), "%s/api/extracted?id=%lu",
+                 META_STORE_API_BASE, (unsigned long)play_id);
+    }
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_GET,
         .timeout_ms = HTTP_TIMEOUT_MS,
         .buffer_size = 4096,                          // 同 analyze:头部解析缓冲防截断
         .crt_bundle_attach = esp_crt_bundle_attach,   // r10.5:同 analyze,信任锚缺失修复
+        // r10.17:响应头捕获(摘要 + Content-Range);get_header 是请求头 API。
+        .event_handler = http_event_cb,
         .user_agent = META_STORE_API_USER_AGENT,      // 同 analyze:设备 UA 唯一同源
         .disable_auto_redirect = true,                // 同 analyze:长度契约不跨源
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_FAIL;
 
-    set_progress(true, 0, 0, 0, false, "Connecting...");
-    err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) goto fail;
-
-    // r10.8(BUG-19):与 analyze 同款修复 —— fetch_headers() 返回 CL 不是状态码;
-    // 旧代码把 ~1.8MB 的 CL 当 "HTTP 1882272" 直接拒,install 在真机上从未成功过。
-    const int64_t hdr_cl = esp_http_client_fetch_headers(client);
-    const int status = esp_http_client_get_status_code(client);
-    if (status != 200) {
-        err = (status < 0) ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE;
-        ESP_LOGE(TAG, "install HTTP %d", status);
-        goto fail;
-    }
-    if (hdr_cl < 0) {
-        err = ESP_FAIL;
-        ESP_LOGE(TAG, "install fetch_headers failed");
-        goto fail;
-    }
-
-    // 同一 TLS 会话内的服务端权威声明:长度与摘要必须与 analyze 完全一致。
-    // 拒绝 chunked/未知长度(content_len==-1):无声明长度就没有 TOCTOU 判据。
-    const int64_t content_len = esp_http_client_get_content_length(client);
-    if (content_len <= 0 || (uint64_t)content_len != (uint64_t)analysis->image_len) {
-        ESP_LOGE(TAG, "长度声明不可用或不一致: header=%lld analyze=%lu",
-                 (long long)content_len, (unsigned long)analysis->image_len);
-        err = ESP_ERR_INVALID_SIZE;   // 上游已换版:要求重新 analyze
-        goto fail;
-    }
-    char hdr_sha[META_SHA256_HEX_LEN + 1] = {0};
-    // IDF 5.x 签名:成功时 *value 指向 client 内部缓冲(响应头生命周期内有效)。
-    const char *hdr_value = NULL;
-    if (esp_http_client_get_header(client, "x-image-sha256", (char **)&hdr_value) == ESP_OK
-        && hdr_value != NULL && hdr_value[0] != '\0') {
-        snprintf(hdr_sha, sizeof(hdr_sha), "%s", hdr_value);
-        uint8_t hdr_digest[32];
-        if (!meta_store_json_parse_sha256(hdr_sha, strlen(hdr_sha), hdr_digest)
-            || memcmp(hdr_digest, analysis->sha256, 32) != 0) {
-            ESP_LOGE(TAG, "摘要头与 analyze 不一致");
-            err = ESP_ERR_INVALID_RESPONSE;
-            goto fail;
+    meta_store_api_fail_set_cause(MSAF_CAUSE_NONE);
+    meta_store_api_fail_set_raw("");
+    response_headers_reset();
+    const bool resume = st->range_supported && st->received > 0;
+    if (resume) {
+        char range[32];
+        snprintf(range, sizeof(range), "bytes=%lu-", (unsigned long)st->received);
+        if (esp_http_client_set_header(client, "Range", range) != ESP_OK) {
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
         }
     }
 
-    set_progress(true, 0, 0, (uint32_t)content_len, false, "Downloading...");
-
-    esp_ota_handle_t ota = 0;
-    err = esp_ota_begin(part, (size_t)content_len, &ota);
+    set_progress(true, (int)(st->received * 100u / analysis->image_len),
+                 st->received, analysis->image_len, false,
+                 resume ? "Resuming..." : "Connecting...");
+    err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        // begin 内部会先擦目标区域:失败可能留下半擦除的槽位,必须作废注册表条目。
+        ESP_LOGE(TAG, "install open failed at rx=%lu", (unsigned long)st->received);
         esp_http_client_cleanup(client);
-        meta_slot_mark_invalid(slot_info);
-        set_progress(false, -1, 0, 0, false, "Flash write failed.");
-        return err;
+        return ESP_FAIL;
+    }
+
+    // r10.8(BUG-19):fetch_headers() 返回 CL 不是状态码;状态必须走 get_status_code()。
+    const int64_t hdr_cl = esp_http_client_fetch_headers(client);
+    const int status = esp_http_client_get_status_code(client);
+    if (hdr_cl < 0) {
+        ESP_LOGE(TAG, "install fetch_headers failed at rx=%lu", (unsigned long)st->received);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (resume && (status == 200 || status == 416)) {
+        // 旧 worker 对 Range 回 200 全量;显式实现也可能回 416。两者都不能把
+        // 响应追加到已写 offset;外层作废本次 OTA 后降级为旧版整单重试。
+        ESP_LOGE(TAG, "server refused Range at rx=%lu (HTTP %d)",
+                 (unsigned long)st->received, status);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    const int expected_status = resume ? 206 : 200;
+    if (status != expected_status) {
+        ESP_LOGE(TAG, "install HTTP %d (expected %d) at rx=%lu",
+                 status, expected_status, (unsigned long)st->received);
+        esp_http_client_cleanup(client);
+        return status >= 500 ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE;
+    }
+
+    // 同一 TLS 会话内的服务端权威声明:全量时 CL=镜像长度;续传时
+    // Content-Range 起点/总长与 analyze 对齐,CL=剩余区间长度。
+    const int64_t content_len = esp_http_client_get_content_length(client);
+    if (!resume) {
+        if (content_len <= 0 || (uint64_t)content_len != (uint64_t)analysis->image_len) {
+            ESP_LOGE(TAG, "长度声明不可用或不一致: header=%lld analyze=%lu",
+                     (long long)content_len, (unsigned long)analysis->image_len);
+            esp_http_client_cleanup(client);
+            return ESP_ERR_INVALID_SIZE;
+        }
+    } else {
+        meta_store_range_t range;
+        if (!meta_store_range_parse(s_resp_content_range, &range)
+            || !meta_store_range_matches(&range, st->received,
+                                         analysis->image_len, content_len)) {
+            ESP_LOGE(TAG, "Content-Range 不可用或不一致: %s (rx=%lu cl=%lld)",
+                     s_resp_content_range[0] ? s_resp_content_range : "<missing>",
+                     (unsigned long)st->received, (long long)content_len);
+            esp_http_client_cleanup(client);
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    }
+
+    // r10.17:摘要头强制比对。IDF get_header 读请求头的旧实现从未真正执行
+    // 这一步;现在由 HTTP_EVENT_ON_HEADER 捕获响应头,缺失即协议失败。
+    uint8_t hdr_digest[32];
+    if (s_resp_sha[0] == '\0'
+        || !meta_store_json_parse_sha256(s_resp_sha, strlen(s_resp_sha), hdr_digest)
+        || memcmp(hdr_digest, analysis->sha256, 32) != 0) {
+        ESP_LOGE(TAG, "摘要响应头缺失或与 analyze 不一致");
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    if (!st->ota_open) {
+        // begin 内部会先擦目标区域:只有首条连接的响应头/摘要都可信后才动 flash。
+        st->flash_touched = true;
+        err = esp_ota_begin(part, (size_t)analysis->image_len, &st->ota);
+        if (err != ESP_OK) {
+            st->flash_failed = true;
+            ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            return err;
+        }
+        st->ota_open = true;
     }
 
     static uint8_t s_chunk[DL_CHUNK];
-    mbedtls_sha256_context sha;
-    mbedtls_sha256_init(&sha);
-    mbedtls_sha256_starts(&sha, 0);
-
-    uint32_t received = 0;
-    bool hdr_checked = false;
-    uint8_t hdr[META_IMAGE_HEADER_LEN];
-    size_t seen = 0;
-    int pct = -1;
-    int eagain = 0;   // r10.13:连续读超时计数(每读 = timeout_ms)
-    // r10.10 下载遥测: stalled 读(含 EAGAIN)与慢速段在串口上可定位 ——
-    // 每 5% 打点速率;read 返回 0 时打印上一读耗时,判定死等超时 vs 真 EOF。
+    int pct = (int)(st->received * 100u / analysis->image_len);
+    int eagain = 0;   // 连续读超时计数(每读 = timeout_ms)
     int64_t t_read_start = esp_timer_get_time();
-    int64_t t_last_read_ms = 0;
-    uint32_t last_mark_rx = 0;
+    uint32_t last_mark_rx = st->received;
     int64_t t_last_mark = t_read_start;
 
     for (;;) {
-        if (s_cancel) {   // 用户取消:在当前块边界响应,半成品由下方统一作废
-            err = ESP_FAIL;
-            break;
+        if (s_cancel) {
+            esp_http_client_cleanup(client);
+            return ESP_ERR_INVALID_STATE;
         }
         const int got = esp_http_client_read(client, (char *)s_chunk, sizeof(s_chunk));
         const int64_t now_us = esp_timer_get_time();
-        t_last_read_ms = (now_us - t_read_start) / 1000;
+        const int64_t read_ms = (now_us - t_read_start) / 1000;
         t_read_start = now_us;
         if (got < 0) {
-            // r10.13:-EAGAIN = 读超时但连接存活(esp_http_client.h:636 "timed-out
-            // before any data was ready";传输层未死,续读即可)。服务端(Cloudflare
-            // DYNAMIC)回源停顿 host 实测可达 16s+,30s 单读超时撞上即误杀 ——
-            // 连续 DL_STALL_EAGAIN_MAX 次超时才判死。其他负值 = 传输层死亡,
-            // 整单作废(外层 meta_store_api_install 重试,新 TLS 连接)。
+            // -EAGAIN = 读超时但连接存活;连续 3 次后换一条连接续传,不在坏连接上
+            // 无限等。其他负值 = 传输层死亡,同样从 received 断点重连。
             if (got == -ESP_ERR_HTTP_EAGAIN && ++eagain < DL_STALL_EAGAIN_MAX) {
-                ESP_LOGW(TAG, "download stall: rx=%lu/%ld wait=%lldms (%d/%d)",
-                         (unsigned long)received, (long)content_len,
-                         (long long)t_last_read_ms, eagain, DL_STALL_EAGAIN_MAX);
+                ESP_LOGW(TAG, "download stall: rx=%lu/%lu wait=%lldms (%d/%d)",
+                         (unsigned long)st->received, (unsigned long)analysis->image_len,
+                         (long long)read_ms, eagain, DL_STALL_EAGAIN_MAX);
                 continue;
             }
-            // r10.10:read 失败点带现场(已收字节/该次等待时长)—— "13% 后慢
-            // 然后 failed"这类现象,串口直接给出卡死位置,不再只有 Download failed。
-            ESP_LOGE(TAG, "download read failed: rx=%lu/%ld last_read_ms=%lld got=%d",
-                     (unsigned long)received, (long)content_len,
-                     (long long)t_last_read_ms, got);
-            err = ESP_FAIL;
-            break;
+            ESP_LOGE(TAG, "download read failed: rx=%lu/%lu last_read_ms=%lld got=%d",
+                     (unsigned long)st->received, (unsigned long)analysis->image_len,
+                     (long long)read_ms, got);
+            esp_http_client_cleanup(client);
+            return got == -ESP_ERR_HTTP_EAGAIN ? ESP_ERR_TIMEOUT : ESP_FAIL;
         }
-        if (got == 0) break;
-        eagain = 0;   // 有数据到达:停顿计数复位
-        if (t_last_read_ms > 5000) {
+        if (got == 0) break;   // 本区间 EOF;下方用总长判定真完成还是截断
+        eagain = 0;
+        if (read_ms > 5000) {
             ESP_LOGW(TAG, "download slow read: rx=%lu got=%d took=%lldms",
-                     (unsigned long)received, got, (long long)t_last_read_ms);
+                     (unsigned long)st->received, got, (long long)read_ms);
         }
-        if (seen < META_IMAGE_HEADER_LEN) {
-            const size_t take = ((size_t)got < META_IMAGE_HEADER_LEN - seen)
-                              ? (size_t)got : META_IMAGE_HEADER_LEN - seen;
-            memcpy(hdr + seen, s_chunk, take);
+        if (st->seen < META_IMAGE_HEADER_LEN) {
+            const size_t take = ((size_t)got < META_IMAGE_HEADER_LEN - st->seen)
+                              ? (size_t)got : META_IMAGE_HEADER_LEN - st->seen;
+            memcpy(st->hdr + st->seen, s_chunk, take);
         }
-        seen += (size_t)got;
-        mbedtls_sha256_update(&sha, s_chunk, (size_t)got);
-        err = esp_ota_write(ota, s_chunk, (size_t)got);
-        if (err != ESP_OK) break;
-        received += (uint32_t)got;
-        const int p = (int)(received * 100u / (uint32_t)content_len);
-        if (p != pct) {   // 进度变化才更新快照,避免无谓的跨任务写
+        st->seen += (size_t)got;
+        mbedtls_sha256_update(&st->sha, s_chunk, (size_t)got);
+        err = esp_ota_write(st->ota, s_chunk, (size_t)got);
+        if (err != ESP_OK) {
+            st->flash_failed = true;
+            ESP_LOGE(TAG, "esp_ota_write failed at rx=%lu: %s",
+                     (unsigned long)st->received, esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            return err;
+        }
+        st->received += (uint32_t)got;
+        const int p = (int)(st->received * 100u / analysis->image_len);
+        if (p != pct) {
             pct = p;
-            set_progress(true, p, received, (uint32_t)content_len, false,
+            set_progress(true, p, st->received, analysis->image_len, false,
                          "Downloading...");
-            if (p % 5 == 0) {   // 每 5% 一个串口打点:瞬时吞吐可对照 host 基线(~1MB/s)
+            if (p % 5 == 0) {
                 const int64_t dt_ms = (now_us - t_last_mark) / 1000;
-                const uint32_t drx = received - last_mark_rx;
+                const uint32_t drx = st->received - last_mark_rx;
                 ESP_LOGI(TAG, "dl %d%%: +%luKB in %lldms (%lukB/s)", p,
                          (unsigned long)(drx / 1024), (long long)dt_ms,
                          dt_ms > 0 ? (unsigned long)(drx / 1024 * 1000 / (uint32_t)dt_ms) : 0);
-                last_mark_rx = received;
+                last_mark_rx = st->received;
                 t_last_mark = now_us;
             }
         }
-        if (!hdr_checked && seen >= META_IMAGE_HEADER_LEN) {
-            hdr_checked = true;
-            if (meta_image_check_header(hdr, sizeof(hdr)) != META_IMG_OK) {
+        if (!st->hdr_checked && st->seen >= META_IMAGE_HEADER_LEN) {
+            st->hdr_checked = true;
+            if (meta_image_check_header(st->hdr, sizeof(st->hdr)) != META_IMG_OK) {
                 ESP_LOGW(TAG, "镜像头预检失败");
-                err = ESP_ERR_INVALID_ARG;
-                break;
+                esp_http_client_cleanup(client);
+                return ESP_ERR_INVALID_ARG;
             }
         }
     }
     esp_http_client_cleanup(client);
-    client = NULL;
 
-    if (err != ESP_OK || !hdr_checked) {
-        mbedtls_sha256_free(&sha);
-        esp_ota_abort(ota);
-        meta_slot_mark_invalid(slot_info);
+    if (st->received == analysis->image_len) return ESP_OK;
+    ESP_LOGE(TAG, "字节流提前结束: %lu/%lu",
+             (unsigned long)st->received, (unsigned long)analysis->image_len);
+    return ESP_FAIL;
+}
+
+esp_err_t meta_store_api_install(uint32_t play_id, int slot,
+                                 const meta_store_analysis_t *analysis,
+                                 meta_slot_info_t slots[META_SLOT_COUNT])
+{
+    if (!analysis || !slots || slot < 0 || slot >= META_SLOT_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_partition_t *part = meta_store_slot_partition(slot);
+    if (!part || analysis->image_len == 0) return ESP_ERR_INVALID_ARG;
+
+    // 双上限:analyze 声明的尺寸与槽位物理上限取小者;不一致即拒绝(防上游换版)。
+    const uint32_t app_limit = meta_sign_app_limit(part->size);
+    if (analysis->image_len > app_limit) {
+        ESP_LOGE(TAG, "镜像 %lu 超过槽位 %d 上限 %lu",
+                 (unsigned long)analysis->image_len, slot, (unsigned long)app_limit);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    s_cancel = false;   // 清除可能在排队期间到达的取消请求,只响应当次下载
+    install_state_t st = {0};
+    mbedtls_sha256_init(&st.sha);
+    mbedtls_sha256_starts(&st.sha, 0);
+    st.range_supported = true;
+
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 1; attempt <= DL_ATTEMPTS; attempt++) {
+        if (attempt > 1) {
+            ESP_LOGW(TAG, "install resume %d/%d at %lu/%lu (last err=%s)",
+                     attempt, DL_ATTEMPTS, (unsigned long)st.received,
+                     (unsigned long)analysis->image_len, esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(1000 * (attempt - 1)));
+        }
+        err = install_segment(play_id, analysis, part, &st);
+        if (err == ESP_ERR_NOT_SUPPORTED && st.range_supported && st.received > 0) {
+            // 兼容尚未支持 Range 的旧服务端:不假装 200 全量是续传段,退回
+            // r10.13 的整单重试;一旦服务端升级,同一份固件自动走断点续传。
+            ESP_LOGW(TAG, "Range unsupported; fallback to full-file retry");
+            install_restart_full(&st);
+            err = ESP_FAIL;
+        }
+        if (!st.range_supported && st.received > 0 && install_retryable(err)) {
+            // 旧服务端没有 Range:可重试网络错误只能整单重来,不能把新连接的
+            // 200 全量流追加到旧 offset。
+            install_restart_full(&st);
+        }
+        if (err == ESP_OK || s_cancel || !install_retryable(err)) break;
+    }
+
+    if (err != ESP_OK || !st.hdr_checked) {
+        install_abort_state(&st);
+        if (st.flash_touched) meta_slot_mark_invalid(&slots[slot]);
         const char *msg = s_cancel ? "Cancelled."
+                         : st.flash_failed ? "Flash operation failed."
+                         : (err == ESP_ERR_NOT_SUPPORTED) ? "Server lacks Range."
+                         : (err == ESP_ERR_INVALID_RESPONSE) ? "Bad server response."
+                         : (err == ESP_ERR_INVALID_SIZE) ? "Version changed. Retry."
+                         : (err == ESP_ERR_INVALID_ARG) ? "Bad image header."
                          : (err == ESP_OK) ? "Truncated image."
                                            : "Download failed.";
-        set_progress(false, -1, received, (uint32_t)content_len, false, msg);
+        set_progress(false, -1, st.received, analysis->image_len, false, msg);
         return (err == ESP_OK) ? ESP_ERR_INVALID_SIZE : err;
     }
 
     // 流式摘要与服务端声明比对(信任链终点);不等 flash 回读——边下边算已覆盖全部字节。
     uint8_t digest[32];
-    mbedtls_sha256_finish(&sha, digest);
-    mbedtls_sha256_free(&sha);
-    if (received != (uint32_t)content_len) {   // r10.8:read() 已确认 EOF,残留字节即协议错
-        // r10.13:EOF 截断本质是传输层死亡(服务端停顿后断连),返回 ESP_FAIL
-        // 让外层整单重试;长度契约违约(INVALID_SIZE)才是确定性的,不重试。
-        ESP_LOGE(TAG, "字节流提前结束: %lu/%ld", (unsigned long)received, (long)content_len);
-        esp_ota_abort(ota);
-        meta_slot_mark_invalid(slot_info);
-        set_progress(false, -1, received, (uint32_t)content_len, false, "Truncated image.");
-        return ESP_FAIL;
-    }
+    mbedtls_sha256_finish(&st.sha, digest);
+    mbedtls_sha256_free(&st.sha);
     if (memcmp(digest, analysis->sha256, 32) != 0) {
         ESP_LOGE(TAG, "流式 SHA-256 与 analyze 不一致");
-        esp_ota_abort(ota);
-        meta_slot_mark_invalid(slot_info);
-        set_progress(false, -1, received, (uint32_t)content_len, false,
+        esp_ota_abort(st.ota);
+        meta_slot_mark_invalid(&slots[slot]);
+        set_progress(false, -1, st.received, analysis->image_len, false,
                      "Checksum mismatch.");
         return ESP_ERR_INVALID_CRC;
     }
 
-    set_progress(true, 100, received, (uint32_t)content_len, true, "Verifying...");
-    if (esp_ota_end(ota) != ESP_OK) {   // IDF 权威校验:segment/校验和/尾部哈希
+    set_progress(true, 100, st.received, analysis->image_len, true, "Verifying...");
+    if (esp_ota_end(st.ota) != ESP_OK) {   // IDF 权威校验:segment/校验和/尾部哈希
         meta_store_erase_slot(slot);
-        meta_slot_mark_invalid(slot_info);
-        set_progress(false, -1, received, (uint32_t)content_len, false,
+        meta_slot_mark_invalid(&slots[slot]);
+        set_progress(false, -1, st.received, analysis->image_len, false,
                      "Verify failed. Slot erased.");
         return ESP_ERR_INVALID_CRC;
     }
+    st.ota_open = false;
 
     // 权威获取 image_len(与 meta_store_scan 同一手法;不从 header 偏移猜)。
     esp_image_metadata_t meta = {0};
     const esp_partition_pos_t pos = { .offset = part->address, .size = part->size };
     if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) != ESP_OK) {
         meta_store_erase_slot(slot);
-        meta_slot_mark_invalid(slot_info);
-        set_progress(false, -1, received, (uint32_t)content_len, false,
+        meta_slot_mark_invalid(&slots[slot]);
+        set_progress(false, -1, st.received, analysis->image_len, false,
                      "Image verify failed.");
         return ESP_ERR_INVALID_CRC;
     }
     if (meta.image_len != analysis->image_len) {
         meta_store_erase_slot(slot);
-        meta_slot_mark_invalid(slot_info);
-        set_progress(false, -1, received, (uint32_t)content_len, false,
+        meta_slot_mark_invalid(&slots[slot]);
+        set_progress(false, -1, st.received, analysis->image_len, false,
                      "Image length mismatch.");
         return ESP_ERR_INVALID_SIZE;
     }
@@ -550,55 +722,12 @@ static esp_err_t install_once(uint32_t play_id, int slot,
     if (esp_ota_get_partition_description(part, &desc) == ESP_OK) {
         ver = desc.version;
     }
-    meta_slot_set_valid(slot_info, analysis->name, ver,
+    meta_slot_set_valid(&slots[slot], analysis->name, ver,
                         meta.image_len, sha_hex);
     write_display_name(part, meta.image_len, analysis->name);
 
-    set_progress(false, 100, received, (uint32_t)content_len, false, "Installed.");
+    set_progress(false, 100, st.received, analysis->image_len, false, "Installed.");
     ESP_LOGI(TAG, "槽位 %d 安装成功: %s (%lu B)", slot,
              analysis->name, (unsigned long)meta.image_len);
     return ESP_OK;
-
-fail:
-    // 走到这里时 esp_ota_begin 尚未成功:闪存未动,注册表保持原状——
-    // 纯网络/校验错误不允许抹掉槽位里既有的有效固件信息。
-    if (client) esp_http_client_cleanup(client);
-    set_progress(false, -1, 0, 0, false,
-                 err == ESP_FAIL ? "Network error." : "Version changed. Retry.");
-    return err;
-}
-
-esp_err_t meta_store_api_install(uint32_t play_id, int slot,
-                                 const meta_store_analysis_t *analysis,
-                                 meta_slot_info_t slots[META_SLOT_COUNT])
-{
-    if (!analysis || !slots || slot < 0 || slot >= META_SLOT_COUNT) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    const esp_partition_t *part = meta_store_slot_partition(slot);
-    if (!part) return ESP_ERR_INVALID_ARG;
-
-    // 双上限:analyze 声明的尺寸与槽位物理上限取小者;不一致即拒绝(防上游换版)。
-    const uint32_t app_limit = meta_sign_app_limit(part->size);
-    if (analysis->image_len > app_limit) {
-        ESP_LOGE(TAG, "镜像 %lu 超过槽位 %d 上限 %lu",
-                 (unsigned long)analysis->image_len, slot, (unsigned long)app_limit);
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    // r10.13:服务端回源停顿(host 同端点同分钟实测 3.3s/16.3s/4.4s,ping 0%
-    // 丢包)会让单轮下载死在半途;Range 续传不支持(实测 200 全量),只能整单
-    // 重试 —— 每轮全新 TLS 连接。健康路径整包数秒,3 轮 + 1s/2s 退避可控。
-    s_cancel = false;   // 清除可能在排队期间到达的取消请求,只响应当次下载
-    esp_err_t err = ESP_FAIL;
-    for (int attempt = 1; attempt <= DL_ATTEMPTS; attempt++) {
-        if (attempt > 1) {
-            ESP_LOGW(TAG, "install retry %d/%d (last err=%s)", attempt, DL_ATTEMPTS,
-                     esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(1000 * (attempt - 1)));
-        }
-        err = install_once(play_id, slot, analysis, &slots[slot], part);
-        if (err == ESP_OK || s_cancel) break;
-    }
-    return err;
 }

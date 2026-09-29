@@ -6,6 +6,24 @@
 
 ## Unreleased
 
+- **v3.2-r10.18 (2026-09-30) R2 物化 + HMAC 下载票据**:解包产物现物化进 R2
+  (`extracted/<id>/<storeFwSha256>.bin` + `.meta.json` 审计映射),有票请求直接 R2
+  直出(`x-source: r2`),彻底消除每 isolate 冷启动回源这一段(残余的数秒级 TTFB
+  停顿来源)。票据是 R2 专属钥匙而非准入门槛(定稿规则):analyze 签发
+  `sig = HMAC-SHA256(DL_SECRET, id:ts)` 截 16 hex 字符;有效票解锁 R2 读/写路径,
+  无票/坏票/过期票一律降级老链路(边缘缓存+现算) —— 旧固件(不带 sig)零成本兼容,
+  任何票态都不会被 403 拒绝。设备端解析 analyze 可选的 `dl.sig`/`dl.ts` 并在
+  install URL 回带。限速(每 IP+id)在票据校验前对两条链路无条件生效。两个生产 bug
+  由实测定出并已入门:截断在 hex 化之后(且一度宽度也错),导致每张票 32 字符、
+  永远 invalid(生产实测 `x-r2-write: skipped`) —— `worker_contract.mjs` PASS 10
+  直接执行 `hmacHex16` 断言输出 16 字符,PASS 9 钉死 R2 门控/永不拒绝语义。生产
+  端到端实测:有票首请求物化(`x-r2-write: ok`),再请求 `x-source: r2`,各路径字节
+  sha256 全部等于 analyze 声明值(`40de1562…`)。部署注记:Bun 的 `node` 包装器下
+  wrangler 4.80/4.143 在第一个 API 请求后静默死,部署必须用真 Node
+  (`PATH=/usr/local/bin:$PATH`);`DL_SECRET` 为 Pages 生产 secret,不入仓库。
+- **v3.2-r10.17 (2026-09-29) OTA 断点续传 + 响应头信任链修复**:固件下载不再因可恢复读错误从 0 字节整单重来。OTA/SHA-256 状态跨 TLS 重连保留;下一条连接发送 `Range: bytes=<received>-`,要求 `206` 与精确 `Content-Range`,只有最终失败/取消或校验失败才 abort OTA。旧的三次整单重试改为六条分段连接(1..5s 退避);旧服务端对续传回 `200` 时绝不把全量流追加到旧 offset,而是安全降级为原整单重试。同步修复信任链静默空操作:IDF 5.5.3 `esp_http_client_get_header()` 读取*请求*头,旧 `x-image-sha256` 响应头比对从未真正执行;现在通过 `HTTP_EVENT_ON_HEADER` 捕获响应头,摘要缺失/不一致或 `Content-Range` 非法会在继续写 flash 前失败。新增零 IDF 依赖的 `meta_store_range.[ch]` host 测试,并重写 `test_download_retry_gate.py` 钉住 EAGAIN、200/206 区分、旧服务端回退、OTA 状态生命周期与请求头/响应头 API 陷阱。`sdkconfig.defaults` 现在钉住 r10.16 的 WiFi 动态 RX 缓冲数(48),门禁同时拒绝本地 `sdkconfig` 中 RX buffer 与 `CONFIG_MBEDTLS_SSL_RENEGOTIATION=n` 漂移。CF worker 按 R2 改造节奏暂不修改;服务端一旦输出 206/Content-Range,新续传路径自动启用。
+  OTA begin/write 失败现在显示 `Flash operation failed.`,不再误报为普通下载失败。
+
 - **商店下载改由边缘直出，不再每次请求现场渲染（r10.15，服务端）**：v44 真机日志显示安装以 ~4kB/s 龟速爬行并伴随 502 与 30s 级 TTFB 停顿，而同一分钟 curl 拉同一产物只需数秒 —— Pages worker 每次缓存冷启动都在现场回源 folotoy.cn 拉 3MB 合并镜像（再校验、再解包），而回源这一跳本身就是被节流的慢链路。参照项目之所以快正是这一课：它的设备下载的是静态固件 URL，从不做每请求现算。现在 worker 把两笔回源产物放进 CF Cache API（合并镜像按 URL 缓存 1h；玩法元数据缓存 60s，revisionId 复核窗口有界），统一走 `cachedOriginFetch` 层 —— analyze（P2 详情页）与 extracted（下载）共用，浏览详情页即预热边缘，点安装时直接从缓存流式吐字节。信任链未动：每次冷构建仍强制校验商店公布的 SHA-256 后才解包，缓存字节永远绕不过校验。回归门：`worker_contract.mjs` PASS 8 钉死缓存层、双 TTL 与无条件信任链。部署提示：CI 只从 `main` 部署 worker —— 合并（或手动 `wrangler pages deploy`）后设备路径才生效。
 - **安装不再死于服务端第一次停顿(r10.13)**:v43 真机日志证明吞吐配置已生效(0% 时
   571kB/s),但下载在 45KB/2.6MB 处死掉,每次读停 10-30 秒并以 `errno=11` 告终 ——

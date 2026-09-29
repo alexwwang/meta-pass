@@ -6,6 +6,29 @@
 
 ## Unreleased
 
+- **v3.2-r10.18 (2026-09-30) R2 materialization behind HMAC download tickets**: the extracted
+  artifact is now materialized into R2 (`extracted/<id>/<storeFwSha256>.bin` + `.meta.json`
+  audit mapping) and served straight from R2 — `x-source: r2` — which removes the per-isolate
+  cold-render origin hop (the remaining source of multi-second TTFB stalls). Tickets are
+  R2-only keys, never an admission gate (user-set rule): analyze issues
+  `sig = HMAC-SHA256(DL_SECRET, id:ts)` truncated to 16 hex chars; a valid ticket unlocks the
+  R2 read/write paths, while missing/invalid/expired tickets simply fall back to the legacy
+  edge-cache path — old firmware without `sig` keeps working and nothing is ever rejected
+  with 403. The device parses optional `dl.sig`/`dl.ts` from analyze and appends them to the
+  install URL. Rate limiting (per IP+id) applies to both paths before ticket checking.
+  Two production bugs were caught by live verification and are now pinned by gates:
+  the truncation was applied after hex-encoding (and once at the wrong width), which made
+  every issued ticket 32 chars and therefore always invalid (`x-r2-write: skipped` in
+  production) — `worker_contract.mjs` PASS 10 executes `hmacHex16` and asserts a 16-char
+  output, PASS 9 pins the R2-gating/no-rejection semantics. Verified live end-to-end:
+  ticketed first request materializes (`x-r2-write: ok`), second request serves
+  `x-source: r2`, and every path's bytes hash to the analyze-declared SHA-256
+  (`40de1562…`). Deployment note: local wrangler 4.80/4.143 under Bun's `node` shim died
+  silently after the first API request; deploys require real Node
+  (`PATH=/usr/local/bin:$PATH`). `DL_SECRET` is a Pages production secret, never in the repo.
+- **v3.2-r10.17 (2026-09-29) OTA resume + response-header trust fix**: firmware downloads no longer restart from byte 0 on a recoverable read failure. OTA/SHA-256 state survives TLS reconnects; the next connection requests `Range: bytes=<received>-`, requires `206` plus an exact `Content-Range`, and only aborts the OTA session after final failure/cancel or verification failure. Six segment connections (1s..5s backoff) replace the old three whole-image retries. A legacy server that answers a resume with `200` is never appended at the old offset: the firmware safely falls back to the previous full-file retry behavior. The update also fixes a silent trust-chain no-op — IDF 5.5.3 `esp_http_client_get_header()` reads *request* headers, so the old `x-image-sha256` response-header comparison never ran; response headers are now captured through `HTTP_EVENT_ON_HEADER`. New zero-IDF `meta_store_range.[ch]` host tests and the rewritten `test_download_retry_gate.py` pin EAGAIN handling, 200/206 discrimination, legacy fallback, OTA-state lifetime, and the request-vs-response header trap. `sdkconfig.defaults` now pins the r10.16 WiFi dynamic RX buffer count (48), and gates reject local `sdkconfig` drift for RX buffers and `CONFIG_MBEDTLS_SSL_RENEGOTIATION=n`. The CF worker is intentionally unchanged while its R2 redesign is in progress; resume activates automatically once the server emits 206/Content-Range.
+  OTA begin/write failures now display `Flash operation failed.` instead of a generic download error.
+
 - **Store downloads served from the edge instead of re-rendering per request (r10.15, server side)**: the v44 device log showed installs limping at ~4 kB/s with 502s and 30 s TTFB pauses while the same minute curl fetched the same artifact in seconds — the Pages worker was re-fetching the 3 MB merged image from the folotoy.cn origin (and re-verifying/unpacking it) on every cache-cold request, and that origin hop is itself the throttled link. The sample installer project's fast path is exactly this lesson: its device downloads a static firmware URL, never a per-request render. The worker now caches both origin fetches in the CF Cache API (merged image by URL for 1 h, play metadata for 60 s keeping the revisionId recheck window bounded) via the shared `cachedOriginFetch` layer — analyze (P2 detail page) and extracted (download) share it, so browsing a play pre-warms the edge and the install then streams from cache. The trust chain is untouched: every cold build still verifies the store-published SHA-256 before unpacking, so cached bytes can never bypass validation. Gate: `worker_contract.mjs` PASS 8 pins the cache layer, both TTLs, and the unconditional trust chain. Deploy note: CI deploys the worker from `main` only — this lands on the device path after merge (or manual `wrangler pages deploy`).
 - **Install survives server-side stalls instead of dying at the first 30 s pause (r10.13)**:
   the v43 device log proved the throughput config live (571 kB/s at 0%) but the download died

@@ -1,27 +1,20 @@
 #!/usr/bin/env python3
-# tests/test_download_retry_gate.py — r10.13 download-retry gate.
+# tests/test_download_retry_gate.py — r10.17 resumable-download gate.
 #
-# On-device evidence (user log, v43): `dl 0%: +4KB in 7ms (571kB/s)` proved the
-# r10.12 config live and the path fast; then every 4 KB read took 10-30 s and
-# the download died with `esp_tls_conn_read error ... errno=11` +
-# `esp_transport_read returned:0 and errno:11` after `rx=45749/2664256`.
-# Host-side proof the server was the pause: same minute, same endpoint,
-# device UA over curl → 3.3 s / 16.3 s (TTFB alone 14.7 s) / 4.4 s, while ping
-# showed 0% loss. Root cause: the store serves the 2.6 MB artifact with
-# `cf-cache-status: DYNAMIC` + `cache-control: no-store`, so every request is
-# a fresh origin render that can stall 10-30 s; Range resume is unsupported
-# (tested: Range → 200 full). The device's 30 s single-read timeout therefore
-# killed the whole install on the first server stall, and meta_store_api.c
-# treated every negative read as fatal (IDF returns -ESP_ERR_HTTP_EAGAIN with
-# the connection still alive, esp_http_client.h:320/:636).
+# On-device evidence (user log, v47): each attempt started fast, then 4 KB reads
+# stalled 5-50 s (`errno=11`, `-ESP_ERR_HTTP_EAGAIN`) and the whole install
+# restarted from byte 0 three times. Host replay of the same production artifact
+# (`/api/extracted?id=675`, HTTP/1.1 + device UA) measured 18.9 s, a 524 after
+# 126 s, then 33.5 s; `Range: bytes=100-199` still returned 200 with the full
+# 2,664,256-byte body. Whole-file retry therefore multiplied an unstable path by
+# the full artifact size every time.
 #
-# This gate pins the r10.13 layered tolerance statically:
-#   1. read-level: -ESP_ERR_HTTP_EAGAIN continues (bounded), other negatives fatal
-#   2. session-level: install retries on fresh TLS connections with backoff
-#   3. truncation (EOF short of CL) is retryable, not a contract violation
-#   4. the IDF EAGAIN contract is pinned from the live checkout (or recorded)
+# r10.17 design pinned here:
+#   1. read-level: bounded EAGAIN tolerance, then abandon only that connection
+#   2. session-level: OTA/SHA state survives reconnects; Range resumes at `received`
+#   3. server contract: resume requires 206 + exact Content-Range, never append a 200
+#   4. final failure/cancel/verification is the only OTA abort point
 import os
-import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,12 +24,12 @@ fails = []
 
 def check(cond, why):
     if cond:
-        print("PASS download-retry: %s" % why)
+        print("PASS download-resume: %s" % why)
     else:
         fails.append(why)
-        print("FAIL download-retry: %s" % why)
+        print("FAIL download-resume: %s" % why)
 
-# --- 1. the IDF contract, from the horse's mouth ---
+# --- 1. IDF read-timeout contract, from the live checkout when available ---
 idf_hdr = os.path.join(IDF, "components/esp_http_client/include/esp_http_client.h")
 if os.path.exists(idf_hdr):
     hdr = open(idf_hdr, encoding="utf-8", errors="replace").read()
@@ -46,38 +39,57 @@ if os.path.exists(idf_hdr):
 else:
     check(True, "IDF checkout absent — recorded v5.5.3 EAGAIN contract in use (CI mode)")
 
-# --- 2/3/4. production code must retry instead of dying ---
 api = open(os.path.join(ROOT, "main/meta_store_api.c"), encoding="utf-8").read()
 
+# --- 2. connection-local EAGAIN handling; reconnect budget is segment-level ---
 check("got == -ESP_ERR_HTTP_EAGAIN && ++eagain < DL_STALL_EAGAIN_MAX" in api,
-      "read-level: EAGAIN continues (bounded by DL_STALL_EAGAIN_MAX), not fatal")
-check("eagain = 0;   // 有数据到达:停顿计数复位" in api,
+      "read-level: EAGAIN continues within one connection (bounded), then reconnects")
+check("eagain = 0;" in api,
       "stall counter resets on data arrival")
+check("#define DL_ATTEMPTS        6" in api,
+      "six fresh TLS connections available for one install")
 check("for (int attempt = 1; attempt <= DL_ATTEMPTS; attempt++)" in api and
-      "err = install_once(play_id, slot, analysis, &slots[slot], part);" in api,
-      "session-level: install_once retried up to DL_ATTEMPTS on fresh connections")
+      "err = install_segment(play_id, analysis, part, &st);" in api,
+      "session-level: install_segment retried on fresh connections")
 check("vTaskDelay(pdMS_TO_TICKS(1000 * (attempt - 1)));" in api,
-      "retry backoff 1s/2s between attempts")
-check("if (err == ESP_OK || s_cancel) break;" in api,
-      "retry loop honors user cancel")
+      "retry backoff 1s..5s between segment connections")
+check("if (err == ESP_OK || s_cancel || !install_retryable(err)) break;" in api,
+      "retry loop honors success, cancel, and deterministic errors")
 
-# EOF truncation must map to retryable ESP_FAIL, not the deterministic
-# INVALID_SIZE (which the retry loop would still honor, but the log/progress
-# would lie about a contract violation).
-trunc = api[api.find("字节流提前结束"):]
-trunc = trunc[:trunc.find("}", trunc.find("return"))] if "字节流提前结束" in api else ""
-check("return ESP_FAIL;" in trunc and "esp_ota_abort(ota)" in trunc,
-      "EOF truncation aborts OTA and returns retryable ESP_FAIL (not INVALID_SIZE)")
+# --- 3. resume protocol and state lifetime ---
+check('snprintf(range, sizeof(range), "bytes=%lu-", (unsigned long)st->received)' in api and
+      'esp_http_client_set_header(client, "Range", range)' in api,
+      "resume request sends Range: bytes=<received>-")
+check("const int expected_status = resume ? 206 : 200;" in api,
+      "resume requires HTTP 206 (initial request requires 200)")
+check("meta_store_range_parse(s_resp_content_range, &range)" in api and
+      "meta_store_range_matches(&range, st->received" in api,
+      "206 Content-Range parsed and matched against received/total/CL")
+check("server refused Range at rx=%lu (HTTP %d)" in api and
+      "return ESP_ERR_NOT_SUPPORTED;" in api,
+      "a 200/416 answer to a resume request is rejected, never appended")
+segment = api[api.find("static esp_err_t install_segment"):api.find("esp_err_t meta_store_api_install")]
+check("esp_ota_abort" not in segment,
+      "no OTA abort inside segment download/retry paths")
+check("install_abort_state(&st);" in api and "if (st.flash_touched) meta_slot_mark_invalid" in api,
+      "OTA abort + slot invalidation happen only at final failure/cancel")
+check("st.range_supported = true;" in api and
+      "Range unsupported; fallback to full-file retry" in api and
+      "install_restart_full(&st);" in api,
+      "legacy server fallback rejects 200-on-resume, then safely restarts from byte 0")
+check("st->flash_failed = true;" in api and
+      'st.flash_failed ? "Flash operation failed."' in api,
+      "OTA begin/write failures name the flash layer on screen, not a generic download error")
+check("!st.range_supported && st.received > 0 && install_retryable(err)" in api,
+      "legacy-mode network retry never appends a fresh 200 stream at an old offset")
 
-# The retry loop must NOT retry deterministic contract violations.
-# INVALID_SIZE/INVALID_CRC returns inside install_once end the loop via
-# err != ESP_OK — verify install_once is the only retry unit and the
-# length-contract rejection still returns INVALID_SIZE (non-retry semantics
-# preserved: worst case we retry it, but the attempt count is bounded).
-check("(uint64_t)content_len != (uint64_t)analysis->image_len" in api,
-      "length contract vs analyze still enforced (same-TLS-session TOCTOU guard)")
+# --- 4. response headers must come from ON_HEADER, not IDF's request-header getter ---
+check("HTTP_EVENT_ON_HEADER" in api and "s_resp_sha" in api and
+      "s_resp_content_range" in api,
+      "x-image-sha256 and Content-Range captured from response-header events")
+check("esp_http_client_get_header(client, \"x-image-sha256\"" not in api,
+      "IDF request-header getter is not used for response SHA (old no-op check removed)")
 
 if fails:
-    print("\n%d check(s) failed" % len(fails))
     sys.exit(1)
-print("download-retry: all checks passed")
+print("download-resume: all checks passed")

@@ -40,6 +40,11 @@ typedef struct {
     char     detail[48];                     // reason 的补充参数:警告分区名(r9)
                                              // 或失败层位("upstream 503 (metadata)" 等诊断句,
                                              // r10.4 服务端所有错误都携带);空串 = 无补充
+    char     dl_sig[24];                     // r10.18 下载票据 sig(16 hex + NUL)。
+                                             // R2 快路径专属钥匙;空串 = 服务端未下发
+                                             // (未配 secret/失败),install 走老链路
+    uint32_t dl_ts;                          // 票据签发时间(Unix 秒);与 dl_sig
+                                             // 配对原样回带 /api/extracted
 } meta_store_analysis_t;
 
 // analyze 响应体解析在独立编译单元 main/meta_store_analysis.{h,c}(纯逻辑,
@@ -60,13 +65,15 @@ typedef struct {
 // 必须在 SNTP 已同步、WiFi 已连接后调用(由 meta_store_net 保证)。
 esp_err_t meta_store_api_analyze(uint32_t play_id, meta_store_analysis_t *out);
 
-// GET /api/extracted?id=<play_id>,流式写入 slot 槽位。
-//   analysis  : P2 页取得的 analyze 结果;下载流会与其 image_len/sha256 比对
-//               (防"P2 之后上游换了 revision"的 TOCTOU,不一致即失败要求重新 analyze)。
+// GET /api/extracted?id=<play_id>,流式写入 slot 槽位;连接中断后自动以
+// Range: bytes=<received>- 换新 TLS 连接续传(OTA/SHA 状态跨连接保留)。
+//   analysis  : P2 页取得的 analyze 结果;每条连接都会与其 image_len/sha256
+//               比对(防"P2 之后上游换了 revision"的 TOCTOU,不一致即失败要求
+//               重新 analyze)。续传响应必须是 206 + 精确 Content-Range;
+//               服务端回 200/416 会被拒绝并安全降级为整单重试,绝不追加到断点。
 //   slots     : 启动器槽位注册表;仅"闪存已被改动"的失败路径会作废对应条目
-//               (下载中中止/校验失败/begin 可能已擦除),纯网络与 TOCTOU 校验
-//               失败发生在写 flash 之前,注册表保持原状。
-// 成功返回 ESP_OK;写到一半的任何失败都会 esp_ota_abort(半成品不可启动)。
+//               (下载中中止/校验失败/begin 可能已擦除);首条连接的纯网络与
+//               TOCTOU 校验失败发生在写 flash 之前,注册表保持原状。
 esp_err_t meta_store_api_install(uint32_t play_id, int slot,
                                  const meta_store_analysis_t *analysis,
                                  meta_slot_info_t slots[META_SLOT_COUNT]);

@@ -104,10 +104,12 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # CONFIG_BT_NIMBLE_ENABLED is not set
 
 # --- 商店下载通道(TLS + SNTP) ---
-# r10.12 下载提速:lwIP TCP 窗口 5760(4×MSS 默认)→ 5744×11?否 —— 无窗口缩放
-# 上限 65535,一步到位:RTT 100ms 时理论封顶 5760/0.1≈57KB/s → 655KB/s。
-# LWIP_WND_SCALE 依赖 PSRAM(C3 无),不可用;65535 即无缩放上限。
-# SND_BUF 同步放大(上传/代理转发路径受益);RECVMBOX 32→64 保 RX 不掉包。
+# r10.16 下载提速收敛:lwIP TCP 窗口 5760(4×MSS 默认)→ 32768;65535 会让
+# Cloudflare 一次突发 ~43 个 TCP 段,超过 WiFi 动态 RX 缓冲池,802.11 层丢帧后
+# 进入 RTO 指数退避(真机 v46 日志:4KB 读 9-27s 锯齿)。32768(~23 段)配 48 个
+# 动态 RX 缓冲保留余量;LWIP_WND_SCALE 依赖 PSRAM(C3 无),不可用。
+# SND_BUF 同步放大;RECVMBOX 32→64 保 RX 不掉队。
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64

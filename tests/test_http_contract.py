@@ -64,6 +64,16 @@ check("int64_t esp_http_client_fetch_headers(esp_http_client_handle_t client);" 
 check("int esp_http_client_get_status_code(esp_http_client_handle_t client);" in stub,
       "host stub declares get_status_code()")
 
+# --- 2b. response headers use ON_HEADER; IDF get_header is request-only ---
+idf_impl = os.path.join(IDF, "components/esp_http_client/esp_http_client.c")
+if os.path.exists(idf_impl):
+    impl = open(idf_impl, encoding="utf-8", errors="replace").read()
+    check("return http_header_get(client->request->headers, key, value);" in impl,
+          "IDF implementation (live checkout): get_header reads request headers, not response headers")
+check("char                      *header_key;" in stub and
+      "char                      *header_value;" in stub,
+      "host stub carries HTTP_EVENT_ON_HEADER key/value fields")
+
 # --- 3/4. production code: correct accessors, no misuse pattern ---
 api = open(os.path.join(ROOT, "main/meta_store_api.c")).read()
 misuse_free = not re.search(
@@ -73,6 +83,13 @@ check(api.count("esp_http_client_get_status_code(client)") >= 2,
       "meta_store_api.c: both analyze and install read status via get_status_code()")
 check(not re.search(r"status\s*(?:==|!=)\s*200[^;]*fetch_headers", api),
       "meta_store_api.c: 200 comparison never derived from fetch_headers")
+check(api.count(".event_handler = http_event_cb") == 2,
+      "meta_store_api.c: both analyze and install capture response-header events")
+check("HTTP_EVENT_ON_HEADER" in api and "s_resp_sha" in api and
+      "s_resp_content_range" in api,
+      "meta_store_api.c: x-image-sha256 / Content-Range captured from response events")
+check("esp_http_client_get_header(client, \"x-image-sha256\"" not in api,
+      "meta_store_api.c: response SHA never read through request-header get_header API")
 
 # --- 5. r10.8 request-surface hardening in both configs ---
 for field in (".user_agent = META_STORE_API_USER_AGENT",
@@ -90,6 +107,11 @@ check("#define JOB_STACK          10240" in net,
 sdk = open(os.path.join(ROOT, "sdkconfig.defaults")).read()
 check("CONFIG_MBEDTLS_SSL_RENEGOTIATION=n" in sdk,
       "sdkconfig.defaults: TLS renegotiation explicitly off")
+sdk_live_path = os.path.join(ROOT, "sdkconfig")
+if os.path.exists(sdk_live_path):
+    sdk_live = open(sdk_live_path, encoding="utf-8").read()
+    check("CONFIG_MBEDTLS_SSL_RENEGOTIATION=y" not in sdk_live,
+          "local sdkconfig: renegotiation must not override pinned defaults")
 
 print()
 if fails:

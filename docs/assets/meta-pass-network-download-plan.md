@@ -359,6 +359,17 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10.17 (2026-09-29) resumable OTA state + real response-header parsing**: the v47
+  device log showed recoverable `-ESP_ERR_HTTP_EAGAIN` stalls aborting OTA and restarting a
+  2,664,256-byte image from 0 three times; host replay of the same URL also observed 18.9s /
+  524@126s / 33.5s and a legacy `Range` request answered as `200` full. Firmware now keeps OTA
+  and SHA-256 state across TLS reconnects, requests `Range: bytes=<received>-`, and accepts a
+  resume only as `206` with exact `Content-Range` start/total/span. A legacy `200` is rejected
+  and falls back safely to full-file retry until the R2 worker emits 206. The same revision
+  fixes a silent trust-chain no-op: IDF `esp_http_client_get_header()` reads request headers,
+  so response `x-image-sha256` / `Content-Range` are now captured via `HTTP_EVENT_ON_HEADER`.
+  Pure parser: `main/meta_store_range.[ch]`; gates: `tests/test_meta_store_range.c`,
+  `test_download_retry_gate.py`, `test_http_contract.py`.
 - **v3.2-r10.12 (2026-09-29) download throughput: three stacked caps removed**: WiFi modem sleep
   was never disabled (IDF default `WIFI_PS_MIN_MODEM` throttles downlink between DTIM beacons) —
   now `WIFI_PS_NONE` on both STA and APSTA start paths. lwIP TCP receive window was 5760 B

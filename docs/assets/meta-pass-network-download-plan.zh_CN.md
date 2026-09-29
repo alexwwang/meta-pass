@@ -341,6 +341,16 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r10.17（2026-09-29）可续传 OTA 状态 + 真正的响应头解析**:v47 真机日志显示
+  可恢复的 `-ESP_ERR_HTTP_EAGAIN` 停顿会 abort OTA,并把 2,664,256 字节镜像三次从 0
+  重下;host 复测同 URL 也观测到 18.9s / 524@126s / 33.5s,旧服务端对 `Range` 仍回
+  `200` 全量。固件现在让 OTA 与 SHA-256 状态跨 TLS 重连保留,发送
+  `Range: bytes=<received>-`,只有 `206` 且 `Content-Range` 起点/总长/区间长度精确
+  匹配才接受续传。旧服务端回 `200` 会被拒绝并安全降级为整单重试,直到 R2 worker
+  输出 206。同版本修复信任链静默空操作:IDF `esp_http_client_get_header()` 读请求头,
+  响应 `x-image-sha256` / `Content-Range` 现在经 `HTTP_EVENT_ON_HEADER` 捕获。纯 parser:
+  `main/meta_store_range.[ch]`;门禁:`tests/test_meta_store_range.c`、
+  `test_download_retry_gate.py`、`test_http_contract.py`。
 - **v3.2-r10.12（2026-09-29）下载吞吐：拆除三个叠加上限**：WiFi 省电从未关闭（IDF 默认
   `WIFI_PS_MIN_MODEM` 在 DTIM 信标间节流下行）—— STA 与 APSTA 两条启动路径均改
   `WIFI_PS_NONE`。lwIP TCP 接收窗口 5760B（4×MSS 默认）在 ~100ms RTT 下封顶 ≈57KB/s ——

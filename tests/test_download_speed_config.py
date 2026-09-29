@@ -51,14 +51,21 @@ api = open(os.path.join(ROOT, "main/meta_store_api.c"), encoding="utf-8").read()
 check("#define DL_CHUNK         4096" in api,
       "DL_CHUNK is 4096 (flash page; per-KB syscall overhead /4)")
 
-# --- 4. lwIP window/buffer/mailbox pinned in the build config ---
+# --- 4. lwIP window/buffer/mailbox + WiFi RX pool pinned in the build config ---
 defaults = open(os.path.join(ROOT, "sdkconfig.defaults"), encoding="utf-8").read()
+check("CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48" in defaults,
+      "sdkconfig.defaults: WiFi dynamic RX buffers 48 (r10.16 promised value; clean rebuild reproducibility)")
 check("CONFIG_LWIP_TCP_WND_DEFAULT=32768" in defaults,
       "sdkconfig.defaults: TCP receive window 32768 (fits 48 WiFi RX buffers; 65535 caused 802.11 frame drops -> RTO storms, r10.16)")
 check("CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768" in defaults,
       "sdkconfig.defaults: TCP send buffer 32768 (was 5760)")
 check("CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64" in defaults,
       "sdkconfig.defaults: tcpip receive mailbox 64 (was 32)")
+sdk_live_path = os.path.join(ROOT, "sdkconfig")
+if os.path.exists(sdk_live_path):
+    sdk_live = open(sdk_live_path, encoding="utf-8").read()
+    check("CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48" in sdk_live,
+          "local sdkconfig: WiFi dynamic RX buffers match defaults (clean/dirty build parity)")
 
 # --- 5. stub carries the API surface (syntax-check parity with device) ---
 stub = open(os.path.join(ROOT, "tests/esp_stubs/esp_wifi.h"), encoding="utf-8").read()

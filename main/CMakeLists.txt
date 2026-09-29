@@ -15,6 +15,7 @@ idf_component_register(
          "meta_store_idedit.c"
          "meta_store_api.c"
                 "meta_store_api_fail.c"
+         "meta_store_range.c"
          "meta_store_net.c"
     INCLUDE_DIRS "."
     # 相比基线:去掉 bt(启动器不用 BLE),保留 esp_http_server(配网页)、

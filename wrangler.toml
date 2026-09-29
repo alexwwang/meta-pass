@@ -11,3 +11,10 @@ pages_build_output_dir = "./install-slot"
 #
 # 如需自定义域名(如 install.example.com),在 Cloudflare Dashboard →
 # Pages → meta-pass → Custom domains 中添加。
+
+# r10.17: 解包产物持久化(按需物化) —— 用到的玩法才写 R2;
+# 键 = extracted/<id>/<storeFwSha256>.bin + 同键 .meta.json 存映射
+# (extractedSha256 ↔ 玩法原始固件 sha256/revisionId)。命中即直出,不一致即重写。
+[[r2_buckets]]
+bucket_name = "meta-pass-extracted"
+binding = "meta_pass_extracted"

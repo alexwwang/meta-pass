@@ -74,4 +74,42 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
   console.log("PASS 8: extracted served from same-zone edge cache + analyze prewarm (trust chain intact)");
 }
 
+// 9. r10.18:票据 = R2 专属钥匙,不是准入门槛。定稿规则:"没有票据只能走老
+//    的链路,不能访问 R2"。钉死:
+//    a. 票据校验器是 downloadTicket(ticketed 布尔语义),旧的拒绝式
+//       checkDownloadTicket 不再存在;
+//    b. 无票/坏票/过期票不得产生任何 403/4xx 拒绝响应(错误字符串清零);
+//    c. R2 读和 R2 写都必须在 ticket.ticketed 条件内(未授权流量不碰 R2);
+//    d. 限速必须先于票据校验且对两条链路无条件生效。
+{
+  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/"'));
+  assert.ok(workerSrc.includes("async function downloadTicket"), "ticket checker must be downloadTicket");
+  assert.ok(!workerSrc.includes("checkDownloadTicket"), "reject-style checkDownloadTicket must be gone");
+  assert.ok(!/missing ticket|ticket expired|bad ticket|server ticket config/.test(workerSrc),
+            "tickets must never cause a service-rejection response");
+  assert.ok(extractedBlock.includes("if (ticket.ticketed) {\n        try {\n          const meta"),
+            "R2 read path must be gated on ticket.ticketed");
+  assert.ok(extractedBlock.includes("ticket.ticketed && env.meta_pass_extracted"),
+            "R2 write path must be gated on ticket.ticketed");
+  const gate = workerSrc.indexOf("rateLimit(env, req, id)");
+  const tick = workerSrc.indexOf("downloadTicket(env, url, id)", extractedBlock);
+  assert.ok(gate > 0 && tick > gate, "rate limit must run before ticket check (applies to both paths)");
+  console.log("PASS 9: ticket = R2-only key; no-ticket requests fall back to legacy path, never rejected");
+}
+
+// 10. r10.18:票据标签必须是 16 hex 字符(64bit)。历史教训连犯两次:
+//    hex 化后 .slice(0,16) 切的是"64 个单字符数组"的前 16 个元素(join 仍 32 字符);
+//    字节侧截 16 字节也是 32 字符。签发 32 字符 sig 与校验方 {16} 正则永不匹配,
+//    生产上所有票据 invalid、R2 永远 skipped(x-r2-write: skipped 实测)。本门直接
+//    执行 hmacHex16 源码断言输出长度。
+{
+  const m = workerSrc.match(/async function hmacHex16[\s\S]*?\n}/);
+  assert.ok(m, "hmacHex16 must exist");
+  // eslint-disable-next-line no-eval
+  const fn = eval("(" + m[0].replace("async function hmacHex16", "async function") + ")");
+  const sig = await fn("a".repeat(64), "675:1790701486");
+  assert.ok(/^[0-9a-f]{16}$/.test(sig), `ticket sig must be exactly 16 hex chars, got ${JSON.stringify(sig)}`);
+  console.log("PASS 10: hmacHex16 issues exactly-16-hex-char ticket labels");
+}
+
 console.log("ALL WORKER CONTRACT TESTS PASSED");

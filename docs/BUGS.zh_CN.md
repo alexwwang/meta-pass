@@ -657,6 +657,70 @@ ESP_LOGI(TAG, "槽位 %d 写入成功: %s %s (%d B)", slot, name, ver, req->cont
 
 ---
 
+### BUG-22(Critical)——每条连接的 SHA-256 响应头比对是静默空操作
+
+- **症状**:v47 代码与注释声称每次 install TLS 会话都会先比对
+  `x-image-sha256`,实际上 `esp_http_client_get_header(...) == ESP_OK` 分支
+  从未进入。
+- **根因**:IDF 5.5.3 `esp_http_client_get_header()` 读取
+  `client->request->headers`,即*请求*头存储(`esp_http_client.c:370-377`)。
+  设备从不设置 `x-image-sha256` 请求头,响应头查找永远失败,"存在才比对"
+  的守卫把校验静默跳过。
+- **影响**:流式 SHA-256 终比对仍保证镜像完整性,所以这不是独立的镜像损坏
+  路径;但文档承诺的同会话 TOCTOU 防线并不存在,同一错误 API 也不能用于
+  `Content-Range`。
+- **修复(r10.17)**:通过 `HTTP_EVENT_ON_HEADER` 捕获 `x-image-sha256` 与
+  `Content-Range`,每条连接重置捕获状态,摘要头缺失/不一致即拒绝开始或继续
+  OTA;host stub 同步真实事件字段。
+- **门禁**:`tests/test_http_contract.py` 读取本地 IDF 实现并钉住请求头/
+  响应头差异;`test_download_retry_gate.py` 禁止重新引入
+  `get_header("x-image-sha256")`。
+- **教训**:API 名称不是契约。安全检查必须核对实现读的是哪个数据存储
+  (`request->headers` 还是响应解析器),并用门禁证明"校验被跳过"会失败。
+
+---
+
+### BUG-23(High)——可恢复 TLS 停顿会 abort OTA 并从 0 字节整单重下
+
+- **症状(v47 真机日志,play 675)**:首个 4KB 以 571kB/s 到达,随后每次读
+  停 5-50s(`errno=11`, `-ESP_ERR_HTTP_EAGAIN`)。第 1 次到
+  173,387/2,664,256 字节,第 2 次到 415,433,第 3 次到 59,297 —— 每次都
+  丢弃已收字节从 0 开始,吞吐跌到 1-4kB/s。
+- **host 判别**:同 URL + HTTP/1.1 + 设备 UA 复测为 18.9s、524@126s、33.5s;
+  `Range: bytes=100-199` 返回 `200` 全量 2,664,256 字节。这证明固件外路径
+  确实会停顿且旧服务端不支持续传;但不改变固件设计错误:可恢复读错误被放大
+  成整镜像重传。
+- **根因**:读循环把 EAGAIN/EOF/传输层死亡都当致命错,`esp_ota_abort()` 并
+  作废半成品槽位,外层只重试三次同样的不可续传请求。
+- **修复(r10.17)**:OTA 与 SHA-256 状态跨 TLS 重连保留。失败连接关闭后,
+  下一条连接发送 `Range: bytes=<received>-`,要求 `206` 与解析后的
+  `Content-Range` 起点/总长/区间长度完全匹配,再继续同一个 OTA handle。三条
+  整单重试改为六条分段连接(1..5s 退避)。旧服务端对续传回 `200` 会被拒绝,
+  绝不追加;在 R2 worker 输出 206 前,固件安全降级为原整单重试。
+- **验证**:零 IDF 依赖的 `meta_store_range` 边界测试、host 语法检查、重写
+  后的 retry/HTTP 门禁与 ESP-IDF 5.5.3 完整构建全部通过。真机吞吐仍须在
+  worker/R2 契约可用后复测;在此之前服务端停顿预算未被本次固件修改消除。
+- **教训**:重试粒度必须匹配故障粒度。连接故障的成本应是一条连接,不是整个
+  产物;无法续传时必须拒绝语义含糊的 `200` 字节,而不是追加写入。
+
+---
+
+### BUG-24(Medium)——网络 Kconfig 修复无法从 `sdkconfig.defaults` 重现
+
+- **症状**:r10.16 提交信息承诺 WiFi 动态 RX buffer 32→48,dirty build 也
+  含有该值,但 `sdkconfig.defaults` 没有对应条目;clean rebuild 会静默回落
+  32。与此同时 defaults 钉住 `CONFIG_MBEDTLS_SSL_RENEGOTIATION=n`,本地生成
+  的 `sdkconfig` 却仍是 `=y`。
+- **根因**:ESP-IDF 只在配置缺失时应用 defaults;陈旧的生成 `sdkconfig` 会
+  覆盖文档化默认值。r10.16 的 dirty-build 产物看起来正确,但源码事实来源
+  不完整。
+- **修复(r10.17)**:`sdkconfig.defaults` 增加 RX buffer 钉值,本地生成配置
+  修正 renegotiation;speed/HTTP 门禁现在拒绝这两个 live-`sdkconfig` 漂移。
+- **教训**:每项网络调优结论必须同时核对 defaults、生成 sdkconfig 与构建
+  `sdkconfig.h` 三处。dirty build 不是 clean-build 配置证据。
+
+---
+
 ## 已排查并排除的疑点(附证据)
 
 - **LVGL 9.5 定时器自删除** — `lv_timer.c` 用 `act_timer_deleted` 守护回调,
@@ -690,6 +754,7 @@ ESP_LOGI(TAG, "槽位 %d 写入成功: %s %s (%d B)", slot, name, ver, req->cont
   "镜像头 +20 处不是长度字段"的坑(`meta_net.c:314-318`)。
 - **线上安装器的尾扇区提取** — 将 MSIG/MAEG/MNAM 提取进同一个
   `image.tailSector` 并单次 `writeFlash` 写入,正确。
+
 
 ---
 

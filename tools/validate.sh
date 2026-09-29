@@ -93,6 +93,11 @@ PY
         main/meta_store_json.c \
         -o "${test_dir}/test_store_analyze_contract"
     "${test_dir}/test_store_analyze_contract"
+    # HTTP Content-Range 续传协议(纯逻辑;真机同一份 parser)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_store_range.c main/meta_store_range.c \
+        -o "${test_dir}/test_meta_store_range"
+    "${test_dir}/test_meta_store_range"
     # 商店通道 ESP-IDF 模块 host 语法检查(桩头在 tests/esp_stubs,对齐 IDF 5.x
     # 签名;不链接,只验证类型/声明/警告级问题,真机构建仍由 --firmware 负责)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
@@ -125,7 +130,7 @@ PY
     python3 tests/test_bug21_scan_silent.py
     # 下载吞吐配置门(r10.12;省电关闭×2 路径/4KB 块/lwIP 窗口与邮箱,防回退)
     python3 tests/test_download_speed_config.py
-    # 下载容错门(r10.13;EAGAIN 读级容忍 + 整单重试退避,真机停顿病例驱动)
+    # 下载续传门(r10.17;EAGAIN 读级容忍 + Range 断点重连,真机停顿病例驱动)
     python3 tests/test_download_retry_gate.py
     python3 tests/test_verify_firmware.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):

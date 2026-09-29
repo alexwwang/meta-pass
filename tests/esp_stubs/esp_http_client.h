@@ -41,6 +41,8 @@ typedef struct esp_http_client_event {
     void                      *user_data;
     void                      *data;   // HTTP_EVENT_ERROR: esp_tls_error_handle_t
     int                        data_len;
+    char                      *header_key;    // HTTP_EVENT_ON_HEADER(IDF 5.5.3)
+    char                      *header_value;  // HTTP_EVENT_ON_HEADER(IDF 5.5.3)
 } esp_http_client_event_t;
 
 typedef struct {
@@ -71,6 +73,7 @@ int esp_http_client_get_status_code(esp_http_client_handle_t client);
 int esp_http_client_read(esp_http_client_handle_t client, char *buffer, int len);
 int64_t esp_http_client_get_content_length(esp_http_client_handle_t client);
 esp_err_t esp_http_client_get_header(esp_http_client_handle_t client, const char *key, char **value);
+esp_err_t esp_http_client_set_header(esp_http_client_handle_t client, const char *key, const char *value);
 esp_err_t esp_http_client_close(esp_http_client_handle_t client);
 esp_err_t esp_http_client_cleanup(esp_http_client_handle_t client);
 

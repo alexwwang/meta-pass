@@ -99,6 +99,17 @@ bool meta_store_analysis_parse(const char *json, size_t len, meta_store_analysis
         if (!meta_store_json_parse_sha256(sha_hex, strlen(sha_hex), out->sha256)) {
             return false;
         }
+        // r10.18 下载票据(可选):dl.sig(16 hex)/dl.ts(签发秒)。缺席/畸形都
+        // 不算契约失败 —— 无票走老链路是合法形态(旧 worker/未配 secret)。
+        char sig[24] = {0};
+        if (meta_store_json_get_string(json, len, "dl/sig", sig, sizeof(sig))) {
+            int64_t ts = 0;
+            if (meta_store_json_get_int(json, len, "dl/ts", &ts) && ts > 0
+                && strlen(sig) == 16) {
+                snprintf(out->dl_sig, sizeof(out->dl_sig), "%s", sig);
+                out->dl_ts = (uint32_t)ts;
+            }
+        }
     }
     return true;
 }

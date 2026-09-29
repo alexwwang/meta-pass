@@ -800,6 +800,87 @@ correctness bug, not a cosmetic one.
 
 ---
 
+### BUG-22 (Critical) — the per-connection SHA-256 response-header check was a silent no-op
+
+- **Symptom**: v47 code and comments claimed every install TLS session compared
+  `x-image-sha256` with the analyze result before writing flash. In reality the
+  `if (esp_http_client_get_header(...) == ESP_OK ...)` comparison never ran.
+- **Root cause**: IDF 5.5.3 `esp_http_client_get_header()` reads
+  `client->request->headers` — the *request* header store
+  (`esp_http_client.c:370-377`). The device never sets an `x-image-sha256`
+  request header, so the response-header lookup always failed and the code's
+  "if present" guard silently skipped validation.
+- **Impact**: the streaming SHA-256 final comparison still protected image
+  integrity, so this was not an install-corruption path by itself. But the
+  documented same-session TOCTOU defense was absent, and the same wrong API
+  could not be reused for `Content-Range`.
+- **Fix (r10.17)**: capture `x-image-sha256` and `Content-Range` through
+  `HTTP_EVENT_ON_HEADER`, reset capture state per connection, and make the
+  digest header mandatory before beginning/continuing OTA. Host stubs now carry
+  the real event fields.
+- **Gates**: `tests/test_http_contract.py` reads the live IDF implementation
+  and pins the request-vs-response distinction; `test_download_retry_gate.py`
+  forbids reintroducing `get_header("x-image-sha256")`.
+- **Lesson**: an API name is not a contract. For security checks, verify the
+  implementation's data store (`request->headers` vs response parser state) and
+  write a gate that would fail when the check is skipped.
+
+---
+
+### BUG-23 (High) — recoverable TLS stalls aborted the OTA and restarted the whole image
+
+- **Symptom (v47 device log, play 675)**: the first 4 KB arrived at 571 kB/s,
+  then reads stalled 5-50 s (`errno=11`, `-ESP_ERR_HTTP_EAGAIN`). Attempt 1
+  reached 173,387/2,664,256 bytes, attempt 2 reached 415,433 bytes, attempt 3
+  reached 59,297 bytes — each retry discarded all prior bytes and began at 0.
+  Throughput collapsed to 1-4 kB/s and every attempt failed.
+- **Host discriminant**: replaying the same production URL with HTTP/1.1 and
+  the device UA measured 18.9 s, a Cloudflare 524 after 126 s, then 33.5 s;
+  `Range: bytes=100-199` returned `200` with the full 2,664,256-byte body. This
+  proves the path can stall outside the firmware and that the old server did
+  not provide resume. It does **not** excuse the firmware design: a recoverable
+  read error was amplified into a full-image retransfer.
+- **Root cause**: the read loop treated EAGAIN/EOF/transport death as fatal,
+  called `esp_ota_abort()`, invalidated the partially written slot, and the
+  outer loop repeated the same non-resumable request only three times.
+- **Fix (r10.17)**: OTA and SHA-256 state now survive TLS reconnects. A failed
+  connection is closed; the next connection sends `Range: bytes=<received>-`,
+  requires `206` plus a parsed `Content-Range` whose start/total/span match the
+  analyze contract, and continues the same OTA handle. Six segment connections
+  with 1..5 s backoff replace three whole-image retries. A legacy `200` answer
+  to a resume is rejected and never appended; firmware safely falls back to the
+  old full-file retry mode until the R2 worker emits 206.
+- **Validation**: zero-IDF `meta_store_range` boundary tests, host syntax
+  checks, rewritten retry/HTTP gates, and a clean ESP-IDF 5.5.3 build all pass.
+  Hardware throughput still needs a device run after the worker/R2 contract is
+  available; until then the remaining server-side stall budget is unchanged.
+- **Lesson**: retry granularity must match failure granularity. A connection
+  failure should cost a connection, not the entire artifact; when resume is not
+  available, reject ambiguous `200` bytes instead of appending them.
+
+---
+
+### BUG-24 (Medium) — network Kconfig fixes were not reproducible from `sdkconfig.defaults`
+
+- **Symptom**: r10.16's commit message promised WiFi dynamic RX buffers 32→48
+  and the dirty build contained that value, but `sdkconfig.defaults` had no
+  `CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM` entry; a clean rebuild silently fell
+  back to 32. Independently, defaults pinned
+  `CONFIG_MBEDTLS_SSL_RENEGOTIATION=n` while the local generated `sdkconfig`
+  still had `=y`.
+- **Root cause**: ESP-IDF applies defaults only when a config is absent; a
+  stale generated `sdkconfig` overrides the documented defaults. The r10.16
+  dirty-build artifact therefore looked correct while the source of truth was
+  incomplete.
+- **Fix (r10.17)**: added the RX buffer pin to `sdkconfig.defaults`, corrected
+  the local generated config for renegotiation, and extended the speed/HTTP
+  gates to reject live-`sdkconfig` drift for both values.
+- **Lesson**: every network tuning claim must be checked in three places:
+  defaults, generated sdkconfig, and built `sdkconfig.h`. A dirty build is not
+  evidence of a clean-build configuration.
+
+---
+
 ## Investigated and cleared (evidence)
 
 - **LVGL 9.5 timer self-delete in UI teardown paths** — `lv_timer.c` guards
