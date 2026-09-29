@@ -12,6 +12,7 @@
 #include "esp_http_client.h"
 #include "esp_image_format.h"   // esp_image_verify / esp_image_metadata_t
 #include "esp_log.h"
+#include "esp_timer.h"          // r10.10:下载遥测(慢读/死因打点)
 #include "esp_ota_ops.h"
 #include "esp_tls.h"            // r10.7:OPEN 死因分类(esp/mbedtls 错误码 +
                                 // esp_tls_get_and_clear_error_type)
@@ -402,6 +403,12 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     uint8_t hdr[META_IMAGE_HEADER_LEN];
     size_t seen = 0;
     int pct = -1;
+    // r10.10 下载遥测: stalled 读(含 EAGAIN)与慢速段在串口上可定位 ——
+    // 每 5% 打点速率;read 返回 0 时打印上一读耗时,判定死等超时 vs 真 EOF。
+    int64_t t_read_start = esp_timer_get_time();
+    int64_t t_last_read_ms = 0;
+    uint32_t last_mark_rx = 0;
+    int64_t t_last_mark = t_read_start;
 
     for (;;) {
         if (s_cancel) {   // 用户取消:在当前块边界响应,半成品由下方统一作废
@@ -409,11 +416,23 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
             break;
         }
         const int got = esp_http_client_read(client, (char *)s_chunk, sizeof(s_chunk));
+        const int64_t now_us = esp_timer_get_time();
+        t_last_read_ms = (now_us - t_read_start) / 1000;
+        t_read_start = now_us;
         if (got < 0) {
+            // r10.10:read 失败点带现场(已收字节/该次等待时长)—— "13% 后慢
+            // 然后 failed"这类现象,串口直接给出卡死位置,不再只有 Download failed。
+            ESP_LOGE(TAG, "download read failed: rx=%lu/%ld last_read_ms=%lld",
+                     (unsigned long)received, (long)content_len,
+                     (long long)t_last_read_ms);
             err = ESP_FAIL;
             break;
         }
         if (got == 0) break;
+        if (t_last_read_ms > 5000) {
+            ESP_LOGW(TAG, "download slow read: rx=%lu got=%d took=%lldms",
+                     (unsigned long)received, got, (long long)t_last_read_ms);
+        }
         if (seen < META_IMAGE_HEADER_LEN) {
             const size_t take = ((size_t)got < META_IMAGE_HEADER_LEN - seen)
                               ? (size_t)got : META_IMAGE_HEADER_LEN - seen;
@@ -429,6 +448,15 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
             pct = p;
             set_progress(true, p, received, (uint32_t)content_len, false,
                          "Downloading...");
+            if (p % 5 == 0) {   // 每 5% 一个串口打点:瞬时吞吐可对照 host 基线(~1MB/s)
+                const int64_t dt_ms = (now_us - t_last_mark) / 1000;
+                const uint32_t drx = received - last_mark_rx;
+                ESP_LOGI(TAG, "dl %d%%: +%luKB in %lldms (%lukB/s)", p,
+                         (unsigned long)(drx / 1024), (long long)dt_ms,
+                         dt_ms > 0 ? (unsigned long)(drx / 1024 * 1000 / (uint32_t)dt_ms) : 0);
+                last_mark_rx = received;
+                t_last_mark = now_us;
+            }
         }
         if (!hdr_checked && seen >= META_IMAGE_HEADER_LEN) {
             hdr_checked = true;

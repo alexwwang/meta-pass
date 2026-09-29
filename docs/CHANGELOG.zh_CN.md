@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+- **商店 UX 修正 + 下载遥测(r10.10)**:安装页行动行改标 CONTINUE(原 CONFIRM,
+  语义是继续去选槽位);槽位选择页信息窗加倍高度、底色弱化,不再与按钮行混为
+  一排,并显示玩法名与 KB;不适配槽位改为一行短标签 "SLOT n too small" 并置灰
+  (旧 "TOO SMALL (will erase)" 超宽被截成乱码样)。下载循环每 5% 打点吞吐,
+  read 失败时串口打印已收/应收字节与上一读阻塞时长 —— 真机 ~13% 卡住再失败
+  这类现象,串口直接报位置与耗时,不再是裸 "Download failed"。host 吞吐基线
+  实测 0.8-1.3 MB/s,快后慢的形态属设备侧射频/链路,服务端无节流;固件每
+  1KB 直写 flash,不存在缓存层。
 - **警告页 CONFIRM 行回归(r10.9,BUG-20)**:真机首次走到 supported analyze 结果
   (此前 BUG-18/19 把所有握手拦死在 P2 之前),custom-partitions 警告页却只渲染
   一个 BACK 行 —— 设计的"警告+确认可装"落空。r10.4 的渲染器丢了 supported

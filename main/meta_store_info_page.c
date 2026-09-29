@@ -24,7 +24,7 @@ int meta_store_info_row_count(meta_store_info_kind_t kind)
 const char *meta_store_info_row0_label(meta_store_info_kind_t kind)
 {
     switch (kind) {
-    case META_INFO_INSTALL: return "CONFIRM";
+    case META_INFO_INSTALL: return "CONTINUE";
     case META_INFO_RETRY:   return "RETRY";
     default:                return "BACK";
     }

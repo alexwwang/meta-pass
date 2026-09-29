@@ -127,7 +127,10 @@ static lv_obj_t *add_row(lv_obj_t *parent, int idx, int y, const char *text)
 static void rows_refresh(int count, int sel)
 {
     for (int i = 0; i < count; i++) {
-        ui_pixel_set_selected(s_rows[i], i == sel, true);
+        // r10.10:P3 不适配槽位行置灰(ui_pixel_set_selected enabled=false);
+        // 其他页全部可用(enabled=true)。fit 表只在 P3 有效,页值缺省 true。
+        const bool enabled = (s_page != PAGE_STORE_SLOT) || s_slot_fit[i];
+        ui_pixel_set_selected(s_rows[i], i == sel, enabled);
     }
 }
 
@@ -653,14 +656,17 @@ static void page_store_slot_build(void)
 {
     const meta_store_analysis_t *a = meta_store_net_analysis();
     s_scr = ui_pixel_screen_create("INSTALL");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 44, UI_PAPER);
+    // r10.10:UI 修正 —— 信息窗(88px)与按钮行(40px)同底色同字时看起来像
+    // 两个乱码按钮;信息窗加倍高度、正文用 MUSED 弱化,与可按行拉开层次。
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 88, UI_MUTED);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
     char text[64];
-    snprintf(text, sizeof(text), "%.20s\npick target slot:", a ? a->name : "?");
+    snprintf(text, sizeof(text), "%.20s\n%lu KB -> pick slot",
+             a ? a->name : "?", a ? (unsigned long)(a->image_len / 1024) : 0);
     lv_label_set_text(s_info, text);
 
     for (int i = 0; i < META_SLOT_COUNT; i++) {
@@ -668,10 +674,15 @@ static void page_store_slot_build(void)
         const uint32_t limit = part ? meta_sign_app_limit(part->size) : 0;
         s_slot_fit[i] = a && part && a->image_len <= limit;
         const bool occupied = s_slots[i].state == META_SLOT_VALID;
-        char row[48];
-        snprintf(row, sizeof(row), "SLOT %d %s%s", i,
-                 s_slot_fit[i] ? "OK" : "TOO SMALL",
-                 occupied ? " (will erase)" : "");
+        // r10.10:不适配槽位 —— 标签短写 "too small"(旧 "SLOT n TOO SMALL
+        // (will erase)" 超宽被截成乱码),行体置灰,OK 路由本就拒 unfit。
+        char row[24];
+        if (s_slot_fit[i]) {
+            snprintf(row, sizeof(row), "SLOT %d%s", i,
+                     occupied ? " erase" : "");
+        } else {
+            snprintf(row, sizeof(row), "SLOT %d too small", i);
+        }
         add_row(s_scr, i, 100 + i * 44, row);
     }
     // 默认选中建议槽位(向上找第一个 fit,防建议槽位被本地占用标记干扰)。

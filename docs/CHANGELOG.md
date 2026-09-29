@@ -6,6 +6,17 @@
 
 ## Unreleased
 
+- **Store UX pass + download telemetry (r10.10)**: the install page's action row now
+  reads CONTINUE (was CONFIRM; the row advances to slot picking); the slot-picker info
+  window is double-height with muted background so it no longer reads as a second row
+  of buttons, and shows the play name + KB; unfit slots render as one short greyed
+  "SLOT n too small" row (the old "TOO SMALL (will erase)" overflowed and clipped into
+  what looked like garbage). Download loop now logs per-5% throughput and, on read
+  failure, the received/expected bytes and how long the last read blocked — a device
+  stall at ~13% will name its position and timing on serial instead of a bare
+  "Download failed". Host throughput baseline measured 0.8-1.3 MB/s end-to-end, so the
+  fast-then-slow shape is device-side radio/link, not server throttling; firmware
+  writes each 1 KB chunk straight to flash (no caching layer exists).
 - **Warning page's CONFIRM row restored (r10.9, BUG-20)**: on the first device run
   that ever reached a supported analyze result (BUG-18/19 had blocked every handshake
   before P2), the custom-partitions warning page rendered a single BACK row — install

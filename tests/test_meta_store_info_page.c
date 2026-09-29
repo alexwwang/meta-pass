@@ -6,7 +6,7 @@
 // 双杀在前),设备上零覆盖。
 //
 // 本测试钉死单一事实源 meta_store_info_classify 的三形态判定与 OK 语义:
-//   INSTALL(supported,含 custom-partitions 警告)→ CONFIRM/BACK,OK 行 0 前进;
+//   INSTALL(supported,含 custom-partitions 警告)→ CONTINUE/BACK,OK 行 0 前进;
 //   RETRY(作业失败/unavailable/传输分类句)      → RETRY/BACK,OK 行 0 重试;
 //   FINAL(not-found/too-large/wrong-chip/...)   → 仅 BACK,OK = BACK。
 #include <assert.h>
@@ -30,7 +30,7 @@ static void test_supported_is_install_two_rows(void)
     meta_store_analysis_t ok = mk("", true);
     assert(meta_store_info_classify(&ok, false) == META_INFO_INSTALL);
     assert(meta_store_info_row_count(META_INFO_INSTALL) == 2);
-    assert(strcmp(meta_store_info_row0_label(META_INFO_INSTALL), "CONFIRM") == 0);
+    assert(strcmp(meta_store_info_row0_label(META_INFO_INSTALL), "CONTINUE") == 0);
     assert(meta_store_info_ok_advances(META_INFO_INSTALL, 0) == true);
     assert(meta_store_info_ok_advances(META_INFO_INSTALL, 1) == false);
 }
@@ -42,7 +42,7 @@ static void test_custom_partitions_warning_is_install(void)
     meta_store_analysis_t warn = mk("custom-partitions", true);
     assert(meta_store_info_classify(&warn, false) == META_INFO_INSTALL);
     assert(meta_store_info_row_count(META_INFO_INSTALL) == 2);
-    assert(strcmp(meta_store_info_row0_label(META_INFO_INSTALL), "CONFIRM") == 0);
+    assert(strcmp(meta_store_info_row0_label(META_INFO_INSTALL), "CONTINUE") == 0);
     assert(meta_store_info_ok_advances(META_INFO_INSTALL, 0) == true);
 }
 
