@@ -14,57 +14,58 @@ import { createStoreAnalyzer } from "./store-analyze.js";
 
 const BACKEND = "https://ai-passport.folotoy.cn";
 
-// r10.15:回源边缘缓存 —— 真机日志证据(5% 段 28s、全程 ~4kB/s 龟速)定位到
-// Worker 每次冷启动都在现场回源 folotoy.cn 拉 3MB 合并镜像→校验→解包,回源
-// 链路本身在滴水(502/回源停顿均源于此)。参照形态:参照项目设备下载的就是
-// 静态固件 URL,不存在每次现算。把两笔回源产物放进 CF Cache API:
-//   - 合并镜像按 URL 缓存 1h:信任链(shopping 公布 sha256)在每次冷构建时
-//     仍强制校验,坏字节/陈旧字节进不了下发流;
-//   - 玩法元数据缓存 60s:revisionId 复核语义保留 ≤1 分钟陈旧窗口,换源站
-//     一场回源 RTT;
-// 设备-facing 响应仍 no-store(不改变既有契约),缓存只发生在回源层。
-// analyze(P2 详情页)与 extracted(下载)共用本 fetch 层 —— 用户浏览详情页
-// 即预热镜像,点安装时边缘已命中。
-const IMG_TTL = 3600;
-const META_TTL = 60;
+// r10.15b:同 zone 边缘缓存。上一版把回源响应(folotoy.cn)写进 caches.default ——
+// Cache API 只允许缓存本 zone 的 URL,put 被静默拒绝,生产实测缓存从未命中
+// (fast/slow/slow/fast 锯齿依旧)。改为缓存*设备-facing*的响应:
+//   - key = 本 zone 的 /api/extracted?id=N(同 zone,put/match 必然可用);
+//   - 缓存体 = 已解包、已验证的 factory 镜像字节 + x-image-len/sha256 元数据头;
+//   - analyze(P2 详情页)成功后后台预热同 key —— 浏览详情页即预填,点安装时
+//     直接边缘直出,与“静态文件下载”同形态(参照项目的快路径);
+//   - 信任链不变:缓存里的字节只能来自“商店公布 SHA256 校验 + 解包”的产物,
+//     任何冷构建仍强制走完整校验,缓存字节永远绕不过验证。
+const EDGE_TTL = 3600;
 
-async function cachedOriginFetch(url) {
-  const cache = caches.default;
-  const key = new Request(url, { method: "GET" });
+function extractedEdgeKey(req) {
+  return new Request(req.url, { method: "GET" });
+}
+
+function edgeHeaders(out, byteLen) {
+  return {
+    "content-type": "application/octet-stream",
+    "x-image-len": String(out.imageLen ?? byteLen),
+    "x-image-sha256": out.sha256 ?? "",
+    "cache-control": `public, max-age=${EDGE_TTL}`,
+  };
+}
+
+async function putExtractedToEdge(req, out) {
   try {
-    const hit = await cache.match(key);
-    if (hit) return hit;
-  } catch { /* cache unavailable: fall through to origin */ }
-  const ttl = url.includes("/api/download/") ? IMG_TTL : META_TTL;
-  const res = await fetch(url, {
-    redirect: "follow",
-    cf: { cacheEverything: true, cacheTtl: ttl },
-  });
-  if (res.ok) {
-    try {
-      const body = await res.arrayBuffer();
-      const cached = new Response(body, {
-        status: res.status,
-        headers: {
-          "content-type": res.headers.get("content-type") || "application/octet-stream",
-          "cache-control": `public, max-age=${ttl}`,
-        },
-      });
-      await cache.put(key, cached);
-      // 重新包一层:body 已被读出,返回与原响应等价的新副本。
-      return new Response(body, {
-        status: res.status,
-        headers: res.headers,
-      });
-    } catch { /* cache.put failed: the fresh response below is still valid */ }
-  }
-  return res;
+    await caches.default.put(extractedEdgeKey(req), new Response(out.stream.slice(), {
+      status: 200,
+      headers: edgeHeaders(out, out.imageLen),
+    }));
+  } catch { /* quota/unavailable: serve uncached */ }
+}
+
+async function warmEdgeExtracted(req, id) {
+  try {
+    const u = new URL(req.url);
+    u.pathname = "/api/extracted";
+    const key = new Request(u.toString(), { method: "GET" });
+    if (await caches.default.match(key)) return;
+    const out = await storeAnalyzer.extractedStream(id);
+    if (out.error || !out.stream) return;
+    await caches.default.put(key, new Response(out.stream.slice(), {
+      status: 200,
+      headers: edgeHeaders(out, out.imageLen),
+    }));
+  } catch { /* warming is best-effort */ }
 }
 
 // store-analyze.js 契约:fetchImpl 返回 {ok,status,statusText,url,arrayBuffer},
 // sha256 接收 Uint8Array 返回 64 位小写 hex。
 const storeAnalyzer = createStoreAnalyzer({
-  fetchImpl: (url) => cachedOriginFetch(url),
+  fetchImpl: (url) => fetch(url, { redirect: "follow" }),
   backend: BACKEND,
   sha256: async (buf) => {
     const d = await crypto.subtle.digest("SHA-256", buf);
@@ -104,7 +105,7 @@ async function proxy(upstreamPath) {
 const PLAY_ID_RE = /^\d{1,7}$/;
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     if (req.method !== "GET" && req.method !== "HEAD") {
       return err(405, "method not allowed");
     }
@@ -136,6 +137,11 @@ export default {
       }
       try {
         const out = await storeAnalyzer.analyze(Number(id));
+        // r10.15b:P2 详情页即预热 —— 浏览过详情的玩法,点安装时 extracted
+        // 边缘缓存已就绪,设备直接吃缓存字节,不再撞回源停顿/502。
+        if (out && out.supported) {
+          ctx.waitUntil(warmEdgeExtracted(req, Number(id)));
+        }
         return new Response(JSON.stringify(out), {
           status: 200,
           headers: {
@@ -176,6 +182,11 @@ export default {
       if (id == null || !PLAY_ID_RE.test(id)) {
         return err(400, "missing or invalid id parameter");
       }
+      // r10.15b:边缘缓存命中直接直出(快路径;字节只能来自已验证产物)。
+      try {
+        const hit = await caches.default.match(extractedEdgeKey(req));
+        if (hit) return hit;
+      } catch { /* cache unavailable: normal path */ }
       try {
         const out = await storeAnalyzer.extractedStream(Number(id));
         if (out.error) {
@@ -200,6 +211,9 @@ export default {
             ...(out.detail ? { detail: out.detail } : {}),
           }), { status: out.error === "not-found" ? 404 : 502, headers: hdrs });
         }
+        // 现算成功:写边缘缓存(下一个请求/下一台设备直出),并回给本请求。
+        // 体是 ReadableStream,需要复制才能同时 put + serve。
+        await putExtractedToEdge(req, out);
         return new Response(out.stream, {
           status: 200,
           headers: {

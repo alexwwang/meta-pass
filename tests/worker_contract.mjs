@@ -38,11 +38,11 @@ assert.ok(workerSrc.includes('"x-image-sha256"'), "extracted must send x-image-s
 assert.ok(workerSrc.includes('"x-image-len"'), "extracted must send x-image-len");
 console.log("PASS 4: extracted response carries x-image-len / x-image-sha256");
 
-// 5. analyze/extracted 不进 CDN 缓存(analyze JSON 与镜像经 revisionId 绑定,
-//    缓存会击穿 TOCTOU 复核;镜像流也按请求即时生成)。
+// 5. analyze/extracted 的设备-facing 响应不进 CDN 缓存(analyze JSON 与镜像经
+//    revisionId 绑定;extracted 的边缘缓存是 worker 内 Cache API,非 CDN 头)。
 {
-  const analyzeBlock = workerSrc.slice(workerSrc.indexOf('"/api/analyze"'), workerSrc.indexOf('"/api/extracted"'));
-  const extractedBlock = workerSrc.slice(workerSrc.indexOf('"/api/extracted"'), workerSrc.indexOf('"/"'));
+  const analyzeBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/analyze"'), workerSrc.indexOf('path === "/api/extracted"'));
+  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/"'));
   assert.ok(analyzeBlock.includes("no-store"), "analyze must be no-store");
   assert.ok(extractedBlock.includes("no-store"), "extracted must be no-store");
   console.log("PASS 5: analyze/extracted responses are no-store");
@@ -60,20 +60,18 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
   console.log("PASS 7: server.mjs (local dev) matches the same id contract");
 }
 
-// 8. r10.15:回源边缘缓存 —— 真机日志(5% 段 28s、~4kB/s 龟速、502 回源失败)
-// 定位到 Worker 冷启动每次现场回源 3MB 镜像→校验→解包;参照项目形态是设备直接
-// 下静态 URL,故把回源产物放进 CF Cache API,详情页访问即预热。静态钉死:
-//   a) 回源走 cachedOriginFetch(analyze/extracted 共用,预热语义成立);
-//   b) 镜像与元数据双 TTL(镜像 1h / 元数据 60s,revisionId 复核窗口有界);
-//   c) 缓存命中后仍走信任链(sha256 校验不可跳过 —— 防"缓存层绕过校验"回退)。
+// 8. r10.15b:同 zone 边缘缓存 —— 真机日志(5% 段 28s、~4kB/s 龟速、502 回源失败)
+// 定位到 Worker 冷启动每次现场回源 3MB 镜像→校验→解包。上一版缓存回源 URL
+// (folotoy.cn,他人 zone)被 Cache API 静默拒绝,生产从未命中。现缓存设备-facing
+// 的 extracted 响应(本 zone 必然可 put/match),analyze 成功后 ctx.waitUntil 预热。
 {
-  assert.ok(workerSrc.includes("cachedOriginFetch"), "origin fetch must go through the edge cache layer");
   assert.ok(workerSrc.includes("caches.default"), "must use the Workers Cache API (caches.default)");
-  assert.ok(workerSrc.includes("cacheEverything: true"), "origin fetch must opt in to CF edge caching");
-  assert.ok(/IMG_TTL\s*=\s*3600/.test(workerSrc), "image TTL must be 3600s");
-  assert.ok(/META_TTL\s*=\s*60/.test(workerSrc), "metadata TTL must be 60s");
+  assert.ok(workerSrc.includes("putExtractedToEdge"), "extracted must populate the edge cache");
+  assert.ok(workerSrc.includes("warmEdgeExtracted"), "analyze must warm the edge cache (detail-page prewarm)");
+  assert.ok(workerSrc.includes("ctx.waitUntil"), "prewarm must use ctx.waitUntil (Pages Advanced Mode)");
+  assert.ok(/EDGE_TTL\s*=\s*3600/.test(workerSrc), "edge TTL must be 3600s");
   assert.ok(!/sha256[^\n]*skip|bypass.*sha256/i.test(workerSrc), "trust chain must remain unconditional");
-  console.log("PASS 8: origin fetch is edge-cached (image 1h / metadata 60s, trust chain intact)");
+  console.log("PASS 8: extracted served from same-zone edge cache + analyze prewarm (trust chain intact)");
 }
 
 console.log("ALL WORKER CONTRACT TESTS PASSED");

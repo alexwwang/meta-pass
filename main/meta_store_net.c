@@ -635,6 +635,17 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
     }
 
     creds_save(ssid, pass);
+    // r10.15c:回源诊断 —— 真机日志与 host 对照显示同一端点 host 侧快/设备侧
+    // 慢 10 倍时,差距不在服务端而在设备到 CF 之间的链路(实测案例:路由器
+    // Fake-IP 代理劫持 DNS,设备流量进代理隧道被节流)。resolve 后把目标 IP
+    // 打上串口:198.18.x/198.19.x = Fake-IP 段 = 流量必经代理,一眼定罪。
+    {
+        esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        esp_netif_dns_info_t dns = {0};
+        if (sta && esp_netif_get_dns_info(sta, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK) {
+            ESP_LOGI(TAG, "DNS: " IPSTR, IP2STR(&dns.ip.u_addr.ip4));
+        }
+    }
     set_state(SN_STATE_ONLINE, "Online.");
     ESP_LOGI(TAG, "ONLINE(路由器 %s)", ssid);
     return ESP_OK;
