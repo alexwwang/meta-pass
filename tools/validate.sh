@@ -76,6 +76,11 @@ PY
         tests/test_meta_store_api_fail.c main/meta_store_api_fail.c \
         -o "${test_dir}/test_meta_store_api_fail"
     "${test_dir}/test_meta_store_api_fail"
+    # P2 详情页三形态判定(BUG-20;真机 main.c 渲染/路由共用同一份纯逻辑)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_meta_store_info_page.c main/meta_store_info_page.c \
+        -o "${test_dir}/test_meta_store_info_page"
+    "${test_dir}/test_meta_store_info_page"
     # P1 玩法 ID 编辑模型(插入光标/退格/换行;真机同一份 meta_store_idedit.c)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_store_idedit.c main/meta_store_idedit.c \

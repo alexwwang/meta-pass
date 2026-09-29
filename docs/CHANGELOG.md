@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+- **Warning page's CONFIRM row restored (r10.9, BUG-20)**: on the first device run
+  that ever reached a supported analyze result (BUG-18/19 had blocked every handshake
+  before P2), the custom-partitions warning page rendered a single BACK row — install
+  impossible despite the designed "warning + confirm" flow. The r10.4 renderer had
+  dropped the supported branch while the OK router kept it (row even labeled BACK but
+  acted CONFIRM). The three page forms are now one pure decision module
+  (`meta_store_info_page`) shared by renderer and router, pinned by
+  `tests/test_meta_store_info_page.c`; re-fill clears the stale second row.
 - **HTTP status code misread from the wrong API fixed (r10.8, BUG-19)**: a cross-check
   against the sample recovery installer (ai-passport-miniapp-installer, device-proven)
   exposed that `esp_http_client_fetch_headers()` returns the Content-Length, not the

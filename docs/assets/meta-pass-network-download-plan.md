@@ -377,6 +377,11 @@ app.get("/api/extracted", async (req, res) => {
   → code 0. Permanent gates: E2E-8 (full production handshake with the device's real anchor
   bundle — the missing test that let this ship through five versions), E2E-8b (rejects
   cross-signed anchors). E2E count 15→17.
+- **v3.2-r10.9 (2026-09-29) warning-page CONFIRM restored (BUG-20)**: the P2 renderer
+  had dropped the supported branch since r10.4 — invisible until BUG-18/19 let a device
+  reach a supported analyze result; the custom-partitions warning page then rendered
+  BACK-only. Renderer and OK router now share one pure decision module
+  (`meta_store_info_page`), pinned by host tests.
 - **v3.2-r10.8 (2026-09-29) HTTP status-code contract fixed (BUG-19)**: cross-checking
   the sample recovery installer (device-proven) exposed that `esp_http_client_fetch_headers()`
   returns Content-Length — analyze/install had compared it against 200, so neither

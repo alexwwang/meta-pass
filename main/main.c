@@ -39,6 +39,7 @@
 #include "meta_store_net.h"
 #include "meta_store_idedit.h"
 #include "meta_store_prov.h"
+#include "meta_store_info_page.h"
 #include "ui_pixel.h"
 
 static const char *TAG = "meta-pass";
@@ -576,14 +577,9 @@ static void page_store_info_build(void)
     lv_screen_load(s_scr);
 }
 
-// analyze 成功后填充详情内容。supported 时行 0 = CONFIRM、行 1 = BACK;
-// 带 custom-partitions 警告时,详情里插一行警告文案(subtype 0x40 自定义数据
-// 分区不随镜像进设备,运行时可能缺该存储,由用户决定是否继续)。
-// r10.4:P2 是否渲染为"可重试失败页"(RETRY/BACK)。判定单一事实源:
-//   - a == NULL:analyze 作业失败,结果未产出;
-//   - 服务端失败码 unavailable(上游 5xx/回源失败,重试可能成功);
-//   - 设备传输分类文案(含空格:"TLS failed (clock unsynced)." 等)。
-// 其余 unsupported(not-found/too-large/wrong-chip/...)是终态,只给 BACK。
+// analyze 成功后填充详情内容。三形态由 meta_store_info_classify 单一判定
+// (BUG-20):INSTALL=CONFIRM/BACK(含 custom-partitions 警告文案)、
+// RETRY=RETRY/BACK、FINAL=仅 BACK —— 渲染与 OK 路由共用,不再可能漏分支。
 static bool store_info_is_retry_page(const meta_store_analysis_t *a)
 {
     if (!a) return true;
@@ -609,6 +605,8 @@ static void store_info_fill(const meta_store_analysis_t *a)
 {
     s_info_filled = true;
     snprintf(s_store_warn_detail, sizeof(s_store_warn_detail), "%s", a->detail);
+    const meta_store_info_kind_t kind = meta_store_info_classify(a, false);
+    const int rows = meta_store_info_row_count(kind);
     char text[220];
     if (a->supported) {
         if (strcmp(a->reason, "custom-partitions") == 0) {
@@ -635,18 +633,19 @@ static void store_info_fill(const meta_store_analysis_t *a)
     }
     lv_label_set_text(s_info, text);
 
-    if (store_info_is_retry_page(a)) {
-        lv_obj_t *retry_lbl = lv_obj_get_child(s_rows[0], 0);
-        lv_label_set_text(retry_lbl, "RETRY");
-        add_row(s_scr, 1, 240, "BACK");
-        rows_refresh(2, s_sel);
-        return;
+    // BUG-20 渲染:行数与行 0 标签来自同一判定;重填(RETRY 后同屏二次进入)
+    // 时先拆掉第 2 行旧对象,防面板堆叠残留(store_goto 整屏重建不受影响)。
+    if (s_rows[1]) {
+        lv_obj_delete(s_rows[1]);
+        s_rows[1] = NULL;
     }
-    // 终态不支持:仅 BACK(行 0 标签直接写 BACK —— 旧版渲染 CONFIRM 却响应
-    // BACK 行为,标签与行为不一致)。
-    lv_obj_t *back_lbl = lv_obj_get_child(s_rows[0], 0);
-    lv_label_set_text(back_lbl, "BACK");
-    rows_refresh(1, s_sel);
+    s_sel = 0;   // 填充即回行 0:陈旧 s_sel 不允许停在不可见行上
+    lv_obj_t *row0_lbl = lv_obj_get_child(s_rows[0], 0);
+    lv_label_set_text(row0_lbl, meta_store_info_row0_label(kind));
+    if (rows == 2) {
+        add_row(s_scr, 1, 240, "BACK");
+    }
+    rows_refresh(rows, s_sel);
 }
 
 // P3 槽位选择:行 = 3 槽,本地分区上限判 fit;仅 fit 行可确认。
@@ -1236,19 +1235,22 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     case PAGE_STORE_INFO:
         if (ev == BSP_BTN_CLICK) {
             const meta_store_analysis_t *a = meta_store_net_analysis();
-            // 三形态:正常页(CONFIRM/BACK)、可重试失败页(RETRY/BACK)、
-            // 终态不支持页(仅 BACK)。判定单一事实源 = store_info_is_retry_page。
-            const bool retry_page = store_info_is_retry_page(a);
-            const int items = (a && a->supported) ? 2 : (retry_page ? 2 : 1);
+            // BUG-20:形态判定与渲染同源(meta_store_info_classify)—— 行数、
+            // 行 0 标签、OK 语义不再可能互相矛盾(supported 页曾有 CONFIRM
+            // 消失/标签与行为相反两种表现)。
+            const meta_store_info_kind_t kind = meta_store_info_classify(a, false);
+            const int items = meta_store_info_row_count(kind);
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                 s_sel = (s_sel + 1) % items;
                 rows_refresh(items, s_sel);
             } else if (btn == BSP_BTN_OK) {
-                if (retry_page && s_sel == 0) {
-                    s_info_filled = false;   // RETRY:重新 analyze 同一玩法
-                    store_info_retry();      // r10.7:失败只提示,不清输入不翻页
-                } else if (a && a->supported && s_sel == 0) {
-                    store_goto(PAGE_STORE_SLOT);
+                if (meta_store_info_ok_advances(kind, s_sel)) {
+                    if (kind == META_INFO_RETRY) {
+                        s_info_filled = false;   // RETRY:重新 analyze 同一玩法
+                        store_info_retry();      // r10.7:失败只提示,不清输入不翻页
+                    } else {
+                        store_goto(PAGE_STORE_SLOT);   // INSTALL:进槽位页
+                    }
                 } else {
                     store_goto(PAGE_STORE_ID);   // BACK = 重新输 ID
                 }

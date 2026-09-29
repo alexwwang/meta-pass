@@ -10,6 +10,7 @@ idf_component_register(
          "meta_sign.c"
          "meta_store_json.c"
          "meta_store_analysis.c"
+         "meta_store_info_page.c"
          "meta_store_prov.c"
          "meta_store_idedit.c"
          "meta_store_api.c"

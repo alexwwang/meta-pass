@@ -268,6 +268,25 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
   无则用记录片段 —— CI 裸 checkout 规则)、桩签名(`int64_t`)、两个访问器、
   BUG-19 误用模式绝迹、两项配置的全部加固字段。host 桩同步真实 `int64_t` 契约。
 
+### BUG-20(高)—— custom-partitions 警告页丢了 CONFIRM 行:"警告但可装"被渲染成"终态仅 BACK"
+
+- **症状(v39 真机,玩法 675)**:analyze 返回 `custom-partitions`(supported=true,
+  契约上是仅警告),详情页警告文案只配了一个 BACK 行 —— 无法安装,与设计的
+  "警告 + 确认后可装"直接矛盾。
+- **根因**:r10.4 把 P2 判定拆成两处:OK 路由算 `items = supported ? 2 :
+  retry ? 2 : 1`(正确),渲染器(`store_info_fill`)却只看
+  `store_info_is_retry_page()`,supported 页掉进终态分支 —— 行 0 标签被改成
+  BACK 且只渲染一行。supported 分支在真机上从未执行过(BUG-18/19 把所有握手
+  拦死在 P2 之前),host 测试又不盖 LVGL 渲染,回归自 r10.4 起潜伏至今。还有
+  一个次生缺陷同行:行 0 标着 BACK,路由却按 CONFIRM 响应(标签与行为相反)。
+- **修复**:三形态收成单源纯模块(`meta_store_info_page.{h,c}`:classify →
+  行数 → 行 0 标签 → OK 语义),main.c 渲染与 OK 路由共用;渲染器重填前先拆
+  旧行 2(RETRY 会在同屏二次填充),并把选中复位到行 0。警告文案留在正文,
+  CONFIRM 进槽位页。
+- **门禁**:`tests/test_meta_store_info_page.c` 钉死三形态、真机现场形态
+  (`custom-partitions` + supported=true → INSTALL/CONFIRM/两行)、逐行 OK 语义,
+  以及作业失败态不降级有效 supported 结果。
+
 ### 措辞(r10,非 bug 而是契约)—— 槽位状态说人话
 
 `(invalid)` 有歧义(暗示设备/槽位损坏),而它最常指 ota_2 装着 littlefs 录音

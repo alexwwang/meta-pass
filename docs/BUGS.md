@@ -335,6 +335,29 @@ the data plane against the production site.
   accessors, the absence of the BUG-19 misuse pattern, and every hardening field in both
   configs. The host stub now declares the real `int64_t` contract.
 
+### BUG-20 (High) — the custom-partitions warning page lost its CONFIRM row: warning-but-installable rendered as final-only-BACK
+
+- **Symptom (v39 device, play 675)**: analyze returned `custom-partitions`
+  (supported=true, warn-only by contract) and the info page showed the warning text
+  with a single BACK row — installation impossible, contradicting the designed
+  "warning + confirm to proceed" behavior.
+- **Root cause**: r10.4 split the P2 decision into two places: the OK-key router
+  computed `items = supported ? 2 : retry ? 2 : 1` (correct), while the renderer
+  (`store_info_fill`) derived rows from `store_info_is_retry_page()` alone and fell
+  through to the final-state branch, overwriting row 0's label to BACK with a single
+  row rendered. The supported branch had never executed on a device — BUG-18/19 killed
+  every handshake before P2 could render — and host tests do not cover LVGL rendering,
+  so the regression sat dormant since r10.4. A second latent defect rode along: row 0
+  was *labeled* BACK while the router *acted* CONFIRM on it (label/action inversion).
+- **Fix**: the three forms are now a single-source pure module
+  (`meta_store_info_page.{h,c}`: classify → row count → row-0 label → OK semantics),
+  shared by the renderer and the OK router in `main.c`; the renderer also deletes a
+  stale second row before re-filling (RETRY refills the same screen) and resets the
+  selection to row 0. Warning text stays in the body; CONFIRM leads to the slot page.
+- **Gates**: `tests/test_meta_store_info_page.c` pins all three forms, the exact
+  field shape (`custom-partitions` + supported=true → INSTALL/CONFIRM/2 rows), OK
+  semantics per row, and that job-failed does not downgrade a valid supported result.
+
 ### Wording (r10, not a bug but a contract) — slot states speak plainly
 
 `(invalid)` was ambiguous (it suggested a broken device/slot) for what is

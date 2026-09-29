@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+- **警告页 CONFIRM 行回归(r10.9,BUG-20)**:真机首次走到 supported analyze 结果
+  (此前 BUG-18/19 把所有握手拦死在 P2 之前),custom-partitions 警告页却只渲染
+  一个 BACK 行 —— 设计的"警告+确认可装"落空。r10.4 的渲染器丢了 supported
+  分支而 OK 路由保留着(行 0 甚至标着 BACK 却按 CONFIRM 响应)。三形态现收成
+  单一纯逻辑模块(`meta_store_info_page`),渲染与路由共用,
+  `tests/test_meta_store_info_page.c` 钉死;重填时清理残留第二行。
 - **HTTP 状态码读错 API 已修(r10.8,BUG-19)**:与样例恢复安装器
   (ai-passport-miniapp-installer,真机验证)交叉比对暴露 ——
   `esp_http_client_fetch_headers()` 返回的是 Content-Length 而非状态码;我们的

@@ -358,6 +358,10 @@ app.get("/api/extracted", async (req, res) => {
   `openssl s_client -CAfile main/certs/gtsr4.pem` → code 0。永久门：E2E-8
   （用设备真实锚包对生产站完整握手 —— 缺失的这个测试让坏链穿了五个版本）、
   E2E-8b（拒绝 cross-signed 锚）。E2E 计数 15→17。
+- **v3.2-r10.9（2026-09-29）回归警告页 CONFIRM（BUG-20）**：P2 渲染器自 r10.4 起
+  丢失 supported 分支 —— 直到 BUG-18/19 修复、真机首次走到 supported 结果才暴露：
+  custom-partitions 警告页只渲染 BACK。渲染与 OK 路由现共用单一纯判定模块
+  （`meta_store_info_page`），host 测试钉死。
 - **v3.2-r10.8（2026-09-29）修复 HTTP 状态码契约（BUG-19）**：与样例恢复安装器
   （真机验证）交叉比对暴露 —— `esp_http_client_fetch_headers()` 返回的是
   Content-Length，而 analyze/install 拿它与 200 比较：无论 TLS 是否修好，两个端点
