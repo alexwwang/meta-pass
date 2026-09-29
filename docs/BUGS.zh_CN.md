@@ -338,6 +338,41 @@ host 测试钉死,数据面由 `tools/e2e-production.mjs` 对正式站设防。
    字节级手段复现它(`tools/verify-crt-bundle-match.py`),再让一切修复接受
    该复现的检验。
 
+### BUG-21(低)—— 槽位里有半成品镜像时每次开机都打 `invalid segment length 0xffffffff`:启动扫描用了非静默镜像校验
+
+- **症状**:启动 USB 日志监听时设备复位,随后的每次开机都打
+  `E (1557) esp_image: invalid segment length 0xffffffff`。两个症状一条因果
+  链:monitor 启动复位了芯片(USJ 预期行为,见下),复位使 app 重新扫描槽位,
+  而某个槽位里还留着 675 会话下载 14% 失败留下的半成品镜像(具体槽位未记录)。
+- **根因**(两部分,均已钉到源码):
+  1. monitor 启动复位本身不是缺陷:`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`
+     (sdkconfig:1111)使设备以 USB PID 0x1001 枚举,esp-idf-monitor 因此在
+     启动时按设计硬复位芯片 —— `serial_reader.py:112`
+     (`if reset: self.reset_strategy.hard()`),esptool `reset.py:124`
+     (`USBJTAGSerialReset`)的 USJ DTR/RTS 序列里明写 `# Reset.`。规避:
+     `idf.py monitor -- --no-reset` 或 `export ESP_IDF_MONITOR_NO_RESET=1`。
+  2. 开机噪音才是我们的问题:`scan_one()` 用
+     `esp_image_verify(ESP_IMAGE_VERIFY, …)`(非静默,`meta_store.c:85`,全
+     项目唯一非静默调用点)校验每个槽位。ESP 应用镜像的段头与段数据交错排
+     列,下载在 14% 附近死掉后槽内是 [合法头+前几段+0xFF 尾];遍历在擦除尾部
+     里读到下一个段头位置,得到 `data_len=0xFFFFFFFF`,违反 4 字节对齐规则,
+     IDF 的 `verify_segment_header`(`esp_image_format.c:819-827`)即打
+     ESP_LOGE。拒绝半成品槽位始终是正确行为 —— 有问题的只是 error 级
+     bootloader 格式噪音(t=1557ms 是 app 阶段扫描耗时,不是 bootloader;
+     单次会话模型每次开机都清 otadata,bootloader 从未校验过这个镜像)。
+- **修复**:扫描期校验改为 `ESP_IMAGE_VERIFY_SILENT`;拒绝路径改为单行
+  WARN 并写明原因与处置(`槽位 n: 镜像校验失败(下载中断残留或已损坏),删除后可重用`)。
+  槽位状态仍为 INVALID,且槽位仍可被覆盖安装(`s_slot_fit` 只看长度,残留
+  永不阻塞安装)。
+- **回归门**:`tests/test_meta_store_scan.c` 搭建 host fixture(8MB flash
+  模型 + 真机分区表 + `meta_image_verify_sim.c` 复现 IDF 段表遍历与 4 字节
+  对齐规则),钉死 empty/INVALID/VALID 三态与擦除恢复;`test_bug21_scan_silent.py`
+  对照 IDF 源码事实钉死静默调用(与 `test_http_contract.py` 同型,兼容 CI
+  裸 checkout)。
+- **教训**:库的错误日志是 API 表面的一部分。在*周期或开机路径*上调用某个
+  校验器之前,先确认它自带的日志模式 —— 一次正确的拒绝若以 bootloader 故障
+  的姿态嘶吼,训练所有人无视串口日志。
+
 ---
 
 ## PASS-RADAR "仍然提示未签名" — 根因与结论

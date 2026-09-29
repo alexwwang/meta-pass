@@ -28,6 +28,7 @@
 - 真机失败一旦可确定地复现，先做字节级静态复现再动硬件（BUG-18：`tools/verify-crt-bundle-match.py` 对实发链逐字节重演 `esp_crt_verify_callback` 的逐层 issuer 查找）；只检查简化切片的门禁（openssl 路径构建、单跳卫生规则、文本比对代替 DER 字节）可以与一台握不了手的设备并存且全绿。
 - HTTP 访问器必须按真实语义使用：`esp_http_client_fetch_headers()` 返回 Content-Length，状态码来自 `esp_http_client_get_status_code()` —— 这类契约要用静态门钉死（`tests/test_http_contract.py`），纯语法的 host 桩抓不住语义误用（BUG-19）。新代码在信任 host 门之前，先与一份真机验证过的参照实现交叉比对。
 - 页面渲染的行数与按键路由的动作必须来自同一判定源：渲染器与路由各自分类时，重构可能在一边删掉分支、另一边保留（BUG-20：supported 页只渲染 BACK 而 OK 仍按 CONFIRM 路由）。把形态判定抽成纯模块并用 host 测试钉死。
+- 校验器的日志模式是 API 表面的一部分：在开机或周期路径上调用之前，先确认它在拒绝时是否打错误日志（BUG-21：槽位扫描以非静默模式运行 `esp_image_verify()`，半成品槽位虽被正确拒绝，却每次开机都嘶吼 `invalid segment length 0xffffffff`）。优先用 SILENT 校验模式，并在自己的一行 WARN 里写明处置；用静态门（`tests/test_bug21_scan_silent.py`）与行为测试（`tests/test_meta_store_scan.c`）分别钉死。
 - 测试与静态门禁不得依赖本地未提交的构建状态；`build/` 产物缺失时（CI 裸 checkout），测试回退到合成 fixture 并保持同等断言。
 - 可测试的状态机、协议、计时和布局计算应与 ESP-IDF/LVGL 解耦，并由 host tests 覆盖。
 - 禁止提交凭证、设备二维码秘密、私钥、个人数据或未脱敏日志。

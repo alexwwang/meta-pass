@@ -82,7 +82,13 @@ static void scan_one(int slot, meta_slot_info_t *out)
     }
     esp_image_metadata_t meta = {0};
     const esp_partition_pos_t pos = { .offset = part->address, .size = part->size };
-    if (esp_image_verify(ESP_IMAGE_VERIFY, &pos, &meta) != ESP_OK) {
+    // BUG-21:静默模式权威校验。非静默模式下 IDF(esp_image_format.c:827)在逐段
+    // 解析撞到擦除态 0xFFFFFFFF 段头时会打 "invalid segment length 0xffffffff"
+    // (ESP_LOGE)——下载中途放弃的半成品槽(合法头+前几段+0xFF 尾)必然触发,
+    // 这是"拒绝半成品"的预期行为而非设备故障,不应以 error 级 bootloader 格式
+    // 噪音呈现;拒因在此单行说明,槽位状态仍标记 INVALID(可覆盖安装)。
+    if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) != ESP_OK) {
+        ESP_LOGW(TAG, "槽位 %d: 镜像校验失败(下载中断残留或已损坏),删除后可重用", slot);
         meta_slot_mark_invalid(out);
         return;
     }

@@ -359,6 +359,16 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. Revision History
 
+- **v3.2-r10.11 (2026-09-29) boot-time slot scan silenced for half-written slots (BUG-21)**: starting
+  the USB monitor resets the chip — the USB-Serial-JTAG hard reset is esp-idf-monitor's default
+  (`serial_reader.py:112` → esptool `USBJTAGSerialReset`; escape: `--no-reset` /
+  `ESP_IDF_MONITOR_NO_RESET=1`) — and the fresh boot then verified the half-written slot left by the
+  675 download failure with non-silent `esp_image_verify`, so IDF's segment walk logged
+  `invalid segment length 0xffffffff` (erased 0xFFFFFFFF header fails the 4-byte alignment rule,
+  `esp_image_format.c:819-827`). Rejection was always correct; the scan now uses
+  `ESP_IMAGE_VERIFY_SILENT` and one WARN names cause and remedy. Gates: `tests/test_meta_store_scan.c`
+  (host fixture + IDF segment-walk simulation) and `tests/test_bug21_scan_silent.py`;
+  `test_http_contract.py` is now wired into validate.sh.
 - **v3.2-r10.6 (2026-09-28) List page corrupted by one store visit (BUG-14)**: `s_keys`
   was still `static lv_obj_t *s_keys[10]` (r8 ten-key leftover) while the r10 keypad is 15
   keys — every P1 build overflowed 5 pointers into `.bss.s_rows` + the head of

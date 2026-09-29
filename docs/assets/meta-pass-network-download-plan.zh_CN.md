@@ -341,6 +341,14 @@ app.get("/api/extracted", async (req, res) => {
 
 ## 8. 修订记录
 
+- **v3.2-r10.11（2026-09-29）开机槽位扫描对半成品镜像静默化（BUG-21）**：启动 USB monitor 会复位
+  芯片——USB-Serial-JTAG 硬复位是 esp-idf-monitor 的默认行为（`serial_reader.py:112` → esptool
+  `USBJTAGSerialReset`；规避：`--no-reset` / `ESP_IDF_MONITOR_NO_RESET=1`）——复位后的开机扫描用
+  非静默 `esp_image_verify` 校验 675 下载失败留下的半成品槽位，IDF 段表遍历即打
+  `invalid segment length 0xffffffff`（擦除态 0xFFFFFFFF 段头违反 4 字节对齐规则，
+  `esp_image_format.c:819-827`）。拒绝本身始终正确；现扫描改用 `ESP_IMAGE_VERIFY_SILENT`，并以一行
+  WARN 写明原因与处置。回归门：`tests/test_meta_store_scan.c`（host fixture + IDF 段表遍历仿真）与
+  `tests/test_bug21_scan_silent.py`；`test_http_contract.py` 已挂进 validate.sh。
 - **v3.2-r10.6（2026-09-28）进一次商店即损毁列表页（BUG-14）**：`s_keys`
   仍是 `static lv_obj_t *s_keys[10]`（r8 十键遗留）而 r10 键盘已达 15 键 ——
   每次进入 P1 越界写 5 个指针，砸进 `.bss.s_rows` + `.bss.s_slots` 头部

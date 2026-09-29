@@ -427,6 +427,52 @@ host tests so it cannot drift silently.
 
 ---
 
+### BUG-21 (Low) — every boot logged `invalid segment length 0xffffffff` on a device with a half-written slot: the scan used non-silent image verification
+
+- **Symptom**: while starting the USB log monitor, the device reset and the
+  fresh boot printed `E (1557) esp_image: invalid segment length 0xffffffff`
+  on every start. Two symptoms, one causal chain: the monitor start reset the
+  chip (expected USJ behavior, see below), and the reset made the app rescan
+  the slots, where a slot still held the half-written image left by the
+  14%-failed download (session 675; exact slot not recorded).
+- **Root cause** (two parts, both pinned to source):
+  1. The monitor reset itself is not a defect: `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`
+     (sdkconfig:1111) means the device enumerates as USB PID 0x1001, and
+     esp-idf-monitor then hard-resets the chip on startup by design —
+     `serial_reader.py:112` (`if reset: self.reset_strategy.hard()`), with the
+     USJ DTR/RTS sequence in esptool `reset.py:124` (`USBJTAGSerialReset`)
+     explicitly annotated `# Reset.`. Escapes: `idf.py monitor -- --no-reset`
+     or `export ESP_IDF_MONITOR_NO_RESET=1`.
+  2. The boot-time noise *was* ours: `scan_one()` verified each slot with
+     `esp_image_verify(ESP_IMAGE_VERIFY, …)` (non-silent, `meta_store.c:85` —
+     the only non-silent call in the project). ESP app images interleave
+     segment headers and data, so a download that died at ~14% leaves
+     [valid header + first segments + 0xFF tail]; the walk reads the next
+     segment-header position inside the erased tail, gets `data_len=0xFFFFFFFF`,
+     and IDF's `verify_segment_header` (`esp_image_format.c:819-827`) logs
+     ESP_LOGE because 0xFFFFFFFF violates the 4-byte alignment rule. Rejecting
+     the half-written slot was always correct — only the error-level
+     bootloader-format noise was the bug (t=1557 ms is app-phase scan time,
+     not the bootloader; the bootloader never verified this image because
+     otadata is wiped every boot by the single-session model).
+- **Fix**: scan-time verify switched to `ESP_IMAGE_VERIFY_SILENT`; the
+  rejection now logs one WARN naming the cause and the remedy (device log:
+  "image verify failed (leftover from an interrupted download or corrupted); erase to reuse"). Slot state is
+  still INVALID, and the slot stays installable-over (`s_slot_fit` is
+  length-based, so residue never blocks an install).
+- **Gates**: `tests/test_meta_store_scan.c` builds a host fixture
+  (8 MB flash model + device partition table + `meta_image_verify_sim.c`
+  replaying IDF's segment walk incl. the 4-byte alignment rule) and pins the
+  states empty/INVALID/VALID plus erase recovery; `tests/test_bug21_scan_silent.py`
+  pins the silent-mode call against the IDF source facts (same shape as
+  `test_http_contract.py`, CI bare-checkout safe).
+- **Lesson**: library error logging is part of the API surface. Before calling
+  a verifier in a *periodic or boot-time path*, check which log mode it ships
+  in — a correct rejection that screams like a bootloader failure trains
+  everyone to ignore the serial log.
+
+---
+
 ## PASS-RADAR "still unsigned" — root cause and resolution
 
 Symptom reported on-device: the pass-radar firmware signed with the *fixed*

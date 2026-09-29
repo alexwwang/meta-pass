@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- **开机槽位扫描不再为半成品镜像打 bootloader 格式错误日志(r10.11,BUG-21)**:启动 USB monitor 会复位芯片(USB-Serial-JTAG 硬复位,monitor 默认行为——用 `idf.py monitor -- --no-reset` 或 `ESP_IDF_MONITOR_NO_RESET=1` 可保持设备运行),复位后的开机扫描用 `esp_image_verify(ESP_IMAGE_VERIFY, …)` 校验失败下载留下的半成品槽位——该非静默模式下,IDF 段表遍历读到擦除态 0xFFFFFFFF 段头即打 `invalid segment length 0xffffffff`(ESP_LOGE)。拒绝本身始终正确:槽位状态为 INVALID,且仍可覆盖安装。现扫描改为静默模式,并打一行写明原因与处置的 WARN。回归覆盖:`tests/test_meta_store_scan.c`(host fixture 复现 IDF 段表遍历;empty/INVALID/VALID 三态 + 擦除恢复)与 `tests/test_bug21_scan_silent.py`(静默调用静态门,对照 IDF 源码验证);`tests/test_http_contract.py` 已挂进 `tools/validate.sh`(r10.8 起一直只手动运行)。
 - **商店 UX 修正 + 下载遥测(r10.10)**:安装页行动行改标 CONTINUE(原 CONFIRM,
   语义是继续去选槽位);槽位选择页信息窗加倍高度、底色弱化,不再与按钮行混为
   一排,并显示玩法名与 KB;不适配槽位改为一行短标签 "SLOT n too small" 并置灰

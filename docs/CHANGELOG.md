@@ -6,6 +6,7 @@
 
 ## Unreleased
 
+- **Boot-time slot scan stopped logging bootloader-format errors for half-written slots (r10.11, BUG-21)**: starting the USB monitor resets the chip (USB-Serial-JTAG hard reset, the monitor's default — use `idf.py monitor -- --no-reset` or `ESP_IDF_MONITOR_NO_RESET=1` to keep it running), and the fresh boot's slot scan then verified the half-written slot left by a failed download with `esp_image_verify(ESP_IMAGE_VERIFY, …)` — the non-silent mode in which IDF's segment walk logs `invalid segment length 0xffffffff` (ESP_LOGE) when it reads an erased-state 0xFFFFFFFF segment header. The rejection itself was always correct: the slot scanned INVALID and stayed installable-over. The scan now verifies in SILENT mode and logs one WARN naming cause and remedy. Regression coverage: `tests/test_meta_store_scan.c` (host fixture replaying IDF's segment walk; empty/INVALID/VALID states + erase recovery) and `tests/test_bug21_scan_silent.py` (static gate on the silent call, verified against IDF sources); `tests/test_http_contract.py` is now wired into `tools/validate.sh` (it had only been run manually since r10.8).
 - **Store UX pass + download telemetry (r10.10)**: the install page's action row now
   reads CONTINUE (was CONFIRM; the row advances to slot picking); the slot-picker info
   window is double-height with muted background so it no longer reads as a second row

@@ -108,6 +108,21 @@ PY
         tests/test_meta_sign.c tests/esp_stubs/meta_sign_stub.c \
         -o "${test_dir}/test_meta_sign"
     "${test_dir}/test_meta_sign"
+    # 槽位扫描状态机(BUG-21;真机同一份 meta_store.c,esp_image_verify 用
+    # meta_image_verify_sim.c 复现 IDF 段表遍历与 4 字节对齐规则)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_meta_store_scan.c main/meta_store.c main/meta_slots.c \
+        main/meta_name.c main/meta_image.c \
+        tests/esp_stubs/meta_image_verify_sim.c \
+        tests/esp_stubs/meta_store_host_fixture.c \
+        tests/esp_stubs/meta_sign_stub.c \
+        -o "${test_dir}/test_meta_store_scan"
+    "${test_dir}/test_meta_store_scan"
+    # HTTP 访问器契约(r10.8/BUG-19;IDF checkout 存在时校验契约本身,缺失时用
+    # 记录的契约片段,CI 裸 checkout 兼容)
+    python3 tests/test_http_contract.py
+    # 扫描静默校验门(r10.11/BUG-21;同上,IDF checkout 缺失时跳过源码事实检查)
+    python3 tests/test_bug21_scan_silent.py
     python3 tests/test_verify_firmware.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin
