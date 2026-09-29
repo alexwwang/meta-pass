@@ -6,6 +6,26 @@
 
 ## Unreleased
 
+- **v3.2-r10.19 (2026-09-30) Worker resume (206) activates firmware r10.17**: the worker now
+  answers firmware resume requests (`Range: bytes=<start>-`) with `206` +
+  `Content-Range: bytes <start>-<total-1>/<total>`, unlocking the OTA resume path that r10.17
+  shipped dormant (the firmware safely fell back to full-file retries whenever a resume got a
+  200). Only the suffix-range form the firmware emits is accepted; every other Range form is
+  ignored per RFC 9110 (200 full), and an out-of-range start gets 416 (the firmware discards
+  the OTA session and restarts whole). Range requests bypass the edge-cache read and never
+  write it — the cache key carries no Range and always stores the full 200 body, so a 206 must
+  never land there. Two supply paths: ticketed requests use R2's native range read
+  (`x-source: r2-range`, no full-object materialization inside the isolate), everything else
+  slices the analyzed `Uint8Array` (`x-source: computed-range`) — the ticket remains an
+  R2-only key, so a mid-download ticket expiry still cannot break a resume (no-rejection
+  semantics unchanged). The 206 carries the full-image `x-image-sha256` (after resuming, the
+  device verifies the complete image) and returns before any cache/R2 write path.
+  `worker_contract.mjs` PASS 11 executes `parseSuffixRange` (accept exactly `bytes=<n>-`,
+  reject other forms) and pins the firmware-exact Content-Range template, exactly two 206
+  paths, 416 on both, and 206-before-writes ordering. Verified live on play 675: 206 +
+  `x-source: r2-range`, slice bytes identical to the full body at the same offset, full-image
+  SHA-256 equals the analyze-declared value, no-ticket resume degrades without rejection,
+  malformed Range → 200, start≥total → 416.
 - **v3.2-r10.18 (2026-09-30) R2 materialization behind HMAC download tickets**: the extracted
   artifact is now materialized into R2 (`extracted/<id>/<storeFwSha256>.bin` + `.meta.json`
   audit mapping) and served straight from R2 — `x-source: r2` — which removes the per-isolate

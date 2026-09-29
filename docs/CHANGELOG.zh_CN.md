@@ -6,6 +6,22 @@
 
 ## Unreleased
 
+- **v3.2-r10.19 (2026-09-30) Worker 续传(206),激活固件 r10.17**:worker 现以
+  `206` + `Content-Range: bytes <start>-<total-1>/<total>` 应答固件续传请求
+  (`Range: bytes=<start>-`),把 r10.17 出厂时休眠的断点续传路径真正激活(此前固件
+  对续传收到 200 会安全降级为整单重试)。只接受固件会发出的 suffix-range 形态;
+  其余 Range 形态按 RFC 9110 忽略(回 200 全量),越界 start 回 416(固件作废 OTA
+  会话整单重来)。Range 请求绕过边缘缓存读、也绝不写入 —— 缓存键不含 Range 且恒存
+  200 全量体,206 绝不能落进去。两条供给路径:有票走 R2 原生区间读
+  (`x-source: r2-range`,不在 isolate 内物化整对象),其余对 analyze 缓存的
+  `Uint8Array` 切片(`x-source: computed-range`) —— 票据仍是 R2 专属钥匙,下载中途
+  票据过期依旧不可能弄断续传(永不拒绝语义不变)。206 携带全镜像
+  `x-image-sha256`(续传完成后设备校验完整镜像),且先于任何缓存/R2 写路径返回。
+  `worker_contract.mjs` PASS 11 直接执行 `parseSuffixRange`(恰好接受 `bytes=<n>-`,
+  其余形态拒绝),钉死固件同构 Content-Range 模板、恰好两条 206 路径、双双 416、
+  206 先于写路径的顺序。675 生产实测:206 + `x-source: r2-range`,切片字节与全量体
+  同偏移逐位一致,全镜像 SHA-256 等于 analyze 声明值,无票续传降级不被拒绝,
+  畸形 Range → 200,start≥total → 416。
 - **v3.2-r10.18 (2026-09-30) R2 物化 + HMAC 下载票据**:解包产物现物化进 R2
   (`extracted/<id>/<storeFwSha256>.bin` + `.meta.json` 审计映射),有票请求直接 R2
   直出(`x-source: r2`),彻底消除每 isolate 冷启动回源这一段(残余的数秒级 TTFB

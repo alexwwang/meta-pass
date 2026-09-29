@@ -112,4 +112,55 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
   console.log("PASS 10: hmacHex16 issues exactly-16-hex-char ticket labels");
 }
 
+// 11. r10.19:断点续传(206)。固件 r10.17 对中断安装发 `Range: bytes=<start>-`,
+//     设备端 meta_store_range_parse 只认 "bytes <first>-<last>/<total>"(带空格,
+//     span 必须等于该响应 content-length,total 必须等于 analyze image_len)。
+//     钉死:
+//     a. 只接受 suffix-range 形态 `bytes=<n>-`,其余 Range 形态按 RFC 回 200;
+//     b. Range 请求绕过边缘缓存读(缓存键不含 Range,缓存体恒为 200 全量);
+//     c. R2 路径用原生区间读 get(key,{range:{offset}}),现算路径切片供给;
+//     d. 两条 206 路径的 content-range 模板逐字符匹配固件解析器;
+//     e. 206 的 x-image-sha256 仍是全镜像摘要(设备端续传后强校验完整镜像);
+//     f. 206 提前返回,绝不写边缘缓存/不触发 R2 物化(污染防护);
+//     g. start>=total 回 416(固件作废 OTA 降级整单重试,安全)。
+{
+  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/api/r2check"'));
+  assert.ok(workerSrc.includes("function parseSuffixRange"), "suffix-range parser must exist");
+  assert.ok(workerSrc.includes("/^bytes=(\\d+)-$/"), "only `bytes=<n>-` form accepted (firmware emits exactly this)");
+  assert.ok(extractedBlock.includes("if (rangeStart === null) {"),
+            "range requests must bypass the edge-cache read");
+  assert.ok(extractedBlock.includes("get(key, { range: { offset: rangeStart } })"),
+            "R2 resume must use native range read");
+  assert.ok(extractedBlock.includes("out.stream.slice(rangeStart)"),
+            "computed resume must slice the analyzed Uint8Array");
+  // content-range 模板:与固件 meta_store_range_parse 的 "bytes <first>-<last>/<total>"
+  // 逐字符同源(R2 与现算两条路径共用同一模板字面量)。
+  const tmpl = "`bytes ${rangeStart}-${total - 1}/${total}`";
+  assert.ok(workerSrc.split(tmpl).length - 1 === 2,
+            "both 206 paths must share the exact content-range template");
+  assert.ok(extractedBlock.split("status: 206").length - 1 === 2,
+            "exactly two 206 supply paths (r2-range + computed-range)");
+  // 206 早于缓存/物化写路径返回(顺序断言,防未来重构把写路径挪到前面)。
+  const i206 = extractedBlock.indexOf("status: 206");
+  const iEdge = extractedBlock.indexOf("putExtractedToEdge(req, out)");
+  const iR2w = extractedBlock.indexOf('r2Write = `ok:');
+  assert.ok(i206 > 0 && i206 < iEdge && i206 < iR2w,
+            "206 must return before any cache/R2 write");
+  assert.ok((extractedBlock.match(/status: 416/g) || []).length === 2,
+            "start>=total must 416 on both supply paths");
+  // 动态执行解析器:固件唯一形态接受,其余形态(多字节/后缀/无头)必须 null → 200。
+  const pm = workerSrc.match(/function parseSuffixRange[\s\S]*?\n}/);
+  assert.ok(pm, "parseSuffixRange must be extractable");
+  // eslint-disable-next-line no-eval
+  const parseFn = eval("(" + pm[0].replace("function parseSuffixRange", "function") + ")");
+  const withRange = (v) => new Request("https://x/api/extracted?id=1",
+    v === null ? {} : { headers: { range: v } });
+  assert.equal(parseFn(withRange("bytes=123-")), 123, "suffix-range accepted");
+  assert.equal(parseFn(withRange("bytes=0-")), 0, "zero offset accepted");
+  assert.equal(parseFn(withRange("bytes=0-499")), null, "explicit-end form rejected (200 full)");
+  assert.equal(parseFn(withRange("bytes=-500")), null, "suffix-length form rejected");
+  assert.equal(parseFn(withRange(null)), null, "no header -> full response");
+  console.log("PASS 11: range resume serves 206 with firmware-exact Content-Range; other Range forms stay 200");
+}
+
 console.log("ALL WORKER CONTRACT TESTS PASSED");

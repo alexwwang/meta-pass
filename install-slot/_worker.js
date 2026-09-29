@@ -162,6 +162,19 @@ async function downloadTicket(env, url, idStr) {
   return { ticketed: true, reason: "ok" };
 }
 
+// r10.19:断点续传 —— 固件(r10.17)对中断安装发 `Range: bytes=<start>-`,期待
+// 206 + `Content-Range: bytes <first>-<last>/<total>`(设备端 meta_store_range_parse
+// 只认这一种形态:带空格的 "bytes " 前缀、span 必须等于该响应 content-length、
+// total 必须等于 analyze 的 image_len)。只实现固件会发的 suffix-range 子集;
+// 其余 Range 形态按 RFC 9110 忽略(回 200 全量,固件会作废 OTA 降级整单重试)。
+// 返回 null = 无 Range 或非此形态;数字 = 起始偏移(>=total 由调用方判 416)。
+function parseSuffixRange(req) {
+  const h = req.headers.get("range");
+  if (!h) return null;
+  const m = /^bytes=(\d+)-$/.exec(h.trim());
+  return m ? Number(m[1]) : null;
+}
+
 async function rateLimit(env, req, idStr) {
   if (!env.RATE_KV) return true; // 未绑 KV(本地 dev):不设限;生产环境绑定后生效
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
@@ -268,11 +281,16 @@ export default {
                             { status: 429, headers: h });
       }
       const ticket = await downloadTicket(env, url, id);
+      const rangeStart = parseSuffixRange(req);
       // r10.15b:边缘缓存命中直接直出(老链路快路径;字节只能来自已验证产物)。
-      try {
-        const hit = await caches.default.match(extractedEdgeKey(req));
-        if (hit) return hit;
-      } catch { /* cache unavailable: normal path */ }
+      // r10.19:Range(续传)请求绕过缓存读 —— 缓存键不含 Range,缓存体恒为
+      // 200 全量;206 绝不能命中也绝不能写入该键(见下方两条供给路径)。
+      if (rangeStart === null) {
+        try {
+          const hit = await caches.default.match(extractedEdgeKey(req));
+          if (hit) return hit;
+        } catch { /* cache unavailable: normal path */ }
+      }
       // r10.18:R2 按需物化命中路径 —— 仅有效票据(ticket = R2 专属钥匙)。
       // analyze(内存缓存命中时纯内存)取 store.sha256 构造键;命中且
       // sha256/imageLen 与 analyze 声明一致 → 直出,跳过回源+解包全流程。
@@ -281,21 +299,52 @@ export default {
         try {
           const meta = await storeAnalyzer.analyze(Number(id));
           if (meta && meta.ok && meta.store?.sha256 && env.meta_pass_extracted) {
-            const obj = await env.meta_pass_extracted.get(r2Key(Number(id), meta.store.sha256));
-            if (obj && obj.body
-                && obj.customMetadata?.["x-image-sha256"] === meta.extracted.sha256
-                && Number(obj.customMetadata?.["x-image-len"]) === meta.extracted.imageLen) {
-              return new Response(obj.body, {
-                status: 200,
-                headers: {
-                  "content-type": "application/octet-stream",
-                  "content-length": String(obj.size),
-                  "x-image-len": String(obj.size),
-                  "x-image-sha256": meta.extracted.sha256,
-                  "x-source": "r2",
-                  "cache-control": "no-store",
-                },
-              });
+            const key = r2Key(Number(id), meta.store.sha256);
+            const total = meta.extracted.imageLen;
+            // r10.19:续传走 R2 原生区间读(get(key,{range})),不把整对象
+            // 物化进 isolate 内存;R2 miss/元数据不符 → 落回现算切片路径。
+            if (rangeStart !== null) {
+              if (rangeStart >= total) {
+                return new Response(JSON.stringify({ error: "range not satisfiable" }), {
+                  status: 416,
+                  headers: { "content-range": `bytes */${total}`,
+                             "cache-control": "no-store" },
+                });
+              }
+              const obj = await env.meta_pass_extracted.get(key, { range: { offset: rangeStart } });
+              if (obj && obj.body
+                  && obj.customMetadata?.["x-image-sha256"] === meta.extracted.sha256
+                  && Number(obj.customMetadata?.["x-image-len"]) === total) {
+                return new Response(obj.body, {
+                  status: 206,
+                  headers: {
+                    "content-type": "application/octet-stream",
+                    "content-length": String(obj.size),
+                    "content-range": `bytes ${rangeStart}-${total - 1}/${total}`,
+                    "x-image-len": String(total),
+                    "x-image-sha256": meta.extracted.sha256,
+                    "x-source": "r2-range",
+                    "cache-control": "no-store",
+                  },
+                });
+              }
+            } else {
+              const obj = await env.meta_pass_extracted.get(key);
+              if (obj && obj.body
+                  && obj.customMetadata?.["x-image-sha256"] === meta.extracted.sha256
+                  && Number(obj.customMetadata?.["x-image-len"]) === meta.extracted.imageLen) {
+                return new Response(obj.body, {
+                  status: 200,
+                  headers: {
+                    "content-type": "application/octet-stream",
+                    "content-length": String(obj.size),
+                    "x-image-len": String(obj.size),
+                    "x-image-sha256": meta.extracted.sha256,
+                    "x-source": "r2",
+                    "cache-control": "no-store",
+                  },
+                });
+              }
             }
           }
         } catch { /* R2 miss/不可用/analyze 失败:走完整信任链路径 */ }
@@ -323,6 +372,31 @@ export default {
             reason: out.error,
             ...(out.detail ? { detail: out.detail } : {}),
           }), { status: out.error === "not-found" ? 404 : 502, headers: hdrs });
+        }
+        // r10.19:现算路径的续传供给 —— analyze 缓存里的全镜像 Uint8Array
+        // 直接切片(只读副本);206 在此提前返回,绝不下探到缓存/物化写路径。
+        if (rangeStart !== null) {
+          const total = out.imageLen;
+          if (rangeStart >= total) {
+            return new Response(JSON.stringify({ error: "range not satisfiable" }), {
+              status: 416,
+              headers: { "content-range": `bytes */${total}`,
+                         "cache-control": "no-store" },
+            });
+          }
+          const body = out.stream.slice(rangeStart);
+          return new Response(body, {
+            status: 206,
+            headers: {
+              "content-type": "application/octet-stream",
+              "content-length": String(body.byteLength),
+              "content-range": `bytes ${rangeStart}-${total - 1}/${total}`,
+              "x-image-len": String(total),
+              "x-image-sha256": out.sha256,
+              "x-source": "computed-range",
+              "cache-control": "no-store",
+            },
+          });
         }
         // 现算成功:写边缘缓存(下一个请求/下一台设备直出) + R2 物化(跨实例/跨
         // POP 持久,消灭后续 Worker 冷启动回源慢路径),并回给本请求。
