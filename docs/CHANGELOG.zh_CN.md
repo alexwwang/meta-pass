@@ -6,6 +6,15 @@
 
 ## Unreleased
 
+- **安装不再死于服务端第一次停顿(r10.13)**:v43 真机日志证明吞吐配置已生效(0% 时
+  571kB/s),但下载在 45KB/2.6MB 处死掉,每次读停 10-30 秒并以 `errno=11` 告终 ——
+  同一分钟同端点用设备 UA 的 curl 却是 3.3s/16.3s/4.4s,ping 0% 丢包。商店以
+  `cf-cache-status: DYNAMIC` + `no-store` 下发这个确定性产物,Cloudflare 每次请求
+  都回源现生成,源站间歇性停顿;Range 续传不支持(返回 200 全量)。IDF 读超时返回
+  `-ESP_ERR_HTTP_EAGAIN` 且连接仍存活 —— 旧代码把一切负值当致命错。现在:EAGAIN
+  续读(有界,连续 3 次才判死);其他读错误或 EOF 截断则 abort OTA 并用全新 TLS
+  连接整单重试(3 次,退避 1s/2s,尊重取消);长度/摘要契约违约仍是确定性错误,
+  照旧直接报错。回归门:`tests/test_download_retry_gate.py`。
 - **商店下载提速:拆掉三个叠加的默认限制(r10.12)**:下载稳态只有几十 KB/s,是三个
   独立上限叠加的结果,现已逐一拆除。WiFi 调制解调器省电从未关闭(IDF 默认
   `WIFI_PS_MIN_MODEM` 在 DTIM 信标间休眠射频)—— STA 与 APSTA 两条启动路径均加

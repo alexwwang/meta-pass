@@ -6,6 +6,12 @@
 
 #include "esp_err.h"
 
+// esp_http_client.h:275 (IDF 5.5.3) — mapping of errno EAGAIN to esp_err_t.
+// esp_http_client_read() returns -ESP_ERR_HTTP_EAGAIN on a read timeout while
+// the connection stays alive (header docs :320/:636).
+#define ESP_ERR_HTTP_BASE 0x7000
+#define ESP_ERR_HTTP_EAGAIN (ESP_ERR_HTTP_BASE + 7)
+
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -125,6 +125,8 @@ PY
     python3 tests/test_bug21_scan_silent.py
     # 下载吞吐配置门(r10.12;省电关闭×2 路径/4KB 块/lwIP 窗口与邮箱,防回退)
     python3 tests/test_download_speed_config.py
+    # 下载容错门(r10.13;EAGAIN 读级容忍 + 整单重试退避,真机停顿病例驱动)
+    python3 tests/test_download_retry_gate.py
     python3 tests/test_verify_firmware.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin

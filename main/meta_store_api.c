@@ -14,6 +14,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"          // r10.10:下载遥测(慢读/死因打点)
 #include "esp_ota_ops.h"
+#include "freertos/FreeRTOS.h"  // r10.13:整单重试退避 vTaskDelay/pdMS_TO_TICKS
+#include "freertos/task.h"
 #include "esp_tls.h"            // r10.7:OPEN 死因分类(esp/mbedtls 错误码 +
                                 // esp_tls_get_and_clear_error_type)
 #include "lwip/errno.h"         // ECONNREFUSED/EHOSTUNREACH(SOCK errno 系)
@@ -96,6 +98,11 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 // 的调用开销降为 1/4;样例参照实现(ai-passport-miniapp-installer)真机验证值。
 // s_chunk 为 static 缓冲,不占栈。
 #define DL_CHUNK         4096
+// r10.13:下载容错。服务端(Cloudflare DYNAMIC + no-store)偶发回源停顿
+// 10-30s(host 同端点同分钟实测 3.3s/16.3s/4.4s,ping 0% 丢包);Range 续传
+// 不支持(实测 200 全量),只能整单重试。健康路径整包仅数秒,重试成本低。
+#define DL_ATTEMPTS        3    // 整单重试上限(新 TLS 连接,退避 1s/2s)
+#define DL_STALL_EAGAIN_MAX 3  // 单轮内连续读超时上限(每次 = timeout_ms)
 // 请求超时:构建期可用 CONFIG_META_STORE_HTTP_TIMEOUT_MS 覆盖(main/Kconfig.projbuild);
 // host 桩编译无 sdkconfig,保留同值回退。
 #ifdef CONFIG_META_STORE_HTTP_TIMEOUT_MS
@@ -307,23 +314,14 @@ static void write_display_name(const esp_partition_t *part, uint32_t image_len,
     ESP_LOGI(TAG, "槽位显示名 %s: %s", (err == ESP_OK) ? "已写入" : "写入失败", name);
 }
 
-esp_err_t meta_store_api_install(uint32_t play_id, int slot,
-                                 const meta_store_analysis_t *analysis,
-                                 meta_slot_info_t slots[META_SLOT_COUNT])
+// 单次安装尝试:open → 下载 → 校验 → 写注册表。失败路径自清理(ota_abort/
+// 标 INVALID);整单重试由 meta_store_api_install 外层循环驱动(r10.13)。
+static esp_err_t install_once(uint32_t play_id, int slot,
+                              const meta_store_analysis_t *analysis,
+                              meta_slot_info_t *slot_info,
+                              const esp_partition_t *part)
 {
-    if (!analysis || !slots || slot < 0 || slot >= META_SLOT_COUNT) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    const esp_partition_t *part = meta_store_slot_partition(slot);
-    if (!part) return ESP_ERR_INVALID_ARG;
-
-    // 双上限:analyze 声明的尺寸与槽位物理上限取小者;不一致即拒绝(防上游换版)。
-    const uint32_t app_limit = meta_sign_app_limit(part->size);
-    if (analysis->image_len > app_limit) {
-        ESP_LOGE(TAG, "镜像 %lu 超过槽位 %d 上限 %lu",
-                 (unsigned long)analysis->image_len, slot, (unsigned long)app_limit);
-        return ESP_ERR_INVALID_SIZE;
-    }
+    esp_err_t err = ESP_FAIL;
 
     char url[96];
     snprintf(url, sizeof(url), "%s/api/extracted?id=%lu",
@@ -341,8 +339,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     if (!client) return ESP_FAIL;
 
     set_progress(true, 0, 0, 0, false, "Connecting...");
-    s_cancel = false;   // 清除可能在排队期间到达的取消请求,只响应当次下载
-    esp_err_t err = esp_http_client_open(client, 0);
+    err = esp_http_client_open(client, 0);
     if (err != ESP_OK) goto fail;
 
     // r10.8(BUG-19):与 analyze 同款修复 —— fetch_headers() 返回 CL 不是状态码;
@@ -391,7 +388,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     if (err != ESP_OK) {
         // begin 内部会先擦目标区域:失败可能留下半擦除的槽位,必须作废注册表条目。
         esp_http_client_cleanup(client);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         set_progress(false, -1, 0, 0, false, "Flash write failed.");
         return err;
     }
@@ -406,6 +403,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     uint8_t hdr[META_IMAGE_HEADER_LEN];
     size_t seen = 0;
     int pct = -1;
+    int eagain = 0;   // r10.13:连续读超时计数(每读 = timeout_ms)
     // r10.10 下载遥测: stalled 读(含 EAGAIN)与慢速段在串口上可定位 ——
     // 每 5% 打点速率;read 返回 0 时打印上一读耗时,判定死等超时 vs 真 EOF。
     int64_t t_read_start = esp_timer_get_time();
@@ -423,15 +421,27 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
         t_last_read_ms = (now_us - t_read_start) / 1000;
         t_read_start = now_us;
         if (got < 0) {
+            // r10.13:-EAGAIN = 读超时但连接存活(esp_http_client.h:636 "timed-out
+            // before any data was ready";传输层未死,续读即可)。服务端(Cloudflare
+            // DYNAMIC)回源停顿 host 实测可达 16s+,30s 单读超时撞上即误杀 ——
+            // 连续 DL_STALL_EAGAIN_MAX 次超时才判死。其他负值 = 传输层死亡,
+            // 整单作废(外层 meta_store_api_install 重试,新 TLS 连接)。
+            if (got == -ESP_ERR_HTTP_EAGAIN && ++eagain < DL_STALL_EAGAIN_MAX) {
+                ESP_LOGW(TAG, "download stall: rx=%lu/%ld wait=%lldms (%d/%d)",
+                         (unsigned long)received, (long)content_len,
+                         (long long)t_last_read_ms, eagain, DL_STALL_EAGAIN_MAX);
+                continue;
+            }
             // r10.10:read 失败点带现场(已收字节/该次等待时长)—— "13% 后慢
             // 然后 failed"这类现象,串口直接给出卡死位置,不再只有 Download failed。
-            ESP_LOGE(TAG, "download read failed: rx=%lu/%ld last_read_ms=%lld",
+            ESP_LOGE(TAG, "download read failed: rx=%lu/%ld last_read_ms=%lld got=%d",
                      (unsigned long)received, (long)content_len,
-                     (long long)t_last_read_ms);
+                     (long long)t_last_read_ms, got);
             err = ESP_FAIL;
             break;
         }
         if (got == 0) break;
+        eagain = 0;   // 有数据到达:停顿计数复位
         if (t_last_read_ms > 5000) {
             ESP_LOGW(TAG, "download slow read: rx=%lu got=%d took=%lldms",
                      (unsigned long)received, got, (long long)t_last_read_ms);
@@ -476,7 +486,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     if (err != ESP_OK || !hdr_checked) {
         mbedtls_sha256_free(&sha);
         esp_ota_abort(ota);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         const char *msg = s_cancel ? "Cancelled."
                          : (err == ESP_OK) ? "Truncated image."
                                            : "Download failed.";
@@ -489,16 +499,18 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     mbedtls_sha256_finish(&sha, digest);
     mbedtls_sha256_free(&sha);
     if (received != (uint32_t)content_len) {   // r10.8:read() 已确认 EOF,残留字节即协议错
+        // r10.13:EOF 截断本质是传输层死亡(服务端停顿后断连),返回 ESP_FAIL
+        // 让外层整单重试;长度契约违约(INVALID_SIZE)才是确定性的,不重试。
         ESP_LOGE(TAG, "字节流提前结束: %lu/%ld", (unsigned long)received, (long)content_len);
         esp_ota_abort(ota);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         set_progress(false, -1, received, (uint32_t)content_len, false, "Truncated image.");
-        return ESP_ERR_INVALID_SIZE;
+        return ESP_FAIL;
     }
     if (memcmp(digest, analysis->sha256, 32) != 0) {
         ESP_LOGE(TAG, "流式 SHA-256 与 analyze 不一致");
         esp_ota_abort(ota);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         set_progress(false, -1, received, (uint32_t)content_len, false,
                      "Checksum mismatch.");
         return ESP_ERR_INVALID_CRC;
@@ -507,7 +519,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     set_progress(true, 100, received, (uint32_t)content_len, true, "Verifying...");
     if (esp_ota_end(ota) != ESP_OK) {   // IDF 权威校验:segment/校验和/尾部哈希
         meta_store_erase_slot(slot);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         set_progress(false, -1, received, (uint32_t)content_len, false,
                      "Verify failed. Slot erased.");
         return ESP_ERR_INVALID_CRC;
@@ -518,14 +530,14 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     const esp_partition_pos_t pos = { .offset = part->address, .size = part->size };
     if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) != ESP_OK) {
         meta_store_erase_slot(slot);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         set_progress(false, -1, received, (uint32_t)content_len, false,
                      "Image verify failed.");
         return ESP_ERR_INVALID_CRC;
     }
     if (meta.image_len != analysis->image_len) {
         meta_store_erase_slot(slot);
-        meta_slot_mark_invalid(&slots[slot]);
+        meta_slot_mark_invalid(slot_info);
         set_progress(false, -1, received, (uint32_t)content_len, false,
                      "Image length mismatch.");
         return ESP_ERR_INVALID_SIZE;
@@ -538,7 +550,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
     if (esp_ota_get_partition_description(part, &desc) == ESP_OK) {
         ver = desc.version;
     }
-    meta_slot_set_valid(&slots[slot], analysis->name, ver,
+    meta_slot_set_valid(slot_info, analysis->name, ver,
                         meta.image_len, sha_hex);
     write_display_name(part, meta.image_len, analysis->name);
 
@@ -553,5 +565,40 @@ fail:
     if (client) esp_http_client_cleanup(client);
     set_progress(false, -1, 0, 0, false,
                  err == ESP_FAIL ? "Network error." : "Version changed. Retry.");
+    return err;
+}
+
+esp_err_t meta_store_api_install(uint32_t play_id, int slot,
+                                 const meta_store_analysis_t *analysis,
+                                 meta_slot_info_t slots[META_SLOT_COUNT])
+{
+    if (!analysis || !slots || slot < 0 || slot >= META_SLOT_COUNT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_partition_t *part = meta_store_slot_partition(slot);
+    if (!part) return ESP_ERR_INVALID_ARG;
+
+    // 双上限:analyze 声明的尺寸与槽位物理上限取小者;不一致即拒绝(防上游换版)。
+    const uint32_t app_limit = meta_sign_app_limit(part->size);
+    if (analysis->image_len > app_limit) {
+        ESP_LOGE(TAG, "镜像 %lu 超过槽位 %d 上限 %lu",
+                 (unsigned long)analysis->image_len, slot, (unsigned long)app_limit);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    // r10.13:服务端回源停顿(host 同端点同分钟实测 3.3s/16.3s/4.4s,ping 0%
+    // 丢包)会让单轮下载死在半途;Range 续传不支持(实测 200 全量),只能整单
+    // 重试 —— 每轮全新 TLS 连接。健康路径整包数秒,3 轮 + 1s/2s 退避可控。
+    s_cancel = false;   // 清除可能在排队期间到达的取消请求,只响应当次下载
+    esp_err_t err = ESP_FAIL;
+    for (int attempt = 1; attempt <= DL_ATTEMPTS; attempt++) {
+        if (attempt > 1) {
+            ESP_LOGW(TAG, "install retry %d/%d (last err=%s)", attempt, DL_ATTEMPTS,
+                     esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(1000 * (attempt - 1)));
+        }
+        err = install_once(play_id, slot, analysis, &slots[slot], part);
+        if (err == ESP_OK || s_cancel) break;
+    }
     return err;
 }

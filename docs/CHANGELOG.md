@@ -6,6 +6,18 @@
 
 ## Unreleased
 
+- **Install survives server-side stalls instead of dying at the first 30 s pause (r10.13)**:
+  the v43 device log proved the throughput config live (571 kB/s at 0%) but the download died
+  at 45 KB/2.6 MB with 10-30 s per-read pauses and `errno=11` — while the same minute the same
+  endpoint served curl with the device's UA in 3.3 s / 16.3 s / 4.4 s at 0% ping loss. The store
+  serves this deterministic artifact with `cf-cache-status: DYNAMIC` + `no-store`, so Cloudflare
+  re-renders from origin per request and the origin intermittently stalls; Range resume is
+  unsupported (returns 200 full). IDF returns `-ESP_ERR_HTTP_EAGAIN` on a read timeout with the
+  connection still alive — the code treated every negative read as fatal. Now: EAGAIN continues
+  (bounded, 3 consecutive = dead), other read errors or EOF truncation abort the OTA and retry
+  the whole install on a fresh TLS connection (3 attempts, 1 s/2 s backoff, cancel honored);
+  length/hash contract violations remain deterministic and are surfaced as before. Gate:
+  `tests/test_download_retry_gate.py`.
 - **Store download throughput: three stacked defaults removed (r10.12)**: the download's
   steady-state ~tens-of-KB/s had three independent caps, each now lifted. WiFi modem sleep
   was never disabled (IDF default `WIFI_PS_MIN_MODEM` dozes the radio between DTIM beacons) —
