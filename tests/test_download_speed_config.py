@@ -53,10 +53,10 @@ check("#define DL_CHUNK         4096" in api,
 
 # --- 4. lwIP window/buffer/mailbox pinned in the build config ---
 defaults = open(os.path.join(ROOT, "sdkconfig.defaults"), encoding="utf-8").read()
-check("CONFIG_LWIP_TCP_WND_DEFAULT=65535" in defaults,
-      "sdkconfig.defaults: TCP receive window 65535 (was 5760)")
-check("CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535" in defaults,
-      "sdkconfig.defaults: TCP send buffer 65535 (was 5760)")
+check("CONFIG_LWIP_TCP_WND_DEFAULT=32768" in defaults,
+      "sdkconfig.defaults: TCP receive window 32768 (fits 48 WiFi RX buffers; 65535 caused 802.11 frame drops -> RTO storms, r10.16)")
+check("CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768" in defaults,
+      "sdkconfig.defaults: TCP send buffer 32768 (was 5760)")
 check("CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64" in defaults,
       "sdkconfig.defaults: tcpip receive mailbox 64 (was 32)")
 
