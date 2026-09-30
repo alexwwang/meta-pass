@@ -18,6 +18,13 @@ page: architecture design, decision records, protocol conventions, and similar m
   retrospective of the v1.0.0 cycle: goals, approach, and lessons learned.
 - `ota-r10.17-r10.19-audit.md` / `ota-r10.17-r10.19-audit.zh_CN.md` — code audit of the
   OTA Range/R2 changes, including evidence boundaries, findings, and follow-up order.
+- `lan-pair-install-design.md` / `lan-pair-install-design.zh_CN.md` — design (not yet
+  implemented) for phone-assisted installs over the LAN: the device hosts a landing
+  page, the phone renders the catalog, downloads the image on its own network, and
+  pushes it to the device, bypassing the slow WAN path.
+- `play563-appstore-download-reverse.md` / `play563-appstore-download-reverse.zh_CN.md` —
+  reverse analysis of the hosted AppStore play 563 download path, with host/device evidence
+  and actionable meta-pass improvements.
 
 ## For AI agents
 
