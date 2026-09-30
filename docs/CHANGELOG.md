@@ -6,6 +6,22 @@
 
 ## Unreleased
 
+- **v3.2-r10.21 (2026-09-30) Fast zombie-connection kill during OTA**: the first on-device
+  run of the r10.17-r10.19 stack (v50, play 675) proved resume end-to-end —
+  `install resume 2/6 at 900188/2664256`, 2.4s TLS reconnect, no full restart, image
+  verified — but the dead first connection burned ~150s on the 3x30s EAGAIN ladder plus
+  20-29s slow reads before being declared dead (t=225s to t=373s moved only 36KB). While a
+  connection is a zombie (TCP open, no data), waiting is strictly worse than reconnecting:
+  resume costs only a ~2.5s handshake and keeps every byte already written. The install
+  per-read timeout therefore drops 30s to 15s (`DL_READ_TIMEOUT_MS`), consecutive-EAGAIN
+  tolerance 3 to 2 (worst-case zombie detection 30s vs ~150s), and the connection budget
+  rises 6 to 8 to spend the savings on reconnects. analyze keeps the 30s timeout (single
+  small response, no resume semantics). Pinned by `test_download_retry_gate.py`. Context
+  from the same run: the link burst to 67kB/s while averaging 5.7kB/s — stalls are
+  path/WiFi-side, not server-side (R2 serves host curl at ~630kB/s); the firmware cannot
+  fix the link, it can only keep making progress, which is exactly what fast-kill + resume
+  does.
+
 - **v3.2-r10.20 (2026-09-30) Audit H1-H8 closed**: all nine handover items from the
   r10.17-r10.19 code audit are addressed (H9 = on-device evidence, still open by design).
   H1 rate limiting is now real: a `RATE_KV` KV namespace is bound in `wrangler.toml`

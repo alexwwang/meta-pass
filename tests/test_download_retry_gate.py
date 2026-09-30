@@ -46,7 +46,7 @@ check("got == -ESP_ERR_HTTP_EAGAIN && ++eagain < DL_STALL_EAGAIN_MAX" in api,
       "read-level: EAGAIN continues within one connection (bounded), then reconnects")
 check("eagain = 0;" in api,
       "stall counter resets on data arrival")
-check("#define DL_ATTEMPTS        6" in api,
+check("#define DL_ATTEMPTS        8" in api,
       "six fresh TLS connections available for one install")
 check("for (int attempt = 1; attempt <= DL_ATTEMPTS; attempt++)" in api and
       "err = install_segment(play_id, analysis, part, &st);" in api,
@@ -73,6 +73,11 @@ check("esp_ota_abort" not in segment,
       "no OTA abort inside segment download/retry paths")
 check("install_abort_state(&st);" in api and "if (st.flash_touched) meta_slot_mark_invalid" in api,
       "OTA abort + slot invalidation happen only at final failure/cancel")
+check("#define DL_STALL_EAGAIN_MAX 2" in api and
+      "#define DL_READ_TIMEOUT_MS 15000" in api and
+      ".timeout_ms = DL_READ_TIMEOUT_MS" in api,
+      "zombie connections are declared dead in <=2x15s (r10.21: 30s worst-case vs "
+      "~150s observed on the 3x30s ladder), then resume from the byte offset")
 check("st.range_supported = true;" in api and
       "Range unsupported; fallback to full-file retry" in api and
       "install_restart_full(&st);" in api,

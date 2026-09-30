@@ -134,15 +134,27 @@ static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 #define DL_CHUNK         4096
 // r10.17:断点续传容错。服务端冷路径(host 同端点实测 18.9s/524/33.5s)
 // 与设备链路都可能停顿;每条 HTTP 连接失败后从 received 断点重连,不再整单
-// 重下。6 条连接 + 1..5s 退避覆盖生产偶发 524,成本只按剩余字节计。
-#define DL_ATTEMPTS        6    // 续传连接上限(新 TLS 连接,退避 1..5s)
-#define DL_STALL_EAGAIN_MAX 3   // 单连接内连续读超时上限(每次 = timeout_ms)
+// 重下。r10.21 起 8 条连接 + 1..5s 退避覆盖生产偶发 524 与更激进的僵尸判死,
+// 成本只按剩余字节计(真机实测断点重连 ~2.5s)。
+#define DL_ATTEMPTS        8    // 续传连接上限(新 TLS 连接,退避 1..5s)。r10.21:
+                                 // 判死更快(见 DL_READ_TIMEOUT_MS)后单次安装允许更多连接
+#define DL_STALL_EAGAIN_MAX 2   // 单连接内连续读超时上限(每次 = DL_READ_TIMEOUT_MS)。
+                                 // r10.21 真机日志(675):僵尸连接靠 3x30s 阶梯 + 29s 慢读
+                                 // 吊了 ~150s 只推进 36KB;判死收紧后最坏 2x15s=30s。
+                                 // 断点重连实测 ~2.5s(TLS 握手),吊死连接不再划算
 // 请求超时:构建期可用 CONFIG_META_STORE_HTTP_TIMEOUT_MS 覆盖(main/Kconfig.projbuild);
 // host 桩编译无 sdkconfig,保留同值回退。
 #ifdef CONFIG_META_STORE_HTTP_TIMEOUT_MS
 #define HTTP_TIMEOUT_MS  CONFIG_META_STORE_HTTP_TIMEOUT_MS
 #else
 #define HTTP_TIMEOUT_MS  30000
+#endif
+// r10.21:install 每读超时。30s 阶梯对"连接已死但 TCP 未关"的僵尸期代价过高
+// (真机日志:单连接死亡尾巴 ~150s);15s x 2 次 EAGAIN = 最坏 30s 判死,断点
+// 续传下重连只按剩余字节计,激进判死的期望成本远低于吊着等。analyze 仍用
+// HTTP_TIMEOUT_MS(单次小响应,无续传语义)。
+#ifndef DL_READ_TIMEOUT_MS
+#define DL_READ_TIMEOUT_MS 15000
 #endif
 
 // ---- 进度快照(网络任务写,UI 轮询读) ----
@@ -421,7 +433,7 @@ static esp_err_t install_segment(uint32_t play_id,
     esp_http_client_config_t cfg = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = HTTP_TIMEOUT_MS,
+        .timeout_ms = DL_READ_TIMEOUT_MS,   // r10.21:install 每读 15s(僵尸连接快速判死)
         .buffer_size = 4096,                          // 同 analyze:头部解析缓冲防截断
         .crt_bundle_attach = esp_crt_bundle_attach,   // r10.5:同 analyze,信任锚缺失修复
         // r10.17:响应头捕获(摘要 + Content-Range);get_header 是请求头 API。
