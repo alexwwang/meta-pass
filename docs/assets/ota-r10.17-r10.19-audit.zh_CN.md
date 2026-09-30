@@ -374,7 +374,7 @@ H1-H8 必须有对应提交,H9 必须有真机串口日志,才能宣布 R2 改�
 - **H6 已关闭** —— 边缘命中先与当前 analyze sha/imageLen 复核,陈旧条目先驱逐后服务。
 - **H7 已关闭** —— `st.received == image_len` 退出重试循环直接进入校验;`test_download_retry_gate.py` 钉死。
 - **H8 已关闭** —— `test_store_analyze_contract.c` 覆盖五形态;解析器逐字符校验 16 位小写 hex。
-- **H9 待办** —— 需刷入审计固件并抓取真机串口日志:中断一次 R2 下载,从非零 offset 恢复。
+- **H9 已关闭** —— 证据:用户提供的 v50 串口日志(2026-09-30,675)。`analyze` 200(529B)后,第一条连接在 34% 处因连续停顿死亡,随后 `install resume 2/6 at 900188/2664256` —— 新连接从非零 offset 一路续传到 100%,无整包重来,100% 后无任何校验失败日志。注:摘录止于 `dl 100%`,`esp_ota_end`/boot 行未含其中。同一轮运行也量化了 r10.21 要解决的停顿问题(每条死连接的僵尸阶梯 ~150s)。
 
 关闭时门禁状态:`worker_contract.mjs` PASS 1-14,`./tools/validate.sh` 全绿,
 `node tools/e2e-production.mjs` 全部通过(含 E2E-9/H1 与 E2E-9/H3)。

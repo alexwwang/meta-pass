@@ -371,7 +371,7 @@ All items are **CLOSED** in commit `r10.20` except H9. Production-verified evide
 - **H6 CLOSED** — edge hits re-checked against current analyze sha/imageLen; stale entries evicted before serving.
 - **H7 CLOSED** — `st.received == image_len` exits the retry loop into verification; pinned by `test_download_retry_gate.py`.
 - **H8 CLOSED** — five-form dl.sig/dl.ts coverage in `test_store_analyze_contract.c`; parser validates 16 lowercase-hex per character.
-- **H9 OPEN** — requires flashing the audit firmware and capturing a device serial log of an interrupted R2 download resuming from a non-zero offset.
+- **H9 CLOSED** — evidence: user-supplied v50 serial log (2026-09-30, play 675). Shows `analyze` 200 (529B), a first connection dying at 34% after repeated stalls, then `install resume 2/6 at 900188/2664256` — a fresh connection resuming from the non-zero offset straight to 100% with no full re-download and no verification failure. Caveat: the excerpt ends at `dl 100%`; the `esp_ota_end`/boot lines are not shown, but no failure was logged after 100%. The same run quantified the stall problem that r10.21 addresses (zombie ladder ~150s per dead connection).
 
 Gates at closure: `worker_contract.mjs` PASS 1-14, `./tools/validate.sh` all green,
 `node tools/e2e-production.mjs` ALL PASSED (including E2E-9/H1 and E2E-9/H3).
