@@ -25,8 +25,13 @@ const BACKEND = "https://ai-passport.folotoy.cn";
 //     任何冷构建仍强制走完整校验,缓存字节永远绕不过验证。
 const EDGE_TTL = 3600;
 
-function extractedEdgeKey(req) {
-  return new Request(req.url, { method: "GET" });
+// r10.20-H2:缓存键只含路径+id。ts/sig 是每请求凭证,绝不入键——否则 analyze
+// 预热(无票)与固件(带票)各占一个条目,预热失效,且每个 (ts,sig) 组合都留下
+// 一次性 2.6MB 条目。
+function extractedEdgeKey(url) {
+  const u = new URL(url);
+  const keyUrl = `${u.origin}/api/extracted?id=${encodeURIComponent(u.searchParams.get("id") ?? "")}`;
+  return new Request(keyUrl, { method: "GET" });
 }
 
 function edgeHeaders(out, byteLen) {
@@ -34,6 +39,9 @@ function edgeHeaders(out, byteLen) {
     "content-type": "application/octet-stream",
     "x-image-len": String(out.imageLen ?? byteLen),
     "x-image-sha256": out.sha256 ?? "",
+    // r10.20-H2: 边缘命中可识别(与 r2/computed/r2-range/computed-range 并列;
+    // 审计关闭记录要求生产可实测"预热条目服务带票请求")。
+    "x-source": "edge",
     "cache-control": `public, max-age=${EDGE_TTL}`,
   };
 }
@@ -46,9 +54,9 @@ function r2Key(id, storeSha256) {
   return `extracted/${id}/${storeSha256}.bin`;
 }
 
-async function putExtractedToEdge(req, out) {
+async function putExtractedToEdge(url, out) {
   try {
-    await caches.default.put(extractedEdgeKey(req), new Response(out.stream.slice(), {
+    await caches.default.put(extractedEdgeKey(url), new Response(out.stream.slice(), {
       status: 200,
       headers: edgeHeaders(out, out.imageLen),
     }));
@@ -59,7 +67,8 @@ async function warmEdgeExtracted(req, id) {
   try {
     const u = new URL(req.url);
     u.pathname = "/api/extracted";
-    const key = new Request(u.toString(), { method: "GET" });
+    u.search = `id=${encodeURIComponent(String(id))}`; // r10.20-H2:键只含 id
+    const key = extractedEdgeKey(u);
     if (await caches.default.match(key)) return;
     const out = await storeAnalyzer.extractedStream(id);
     if (out.error || !out.stream) return;
@@ -125,7 +134,11 @@ const PLAY_ID_RE = /^\d{1,7}$/;
 //   P2. 限速:每 (IP,id) 每分钟 N 次,KV 计数,超限 429 —— 两条链路都生效。
 //   P3. R2 读/写仅在有票且市场 sha 校验通过后发生(信任链内),键由 id+sha 构造。
 //   兜底:DL_SECRET 未配置时所有请求都走老链路(R2 永不启用,功能不受损)。
-const DL_TICKET_MAX_AGE_S = 600;
+const DL_TICKET_MAX_AGE_S = 600;        // analyze 签发票据有效期(dl.max_age 同值)
+// r10.20-H5:Range 续传专用窗口。固件每条续传连接复用 analyze 下发的票;10 分钟
+// 盖不住"慢链路+多次续传"的总时长,过期掉回 computed 慢路径会复活本次改造要消灭
+// 的问题。格式有效的票在续传请求上按此窗口仍受信;字节信任链不变。
+const DL_RANGE_TICKET_MAX_AGE_S = 3600;
 const RATE_LIMIT_PER_MIN = 6;
 
 async function hmacHex16(secret, msg) {
@@ -149,12 +162,13 @@ function timingSafeEq(a, b) {
 }
 
 // 票据校验:只回答"能不能吃 R2 快路径",绝不做准入拒绝(r10.18 定稿语义)。
-async function downloadTicket(env, url, idStr) {
+async function downloadTicket(env, url, idStr, maxAgeS) {
   if (!env.DL_SECRET) return { ticketed: false, reason: "no-secret" };
   const sig = url.searchParams.get("sig");
   if (!sig || !/^[0-9a-f]{16}$/.test(sig)) return { ticketed: false, reason: "missing" };
   const ts = Number(url.searchParams.get("ts"));
-  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > DL_TICKET_MAX_AGE_S) {
+  const maxAge = maxAgeS ?? DL_TICKET_MAX_AGE_S;
+  if (!Number.isFinite(ts) || Math.abs(Date.now() / 1000 - ts) > maxAge) {
     return { ticketed: false, reason: "expired" };
   }
   const expect = await hmacHex16(env.DL_SECRET, `${idStr}:${ts}`);
@@ -280,15 +294,30 @@ export default {
         return new Response(JSON.stringify({ error: "rate limited" }),
                             { status: 429, headers: h });
       }
-      const ticket = await downloadTicket(env, url, id);
       const rangeStart = parseSuffixRange(req);
+      // r10.20-H5:续传请求用长票据窗口(见 DL_RANGE_TICKET_MAX_AGE_S)。
+      const ticket = await downloadTicket(env, url, id,
+        rangeStart !== null ? DL_RANGE_TICKET_MAX_AGE_S : undefined);
       // r10.15b:边缘缓存命中直接直出(老链路快路径;字节只能来自已验证产物)。
       // r10.19:Range(续传)请求绕过缓存读 —— 缓存键不含 Range,缓存体恒为
       // 200 全量;206 绝不能命中也绝不能写入该键(见下方两条供给路径)。
+      // r10.20-H6:边缘缓存 1h TTL 内的条目可能旧于市场当前镜像,而固件对摘要头
+      // 缺失/不一致是确定性失败 —— 命中必须先与当前 analyze 摘要复核,不符即
+      // 丢弃陈旧条目落现算路径(绝不拿旧字节冒新声明)。
       if (rangeStart === null) {
         try {
-          const hit = await caches.default.match(extractedEdgeKey(req));
-          if (hit) return hit;
+          const hit = await caches.default.match(extractedEdgeKey(url));
+          if (hit) {
+            try {
+              const cur = await storeAnalyzer.analyze(Number(id));
+              if (cur && cur.ok && cur.extracted?.sha256
+                  && hit.headers.get("x-image-sha256") === cur.extracted.sha256
+                  && Number(hit.headers.get("x-image-len")) === cur.extracted.imageLen) {
+                return hit;
+              }
+              try { await caches.default.delete(extractedEdgeKey(url)); } catch { /* best-effort */ }
+            } catch { /* analyze 失败:不信任缓存条目,落现算 */ }
+          }
         } catch { /* cache unavailable: normal path */ }
       }
       // r10.18:R2 按需物化命中路径 —— 仅有效票据(ticket = R2 专属钥匙)。
@@ -319,7 +348,9 @@ export default {
                   status: 206,
                   headers: {
                     "content-type": "application/octet-stream",
-                    "content-length": String(obj.size),
+                    // r10.20-H3:区间长度显式计算(obj.size 是全对象元数据,
+                    // 依赖运行时对 ranged 响应做规范化是隐式行为)。
+                    "content-length": String(total - rangeStart),
                     "content-range": `bytes ${rangeStart}-${total - 1}/${total}`,
                     "x-image-len": String(total),
                     "x-image-sha256": meta.extracted.sha256,
@@ -398,46 +429,49 @@ export default {
             },
           });
         }
-        // 现算成功:写边缘缓存(下一个请求/下一台设备直出) + R2 物化(跨实例/跨
-        // POP 持久,消灭后续 Worker 冷启动回源慢路径),并回给本请求。
-        // 体是 ReadableStream,需要复制才能同时 put + serve。
-        await putExtractedToEdge(req, out);
+        // 现算成功。r10.20-H4:持久化(边缘缓存+R2 对象+映射)全部移入
+        // ctx.waitUntil 后台执行,响应先行返回 —— 设备首字节时间不再含两笔
+        // 2.6MB 写。out.stream 实为 Uint8Array(store-analyze.js 契约);响应体
+        // 与 R2 写体各自独立复制,后台闭包独占自己的副本,不共享可变 buffer。
+        const edgeBody = out.stream.slice();
+        const respBody = out.stream.slice();
         // r10.18:R2 写入同样仅有效票据 —— 未授权流量不得消耗写配额/键空间。
-        // 失败原因透传到 x-r2-write 响应头(诊断;生产稳定后此头仍有用且无敏感信息)。
-        let r2Write = "skipped";
         if (ticket.ticketed && env.meta_pass_extracted) {
-          try {
-            const m = await storeAnalyzer.analyze(Number(id));
-            const storeSha = m && m.store ? m.store.sha256 : null;
-            if (storeSha) {
-              await env.meta_pass_extracted.put(
-                r2Key(Number(id), storeSha), out.stream.slice(), {
-                  httpMetadata: { contentType: "application/octet-stream" },
-                  customMetadata: {
-                    "x-image-len": String(out.imageLen),
-                    "x-image-sha256": out.sha256,
-                    "x-revision-id": m.revisionId == null ? "" : String(m.revisionId),
-                  },
-                });
-              // 映射文件:R2 固件 ↔ 原始玩法固件 sha256 + revisionId(审计用)。
-              await env.meta_pass_extracted.put(
-                `${r2Key(Number(id), storeSha)}.meta.json`, JSON.stringify({
-                  id: Number(id),
-                  storeFwSha256: storeSha,
-                  extractedSha256: out.sha256,
-                  imageLen: out.imageLen,
-                  revisionId: m.revisionId == null ? null : m.revisionId,
-                  writtenAt: new Date().toISOString(),
-                }), { httpMetadata: { contentType: "application/json" } });
-              r2Write = `ok:${r2Key(Number(id), storeSha)}`;
-            } else {
-              r2Write = "no-store-sha";
+          ctx.waitUntil((async () => {
+            try {
+              await putExtractedToEdge(url, out);
+            } catch { /* 边缘缓存尽力而为 */ }
+            try {
+              const m = await storeAnalyzer.analyze(Number(id));
+              const storeSha = m && m.store ? m.store.sha256 : null;
+              if (storeSha) {
+                await env.meta_pass_extracted.put(
+                  r2Key(Number(id), storeSha), edgeBody, {
+                    httpMetadata: { contentType: "application/octet-stream" },
+                    customMetadata: {
+                      "x-image-len": String(out.imageLen),
+                      "x-image-sha256": out.sha256,
+                      "x-revision-id": m.revisionId == null ? "" : String(m.revisionId),
+                    },
+                  });
+                // 映射文件:R2 固件 ↔ 原始玩法固件 sha256 + revisionId(审计用)。
+                await env.meta_pass_extracted.put(
+                  `${r2Key(Number(id), storeSha)}.meta.json`, JSON.stringify({
+                    id: Number(id),
+                    storeFwSha256: storeSha,
+                    extractedSha256: out.sha256,
+                    imageLen: out.imageLen,
+                    revisionId: m.revisionId == null ? null : m.revisionId,
+                    writtenAt: new Date().toISOString(),
+                  }), { httpMetadata: { contentType: "application/json" } });
+              }
+            } catch (e) {
+              console.error("r2 materialize failed:",
+                String(e && e.message ? e.message : e).slice(0, 80));
             }
-          } catch (e) {
-            r2Write = `err:${String(e && e.message ? e.message : e).slice(0, 80)}`;
-          }
+          })());
         }
-        return new Response(out.stream, {
+        return new Response(respBody, {
           status: 200,
           headers: {
             "content-type": "application/octet-stream",
@@ -445,7 +479,6 @@ export default {
             "x-image-len": String(out.imageLen),
             "x-image-sha256": out.sha256,
             "x-source": "computed",
-            "x-r2-write": r2Write,
             "cache-control": "no-store",
           },
         });
@@ -456,7 +489,9 @@ export default {
 
     // ── 诊断:R2 绑定 + 票据链路(只回布尔/原因码,不泄 secret/对象) ──
     if (path === "/api/r2check") {
-      const t = await downloadTicket(env, url, url.searchParams.get("id") ?? "0");
+      // 诊断也可验长续传窗口:?range=1 按 DL_RANGE_TICKET_MAX_AGE_S 检查。
+      const t = await downloadTicket(env, url, url.searchParams.get("id") ?? "0",
+        url.searchParams.get("range") === "1" ? DL_RANGE_TICKET_MAX_AGE_S : undefined);
       return new Response(JSON.stringify({
         r2Bound: !!env.meta_pass_extracted,
         secretSet: !!env.DL_SECRET,

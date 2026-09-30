@@ -27,11 +27,11 @@ const fail = (id, why) => { console.error(`FAIL ${id}: ${why}`); failed++; };
 // r10.8:设备请求面复演 —— UA/头与设备固件同源(DEVICE_UA 从 main/meta_store_api.h
 // 解析);redirect:"manual" 与设备 disable_auto_redirect=true 对齐,跨源跳转必须
 // 显式暴露而不是被 fetch 静默跟随。
-const httpGet = async (url, timeoutMs = 120_000) => {
+const httpGet = async (url, timeoutMs = 120_000, extra = {}) => {
   const r = await fetch(url, {
     redirect: "manual",
     signal: AbortSignal.timeout(timeoutMs),
-    headers: { "User-Agent": DEVICE_UA, "Accept": "*/*" },
+    headers: { "User-Agent": DEVICE_UA, "Accept": "*/*", ...extra },
   });
   return { status: r.status, headers: r.headers, buf: Buffer.from(await r.arrayBuffer()) };
 };
@@ -287,6 +287,44 @@ let chainArgs = [];
       fail("E2E-8d", `verify-crt-bundle-match: ${tail || e.message.slice(0, 200)}`);
     }
   }
+}
+
+// ---- E2E-9 r10.20: H1 限速真实生效(RATE_KV 绑定) + H3 Range 显式长度 ----
+// 限速计数在 handler 最前,200/206/416 全部消耗 (IP,id) 桶。本块之前 e2e 对
+// id=675 的 extracted 请求 ≤4(E2E-4 一次 + H3 三探),故 7 连发内必现 429。
+{
+  const an9 = await httpGet(`${HOST}/api/analyze?id=675`);
+  const a9 = JSON.parse(an9.buf.toString());
+  const dl9 = a9.dl ?? {};
+  const tbase = `ts=${dl9.ts ?? ""}&sig=${dl9.sig ?? ""}`;
+  const total9 = a9.extracted.imageLen;
+  // H3: 首/中/尾三个 offset 的 206 —— CL == body 字节数 == total-off,Content-Range 精确匹配。
+  const offs = [1, Math.floor(total9 / 2), total9 - 1];
+  const probs = [];
+  let h3ok = true;
+  for (const off of offs) {
+    const r = await httpGet(`${HOST}/api/extracted?id=675&${tbase}&r10=${off}`, 60_000,
+      { Range: `bytes=${off}-` });
+    const cr = r.headers.get("content-range");
+    const expCr = `bytes ${off}-${total9 - 1}/${total9}`;
+    const ok = r.status === 206 && r.buf.length === total9 - off
+      && Number(r.headers.get("content-length")) === r.buf.length && cr === expCr;
+    if (!ok) { h3ok = false; probs.push(`@${off}: status=${r.status} body=${r.buf.length} cr=${cr}`); }
+  }
+  if (h3ok) pass("E2E-9/H3", `range 206 x3 (first/mid/last offset): CL==body==total-off, content-range exact, total=${total9}`);
+  else fail("E2E-9/H3", probs.join(" ; "));
+  // H1: 越界 Range → 416 探测(无下载体,限速计数照走),7 连发内必现 429。
+  let saw416 = false, saw429 = false;
+  const seen = [];
+  for (let i = 0; i < 7; i++) {
+    const r = await httpGet(`${HOST}/api/extracted?id=675&${tbase}&r10p=${i}`, 60_000,
+      { Range: "bytes=99999999-" });  // 越界 suffix-range:绕开边缘缓存,直达 416 逻辑
+    seen.push(r.status);
+    if (r.status === 416) saw416 = true;
+    if (r.status === 429) saw429 = true;
+  }
+  if (saw416 && saw429) pass("E2E-9/H1", `out-of-range probes: 416 served then 429 within 7 requests (RATE_KV live; statuses=${seen.join(",")})`);
+  else fail("E2E-9/H1", `expected 416+429 in 7 probes, got ${seen.join(",")}`);
 }
 
 console.log(failed === 0

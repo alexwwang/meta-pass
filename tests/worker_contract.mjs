@@ -42,7 +42,7 @@ console.log("PASS 4: extracted response carries x-image-len / x-image-sha256");
 //    revisionId 绑定;extracted 的边缘缓存是 worker 内 Cache API,非 CDN 头)。
 {
   const analyzeBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/analyze"'), workerSrc.indexOf('path === "/api/extracted"'));
-  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/"'));
+  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/api/r2check"'));
   assert.ok(analyzeBlock.includes("no-store"), "analyze must be no-store");
   assert.ok(extractedBlock.includes("no-store"), "extracted must be no-store");
   console.log("PASS 5: analyze/extracted responses are no-store");
@@ -82,7 +82,7 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
 //    c. R2 读和 R2 写都必须在 ticket.ticketed 条件内(未授权流量不碰 R2);
 //    d. 限速必须先于票据校验且对两条链路无条件生效。
 {
-  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/"'));
+  const extractedBlock = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'), workerSrc.indexOf('path === "/api/r2check"'));
   assert.ok(workerSrc.includes("async function downloadTicket"), "ticket checker must be downloadTicket");
   assert.ok(!workerSrc.includes("checkDownloadTicket"), "reject-style checkDownloadTicket must be gone");
   assert.ok(!/missing ticket|ticket expired|bad ticket|server ticket config/.test(workerSrc),
@@ -92,7 +92,7 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
   assert.ok(extractedBlock.includes("ticket.ticketed && env.meta_pass_extracted"),
             "R2 write path must be gated on ticket.ticketed");
   const gate = workerSrc.indexOf("rateLimit(env, req, id)");
-  const tick = workerSrc.indexOf("downloadTicket(env, url, id)", extractedBlock);
+  const tick = workerSrc.indexOf("downloadTicket(env, url, id,", extractedBlock); // r10.20: 调用带 maxAge 参数
   assert.ok(gate > 0 && tick > gate, "rate limit must run before ticket check (applies to both paths)");
   console.log("PASS 9: ticket = R2-only key; no-ticket requests fall back to legacy path, never rejected");
 }
@@ -142,10 +142,9 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
             "exactly two 206 supply paths (r2-range + computed-range)");
   // 206 早于缓存/物化写路径返回(顺序断言,防未来重构把写路径挪到前面)。
   const i206 = extractedBlock.indexOf("status: 206");
-  const iEdge = extractedBlock.indexOf("putExtractedToEdge(req, out)");
-  const iR2w = extractedBlock.indexOf('r2Write = `ok:');
-  assert.ok(i206 > 0 && i206 < iEdge && i206 < iR2w,
-            "206 must return before any cache/R2 write");
+  const iBg = extractedBlock.indexOf("ctx.waitUntil((async () => {");
+  assert.ok(i206 > 0 && i206 < iBg,
+            "206 must return before any cache/R2 write (persistence is backgrounded since r10.20-H4)");
   assert.ok((extractedBlock.match(/status: 416/g) || []).length === 2,
             "start>=total must 416 on both supply paths");
   // 动态执行解析器:固件唯一形态接受,其余形态(多字节/后缀/无头)必须 null → 200。
@@ -162,5 +161,63 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
   assert.equal(parseFn(withRange(null)), null, "no header -> full response");
   console.log("PASS 11: range resume serves 206 with firmware-exact Content-Range; other Range forms stay 200");
 }
+
+// 12. r10.20-H2/H6: 边缘缓存键归一化 + 命中新鲜度复核。ts/sig 是每请求凭证,
+//     绝不入键(否则 analyze 预热与带票固件各占一条目,预热失效+一次性 2.6MB
+//     条目堆积);1h TTL 内市场镜像可能更新,命中必须与当前 analyze 摘要复核,
+//     不符即驱逐陈旧条目 —— 绝不拿旧字节冒新声明(固件对摘要头是确定性失败)。
+{
+  assert.ok(workerSrc.includes("function extractedEdgeKey(url)"), "edge key derives from URL");
+  const kf = workerSrc.slice(workerSrc.indexOf("function extractedEdgeKey"),
+                             workerSrc.indexOf("function putExtractedToEdge"));
+  assert.ok(kf.includes('searchParams.get("id")'), "edge key carries the play id");
+  assert.ok(!kf.includes('"ts"') && !kf.includes('"sig"'),
+            "ts/sig must never enter the edge cache key");
+  const ex = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'),
+                             workerSrc.indexOf('path === "/api/r2check"'));
+  assert.ok(ex.includes('hit.headers.get("x-image-sha256") === cur.extracted.sha256'),
+            "edge hits are re-checked against the current analyze sha before serving");
+  assert.ok(ex.includes("caches.default.delete(extractedEdgeKey(url))"),
+            "stale edge entries are evicted, never served");
+}
+console.log("PASS 12: edge key normalized to id; hits re-checked against current analyze sha");
+
+// 13. r10.20-H4: 冷路径持久化后台化。响应体与 R2 写体是两份独立复制
+//     (后台闭包独占,不共享可变 buffer);持久化进 ctx.waitUntil,响应先行。
+{
+  const ex = workerSrc.slice(workerSrc.indexOf('path === "/api/extracted"'),
+                             workerSrc.indexOf('path === "/api/r2check"'));
+  assert.ok(workerSrc.includes("const respBody = out.stream.slice();"),
+            "response body is an independent copy");
+  assert.ok(workerSrc.includes("const edgeBody = out.stream.slice();"),
+            "R2 write gets its own buffer copy");
+  const iResp = ex.indexOf("return new Response(respBody");
+  const iBg = ex.indexOf("ctx.waitUntil((async () => {");
+  assert.ok(iResp > 0 && iBg > 0 && iBg < iResp,
+            "waitUntil is scheduled before the response returns");
+  const iEdgeCall = ex.indexOf("await putExtractedToEdge");
+  assert.ok(iEdgeCall < 0 || iEdgeCall > iBg,
+            "any inline edge put must live inside the waitUntil closure");
+}
+console.log("PASS 13: cold-path persistence (edge/R2/meta) runs in ctx.waitUntil, response returns first");
+
+// 14. r10.20-H1/H5: 限速真实接线(KV namespace 绑定进 wrangler.toml,审计发现
+//     此前仅声明未绑定 → 生产 429 从未生效);Range 续传用长票据窗口。
+{
+  const rl = workerSrc.slice(workerSrc.indexOf("async function rateLimit"),
+                             workerSrc.indexOf("export default"));
+  assert.ok(rl.includes("env.RATE_KV.get") && rl.includes("env.RATE_KV.put"),
+            "rateLimit must count via RATE_KV");
+  const toml = readFileSync(path.join(ROOT, "wrangler.toml"), "utf8");
+  assert.ok(/\[\[kv_namespaces\]\][^\[]*binding = "RATE_KV"/.test(toml),
+            "wrangler.toml must bind the RATE_KV namespace");
+  assert.ok(/DL_RANGE_TICKET_MAX_AGE_S = 3600/.test(workerSrc),
+            "resume ticket window is 3600s");
+  assert.ok(workerSrc.includes("rangeStart !== null ? DL_RANGE_TICKET_MAX_AGE_S : undefined"),
+            "only Range resume requests use the long ticket window");
+  assert.ok(workerSrc.includes('url.searchParams.get("range") === "1" ? DL_RANGE_TICKET_MAX_AGE_S : undefined'),
+            "r2check exposes the long-window ticket diagnosis");
+}
+console.log("PASS 14: rate limit wired via RATE_KV binding; Range resume uses the 3600s ticket window");
 
 console.log("ALL WORKER CONTRACT TESTS PASSED");

@@ -6,6 +6,29 @@
 
 ## Unreleased
 
+- **v3.2-r10.20 (2026-09-30) 审计 H1-H8 关闭**:r10.17-r10.19 代码审计的九项交接
+  全部处理(H9 = 真机证据,按设计保持待真机)。H1 限速真实生效:`wrangler.toml`
+  绑定 `RATE_KV` KV namespace(审计发现计数代码存在但从未绑定 → 生产从未回
+  429);生产实测 —— 越界探针序列 `416,416,416,429,429,429,429`。H2 边缘缓存键
+  只含玩法 id(剥离 ts/sig),analyze 预热从此能服务带票固件请求,不再按
+  (ts,sig) 堆一次性 2.6MB 条目;生产实测 —— `analyze?id=100` 预热后,换 query 的
+  extracted 请求连续两次 `x-source: edge`(为此给边缘条目加了 `x-source` 响应头)。
+  注:Workers Cache API 在 `*.pages.dev` 预览域是 no-op(无 zone),缓存命中只发生
+  在生产自定义域。H3 区间响应显式置 `content-length:
+  total - rangeStart`,不再依赖运行时对 `obj.size` 的规范化;首/中/尾三偏移实测
+  `CL == body == total-off`。H4 冷路径持久化(边缘缓存/R2 对象/.meta.json)移入
+  `ctx.waitUntil` 且各自持独立 buffer 副本 —— 设备先拿到首字节,再等任何一笔
+  2.6MB 写;`x-r2-write` 头随之取消,写入结果记入后台日志。H5 Range 续传请求按
+  3600s 票据窗口受信(600s 盖不住慢链路续传;非 Range 请求维持 600s;r2check
+  加 `?range=1` 诊断)。H6 边缘缓存命中先与当前 analyze sha/imageLen 复核、不符即
+  驱逐 —— 固件对摘要头不一致是确定性失败,绝不拿旧字节冒新声明。H7 已收满
+  镜像直接退出重试循环进入校验(最后一字节后断线不再浪费一次
+  `Range: bytes=<image_len>-` 探测与整包重下);`test_download_retry_gate.py`
+  钉死。H8 dl.sig/dl.ts 解析获得五形态 host 覆盖(合法/缺失/ts=0/非 hex/错长),
+  且解析器逐字符校验 16 位小写 hex,残缺票据不再进 install URL;
+  `test_store_analyze_contract.c` 钉死。门禁:`worker_contract.mjs` PASS 12/13/14
+  钉键归一化+新鲜度复核、后台化持久化、RATE_KV 接线;`e2e-production.mjs`
+  E2E-9 增加 H1/H3 生产验收。
 - **v3.2-r10.19 (2026-09-30) Worker 续传(206),激活固件 r10.17**:worker 现以
   `206` + `Content-Range: bytes <start>-<total-1>/<total>` 应答固件续传请求
   (`Range: bytes=<start>-`),把 r10.17 出厂时休眠的断点续传路径真正激活(此前固件

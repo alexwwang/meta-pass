@@ -12,6 +12,7 @@
 
 - `meta-pass-design.md` / `meta-pass-design.zh_CN.md` — meta-pass 固件启动器的设计文档（单一权威来源）。
 - `meta-pass-v1-retrospective.md` / `meta-pass-v1-retrospective.zh_CN.md` — v1.0.0 开发周期的 ELI5 回顾：目标、方案与经验教训。
+- `ota-r10.17-r10.19-audit.md` / `ota-r10.17-r10.19-audit.zh_CN.md` — OTA Range/R2 变更的代码审计报告,包含证据边界、发现的问题与后续处理顺序。
 
 ## AI 使用方法
 

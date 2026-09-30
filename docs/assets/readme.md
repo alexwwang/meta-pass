@@ -16,6 +16,8 @@ page: architecture design, decision records, protocol conventions, and similar m
   meta-pass firmware launcher (single source of truth).
 - `meta-pass-v1-retrospective.md` / `meta-pass-v1-retrospective.zh_CN.md` — ELI5-style
   retrospective of the v1.0.0 cycle: goals, approach, and lessons learned.
+- `ota-r10.17-r10.19-audit.md` / `ota-r10.17-r10.19-audit.zh_CN.md` — code audit of the
+  OTA Range/R2 changes, including evidence boundaries, findings, and follow-up order.
 
 ## For AI agents
 

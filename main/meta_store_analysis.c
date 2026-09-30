@@ -101,11 +101,18 @@ bool meta_store_analysis_parse(const char *json, size_t len, meta_store_analysis
         }
         // r10.18 下载票据(可选):dl.sig(16 hex)/dl.ts(签发秒)。缺席/畸形都
         // 不算契约失败 —— 无票走老链路是合法形态(旧 worker/未配 secret)。
+        // r10.20-H8:sig 逐字符校验 16 位小写 hex —— 残缺票据不回带,设备侧就
+        // 保持"无票"形态,而不是把垃圾字符串送进 install URL(worker 会判
+        // missing/bad,但校验前移让契约在源头闭合,也免一次无谓请求)。
         char sig[24] = {0};
         if (meta_store_json_get_string(json, len, "dl/sig", sig, sizeof(sig))) {
             int64_t ts = 0;
-            if (meta_store_json_get_int(json, len, "dl/ts", &ts) && ts > 0
-                && strlen(sig) == 16) {
+            bool sig_hex = strlen(sig) == 16;
+            for (int i = 0; sig_hex && i < 16; i++) {
+                char c = sig[i];
+                sig_hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            }
+            if (meta_store_json_get_int(json, len, "dl/ts", &ts) && ts > 0 && sig_hex) {
                 snprintf(out->dl_sig, sizeof(out->dl_sig), "%s", sig);
                 out->dl_ts = (uint32_t)ts;
             }

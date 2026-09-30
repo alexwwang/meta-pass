@@ -83,6 +83,16 @@ check("st->flash_failed = true;" in api and
 check("!st.range_supported && st.received > 0 && install_retryable(err)" in api,
       "legacy-mode network retry never appends a fresh 200 stream at an old offset")
 
+# --- r10.20-H7: a fully received image must go straight to verification ---
+check("if (st.received == analysis->image_len) break;" in api,
+      "fully-received image exits the retry loop before opening a new segment "
+      "connection (no wasted Range: bytes=<image_len>- attempt / full retry)")
+inst_pos = api.find("esp_err_t meta_store_api_install")
+loop_pos = api.find("if (st.received == analysis->image_len) break;")
+check(0 < inst_pos and inst_pos < loop_pos,
+      "the full-received check lives inside meta_store_api_install's retry loop, "
+      "not inside install_segment")
+
 # --- 4. response headers must come from ON_HEADER, not IDF's request-header getter ---
 check("HTTP_EVENT_ON_HEADER" in api and "s_resp_sha" in api and
       "s_resp_content_range" in api,

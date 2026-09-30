@@ -643,6 +643,7 @@ esp_err_t meta_store_api_install(uint32_t play_id, int slot,
                      (unsigned long)analysis->image_len, esp_err_to_name(err));
             vTaskDelay(pdMS_TO_TICKS(1000 * (attempt - 1)));
         }
+        if (st.received == analysis->image_len) break;  // r10.20-H7:收满即离场
         err = install_segment(play_id, analysis, part, &st);
         if (err == ESP_ERR_NOT_SUPPORTED && st.range_supported && st.received > 0) {
             // 兼容尚未支持 Range 的旧服务端:不假装 200 全量是续传段,退回

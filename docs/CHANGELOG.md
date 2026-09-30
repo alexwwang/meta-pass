@@ -6,6 +6,34 @@
 
 ## Unreleased
 
+- **v3.2-r10.20 (2026-09-30) Audit H1-H8 closed**: all nine handover items from the
+  r10.17-r10.19 code audit are addressed (H9 = on-device evidence, still open by design).
+  H1 rate limiting is now real: a `RATE_KV` KV namespace is bound in `wrangler.toml`
+  (the audit found the counter existed in code but was never bound, so production never
+  returned 429); verified live — out-of-range probes yield `416,416,416,429,429,429,429`.
+  H2 the edge-cache key carries only the play id (ts/sig stripped), so the analyze prewarm
+  now serves ticketed firmware requests instead of splitting into one-shot 2.6 MB entries;
+  verified live — `analyze?id=100` prewarm, then a different-query extracted request, served
+  `x-source: edge` twice (the `x-source` response header was added to edge entries for
+  exactly this observability). Note: the Workers Cache API is a no-op on `*.pages.dev`
+  preview hosts (no zone); cache hits only happen on the production custom domain.
+  H3 ranged responses set `content-length: total - rangeStart` explicitly instead of relying
+  on runtime normalization of `obj.size`; verified at first/mid/last offsets
+  (`CL == body == total-off`). H4 cold-path persistence (edge cache, R2 object, `.meta.json`)
+  moved into `ctx.waitUntil` with independent buffer copies — the device gets first byte
+  before any 2.6 MB write; `x-r2-write` became a background-only log line. H5 Range resume
+  requests honor tickets for 3600 s (the 600 s analyze window cannot cover slow-link resumes;
+  non-Range requests keep 600 s; `?range=1` on r2check diagnoses the long window).
+  H6 edge-cache hits are re-checked against the current analyze sha/imageLen before serving
+  and stale entries are evicted — the firmware treats a mismatched digest header as fatal.
+  H7 a fully received image exits the retry loop straight to verification (a connection
+  dying after the last byte no longer triggers a wasted `Range: bytes=<image_len>-` attempt
+  and full re-download); pinned by `test_download_retry_gate.py`. H8 dl.sig/dl.ts parsing has
+  host coverage for five forms (valid / missing / ts=0 / non-hex / wrong-length), and the
+  parser now validates 16 lowercase-hex chars per character so mangled tickets never reach
+  the install URL; pinned by `test_store_analyze_contract.c`. Gates: `worker_contract.mjs`
+  PASS 12/13/14 pin key normalization+freshness re-check, backgrounded persistence, and
+  RATE_KV wiring; `e2e-production.mjs` E2E-9 adds live H1/H3 acceptance.
 - **v3.2-r10.19 (2026-09-30) Worker resume (206) activates firmware r10.17**: the worker now
   answers firmware resume requests (`Range: bytes=<start>-`) with `206` +
   `Content-Range: bytes <start>-<total-1>/<total>`, unlocking the OTA resume path that r10.17

@@ -18,3 +18,9 @@ pages_build_output_dir = "./install-slot"
 [[r2_buckets]]
 bucket_name = "meta-pass-extracted"
 binding = "meta_pass_extracted"
+
+# r10.20-H1: 限速计数(每 IP+id 每分钟窗口)。审计发现仅声明未绑定 → 生产
+# 限速从未生效(rateLimit 静默放行)。绑定后 429 由 r2check 的 rateLimited 诊断验证。
+[[kv_namespaces]]
+binding = "RATE_KV"
+id = "fbbc09c5cd724eecae12ca5ba7c0e75e"

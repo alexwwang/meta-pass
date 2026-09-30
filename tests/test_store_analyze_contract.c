@@ -188,6 +188,74 @@ static void test_server_diag_detail_48b(void)
     printf("PASS: server diag detail survives 48B buffer (23 & 47 chars)\n");
 }
 
+
+// r10.20-H8: 下载票据 dl.sig/dl.ts 解析(可选字段)。五形态钉死:合法票据填充;
+// 缺失/非法 ts/非 hex sig/错长 sig 一律回到"无票"形态,且都不影响 analyze
+// 主字段解析(无票走老链路是合法形态,绝不能因票据畸形整包拒收)。
+static void test_download_ticket_parsing(void)
+{
+    // 基座:675 真实形态(custom-partitions 警告可装)。
+    static const char BASE_HEAD[] =
+        "{\"ok\":true,\"id\":675,\"revisionId\":1291,\"name\":\"ai-9\","
+        "\"store\":{\"size\":2729792,\"sha256\":\"a1b2c3d4e5f60718293a4b5c6d7e8f90\"},"
+        "\"extracted\":{\"imageLen\":2664256,"
+        "\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},"
+        "\"slots\":[{\"slot\":0,\"limit\":1921024,\"fit\":false},"
+        "{\"slot\":2,\"limit\":2740224,\"fit\":true}],"
+        "\"suggestedSlot\":2,\"supported\":true,"
+        "\"reason\":\"custom-partitions\",\"detail\":\"rec\"";
+    static const char TICKET_OK[]   = ",\"dl\":{\"sig\":\"0123456789abcdef\",\"ts\":1790718215}";
+    static const char TICKET_TS0[]  = ",\"dl\":{\"sig\":\"0123456789abcdef\",\"ts\":0}";
+    static const char TICKET_BADSIG[] = ",\"dl\":{\"sig\":\"0123456789abcdeg\",\"ts\":1790718215}";
+    static const char TICKET_SHORTSIG[] = ",\"dl\":{\"sig\":\"abc\",\"ts\":1790718215}";
+    static const char TICKET_LONGSIG[] = ",\"dl\":{\"sig\":\"0123456789abcdef012345\",\"ts\":1790718215}";
+    static const char TAIL[] = "}";
+
+    meta_store_analysis_t a;
+
+    // 1) 合法票据 → dl_sig/dl_ts 填充。
+    char buf[1024];
+    snprintf(buf, sizeof(buf), "%s%s%s", BASE_HEAD, TICKET_OK, TAIL);
+    memset(&a, 0, sizeof(a));
+    assert(meta_store_analysis_parse(buf, strlen(buf), &a));
+    assert(a.supported && a.image_len == 2664256);      // 主字段照常解析
+    assert(strcmp(a.dl_sig, "0123456789abcdef") == 0);
+    assert(a.dl_ts == 1790718215u);
+    printf("PASS: valid dl ticket fills dl_sig/dl_ts\n");
+
+    // 2) 缺失 dl → 无票形态(空串 + ts=0),主字段不受影响。
+    snprintf(buf, sizeof(buf), "%s%s", BASE_HEAD, TAIL);
+    memset(&a, 0, sizeof(a));
+    assert(meta_store_analysis_parse(buf, strlen(buf), &a));
+    assert(a.supported && a.dl_sig[0] == '\0' && a.dl_ts == 0);
+    printf("PASS: missing dl falls back to no-ticket form\n");
+
+    // 3) 非法 ts(0) → 票据整体作废,不留残缺 sig。
+    snprintf(buf, sizeof(buf), "%s%s%s", BASE_HEAD, TICKET_TS0, TAIL);
+    memset(&a, 0, sizeof(a));
+    assert(meta_store_analysis_parse(buf, strlen(buf), &a));
+    assert(a.dl_sig[0] == '\0' && a.dl_ts == 0);
+    printf("PASS: ts=0 rejects the ticket (no half ticket)\n");
+
+    // 4) 16 字符但含非 hex('g') → 拒收。
+    snprintf(buf, sizeof(buf), "%s%s%s", BASE_HEAD, TICKET_BADSIG, TAIL);
+    memset(&a, 0, sizeof(a));
+    assert(meta_store_analysis_parse(buf, strlen(buf), &a));
+    assert(a.dl_sig[0] == '\0' && a.dl_ts == 0);
+    printf("PASS: non-hex sig rejected\n");
+
+    // 5) 错长 sig(过短/过长) → 拒收。
+    snprintf(buf, sizeof(buf), "%s%s%s", BASE_HEAD, TICKET_SHORTSIG, TAIL);
+    memset(&a, 0, sizeof(a));
+    assert(meta_store_analysis_parse(buf, strlen(buf), &a));
+    assert(a.dl_sig[0] == '\0');
+    snprintf(buf, sizeof(buf), "%s%s%s", BASE_HEAD, TICKET_LONGSIG, TAIL);
+    memset(&a, 0, sizeof(a));
+    assert(meta_store_analysis_parse(buf, strlen(buf), &a));
+    assert(a.dl_sig[0] == '\0');
+    printf("PASS: wrong-length sig rejected (short & long)\n");
+}
+
 int main(void)
 {
     test_supported_ok();
@@ -195,6 +263,7 @@ int main(void)
     test_unsupported_keeps_reason();
     test_drift_rejected();
     test_server_diag_detail_48b();
+    test_download_ticket_parsing();
     printf("ALL store-analyze CONTRACT TESTS PASSED\n");
     return 0;
 }
