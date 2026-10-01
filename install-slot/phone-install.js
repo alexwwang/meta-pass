@@ -505,7 +505,22 @@ padding:20px 16px 56px;-webkit-text-size-adjust:100%}
 .mp-wordmark b{font-size:18px;font-weight:700;letter-spacing:-.01em}
 .mp-dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--ink2)}
 .mp-dot.on{background:var(--grass-dark)}
-.mp-sub{margin:0 0 14px;font-size:12.5px;color:var(--ink2)}
+/* 顶部引导区(随滚动离开,不占固定层):左操作步骤,右咖啡码。 */
+.mp-hero{display:flex;gap:14px;align-items:flex-start;margin:12px 0 2px}
+.mp-hero .steps{flex:1;margin:2px 0 0;font-size:12.5px;line-height:1.75;color:var(--ink2)}
+.mp-hero .steps b{color:var(--ink);font-weight:600}
+.mp-coffee{flex:none;margin:0;padding:0;background:none;border:0;cursor:pointer;text-align:center}
+.mp-coffee img{display:block;width:84px;height:84px;object-fit:cover;border:2px solid var(--ink);border-radius:var(--r)}
+.mp-coffee span{display:block;margin-top:4px;font-size:11px;color:var(--ink2)}
+.mp-coffee-lg{text-align:center}
+.mp-coffee-lg img{width:min(240px,70vw);height:auto;border:2px solid var(--ink);border-radius:var(--r)}
+.mp-coffee-lg p{margin:10px 0 14px;font-size:14px}
+/* 回到顶部浮层:右下角,滚动后现身。 */
+.mp-top{position:fixed;right:16px;bottom:calc(20px + env(safe-area-inset-bottom));z-index:40;
+width:44px;height:44px;display:none;align-items:center;justify-content:center;
+border:2px solid var(--ink);border-radius:var(--r);background:var(--card);color:var(--ink);cursor:pointer}
+.mp-top.show{display:flex}
+.mp-sub{margin:0 0 14px;font-size:12.5px;color:var(--ink2)}   /* 抽屉/详情内小注(页头重复信息已移除) */
 .mp-status{margin:12px 2px 0;font-size:13px;color:var(--ink2);min-height:1.5em}
 .mp-status.err{color:var(--red)}
 .mp-status.ok{color:var(--grass-dark)}
@@ -596,8 +611,13 @@ export function boot(opts = {}) {
   root.id = "mp-install-root";
   root.innerHTML = `
     <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b></header>
-    <p class=mp-sub>LAN install${
-      deviceOrigin ? " · " + esc(deviceOrigin.replace(/^http:\/\//, "")) : ""}</p>
+    <div class=mp-hero>
+      <p class=steps><b>①</b> 设备进商店页,扫码或输配对码连接<br><b>②</b> 搜索/浏览玩法,点条目看详情<br><b>③</b> 选槽、可改名,点「确认安装」</p>
+      <button class=mp-coffee id=mp-coffee aria-label="请作者喝咖啡">
+        <img src="${METAPASS}/author-coffee.jpg" alt="请作者喝咖啡" width=84 height=84 loading=lazy>
+        <span>请作者喝咖啡</span>
+      </button>
+    </div>
     <div id=mp-dev-row class=mp-search style="display:${deviceOrigin ? "none" : "flex"}">
       <input id=mp-dev placeholder="http://192.168.x.x" inputmode=url>
       <button id=mp-dev-go class=mp-btn>Connect</button>
@@ -612,9 +632,34 @@ export function boot(opts = {}) {
       没有可安装的玩法。换个关键词,或清空输入框浏览全部。</div>
     <div id=mp-count class=mp-count></div>
     <button id=mp-more class="mp-btn ghost mp-more" style="display:none">加载更多</button>
-    <div id=mp-panel></div>`;
+    <div id=mp-panel></div>
+    <button id=mp-top class=mp-top aria-label="回到顶部" title="回到顶部">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path d="M4 15.5h12M10 12V4m0 0L5.5 8.5M10 4l4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>`;
   (opts.mount ?? document.body).appendChild(root);
   const $ = (id) => root.querySelector(`#${id}`);
+  // 咖啡码:点击放大成浮层(手机扫码需要近距离)。
+  $("mp-coffee").onclick = () => {
+    setPanel(`<section class="mp-panel mp-coffee-lg">
+      <img src="${METAPASS}/author-coffee.jpg" alt="请作者喝咖啡">
+      <p>请作者喝咖啡</p>
+      <button id=mp-coffee-x class=mp-btn style="width:100%">关闭</button>
+    </section>`);
+    $("mp-coffee-x").onclick = clearPanel;
+  };
+  // 回到顶部浮层:滚动超过一屏后现身。
+  const topBtn = $("mp-top");
+  const onScroll = () => topBtn.classList.toggle("show",
+    (window.scrollY || document.documentElement.scrollTop || 0) > 480);
+  if (typeof window !== "undefined") {
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  }
+  topBtn.onclick = () => {
+    (window.scrollTo || (() => {})).call(window, { top: 0, behavior: "smooth" });
+  };
   const statusEl = $("mp-status");
   const log = (msg, cls = "") => {
     statusEl.textContent = msg;

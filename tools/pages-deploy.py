@@ -71,7 +71,13 @@ def oauth_token():
             "client_id": "54d11594-84e4-41aa-b438-e81b8fa78ee7",
         }, timeout=60)
         x.raise_for_status()
-        tok = x.json()["access_token"]
+        body = x.json()
+        tok = body["access_token"]
+        # CF 旋转 refresh_token:响应里的新 token 必须落盘,否则下次刷新
+        # 拿旧 token 换 = 400 invalid_grant(本次事故根因)。
+        if body.get("refresh_token"):
+            raw = re.sub(rb'refresh_token = "[^"]*"',
+                         b'refresh_token = "' + body["refresh_token"].encode() + b'"', raw)
         raw = re.sub(rb'oauth_token = "[^"]*"',
                      b'oauth_token = "' + tok.encode() + b'"', raw)
         open(WRANGLER_CONFIG, "wb").write(raw)
