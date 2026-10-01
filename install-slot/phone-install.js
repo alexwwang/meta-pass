@@ -182,6 +182,7 @@ export function normalizePlay(p) {
     sha256: sha.toLowerCase(),
     downloadUrl: url,
     updatedAt: p.updatedAt ?? null,
+    category: typeof p.category === "string" ? p.category : null,
   };
 }
 
@@ -196,16 +197,19 @@ async function mpJson(path) {
   return r.json();
 }
 
-export async function searchPlays(q, offset = 0, limit = 20) {
+export async function searchPlays(q, offset = 0, limit = 20, category = "") {
   // 官方上游分页契约(生产实测):只认 offset+limit(page/pageSize 被静默忽略),
   // 响应 pagination.{total,hasMore};limit=20 ≈ 100KB/页,limit>=100 上游 502。
-  const d = await mpJson(`/api/plays?multiDevice=false&q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`);
+  // category 为官方分类键(games/information/…,服务端过滤,实测生效)。
+  const cat = category ? `&category=${encodeURIComponent(category)}` : "";
+  const d = await mpJson(`/api/plays?multiDevice=false&q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}${cat}`);
   const plays = Array.isArray(d?.plays) ? d.plays : [];
   const pagination = d?.pagination ?? {};
   return {
     list: plays.map(normalizePlay).filter((p) => p),
     hasMore: pagination.hasMore === true,
     total: Number.isFinite(pagination.total) ? pagination.total : null,
+    tags: Array.isArray(d?.discoveryTags) ? d.discoveryTags : null,
   };
 }
 
@@ -235,8 +239,9 @@ export async function preflightMeta(id, hooks = {}) {
 }
 
 // meta = preflightMeta 结果;slot = 用户选定槽位(>=0;交互 v2 设备直确认,
-// -1 = 旧流程设备物理确认)。
-export async function prepareImage(meta, slot, hooks = {}) {
+// -1 = 旧流程设备物理确认);userName = 用户在安装页改写的显示名(可空,
+// 空则回退 analyze/商店名链)。
+export async function prepareImage(meta, slot, hooks = {}, userName = "") {
   const stage = (s) => hooks.stage?.(s);
   const { analyze: a, play } = meta;
   stage("download");
@@ -299,7 +304,7 @@ export async function prepareImage(meta, slot, hooks = {}) {
     protocol: PROTOCOL_V1,
     playId: play.id,
     revisionId: a.revisionId ?? play.revisionId ?? 0,
-    name: pickDisplayName(a.name, play.name, play.id),
+    name: pickDisplayName(userName || null, a.name, play.name, play.id),
     storeSha256: play.sha256,
     imageLen: ext.length,
     sha256: appSha,
@@ -637,12 +642,59 @@ export function boot(opts = {}) {
   // 不挂起的话"加载更多"按钮因面板出现而进入视区,IO 无限加载把面板
   // 越顶越远,永远够不到确认键(真机反馈)。
   let lastQ = "";
+  let lastCat = "";            // 官方分类键;"" = 全部(服务端过滤,实测生效)
+  let catTags = null;          // discoveryTags(官方分类目录,含中英文名)
   let items = [];
   let hasMore = false;
   let total = null;
   let loading = false;
   let panelOpen = false;
   const seen = new Set();
+
+  const FALLBACK_TAGS = [   // discoveryTags 缺失时的兜底(与官方 categoryCounts 对齐)
+    ["games", "游戏"], ["learning", "学习"], ["information", "资讯"],
+    ["productivity", "效率"], ["media", "媒体"], ["child-friendly", "儿童"],
+    ["social", "社交"], ["developer", "开发者"], ["multi-device", "多设备"],
+    ["must-play", "必玩"],
+  ];
+  function tagList() {
+    if (catTags && catTags.length) {
+      return catTags.filter((t) => t && typeof t.key === "string")
+        .sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99))
+        .map((t) => [t.key, t.name?.zh || t.name?.en || t.key]);
+    }
+    return FALLBACK_TAGS;
+  }
+
+  function renderCatChips() {
+    let host = $("mp-cats");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "mp-cats";
+      host.style.cssText = "display:flex;gap:8px;overflow-x:auto;margin:12px -16px 0;padding:0 16px;scrollbar-width:none";
+      $("mp-list").before(host);
+    }
+    host.innerHTML = "";
+    const mk = (key, label) => {
+      const b = document.createElement("button");
+      b.className = "mp-btn" + (key === lastCat ? "" : " ghost");
+      b.style.cssText = "flex:none;padding:6px 12px;font-size:13px;border-radius:999px";
+      b.textContent = label;
+      b.onclick = () => {
+        if (loading || key === lastCat) return;
+        lastCat = key;
+        renderCatChips();
+        items = []; hasMore = false; total = null; seen.clear();
+        $("mp-list").innerHTML = "";
+        clearPanel();
+        log(key ? `分类「${label}」加载中…` : "浏览全部玩法…");
+        fetchPage(0);
+      };
+      host.appendChild(b);
+    };
+    mk("", "全部");
+    for (const [k, label] of tagList()) mk(k, label);
+  }
 
   function renderRow(p) {
     const li = document.createElement("li");
@@ -668,7 +720,8 @@ export function boot(opts = {}) {
     try {
       let cur = offset;
       for (let guard = 0; guard < 500; guard++) {
-        const r = await searchPlays(lastQ, cur);
+        const r = await searchPlays(lastQ, cur, 20, lastCat);
+        if (r.tags && !catTags) { catTags = r.tags; renderCatChips(); }
         let added = 0;
         for (const p of r.list) {
           if (seen.has(p.id)) continue;
@@ -716,6 +769,7 @@ export function boot(opts = {}) {
     if (items.length === 0) log("没有结果", "");
     else if (q) log("");
   };
+  renderCatChips();                    // 首屏先给兜底分类,拿到 discoveryTags 后替换
   fetchPage(0);                        // 首屏即目录(官方市场首屏=内容)
   $("mp-more").onclick = () => { if (!panelOpen) fetchPage(items.length); };
   if (typeof IntersectionObserver !== "undefined") {
@@ -780,11 +834,15 @@ export function boot(opts = {}) {
     const suggested = fit.some((o) => o.slot === a?.suggestedSlot)
       ? a.suggestedSlot : fit[0].slot;
     let chosen = suggested;
+    let nameVal = pickDisplayName(a?.name, p.name, p.id);   // 重选槽位重渲染时保留用户已改名
 
     const render = () => {
       setPanel(`<section class=mp-panel>
-        <h4>选择安装槽位</h4>
+        <h4>安装到设备</h4>
         <p class=mp-sub style="margin-bottom:0">${esc(p.name)} · 剥离后 ${Number.isFinite(imageLen) ? fmtMB(imageLen) : "?"}</p>
+        <label class=mp-note for=mp-name style="display:block;margin:12px 0 4px">安装名称(显示在设备列表)</label>
+        <input id=mp-name maxlength=64 value="${esc(nameVal)}" style="width:100%;font:inherit;padding:10px 12px;border:2px solid var(--ink);border-radius:var(--r);background:var(--paper);color:var(--ink)">
+        <div class=mp-note style="text-align:right;margin-top:2px"><span id=mp-nch>0</span>/32</div>
         <div class=mp-slots role=radiogroup>
           ${opts.map((o) => `
           <button class=mp-slot role=radio aria-checked="${o.slot === chosen}"
@@ -799,19 +857,29 @@ export function boot(opts = {}) {
           <button id=mp-cancel class="mp-btn ghost">取消</button>
         </div>
       </section>`);
+      const nameEl = $("mp-name"), nch = $("mp-nch");
+      const updCount = () => {
+        // 设备契约:≤32 可打印 ASCII(MNAM 同源);输入即过滤,计数显示截断后长度。
+        nameEl.value = sanitizeDisplayName(nameEl.value);
+        nameVal = nameEl.value;
+        nch.textContent = String(nameEl.value.length);
+      };
+      nameEl.oninput = updCount;
+      updCount();
       root.querySelectorAll(".mp-slot:not([disabled])").forEach((el) => {
-        el.onclick = () => { chosen = Number(el.dataset.slot); render(); };
+        el.onclick = () => { chosen = Number(el.dataset.slot); render();
+          requestAnimationFrame(() => { const n=$("mp-name"); if(n){n.focus(); n.setSelectionRange(n.value.length,n.value.length);} }); };
       });
       const confirm = $("mp-confirm");
       confirm.disabled = false;
-      confirm.onclick = () => continueInstall(meta, chosen);
+      confirm.onclick = () => continueInstall(meta, chosen, nameEl.value.trim());
       $("mp-cancel").onclick = clearPanel;
     };
     render();
-    log("选择槽位后点「确认安装」");
+    log("选择槽位与名称后点「确认安装」");
   }
 
-  async function continueInstall(meta, slot) {
+  async function continueInstall(meta, slot, userName) {
     const t0 = Date.now();
     const stage = (s) => log(`${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     setPanel(`<section class=mp-panel>
@@ -822,7 +890,7 @@ export function boot(opts = {}) {
     </section>`);
     const bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
     stage("下载固件");
-    const pre = await prepareImage(meta, slot, { stage: (s) => { stageEl.textContent = s; } });
+    const pre = await prepareImage(meta, slot, { stage: (s) => { stageEl.textContent = s; } }, userName);
     if (!pre.ok) {
       setPanel("");
       log(`✗ 安装失败 [${pre.stage}]: ${pre.reason}`, "err");

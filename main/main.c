@@ -661,13 +661,16 @@ static void page_store_done_build(void)
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    // 完成名取自 install 快照(finalize 成功后保留 name/slot 供本页展示)。
+    // 完成名/槽位取自 install 会话快照(finalize 成功后保留 name/slot)。
+    // 槽位必须用 st.slot:手机选槽(v2)流程不经过 P3,s_store_installed_slot
+    // 从未赋值 → 恒显示 slot 0(真机 bug:实际装入 slot 2,屏显 slot 0)。
     meta_install_session_status_t st;
     meta_install_session_poll(&st);
     char text[160];
     snprintf(text, sizeof(text),
              "%.20s\ninstalled to slot %d.\n\nPower off & on to boot it.",
-             st.name[0] ? st.name : "Firmware", s_store_installed_slot);
+             st.name[0] ? st.name : "Firmware",
+             st.slot >= 0 ? st.slot : s_store_installed_slot);
     lv_label_set_text(s_info, text);
     add_row(s_scr, 0, 180, "BACK TO LIST");
     rows_refresh(1, 0);

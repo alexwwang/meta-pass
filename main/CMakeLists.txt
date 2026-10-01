@@ -21,6 +21,7 @@ idf_component_register(
     REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
              esp_http_server app_update esp_partition mbedtls
              lwip      # install httpd 的 socket 层(自 v5.1 起需显式声明)
+             spi_flash # 裸 flash 凭证备份(esp_flash_read/write/erase)
 )
 
 # BUG-14 教训:UB 警告(越界写)在构建日志里躺了三个版本没人看 —— 本组件
