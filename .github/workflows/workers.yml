@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "install-slot/**"
-      - "wrangler.toml"
+      - "tools/pages-deploy.py"
       - ".github/workflows/workers.yml"
   workflow_dispatch:
 
@@ -14,14 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      # 网页版本管理:同 pages.yml,把 __PAGE_VERSION__ 替换为 git 短 SHA
-      - name: Stamp page version from git
-        run: |
-          V="$(git rev-parse --short HEAD)"
-          sed -i "s/__PAGE_VERSION__/${V}/g" install-slot/install-slot.html
-          echo "page version: ${V}"
-      - uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3
-        with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: pages deploy --project-name meta-pass --branch main
+      # 与本地同一部署路径:tools/pages-deploy.py 直接调 Cloudflare REST API
+      # (staging 打版本戳 + blake3 manifest + upsert-hashes + worker bun bundle)。
+      # 弃用 wrangler-action:wrangler 4.x pages deploy 在上传后读取响应时挂起
+      # (本机实测,4.145.0),REST 路径为唯一验证可用的部署方式。
+      # ubuntu-latest 镜像已预装 bun(worker bundle 需要)。
+      - name: Install deploy deps
+        run: pip3 install requests blake3
+      - name: Deploy to Cloudflare Pages
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: python3 tools/pages-deploy.py

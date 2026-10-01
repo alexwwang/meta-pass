@@ -50,6 +50,11 @@ WRANGLER_CONFIG = os.path.expanduser("~/Library/Preferences/.wrangler/config/def
 
 
 def oauth_token():
+    # CI(github secrets)没有 wrangler OAuth 配置:CF_API_TOKEN(Pages:Edit)直接可用,
+    # 上传类端点与 OAuth token 等价。本地仍走 default.toml 的 OAuth + refresh 轮换。
+    env = os.environ.get("CF_API_TOKEN")
+    if env:
+        return env
     if not os.path.exists(WRANGLER_CONFIG):
         sys.exit(f"wrangler 配置不存在: {WRANGLER_CONFIG}(先跑一次 wrangler login)")
     raw = open(WRANGLER_CONFIG, "rb").read()
