@@ -113,7 +113,10 @@ Allocator rules:
 
 - Slot offsets 64 KB-aligned; sizes rounded to 4 KB; **min slot 128 KB**.
 - **Max 8 slots** (IDF hard cap is 16 OTA subtypes; 8 is the design cap).
-- First-fit across pool_0 then pool_1. No compaction in v1 (§6, L1).
+- First-fit across pool_0 then pool_1. The small-segment-first order is
+  deliberate: pool_0 (~1.8 MB, cut off by cardid) absorbs small slots first
+  so pool_1 keeps its large contiguous span for big apps/archives. No
+  compaction in v1 (§6, L1).
 
 ### 4.2 The three table states
 
