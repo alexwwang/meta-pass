@@ -45,10 +45,9 @@ static const char *TAG = "meta-pass";
 
 // 页面枚举:每个页面独立 build/teardown(沿用基线 demo 的建删屏纪律)。
 typedef enum {
-    PAGE_LIST = 0,     // 槽位列表 + Store 入口
-    PAGE_DETAIL,       // 槽位详情:Boot / Delete / Back(启动签名与否都直接
-                       // 运行,不再弹未签名警告 —— 上游 48e85590 语义,按需保留页)
-    PAGE_CONFIRM_DEL,  // 删除确认
+    PAGE_LIST = 0,     // 槽位列表 + Store 入口(一键启动,签名与否都不再确认;
+                       // 详情页/未签名警告页/删除确认页全移除 —— 上游 48e85590,
+                       // 设备端删除由网页重灌替代)
     PAGE_EGG,          // 彩蛋页:隐藏序列进入,滚动查看 MAEG 文本
     PAGE_STORE_NET,    // P0 商店:配网/连接状态
     PAGE_STORE_QR,     // P1 商店:QR + 配对码(本地 install 服务已启动)
@@ -60,7 +59,6 @@ typedef enum {
 } page_t;
 
 #define LIST_ITEMS   4                   // Slot 0 / Slot 1 / Slot 2 / Store
-#define DETAIL_ITEMS 3                   // Boot / Delete / Back
 // 商店会话超时不再"到点即关":到期提示用户决策(OK=保留 / LONG=退出),见 store_tick。
 // 超时时长默认 CONFIG_META_STORE_SESSION_TIMEOUT_MS,运行时可用
 // meta_store_session_set_timeout_ms 覆盖(见 meta_store_net.h)。
@@ -69,7 +67,7 @@ static meta_slot_info_t s_slots[META_SLOT_COUNT];  // 槽位注册表(安装成�
 
 static page_t    s_page = PAGE_LIST;
 static int       s_sel;              // 当前页选中行
-static int       s_detail_slot;      // 详情/确认页操作的槽位
+static int       s_detail_slot;      // 彩蛋页展示的槽位(=列表高亮行)
 static int64_t   s_store_deadline;   // 商店会话自动关闭时刻(ms,esp_timer 时基)
 static lv_timer_t *s_store_timer;    // 商店页轮询定时器(离开页面前必须删)
 
@@ -203,39 +201,6 @@ static void page_list_build(void)
 
 // ---------- 页面:槽位详情 ----------
 
-static void page_detail_build(int slot)
-{
-    s_detail_slot = slot;
-    meta_seq_reset(&s_egg_seq);   // 每次进入详情页重置彩蛋序列,避免残留干扰
-    s_scr = ui_pixel_screen_create("SLOT");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 118, UI_PAPER);
-    s_info = lv_label_create(panel);
-    lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-
-    const meta_slot_info_t *s = &s_slots[slot];
-    char text[220];
-    if (s->state == META_SLOT_VALID) {
-        snprintf(text, sizeof(text),
-                 "%s%.16s\nver:  %.16s\nsize: %lu KB\nsha: %.16s...",
-                 s->signed_fw ? "SIGNED\n" : "",
-                 s->name, s->version, (unsigned long)(s->size / 1024), s->sha256_hex);
-     } else {
-         // r10:措辞单一事实源 meta_slots.c(empty=已擦除 / no firmware=有
-         // 数据但非可引导镜像;两者都可覆盖安装,安装先擦除)。
-         snprintf(text, sizeof(text), "%s", meta_slot_detail_word(s->state));
-     }
-     lv_label_set_text(s_info, text);
-
-     add_row(s_scr, 0, 180, "BOOT");
-     add_row(s_scr, 1, 224, "DELETE");
-     add_row(s_scr, 2, 268, "BACK");
-     rows_refresh(DETAIL_ITEMS, s_sel);
-     lv_screen_load(s_scr);
-}
-
 // ---------- 页面:彩蛋(详情页隐藏序列 UP UP DOWN DOWN 快速四 CLICK 进入) ----------
 
 static void page_egg_build(void)
@@ -266,25 +231,6 @@ static void page_egg_build(void)
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_label_set_text_static(lbl, text);
     lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
-    lv_screen_load(s_scr);
-}
-
-// ---------- 页面:二次确认 ----------
-
-// 启动确认(未签名固件):警告文本 + BOOT/CANCEL 两个按钮行,UP/DOWN 选择,OK 短按确认。
-// 默认停在 CANCEL:不可信固件不允许"一路 OK"误启动,保持原有的刻意操作门槛。
-// OK LONG 沿用全局语义=返回详情页。
-static void page_confirm_del_build(void)
-{
-    s_scr = ui_pixel_screen_create("DELETE?");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 60, 216, 130, UI_PAPER);
-    lv_obj_t *lbl = lv_label_create(panel);
-    lv_obj_set_width(lbl, 196);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
-    lv_label_set_text(lbl, "Erase this slot?\nThis cannot be undone.\n\nOK LONG = delete\nOK click = cancel");
-    ui_pixel_mascot_create(s_scr, 101, 242);
     lv_screen_load(s_scr);
 }
 
@@ -908,8 +854,6 @@ static void goto_page(page_t page)
     s_sel = 0;
     switch (page) {
     case PAGE_LIST:     page_list_build();               break;
-    case PAGE_DETAIL:   page_detail_build(s_detail_slot); break;
-    case PAGE_CONFIRM_DEL:  page_confirm_del_build();    break;
     case PAGE_EGG:      page_egg_build();                break;
     case PAGE_STORE_NET: page_store_net_build();         break;
     case PAGE_STORE_QR:  page_store_qr_build();          break;
@@ -1008,9 +952,12 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             } else if (btn == BSP_BTN_OK) {
                 if (esp_timer_get_time() / 1000 < s_list_arm_at) break;   // 吞咽尾随 CLICK
                 if (s_sel < META_SLOT_COUNT) {
-                    const int slot = s_sel;
-                    s_detail_slot = slot;
-                    goto_page(PAGE_DETAIL);
+                    // 一键启动(签名与否同权,无确认页;上游 48e85590)。完整性仍由
+                    // esp_image_verify/meta_slot_bootable 把守;不可启动槽位静默。
+                    if (meta_slot_bootable(&s_slots[s_sel])
+                        && meta_store_boot_slot(s_sel) == ESP_OK) {
+                        esp_restart();
+                    }
                 } else {
                     if (meta_store_net_init() == ESP_OK
                         && meta_store_net_begin() == ESP_OK) {
@@ -1022,46 +969,9 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
     }
 
-    case PAGE_DETAIL: {
-        const meta_slot_info_t *s = &s_slots[s_detail_slot];
-
-        if (ev == BSP_BTN_CLICK) {
-            if (btn == BSP_BTN_UP)   s_sel = (s_sel + DETAIL_ITEMS - 1) % DETAIL_ITEMS;
-            if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % DETAIL_ITEMS;
-            if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                rows_refresh(DETAIL_ITEMS, s_sel);
-            } else if (btn == BSP_BTN_OK) {
-                if (s_sel == 0 && meta_slot_bootable(s)) {          // BOOT
-                    // 签名与否都直接启动,不再弹未签名警告(用户定稿,对齐上游
-                    // 48e85590 的快速确认语义;签名结果仍在启动扫描时记录)。
-                    if (meta_store_boot_slot(s_detail_slot) == ESP_OK)
-                        esp_restart();
-                    goto_page(PAGE_DETAIL);
-                } else if (s_sel == 1 && s->state != META_SLOT_EMPTY) { // DELETE
-                    goto_page(PAGE_CONFIRM_DEL);
-                } else if (s_sel == 2) {                            // BACK
-                    goto_page(PAGE_LIST);
-                }
-            }
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            goto_page(PAGE_LIST);
-        }
-        break;
-    }
-
-    case PAGE_CONFIRM_DEL:
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {   // 取消
-            goto_page(PAGE_DETAIL);
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            meta_store_erase_slot(s_detail_slot);
-            meta_slot_clear(&s_slots[s_detail_slot]);
-            goto_page(PAGE_LIST);
-        }
-        break;
-
     case PAGE_EGG:
         if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
-            goto_page(PAGE_DETAIL);   // 短按退出;LONG 有意忽略(序列末键 PRESS 之后仍会有 CLICK 到达)
+            goto_page(PAGE_LIST);   // 短按退出;LONG 有意忽略(序列末键 PRESS 之后仍会有 CLICK 到达)
         } else if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) && ev == BSP_BTN_CLICK
                    && s_egg_panel) {
             const int step = lv_font_get_line_height(&lv_font_montserrat_14) * 4;
