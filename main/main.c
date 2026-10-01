@@ -508,7 +508,9 @@ static void page_store_qr_build(void)
         }
     }
 
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 158, 216, 104, UI_PAPER);
+    // 等距排版(真机审美反馈):标题牌底 41 → 间隙 5 → QR 46..166 → 间隙 5
+    // → 面板 171..275(草皮 286 前收住)。面板 104px 高真容 4 行信息+状态行。
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 171, 216, 104, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
