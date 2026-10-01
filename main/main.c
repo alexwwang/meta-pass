@@ -32,6 +32,7 @@
 #include "esp_timer.h"
 
 #include "lvgl.h"
+#include "src/libs/qrcode/qrcodegen.h"   // lv_qrcode 的编码器直用(RGB565 画布手绘)
 #include "meta_seq.h"
 #include "meta_slots.h"
 #include "meta_store.h"
@@ -84,6 +85,11 @@ static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(�
 static meta_install_manifest_t s_offer;          // P2/P3 展示中的 install offer 快照
 static bool s_offer_valid;                       // s_offer 是否有效(页面重建复用)
 static bool s_qr_service_failed;                 // P1 起本地 install 服务失败的粘滞提示
+// QR 直绘静态缓冲(qrcodegen 工作/输出 + RGB565 画布)。bss 共 ~37KB:
+// 不上栈(UI 任务栈吃不下),也不上堆(页面构建期一次性使用)。
+static uint8_t s_qr_tmp[qrcodegen_BUFFER_LEN_MAX];
+static uint8_t s_qr_data[qrcodegen_BUFFER_LEN_MAX];
+static uint8_t s_qr_canvas_buf[120 * 120 * 2];
 // 生命周期纪律:凡"页面重建后仍需有效"的状态由 store_goto/各 build 显式维护,
 // 不能依赖 LVGL 对象存活;offer 快照在 P1→P2 迁移时填充,回 P1 即丢弃。
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
@@ -456,32 +462,49 @@ static void page_store_qr_build(void)
     meta_install_qr_info(&token_hex, &pair, url);
 
     if (token_hex) {
-        lv_obj_t *qr = lv_qrcode_create(s_scr);
-        lv_qrcode_set_size(qr, 120);
-        lv_qrcode_set_dark_color(qr, lv_color_hex(UI_INK));
-        lv_qrcode_set_light_color(qr, lv_color_hex(UI_PAPER));
-        lv_qrcode_set_quiet_zone(qr, true);
-        // 诊断(真机 bring-up):lv_qrcode_update 此前静默失败时页面只剩文字、
-        // 串口无任何线索 —— 两个分支都必须留痕。
-        ESP_LOGI(TAG, "qr: encoding %u-byte url", (unsigned)strlen(url));
-        const lv_result_t qr_rc = lv_qrcode_update(qr, url, (uint32_t)strlen(url));
-        if (qr_rc != LV_RESULT_OK) {
-            ESP_LOGE(TAG, "qr update failed: rc=%d url=%u bytes (token=%s)",
-                     (int)qr_rc, (unsigned)strlen(url), token_hex);
-            lv_obj_delete(qr);
+        // QR 用 qrcodegen 直编码 + RGB565 原生画布手绘模块。不用 lv_qrcode
+        // widget:它的画布是 I1 索引格式,经真机两轮诊断(lv_qrcode_update
+        // 返回成功、像素回读被 get_px 的 I1 default 分支屏蔽)无法确认其
+        // 绘制链路在本 BSP 上真的可见;RGB565 是 canvas 最成熟路径,
+        // lv_canvas_get_px 亦支持(RGB565 case),诊断读数恢复有效。
+        // 固定 version 5(37 模块,M 容量 106B,覆盖最长 URL ~58B)。
+        bool enc = qrcodegen_encodeText(url, s_qr_tmp, s_qr_data,
+                                        qrcodegen_Ecc_MEDIUM, 5, 5,
+                                        qrcodegen_Mask_AUTO, true);
+        if (!enc) {
+            ESP_LOGE(TAG, "qr encode failed (%u bytes)", (unsigned)strlen(url));
         } else {
-            lv_obj_set_pos(qr, 60, 46);
-            ESP_LOGI(TAG, "qr rendered 120px at (60,46)");
-            // 回读画布像素给 QR 不可见定论:中心_finder 区(30,30)应深、
-            // quiet zone(2,2)应浅。两样本都对而屏上无物 = 显示/刷新链路
-            // 问题;样本不对 = 编码/调色板问题。lv_canvas_get_px 为本地坐标,
-            // LVGL 9.5 返回 lv_color32_t(非 lv_color_t)。
-            const lv_color32_t px_dark = lv_canvas_get_px(qr, 30, 30);
-            const lv_color32_t px_light = lv_canvas_get_px(qr, 2, 2);
-            ESP_LOGI(TAG, "qr px(30,30)=%02x%02x%02x px(2,2)=%02x%02x%02x (ink=%06x paper=%06x)",
+            const int size = qrcodegen_version2size(5);          // 37
+            const int scale = 120 / size;                        // 3
+            const int margin = (120 - size * scale) / 2;         // 4
+            lv_obj_t *cv = lv_canvas_create(s_scr);
+            lv_canvas_set_buffer(cv, s_qr_canvas_buf, 120, 120,
+                                 LV_COLOR_FORMAT_RGB565);
+            lv_canvas_fill_bg(cv, lv_color_hex(UI_PAPER), LV_OPA_COVER);
+            const lv_color_t ink = lv_color_hex(UI_INK);
+            int dark = 0;
+            for (int my = 0; my < size; my++) {
+                for (int mx = 0; mx < size; mx++) {
+                    if (!qrcodegen_getModule(s_qr_data, mx, my)) continue;
+                    dark++;
+                    for (int dy = 0; dy < scale; dy++) {
+                        for (int dx = 0; dx < scale; dx++) {
+                            lv_canvas_set_px(cv, margin + mx * scale + dx,
+                                             margin + my * scale + dy,
+                                             ink, LV_OPA_COVER);
+                        }
+                    }
+                }
+            }
+            lv_obj_set_pos(cv, 60, 46);
+            ESP_LOGI(TAG, "qr rendered v5 %d modules scale %d dark=%d",
+                     size, scale, dark);
+            // RGB565 get_px 受支持:深色模块处应 ≈ ink,留白处 ≈ paper。
+            const lv_color32_t px_dark = lv_canvas_get_px(cv, 60, 60);
+            const lv_color32_t px_light = lv_canvas_get_px(cv, 2, 2);
+            ESP_LOGI(TAG, "qr px(60,60)=%02x%02x%02x px(2,2)=%02x%02x%02x",
                      px_dark.red, px_dark.green, px_dark.blue,
-                     px_light.red, px_light.green, px_light.blue,
-                     UI_INK, UI_PAPER);
+                     px_light.red, px_light.green, px_light.blue);
         }
     }
 

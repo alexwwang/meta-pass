@@ -75,6 +75,10 @@ static meta_store_net_status_t s_status;
 static char s_prov_ssid[33];
 static char s_prov_pass[65];
 static volatile int  s_last_disconnect_reason;   // 最近一次 STA 断连原因码(诊断上屏)
+// ONLINE 后断连自动重连用的最近成功凭证(sta_online 成功时快照)。
+static char s_last_ssid[33];
+static char s_last_pass[65];
+static bool s_was_online;                        // sta_online 成功过(重连前置)
 static volatile bool s_teardown_req;   // stop()/reset_wifi() 请求:任务内 teardown+回落 AP
 
 static void set_state(sn_state_t st, const char *msg)
@@ -578,6 +582,13 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
     }
 
     creds_save(ssid, pass);
+    // 重连快照:ONLINE 后断连(bcn_timeout 等)自动重连用。
+    snprintf(s_last_ssid, sizeof(s_last_ssid), "%s", ssid);
+    snprintf(s_last_pass, sizeof(s_last_pass), "%s", pass);
+    s_was_online = true;
+    // 连接期重试会留下 EV_DISCONNECT 残留位;不清的话 job 循环一觉醒来看见
+    // "在线+断连位"会立刻误触发一次自动重连。
+    xEventGroupClearBits(s_events, EV_DISCONNECT);
     // r10.15c:回源诊断 —— resolve 后把 DNS 目标 IP 打上串口:198.18.x/198.19.x
     // = Fake-IP 段 = 流量进代理隧道(路由器劫持 DNS 场景一眼定罪)。
     // LAN 安装模式下此日志仍保留:配网链路异常时是第一手证据。
@@ -603,9 +614,9 @@ static void job_task_main(void *arg)
 {
     (void)arg;
     for (;;) {
-        // 等配网凭证或 teardown 请求(共用事件组等待,凭证优先处理)。
+        // 等配网凭证 / teardown / 在线断连(共用事件组等待,凭证优先处理)。
         const EventBits_t bits = xEventGroupWaitBits(
-            s_events, EV_CREDENTIALS | EV_STOP, pdTRUE, pdFALSE,
+            s_events, EV_CREDENTIALS | EV_STOP | EV_DISCONNECT, pdTRUE, pdFALSE,
             pdMS_TO_TICKS(500));
 
         if (bits & EV_STOP) {
@@ -632,6 +643,32 @@ static void job_task_main(void *arg)
                 if (!s_teardown_req) {
                     ap_start();   // 失败回落:重新开配网 AP(stop/reset 请求优先)
                 }
+            }
+            continue;
+        }
+
+        // 在线断连自动重连(真机 v63:ONLINE 后 ~10s bcn_timeout 断连,旧代码
+        // 无任何恢复 → 手机页面瞬间全打不开,直到退出商店重进)。LAN 安装的
+        // 整个用户面都架在 STA 链路上,断连必须自愈。限 3 次,失败回落配网页。
+        if ((bits & EV_DISCONNECT) && s_was_online && !s_teardown_req
+            && s_status.state == SN_STATE_ONLINE) {
+            ESP_LOGW(TAG, "STA 在线断连(reason=%d),自动重连…", s_last_disconnect_reason);
+            bool ok = false;
+            for (int attempt = 1; attempt <= 3 && !s_teardown_req; attempt++) {
+                ESP_LOGI(TAG, "重连尝试 %d/3: %s", attempt, s_last_ssid);
+                if (sta_online(s_last_ssid, s_last_pass) == ESP_OK) { ok = true; break; }
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+            if (!ok && !s_teardown_req) {
+                s_was_online = false;
+                char fail_buf[32];
+                set_state(SN_STATE_ERROR,
+                          meta_store_wifi_fail_text(s_last_disconnect_reason, fail_buf, sizeof(fail_buf)));
+                ESP_LOGW(TAG, "STA 重连 3 次失败,回落配网页");
+                wifi_teardown();
+                ap_start();
+            } else if (ok) {
+                ESP_LOGI(TAG, "STA 重连成功,安装服务继续");
             }
             continue;
         }
