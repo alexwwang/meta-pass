@@ -196,10 +196,17 @@ async function mpJson(path) {
   return r.json();
 }
 
-export async function searchPlays(q, limit = 20) {
-  const d = await mpJson(`/api/plays?multiDevice=false&q=${encodeURIComponent(q)}`);
+export async function searchPlays(q, offset = 0, limit = 20) {
+  // 官方上游分页契约(生产实测):只认 offset+limit(page/pageSize 被静默忽略),
+  // 响应 pagination.{total,hasMore};limit=20 ≈ 100KB/页,limit>=100 上游 502。
+  const d = await mpJson(`/api/plays?multiDevice=false&q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`);
   const plays = Array.isArray(d?.plays) ? d.plays : [];
-  return plays.map(normalizePlay).filter((p) => p).slice(0, limit);
+  const pagination = d?.pagination ?? {};
+  return {
+    list: plays.map(normalizePlay).filter((p) => p),
+    hasMore: pagination.hasMore === true,
+    total: Number.isFinite(pagination.total) ? pagination.total : null,
+  };
 }
 
 export async function getPlayDetail(id) {
@@ -470,7 +477,7 @@ export function boot(opts = {}) {
     <h3 style="margin:.4em 0">meta-pass install</h3>
     <div id=mp-log style="color:#555;white-space:pre-wrap;min-height:1.2em"></div>
     <div id=mp-search-row style="display:${deviceOrigin ? "flex" : "none"};gap:6px;margin:.5em 0">
-      <input id=mp-q style="flex:1" placeholder="search plays…">
+      <input id=mp-q style="flex:1" placeholder="search plays… (empty = browse all)">
       <button id=mp-go>Search</button>
     </div>
     <div id=mp-dev-row style="display:${deviceOrigin ? "none" : "block"};margin:.5em 0">
@@ -479,6 +486,9 @@ export function boot(opts = {}) {
       <button id=mp-dev-go>Connect</button>
     </div>
     <ul id=mp-list style="list-style:none;padding:0;margin:.5em 0"></ul>
+    <div id=mp-count style="color:#777;font-size:.9em;min-height:1.1em"></div>
+    <button id=mp-more style="display:none;width:100%;margin:.3em 0;padding:8px">
+      load more…</button>
     <div id=mp-detail style="margin:.5em 0"></div>
     <div id=mp-bar-wrap style="display:none;margin:.5em 0">
       <progress id=mp-bar style="width:100%" value=0 max=1></progress>
@@ -500,28 +510,82 @@ export function boot(opts = {}) {
     log("no session token in link — enter the 6-digit pairing code on the device page first, then reload");
   }
 
-  let last = [];
+  // 分页浏览状态机(官方契约:offset+limit,pagination.{total,hasMore}):
+  // 新搜索重置;翻页追加去重;load more 按钮 + IntersectionObserver 自动加载
+  // (不支持 IO 的环境退化为纯按钮)。空关键词 = 浏览全量目录。
+  let lastQ = "";
+  let items = [];          // 已累积的归一化结果(去重后)
+  let hasMore = false;
+  let total = null;        // 服务端过滤后总数(pagination.total,未知为 null)
+  let loading = false;
+  const seen = new Set();
+
+  function renderRow(p) {
+    const li = document.createElement("li");
+    li.style.cssText = "padding:6px 0;border-bottom:1px solid #eee;cursor:pointer";
+    li.textContent = `${p.name} · ${(p.size / 1048576).toFixed(1)}MB`;
+    li.onclick = () => showDetail(p);
+    $("mp-list").appendChild(li);
+  }
+
+  function refreshCount() {
+    $("mp-count").textContent = items.length === 0 ? "no installable results"
+      : `${items.length}${total != null ? " / " + total : ""} result(s)` +
+        (hasMore ? " — scroll or tap for more" : "");
+    $("mp-more").style.display = hasMore ? "block" : "none";
+  }
+
+  async function fetchPage(offset) {
+    if (loading) return;
+    loading = true;
+    $("mp-more").textContent = "loading…";
+    try {
+      let cur = offset;
+      // 整页被滤/重复时按 limit 步进跳页(上游数据漂移),500 页硬顶防死循环。
+      for (let guard = 0; guard < 500; guard++) {
+        const r = await searchPlays(lastQ, cur);
+        let added = 0;
+        for (const p of r.list) {
+          if (seen.has(p.id)) continue;   // 翻页间隙数据漂移防护
+          seen.add(p.id);
+          items.push(p);
+          renderRow(p);
+          added++;
+        }
+        hasMore = r.hasMore;
+        total = r.total;
+        if (added > 0 || !hasMore) break;
+        cur += 20;
+        if (total != null && cur >= total) { hasMore = false; break; }
+      }
+      refreshCount();
+    } catch (e) {
+      log(`page load failed: ${e.message}`);
+    } finally {
+      loading = false;
+      $("mp-more").textContent = "load more…";
+    }
+  }
+
   $("mp-go").onclick = async () => {
     const q = $("mp-q").value.trim();
-    if (!q) return;
-    log(`searching "${q}"…`);
-    try {
-      last = await searchPlays(q);
-    } catch (e) {
-      log(`search failed: ${e.message}`);
-      return;
-    }
-    const ul = $("mp-list");
-    ul.innerHTML = "";
-    for (const p of last) {
-      const li = document.createElement("li");
-      li.style.cssText = "padding:6px 0;border-bottom:1px solid #eee;cursor:pointer";
-      li.textContent = `${p.name} · ${(p.size / 1048576).toFixed(1)}MB`;
-      li.onclick = () => showDetail(p);
-      ul.appendChild(li);
-    }
-    log(last.length ? `${last.length} result(s)` : "no installable results");
+    if (loading) return;
+    lastQ = q;
+    items = []; hasMore = false; total = null; seen.clear();
+    $("mp-list").innerHTML = "";
+    $("mp-detail").textContent = "";
+    log(q ? `searching "${q}"…` : "browsing full catalog…");
+    await fetchPage(0);
+    if (items.length === 0 && !hasMore) log("no installable results");
+    else log("");
   };
+  $("mp-more").onclick = () => fetchPage(items.length);
+  if (typeof IntersectionObserver !== "undefined") {
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) fetchPage(items.length);
+    }, { rootMargin: "120px" });
+    io.observe($("mp-more"));
+  }
 
   async function showDetail(p) {
     // §5/§6.2 元数据契约:name/size/revisionId/updatedAt/sha256(审计 M8)。

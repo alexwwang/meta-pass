@@ -159,13 +159,21 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
     calls.push(u.pathname + u.search);
     if (u.origin === "https://metapass.chuanxilu.net" || u.origin === "https://metapass.example") {
       if (u.pathname === "/api/plays") {
-        // Worker 契约:url.search 原样转发(审计 B3);mock 也必须执行 q 过滤,
-        // 否则"query 被丢弃"在测试里同样不可见。
+        // Worker 契约:url.search 原样转发(审计 B3);mock 也必须执行 q 过滤
+        // 与 offset/limit 分页(生产实测契约:只认 offset+limit,响应
+        // pagination.{total,hasMore}),否则"query 被丢弃/翻页失效"在
+        // 测试里同样不可见。
         const q = u.searchParams.get("q");
+        const offset = Number(u.searchParams.get("offset") ?? 0) || 0;
+        const limit = Number(u.searchParams.get("limit") ?? 20) || 20;
         const filtered = q
           ? plays.filter((p) => JSON.stringify(p).includes(q))
-          : plays;
-        return new Response(JSON.stringify({ ok: true, plays: filtered }), { status: 200 });
+          : plays.slice();
+        return new Response(JSON.stringify({
+          ok: true,
+          plays: filtered.slice(offset, offset + limit),
+          pagination: { total: filtered.length, hasMore: offset + limit < filtered.length },
+        }), { status: 200 });
       }
       if (u.pathname === "/api/play") {
         const id = Number(u.searchParams.get("id"));
@@ -565,16 +573,40 @@ function bigFixtures() {
 // ── 7. 搜索与详情(§6.2) ────────────────────────────────────────────────
 {
   globalThis.fetch = installMockFetch({ plays: [PLAY, { id: 999, title: { zh: "无固件" } }] });
-  const results = await phone.searchPlays("对讲机");
-  assert.equal(results.length, 1);           // 无固件元数据的被过滤
-  assert.equal(results[0].id, 563);
+  const r = await phone.searchPlays("对讲机");
+  assert.equal(r.list.length, 1);           // 无固件元数据的被过滤
+  assert.equal(r.list[0].id, 563);
+  assert.equal(r.hasMore, false);
+  assert.equal(r.total, 1);
   const det = await phone.getPlayDetail(563);
   assert.equal(det.id, 563);
   assert.ok(globalThis.fetch.calls.some((c) => c.startsWith("/api/plays?") && c.includes("q=")),
     "search forwards q");
+  assert.ok(globalThis.fetch.calls.some((c) => c.includes("offset=0") && c.includes("limit=20")),
+    "search uses offset+limit pagination");
   assert.ok(globalThis.fetch.calls.some((c) => c === "/api/play?id=563"),
     "detail goes through the Worker-routed /api/play?id= (audit B2)");
-  console.log("PASS 7: searchPlays forwards q and filters uninstallable plays; getPlayDetail works");
+  console.log("PASS 7: searchPlays paginated contract; filters uninstallable; getPlayDetail works");
+}
+
+// 7b. 分页翻页:25 条夹具跨两页,hasMore 迁移 + 无重复。
+{
+  const many = Array.from({ length: 25 }, (_, i) => ({
+    id: 1000 + i,
+    title: { zh: `玩法${i}` },
+    firmware: { url: "/api/download/x", size: 1024, sha256: "ab".repeat(32) },
+  }));
+  globalThis.fetch = installMockFetch({ plays: many });
+  const p0 = await phone.searchPlays("");
+  assert.equal(p0.list.length, 20);
+  assert.equal(p0.hasMore, true);
+  assert.equal(p0.total, 25);
+  const p1 = await phone.searchPlays("", 20);
+  assert.equal(p1.list.length, 5);
+  assert.equal(p1.hasMore, false);
+  const ids0 = new Set(p0.list.map((p) => p.id));
+  assert.ok(p1.list.every((p) => !ids0.has(p.id)), "pages must not overlap");
+  console.log("PASS 7b: pagination — page 1 (20, hasMore) → page 2 (5, end), no overlap");
 }
 
 // ── 8. 审计回归(见 docs/assets/mota-implementation-audit.md) ───────────
