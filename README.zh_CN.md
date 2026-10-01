@@ -42,12 +42,12 @@ bootloader 改动。
   - **USB 串口安装页**（本地文件推荐）：Chrome 打开本地页面，按住 UP 开机进 ROM
     下载模式，直接写槽位；支持本地 `.bin`（Full 镜像自动解包）和 plays 市场链接
     （自动下载并按商店公布的 SHA-256 校验）；
-  - **设备端商店下载**（完全不需要电脑）：主列表选 STORE DOWNLOAD → 设备复用已存
+  - **LAN 手机辅助安装**（不需要电脑/USB）：主列表选 STORE DOWNLOAD → 设备复用已存
     WiFi 凭证直连，或开配网热点（`192.168.4.1`，屏幕显示随机 WPA2 密码，网页只收
-    WiFi 名/密码，无配对码）→ 用数字键盘输入市场玩法编号 → 设备向
-    metapass.chuanxilu.net 请求解包分析（名称/可装性/最小可装槽位）→ 确认后流式
-    下载已分离的固件镜像刷入所选槽位，边下边按商店公布的 SHA-256 校验。解包不在
-    设备上做（服务端复用与安装页同一套算法）。
+    WiFi 名/密码，无配对码）→ 联网后屏幕显示 QR 码、设备地址与 6 位配对码 → 用手机
+    扫码：metapass 网页模块完成市场搜索、analyze、下载与应用镜像提取，向设备提交
+    安装 offer；在设备上确认槽位（物理 OK 解锁上传）后手机经 LAN HTTP 流式上传，
+    设备边收边校验长度、SHA-256 与镜像结构。分析与解包始终不在设备上做。
 - **完整性校验**：magic、chip id、尺寸、segment 结构逐层校验，`esp_ota_end()` 权威
   复核；SHA-256 在详情页可见，可与商店公布值对照。
 - **未签名警告**：未签名固件启动前弹出警告页，UP/DOWN 选择 BOOT / CANCEL，OK 单击
@@ -96,12 +96,13 @@ python -m esptool --chip esp32c3 -p <串口> -b 460800 \
 设备按住 UP 键开机 → 页面 Connect → 选槽位 → 选本地文件或粘贴 plays 链接 →
 Install → 断电重启。完整指南：[install-slot/README.zh_CN.md](install-slot/README.zh_CN.md)。
 
-**方式 B：设备端商店下载**（不需要电脑有 Chrome）：
+**方式 B：LAN 手机辅助安装**（不需要电脑）：
 
 主列表选 STORE DOWNLOAD → 配网热点（或已存凭证自动直连；配网页只收 WiFi
-名/密码，无配对码）→ 联网后自动翻页 → 数字键盘输玩法编号（UP/DOWN 调数字，
-OK 跳下一位，第 6 位 OK 提交）→ 详情页显示名称、尺寸、建议最小槽位（不支持时
-显示原因码）→ CONFIRM → 选目标槽位 → 下载刷写完成后提示断电重启。
+名/密码，无配对码）→ 联网后屏幕显示 QR 码、设备地址与 6 位配对码 → 用同一
+WiFi 下的手机扫码（或手动输入显示的网址 + 配对码）→ 在手机上选玩法；手机
+下载、校验并提取应用镜像后向设备提交安装 offer → 设备上 CONFIRM → 选目标
+槽位 → 物理确认解锁上传 → 双端同屏进度 → 断电重启即可启动。
 
 ### 3. 启动
 
@@ -116,20 +117,19 @@ OK 跳下一位，第 6 位 OK 提交）→ 详情页显示名称、尺寸、建
 | 槽位详情 | 选 BOOT/DELETE/BACK | 确认 | 返回主列表 |
 | 未签名警告 | 选 BOOT/CANCEL | 确认所选 | 取消（回详情页） |
 | 删除确认 | — | 取消 | 确认删除 |
-| 商店：配网 | — | — | 退出商店、回主列表 |
-| 商店：输编号 | 数字 ±1 | 跳下一位 / 提交 | 回配网页 |
-| 商店：详情 | CONFIRM/BACK | 确认 | 回输编号 |
-| 商店：选槽 | 选择槽位 | 安装到所选槽 | 回详情 |
-| 商店：进度 | — | 失败后返回 | 下载中=进取消确认页；否则回详情 |
-| 商店：取消确认 | 选 CANCEL/RETRY/BACK | 执行所选 | 不作取消，继续等下载 |
+| 商店：配网 | 双击 UP = 更换 WiFi | — | 退出商店、回主列表 |
+| 商店：扫码配对 | — | — | 退出商店、回主列表 |
+| 商店：offer 确认 | 选 CONFIRM/BACK | 确认所选（BACK = 拒绝） | 拒绝 offer，回扫码页 |
+| 商店：选槽 | 选择槽位 | 物理确认——解锁手机上传 | 回 offer 确认页 |
+| 商店：进度 | — | 失败后回扫码页 | 上传中=进取消确认页；否则无动作 |
+| 商店：取消确认 | 选 CANCEL/BACK | 执行所选 | 不作取消，继续等 |
 | 商店：完成 | — | 回主列表 | — |
 | 商店：任意页（会话到期提示时） | — | 继续当前操作（续期） | 退出商店、回主列表 |
 
-取消确认页（下载中按 OK LONG 进入，后台下载不停）：**CANCEL** = 继续取消，
-半成品槽位作废；**RETRY** = 取消当前下载并自动重新开始安装；**BACK** = 不取消，
-回到进度页继续等。
+取消确认页（上传中按 OK LONG 进入，后台上传不停）：**CANCEL** = 继续取消，
+半成品槽位作废；**BACK** = 不取消，回到进度页继续等。
 
-会话超时（默认 5 分钟，作业进行中自动延续）到期不强制关闭：屏上提示
+会话超时（默认 5 分钟，上传进行中自动延续）到期不强制关闭：屏上提示
 "Session timeout. OK = continue / LONG = exit store"，由用户选择继续或退出。
 超时时长可用 `CONFIG_META_STORE_SESSION_TIMEOUT_MS`（menuconfig）或运行时
 `meta_store_session_set_timeout_ms()` 配置（范围 30 秒～24 小时）。
@@ -157,7 +157,7 @@ OK 跳下一位，第 6 位 OK 提交）→ 详情页显示名称、尺寸、建
 
 | 路径 | 内容 |
 | --- | --- |
-| `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、商店下载通道（`meta_store_net` WiFi/配网/网络任务 + `meta_store_api` HTTPS/OTA + `meta_store_json` 有界 JSON 提取器）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
+| `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、LAN 安装通道（`meta_store_net` WiFi/配网/httpd + `meta_store_install` 本地安装 HTTP/OTA + `meta_store_json` 有界 JSON 提取器 + `meta_install_model` 安装规则）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
 | `components/bsp/` | 板级支持包（官方原样 + 显式 `BSP_BTN_LONG` 1.5 秒阈值） |
 | `install-slot/` | USB 串口安装页，线上地址 https://meta-pass.pages.dev/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
 | `tools/install-slot/` | `server.mjs` 本地服务器（直接服务规范的 `install-slot/` 页面——单一来源，零依赖） |
@@ -228,10 +228,10 @@ node tools/install-slot/test-extract.mjs   # 安装页解包/名字 blob 测试
 
 ## 验证记录
 
-| 类别 | 结果（2026-09-13） |
+| 类别 | 结果（2026-09-13；Host tests 行更新于 2026-10-01） |
 | --- | --- |
 | 构建 | `validate.sh` 全门禁 PASS；应用 1,024,880 / 1,507,328 B（32% 余量）；合并镜像 8 MB；`cardid` 不动 |
-| Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json` 套件全过；安装页与商店分析 node 测试全过；商店通道 ESP-IDF 模块（`meta_store_net`/`meta_store_api`）经 IDF 5.x 签名桩头做 host 语法检查（`-fsyntax-only`，零硬件）——*SoftAP 上传时代的 `meta_net`/`meta_import` 测试随上传通道一并退役* |
+| Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json`/`meta_install_model` 套件全过；安装页 node 测试全过；通道 ESP-IDF 模块（`meta_store_net`/`meta_store_install`）经 IDF 5.x 签名桩头做 host 语法检查（`-fsyntax-only`，零硬件）——*WAN 商店下载套件（`meta_store_api` 等）随下载通道在 `feat/mota` 一并退役* |
 | 模拟器（passport-sim） | 三槽列表（含动态 blob 偏移的真名：ota_0→0x355000，ota_1→0x55f000）；导航；详情元数据（`name: Pocket Walkie`，ver 1，1262 KB，sha 前缀）；空槽 BOOT 无操作；未签名警告页；LONG2 启动 ota_0；硬重启回滚到启动器；ota_1 Passport Radar 启动 + 回滚；DELETE→LONG2 擦除（SLOT 1→empty，重启后持久）；IMPORT 页（凭证/配对码/倒计时）；两项观察到判定为非固件 bug：确认页残留行 = 模拟器画布脏区伪影；导入页长按退出需更长按住 = 模拟器时序模型 — *记录于 2026-09-13，早于 LONG2 移除与 BOOT/CANCEL 启动菜单；这两项交互需重测* |
 | GitHub Actions | 静态检查（Linux/GCC）✅、固件门禁（ESP-IDF Docker）✅ |
 | CI artifact SHA-256 | `b86ca4fe…1b28e773`（分发包权威参考；本地编译因嵌入时间戳哈希不同） |

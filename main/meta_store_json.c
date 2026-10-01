@@ -273,26 +273,22 @@ bool meta_store_json_get_string(const char *json, size_t len, const char *path,
     return scan_string(&c, out, out_sz, NULL);
 }
 
-bool meta_store_json_get_int(const char *json, size_t len, const char *path,
-                             int64_t *out)
+// 从游标(位于 value 首字符)解析整数。只允许纯整数(契约 number 字段均为整数;
+// 带小数/指数的按不符处理);先用 skip_value 定位 token 边界再逐位复核。
+static bool scan_int(cur_t *c, int64_t *out)
 {
-    if (!out) return false;
-    cur_t c;
-    if (!locate(json, len, path, &c)) return false;
-    // 复用 skip_value 的 number 校验逻辑前,先手动解析整数值:定位 token 边界。
-    const size_t start = c.pos;
-    if (!skip_value(&c)) return false;
-    // 只允许纯整数(契约中 number 字段均为整数;带小数/指数的按不符处理)
+    const size_t start = c->pos;
+    if (!skip_value(c)) return false;
     int64_t v = 0;
     bool neg = false;
     size_t i = start;
-    if (i < c.len && c.p[i] == '-') {
+    if (i < c->len && c->p[i] == '-') {
         neg = true;
         i++;
     }
     size_t digits = 0;
-    for (; i < c.pos; i++) {
-        const char ch = c.p[i];
+    for (; i < c->pos; i++) {
+        const char ch = c->p[i];
         if (ch < '0' || ch > '9') return false;
         // 先判溢出再乘加:契约数字远小于 int64,超长整数一律拒绝(拒绝点即 false,不截断)
         if (v > ((int64_t)INT64_MAX - 9) / 10) return false;
@@ -304,21 +300,117 @@ bool meta_store_json_get_int(const char *json, size_t len, const char *path,
     return true;
 }
 
+// 从游标(位于 value 首字符)解析 bool 字面量(true/false,无空白前缀假设已 skip)。
+static bool scan_bool(cur_t *c, bool *out)
+{
+    if (remain(c) >= 4 && memcmp(c->p + c->pos, "true", 4) == 0) {
+        *out = true;
+        return true;
+    }
+    if (remain(c) >= 5 && memcmp(c->p + c->pos, "false", 5) == 0) {
+        *out = false;
+        return true;
+    }
+    return false;
+}
+
+bool meta_store_json_get_int(const char *json, size_t len, const char *path,
+                             int64_t *out)
+{
+    if (!out) return false;
+    cur_t c;
+    if (!locate(json, len, path, &c)) return false;
+    return scan_int(&c, out);
+}
+
 bool meta_store_json_get_bool(const char *json, size_t len, const char *path,
                               bool *out)
 {
     if (!out) return false;
     cur_t c;
     if (!locate(json, len, path, &c)) return false;
-    if (remain(&c) >= 4 && memcmp(c.p + c.pos, "true", 4) == 0) {
-        *out = true;
-        return true;
+    return scan_bool(&c, out);
+}
+
+// ---- 对象数组读取(install offer slots 契约) ----
+
+// 定位顶层对象中的数组键:返回时游标停在 '[' 之后(已 skip_ws)。
+static bool locate_array(const char *json, size_t len, const char *key, cur_t *out)
+{
+    cur_t c;
+    if (!locate(json, len, key, &c)) return false;
+    skip_ws(&c);
+    if (!take(&c, '[')) return false;
+    *out = c;
+    return true;
+}
+
+// 推进到数组第 idx 个元素(返回时已 skip_ws,停在元素 value 首字符)。
+// 元素不存在或结构偏差(缺逗号/提前收尾)返回 false。
+static bool array_seek(cur_t *c, size_t idx)
+{
+    skip_ws(c);
+    if (take(c, ']')) return false;   // 空数组:任何下标都不存在
+    for (size_t i = 0;; i++) {
+        skip_ws(c);
+        if (i == idx) return true;
+        if (!skip_value(c)) return false;
+        skip_ws(c);
+        if (take(c, ',')) continue;
+        return false;                 // 元素数不足,或缺 ',' 却未闭合
     }
-    if (remain(&c) >= 5 && memcmp(c.p + c.pos, "false", 5) == 0) {
-        *out = false;
-        return true;
+}
+
+// 数组元素对象内字段定位:返回时游标停在 field 的 value 首字符。
+static bool array_field(const char *json, size_t len, const char *key, size_t idx,
+                        const char *field, cur_t *out)
+{
+    cur_t c;
+    if (!locate_array(json, len, key, &c)) return false;
+    if (!array_seek(&c, idx)) return false;
+    if (!take(&c, '{')) return false;   // 元素必须是对象
+    bool found = false;
+    if (!obj_find(&c, field, &found)) return false;
+    if (!found) return false;
+    *out = c;
+    return true;
+}
+
+bool meta_store_json_get_array_count(const char *json, size_t len, const char *key,
+                                     size_t *out)
+{
+    if (!out) return false;
+    cur_t c;
+    if (!locate_array(json, len, key, &c)) return false;
+    skip_ws(&c);
+    if (take(&c, ']')) { *out = 0; return true; }
+    size_t n = 0;
+    for (;;) {
+        if (!skip_value(&c)) return false;
+        n++;
+        skip_ws(&c);
+        if (take(&c, ',')) continue;
+        if (take(&c, ']')) { *out = n; return true; }
+        return false;
     }
-    return false;
+}
+
+bool meta_store_json_get_array_int(const char *json, size_t len, const char *key,
+                                   size_t idx, const char *field, int64_t *out)
+{
+    if (!out) return false;
+    cur_t c;
+    if (!array_field(json, len, key, idx, field, &c)) return false;
+    return scan_int(&c, out);
+}
+
+bool meta_store_json_get_array_bool(const char *json, size_t len, const char *key,
+                                    size_t idx, const char *field, bool *out)
+{
+    if (!out) return false;
+    cur_t c;
+    if (!array_field(json, len, key, idx, field, &c)) return false;
+    return scan_bool(&c, out);
 }
 
 bool meta_store_json_parse_sha256(const char *hex, size_t len, uint8_t out[32])

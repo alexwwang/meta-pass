@@ -13,7 +13,7 @@
 - `meta-pass-design.md` / `meta-pass-design.zh_CN.md` — meta-pass 固件启动器的设计文档（单一权威来源）。
 - `meta-pass-v1-retrospective.md` / `meta-pass-v1-retrospective.zh_CN.md` — v1.0.0 开发周期的 ELI5 回顾：目标、方案与经验教训。
 - `ota-r10.17-r10.19-audit.md` / `ota-r10.17-r10.19-audit.zh_CN.md` — OTA Range/R2 变更的代码审计报告,包含证据边界、发现的问题与后续处理顺序。
-- `lan-pair-install-design.md` / `lan-pair-install-design.zh_CN.md` — 局域网手机辅助安装设计(未实现):设备自托管落地页,手机本地渲染目录、自行下载固件并经局域网推给设备,绕开慢速广域路径。
+- `lan-pair-install-design.md` / `lan-pair-install-design.zh_CN.md` — 已确认的局域网手机安装方向:设备自托管最小 boot 页代理本地操作,metapass 动态提供市场/剥离/写入模块,`feat/mota` 移除旧的编号下载流程。
 - `play563-appstore-download-reverse.md` / `play563-appstore-download-reverse.zh_CN.md` — 托管 AppStore play 563 下载链路逆向分析,含 host/真机证据与 meta-pass 可落地改进建议。
 
 ## AI 使用方法

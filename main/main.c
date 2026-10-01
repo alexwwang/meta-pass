@@ -1,16 +1,16 @@
-// main/main.c —— meta-pass 多固件启动器:槽位管理 + 商店下载安装 + 引导。
+// main/main.c —— meta-pass 多固件启动器:槽位管理 + LAN 手机辅助安装 + 引导。
 //
-// 设计文档(单一权威来源):docs/assets/meta-pass-design.md;商店下载通道见
-// main/meta_store_net.h / meta_store_api.h(方案:meta-pass网络下载改造方案)。
+// 设计文档(单一权威来源):docs/assets/meta-pass-design.md;LAN 安装通道见
+// docs/assets/lan-pair-install-design.md 与 main/meta_store_install.h。
 //
-// 商店流程(P0..P5 + P4b 取消确认,数字键盘三键交互):
-//   P0 配网  SoftAP 表单收 WiFi 凭证(或复用已存凭证直连)→ SNTP → ONLINE
-//   P1 输ID  UP/DOWN 调当前位数字,OK 跳下一位;6 位输完自动取 analyze
-//   P2 详情  名称 / 可装性 / 建议最小槽位(不支持时显示原因码),CONFIRM 继续
-//   P3 选槽  三个槽位行,本地按分区上限标记 fit;仅可装槽位可确认
-//   P4 下载  流式进度 + 服务端摘要双重校验,失败作废槽位
-//   P4b 取消 下载中 OK LONG 进确认页:CANCEL=取消 / RETRY=重试 / BACK=继续等
-//   P5 提示  安装完成,提示断电重启选择子固件
+// 商店流程(feat/mota 净切,手机承担浏览/下载/剥离,设备只确认与写入):
+//   P0 配网   SoftAP 表单收 WiFi 凭证(或复用已存凭证直连)→ STA → ONLINE
+//   P1 扫码   起本地 install HTTP 服务,上屏 QR(http://ip/#s=token)+ 配对码
+//   P2 确认   手机 prepare 后展示名称/体积/原因;CONFIRM 进槽位页 / BACK 拒绝
+//   P3 选槽   三个槽位行,本地分区上限判 fit;OK 物理确认(上传前提,§8)
+//   P4 上传   轮询 install 快照:session 开启 → uploading → done/failed
+//   P4b 取消  上传中 OK LONG 进确认页:CANCEL=作废半成品 / BACK=继续等
+//   P5 提示   安装完成,提示断电重启选择子固件
 //
 // 按键语义(全局统一):
 //   上/下 短按   列表/详情页=移动选中项;启动确认页=切换 BOOT/CANCEL;彩蛋页=滚动文本;
@@ -35,11 +35,9 @@
 #include "meta_seq.h"
 #include "meta_slots.h"
 #include "meta_store.h"
-#include "meta_store_api.h"
 #include "meta_store_net.h"
-#include "meta_store_idedit.h"
+#include "meta_store_install.h"
 #include "meta_store_prov.h"
-#include "meta_store_info_page.h"
 #include "ui_pixel.h"
 
 static const char *TAG = "meta-pass";
@@ -52,11 +50,11 @@ typedef enum {
     PAGE_CONFIRM_DEL,  // 删除确认
     PAGE_EGG,          // 彩蛋页:隐藏序列进入,滚动查看 MAEG 文本
     PAGE_STORE_NET,    // P0 商店:配网/连接状态
-    PAGE_STORE_ID,     // P1 商店:数字键盘输入玩法 ID
-    PAGE_STORE_INFO,   // P2 商店:详情(名称/可装性/建议槽位)
-    PAGE_STORE_SLOT,   // P3 商店:目标槽位选择
-    PAGE_STORE_DL,     // P4 商店:下载+刷写进度
-    PAGE_STORE_CANCEL, // P4b 商店:取消下载确认(CANCEL/RETRY/BACK,后台下载不停)
+    PAGE_STORE_QR,     // P1 商店:QR + 配对码(本地 install 服务已启动)
+    PAGE_STORE_INFO,   // P2 商店:手机 prepare 的 install offer 确认
+    PAGE_STORE_SLOT,   // P3 商店:目标槽位选择(物理确认)
+    PAGE_STORE_DL,     // P4 商店:LAN 分块上传进度
+    PAGE_STORE_CANCEL, // P4b 商店:取消上传确认(CANCEL/BACK,会话仍在)
     PAGE_STORE_DONE,   // P5 商店:安装完成提示
 } page_t;
 
@@ -82,20 +80,17 @@ static lv_obj_t *s_egg_panel;        // 彩蛋页可滚动面板(teardown 时随
 static lv_obj_t *s_mascot;
 static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(四 CLICK)的匹配状态
 
-// ---- 商店会话状态(UI 上下文;网络侧状态在 meta_store_net 快照里) ----
-static uint32_t s_play_id;                       // P1 确认的玩法编号
-static lv_obj_t *s_keys[MPD_KEY_COUNT];          // P1 键盘面板(全部 15 键)
-// BUG-14:s_keys 曾硬编码 [10](r8 十键键盘遗留),r10 键盘扩到 15 键后每入
-// P1 越界写 5 槽 —— map 实证后 20B 正好砸碎 s_rows[0..3] 与 s_slots[0]
-// 头部,退出商店后列表页高亮/按键全废。修复 = 尺寸单一事实源(声明即用
-// MPD_KEY_COUNT),键盘键数再变时数组自动跟随,不再可能静默越界。
+// ---- 商店会话状态(UI 上下文;安装会话状态机在 meta_store_install.c) ----
+static meta_install_manifest_t s_offer;          // P2/P3 展示中的 install offer 快照
+static bool s_offer_valid;                       // s_offer 是否有效(页面重建复用)
+static bool s_qr_service_failed;                 // P1 起本地 install 服务失败的粘滞提示
+// 生命周期纪律:凡"页面重建后仍需有效"的状态由 store_goto/各 build 显式维护,
+// 不能依赖 LVGL 对象存活;offer 快照在 P1→P2 迁移时填充,回 P1 即丢弃。
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
 static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
-static char     s_store_warn_detail[48];         // reason 的 detail:分区名(r9)或失败层位句(r10.4)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
-static bool     s_store_retry;                   // P4b 选了 RETRY:当前下载取消后自动重新安装
 
 // ---------- 公共小部件 ----------
 
@@ -142,7 +137,8 @@ static void page_teardown(void)
         s_store_timer = NULL;
     }
     if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE) {
-        meta_store_net_stop();   // 完整释放 httpd/wifi(资源纪律见 meta_store_net.c)
+        meta_store_net_stop();     // 完整释放 httpd/wifi(资源纪律见 meta_store_net.c)
+        meta_install_net_stop();   // 本地 install 服务与 token 一并作废(§8)
     }
     if (s_scr) {
         lv_obj_delete(s_scr);   // 到期提示浮层是 s_scr 子对象,随屏一起销毁
@@ -350,15 +346,12 @@ static void store_tick(lv_timer_t *t);
 
 // 商店页内部迁移:只拆 LVGL 对象,不动网络栈(与 goto_page 的唯一差异)。
 static void store_goto(page_t page);
-static void page_store_id_build(void);
+static void page_store_qr_build(void);
 static void page_store_info_build(void);
 static void page_store_slot_build(void);
 static void page_store_dl_build(void);
 static void page_store_cancel_build(void);
 static void page_store_done_build(void);
-
-// P2 详情内容是否已填充(防轮询定时器每拍重复填充/重复加行)。
-static bool s_info_filled;
 
 // P0 配网页:AP 态显示热点信息;已存凭证(CONNECTING/ONLINE)态显示当前 SSID
 // 与 RESET WIFI 行 —— 选中并 OK 确认后擦凭证重开配网 AP(改 WiFi 入口)。
@@ -432,232 +425,124 @@ static void page_store_net_build(void)
     lv_screen_load(s_scr);
 }
 
-// P1 屏上键盘(r9,r10 修正几何):15 键 4×4 —— 1 2 3 DEL / 4 5 6 CLR /
-// 7 8 9 OK(纵跨两行) / ◀ 0 ▶。编辑模型在 meta_store_idedit.c(纯逻辑,
-// host 测试同一份):插入光标、退格、显式 OK 提交、UP/DOWN 短按环移选中键、
-// 长按换行、◀▶ 屏上键移光标。
-// 几何契约(编译期锁死,几何回归在构建期直接失败):
-//   - 面板底 52+84=136 < 键盘首行顶 142 → 键盘永不压进 ID 面板;
-//   - OK 高 30+34=64,下缘 142+2*34+64=274 与 0 键下缘 142+3*34+30=274 对齐。
-#define P1_PANEL_H       84
-#define P1_KEY_H         30
-#define P1_ROW_PITCH     34
-#define P1_KEY_TOP       142
-#define P1_OK_H          (P1_KEY_H + P1_ROW_PITCH)
-_Static_assert(52 + P1_PANEL_H <= P1_KEY_TOP, "P1 panel must not overlap keypad");
-_Static_assert(P1_KEY_TOP + 2 * P1_ROW_PITCH + P1_OK_H
-               == P1_KEY_TOP + 3 * P1_ROW_PITCH + P1_KEY_H,
-               "P1 OK bottom must align with 0-key bottom");
-static mpd_idedit_t s_idedit;   // P1 编辑模型(纯逻辑,host 测试同一份;真实声明见键盘区)
-static void id_key_refresh(void);
-
-static void id_refresh_text(void)
+// P1 扫码页(§6.1):上屏 install URL 的 QR(http://ip/#s=token,token 在
+// fragment 不进初始 HTTP 请求)+ 文本兜底(IP + 配对码)。本页无行项:
+// UP/DOWN 无动作,OK LONG = 退出商店;闲置超时由会话浮层提示。
+// 屏宽 240:QR 120px 居中(x=60),配对码面板垫在下方。
+static void page_store_qr_build(void)
 {
-    char line[40];
-    mpd_idedit_render(&s_idedit, line, sizeof(line));
-    lv_label_set_text(s_info, line);
-    id_key_refresh();
-}
+    s_offer_valid = false;   // 回到扫码页即丢弃本地 offer 快照(重 prepare 再取)
+    s_scr = ui_pixel_screen_create("SCAN ME");
 
-static void page_store_id_build(void)
-{
-    s_scr = ui_pixel_screen_create("PLAY ID");
-    // 面板 84 高(52..136):一行 ID + 两行提示,键盘首行 142 之上留 6px
-    // (旧值 100 使键盘第一行压进面板 10px —— r10 修复,几何由上方
-    // _Static_assert 锁死)。
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, P1_PANEL_H, UI_PAPER);
+    if (s_qr_service_failed) {
+        // 本地 install 服务启动失败:QR 无意义(手机连不上),文字交代后果。
+        lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 92, 216, 100, UI_PAPER);
+        s_info = lv_label_create(panel);
+        lv_obj_set_width(s_info, 196);
+        lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
+        lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
+        lv_label_set_text(s_info, "LAN install service\nfailed to start.\nHold OK = exit");
+        add_battery(s_scr);
+        store_touch();
+        s_store_timer = lv_timer_create(store_tick, 250, NULL);
+        lv_screen_load(s_scr);
+        return;
+    }
+
+    const char *token_hex = NULL;
+    const char *pair = NULL;
+    char url[256];
+    meta_install_qr_info(&token_hex, &pair, url);
+
+    if (token_hex) {
+        lv_obj_t *qr = lv_qrcode_create(s_scr);
+        lv_qrcode_set_size(qr, 120);
+        lv_qrcode_set_dark_color(qr, lv_color_hex(UI_INK));
+        lv_qrcode_set_light_color(qr, lv_color_hex(UI_PAPER));
+        lv_qrcode_set_quiet_zone(qr, true);
+        if (lv_qrcode_update(qr, url, (uint32_t)strlen(url)) != LV_RESULT_OK) {
+            // 编码失败(理论上 URL 长度远低于上限):不留半渲染对象。
+            lv_obj_delete(qr);
+        } else {
+            lv_obj_set_pos(qr, 60, 46);
+        }
+    }
+
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 172, 216, 88, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
+    {
+        char ip_txt[20] = "0.0.0.0";
+        const uint32_t ip = meta_install_lan_ip();
+        if (ip != 0) {
+            const uint8_t *b = (const uint8_t *)&ip;   // 网络字节序,内存序即 a.b.c.d
+            snprintf(ip_txt, sizeof(ip_txt), "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+        }
+        char text[96];
+        snprintf(text, sizeof(text), "scan QR, or open:\nhttp://%s\npair code: %s",
+                 ip_txt, (pair && !token_hex) ? "-" : (pair ? pair : "-"));
+        lv_label_set_text(s_info, text);
+    }
 
     s_status_line = lv_label_create(panel);
     lv_obj_set_width(s_status_line, 196);
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    // 屏上提示只写看不见的手势:长按换行/长按退出。短按移动/按下在键盘上
-    // 一眼自明,写了是废话(r10.3:上一版删反了,把必要的删了留下了废话)。
-    lv_label_set_text(s_status_line, "hold UP/DOWN = row - hold OK = exit");
+    lv_label_set_text(s_status_line, token_hex ? "waiting for phone..." : "token error");
 
-    // 屏上键盘 15 键(r9.1):4×4 —— 1 2 3 DEL / 4 5 6 CLR / 7 8 9 OK(纵跨
-    // 两行) / ◀ 0 ▶。键 44x30,列距 50,行距 34;UP/DOWN 短按=环移选中键,
-    // 长按=换行(同列无键停住);◀▶ 屏上键=移光标。
-    static const char *const k_labels[MPD_KEY_COUNT] = {
-        "1", "2", "3", "DEL",
-        "4", "5", "6", "CLR",
-        "7", "8", "9", "OK",
-        "<", "0", ">",
-    };
-    for (int i = 0; i < MPD_KEY_COUNT; i++) {
-        int row, col;
-        mpd_key_row_col(i, &row, &col);
-        const uint32_t base = (i == MPD_KEY_OK) ? UI_YELLOW
-                            : (i == MPD_KEY_CLR || i == MPD_KEY_DEL
-                               || i == MPD_KEY_LEFT || i == MPD_KEY_RIGHT) ? UI_MUTED
-                            : UI_PAPER;
-        // OK 纵跨 row2-row3:高 64,下缘与第三行数字键(0)下缘精确对齐
-        // (等式由 _Static_assert 锁死;旧值 58 差 6px,r10 修复)。
-        const int h = (i == MPD_KEY_OK) ? P1_OK_H : P1_KEY_H;
-        s_keys[i] = ui_pixel_panel_create(s_scr, 12 + col * 50,
-                                          P1_KEY_TOP + row * P1_ROW_PITCH,
-                                          44, h, base);
-        lv_obj_t *lbl = ui_pixel_label(s_keys[i], k_labels[i],
-                                       &lv_font_montserrat_14, UI_INK);
-        lv_obj_center(lbl);
-    }
-    mpd_idedit_init(&s_idedit);
-    // r10.7:RETRY/BACK 回 P1 不丢输入 —— 有已确认过的 play_id 就预填,
-    // 用户只需改数字或直接 OK;首次进入仍是空键盘。
-    if (s_play_id > 0) {
-        // uint32 最大 4294967295 = 10 位,12B 覆盖任意值(8B 会被 -Werror 的
-        // format-truncation 拒绝 —— 门第一次发挥作用的正面案例)。
-        char preset[12];
-        snprintf(preset, sizeof(preset), "%lu", (unsigned long)s_play_id);
-        (void)mpd_idedit_set_digits(&s_idedit, preset);
-    }
-    id_refresh_text();
     add_battery(s_scr);
     store_touch();
     s_store_timer = lv_timer_create(store_tick, 250, NULL);
     lv_screen_load(s_scr);
 }
 
-// P1 键盘高亮刷新(r9):15 键;选中 = 亮青,OK 平时黄,CLR/DEL/◀▶ 平时灰,
-// 数字纸白。
-static lv_obj_t *k_key_obj(int idx)
-{
-    return (idx >= 0 && idx < MPD_KEY_COUNT) ? s_keys[idx] : NULL;
-}
-
-static void id_key_refresh(void)
-{
-    if (!s_scr) return;
-    for (int i = 0; i < MPD_KEY_COUNT; i++) {
-        const bool sel = (i == s_idedit.sel);
-        uint32_t base = (i == MPD_KEY_OK) ? UI_YELLOW
-                      : (i == MPD_KEY_CLR || i == MPD_KEY_DEL
-                         || i == MPD_KEY_LEFT || i == MPD_KEY_RIGHT) ? UI_MUTED
-                      : UI_PAPER;
-        lv_obj_set_style_bg_color(k_key_obj(i),
-                                  lv_color_hex(sel ? 0x35C4E8 : base), 0);
-    }
-}
-
-// P1 → 组装编号并发 analyze,切到 P2 轮询。变长:至少 1 位。
-static void id_commit(void)
-{
-    uint32_t id = 0;
-    if (!mpd_idedit_value(&s_idedit, &id)) return;   // 空输入不提交
-    s_play_id = id;
-    if (meta_store_net_cmd_analyze(id) == ESP_OK) {
-        store_goto(PAGE_STORE_INFO);
-    } else {
-        lv_label_set_text(s_status_line, "not online");
-    }
-}
-
-// P2 详情页构建(analyze 进行中状态;结果经轮询填充)。
+// P2 offer 确认页(§6.4):手机 prepare 后展示名称/体积/原因;行 0 = CONFIRM
+// (进槽位页),行 1 = BACK(设备侧拒绝,手机可重新 prepare)。
 static void page_store_info_build(void)
 {
-    s_info_filled = false;
-    s_scr = ui_pixel_screen_create("STORE");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 140, UI_PAPER);
+    s_scr = ui_pixel_screen_create("INSTALL");
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 138, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    lv_label_set_text(s_info, "Fetching info...");
+    char text[224];
+    if (!s_offer_valid) {
+        // 防御路径:P2 只应从 P1 携有效快照进入;置空快照时只给 BACK 出口。
+        snprintf(text, sizeof(text), "No pending offer.");
+    } else if (s_offer.reason[0] && strcmp(s_offer.reason, "ok") != 0) {
+        // 手机侧判断非 ok(如 custom-partitions):原因句透传上屏。
+        snprintf(text, sizeof(text),
+                 "Install: %.24s\n%lu KB\nNOTE: %.40s",
+                 s_offer.name, (unsigned long)(s_offer.image_len / 1024), s_offer.reason);
+    } else {
+        snprintf(text, sizeof(text), "Install: %.24s\n%lu KB",
+                 s_offer.name, (unsigned long)(s_offer.image_len / 1024));
+    }
+    lv_label_set_text(s_info, text);
 
-    add_row(s_scr, 0, 196, "BACK");
-    rows_refresh(1, 0);
+    add_row(s_scr, 0, 196, "CONFIRM");
+    add_row(s_scr, 1, 240, "BACK");
     s_sel = 0;
+    rows_refresh(2, s_sel);
     add_battery(s_scr);
     store_touch();
     s_store_timer = lv_timer_create(store_tick, 250, NULL);
     lv_screen_load(s_scr);
 }
 
-// analyze 成功后填充详情内容。三形态由 meta_store_info_classify 单一判定
-// (BUG-20):INSTALL=CONFIRM/BACK(含 custom-partitions 警告文案)、
-// RETRY=RETRY/BACK、FINAL=仅 BACK —— 渲染与 OK 路由共用,不再可能漏分支。
-static bool store_info_is_retry_page(const meta_store_analysis_t *a)
-{
-    if (!a) return true;
-    if (a->supported) return false;
-    if (strcmp(a->reason, "unavailable") == 0) return true;
-    return strchr(a->reason, ' ') != NULL;
-}
-
-// r10.7:RETRY 时的用户可见结果。cmd_analyze 在作业未 RUNNING 时入队成功;
-// 入队失败仅提示,绝不清输入/翻页 —— 旧实现 store_goto(PAGE_STORE_ID) 把
-// 三连按 RETRY 的用户扔回空键盘(输入清零,真机实测)。
-static void store_info_retry(void)
-{
-    if (meta_store_net_cmd_analyze(s_play_id) != ESP_OK) {
-        if (s_status_line) {
-            lv_label_set_text(s_status_line, "Busy/Offline.\nHold OK = exit");
-        }
-    }
-    // 入队成功:tick 在作业完成后重填本页(s_info_filled 已置 false)。
-}
-
-static void store_info_fill(const meta_store_analysis_t *a)
-{
-    s_info_filled = true;
-    snprintf(s_store_warn_detail, sizeof(s_store_warn_detail), "%s", a->detail);
-    const meta_store_info_kind_t kind = meta_store_info_classify(a, false);
-    const int rows = meta_store_info_row_count(kind);
-    char text[220];
-    if (a->supported) {
-        if (strcmp(a->reason, "custom-partitions") == 0) {
-            snprintf(text, sizeof(text),
-                     "%.24s\nsize: %lu KB\nmin slot: %d\nNOTE: custom '%.24s' part\nnot installed;\nsome features may lack it",
-                     a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot,
-                     s_store_warn_detail);
-        } else {
-            snprintf(text, sizeof(text),
-                     "%.24s\nsize: %lu KB\nmin slot: %d",
-                     a->name, (unsigned long)(a->image_len / 1024), a->suggested_slot);
-        }
-    } else if (store_info_is_retry_page(a)) {
-        // r10.4:可重试失败 —— reason + 层位 detail 都上屏,一次定位失败层。
-        if (a->detail[0]) {
-            snprintf(text, sizeof(text), "Failed: %.40s\n%.47s",
-                     a->reason, a->detail);
-        } else {
-            snprintf(text, sizeof(text), "Failed: %.40s", a->reason);
-        }
-    } else {
-        snprintf(text, sizeof(text),
-                 "Not supported:\n%.24s", a->reason);
-    }
-    lv_label_set_text(s_info, text);
-
-    // BUG-20 渲染:行数与行 0 标签来自同一判定;重填(RETRY 后同屏二次进入)
-    // 时先拆掉第 2 行旧对象,防面板堆叠残留(store_goto 整屏重建不受影响)。
-    if (s_rows[1]) {
-        lv_obj_delete(s_rows[1]);
-        s_rows[1] = NULL;
-    }
-    s_sel = 0;   // 填充即回行 0:陈旧 s_sel 不允许停在不可见行上
-    lv_obj_t *row0_lbl = lv_obj_get_child(s_rows[0], 0);
-    lv_label_set_text(row0_lbl, meta_store_info_row0_label(kind));
-    if (rows == 2) {
-        add_row(s_scr, 1, 240, "BACK");
-    }
-    rows_refresh(rows, s_sel);
-}
-
-// P3 槽位选择:行 = 3 槽,本地分区上限判 fit;仅 fit 行可确认。
+// P3 槽位选择(§6.4):行 = 3 槽,本地分区上限判 fit;仅 fit 行可确认。
+// OK = 物理确认(上传前提,§8);确认后手机才被允许开上传 session。
 static void page_store_slot_build(void)
 {
-    const meta_store_analysis_t *a = meta_store_net_analysis();
-    s_scr = ui_pixel_screen_create("INSTALL");
-    // r10.10:UI 修正 —— 信息窗(88px)与按钮行(40px)同底色同字时看起来像
-    // 两个乱码按钮;信息窗加倍高度、正文用 MUSED 弱化,与可按行拉开层次。
+    s_scr = ui_pixel_screen_create("SLOT?");
+    // 信息窗与按钮行拉开层次(同 r10.10:正文弱化,避免像两个乱码按钮)。
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 88, UI_MUTED);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
@@ -666,27 +551,28 @@ static void page_store_slot_build(void)
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
     char text[64];
     snprintf(text, sizeof(text), "%.20s\n%lu KB -> pick slot",
-             a ? a->name : "?", a ? (unsigned long)(a->image_len / 1024) : 0);
+             s_offer_valid ? s_offer.name : "?",
+             s_offer_valid ? (unsigned long)(s_offer.image_len / 1024) : 0);
     lv_label_set_text(s_info, text);
 
     for (int i = 0; i < META_SLOT_COUNT; i++) {
         const esp_partition_t *part = meta_store_slot_partition(i);
         const uint32_t limit = part ? meta_sign_app_limit(part->size) : 0;
-        s_slot_fit[i] = a && part && a->image_len <= limit;
+        s_slot_fit[i] = s_offer_valid && part && s_offer.image_len <= limit;
         const bool occupied = s_slots[i].state == META_SLOT_VALID;
-        // r10.10:不适配槽位 —— 标签短写 "too small"(旧 "SLOT n TOO SMALL
-        // (will erase)" 超宽被截成乱码),行体置灰,OK 路由本就拒 unfit。
+        // 占用槽位标 "erase"(esp_ota_begin 先擦除,可覆盖);不适配槽位
+        // 短写 "too small" 防超宽截断(同 r10.10)。
         char row[24];
         if (s_slot_fit[i]) {
-            snprintf(row, sizeof(row), "SLOT %d%s", i,
-                     occupied ? " erase" : "");
+            snprintf(row, sizeof(row), "SLOT %d%s", i, occupied ? " erase" : "");
         } else {
             snprintf(row, sizeof(row), "SLOT %d too small", i);
         }
         add_row(s_scr, i, 100 + i * 44, row);
     }
-    // 默认选中建议槽位(向上找第一个 fit,防建议槽位被本地占用标记干扰)。
-    s_sel = a && a->suggested_slot >= 0 ? a->suggested_slot : 0;
+    // 默认选中建议槽位(模型层:suggestedSlot 本地 fit 才用,否则首个可用)。
+    const int8_t dflt = meta_install_default_slot_from_manifest(&s_offer);
+    s_sel = (dflt >= 0) ? dflt : 0;
     if (!s_slot_fit[s_sel]) {
         for (int i = 0; i < META_SLOT_COUNT; i++) {
             if (s_slot_fit[i]) { s_sel = i; break; }
@@ -699,24 +585,27 @@ static void page_store_slot_build(void)
     lv_screen_load(s_scr);
 }
 
-// P4 下载进度页。
+// P4 上传进度页:轮询 install 快照(手机开 session → 分块写入 → 终态)。
 static void page_store_dl_build(void)
 {
-    s_scr = ui_pixel_screen_create("INSTALL");
+    s_scr = ui_pixel_screen_create("UPLOAD");
     lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 100, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    lv_label_set_text(s_info, "Downloading...");
+    char text[64];
+    snprintf(text, sizeof(text), "Uploading...\n%.20s",
+             s_offer_valid ? s_offer.name : "");
+    lv_label_set_text(s_info, text);
 
     s_status_line = lv_label_create(panel);
     lv_obj_set_width(s_status_line, 196);
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, "0%");
+    lv_label_set_text(s_status_line, "waiting session...");
     add_battery(s_scr);
     store_touch();
     s_store_timer = lv_timer_create(store_tick, 250, NULL);
@@ -733,11 +622,13 @@ static void page_store_done_build(void)
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    const meta_store_analysis_t *a = meta_store_net_analysis();
+    // 完成名取自 install 快照(finalize 成功后保留 name/slot 供本页展示)。
+    meta_install_session_status_t st;
+    meta_install_session_poll(&st);
     char text[160];
     snprintf(text, sizeof(text),
              "%.20s\ninstalled to slot %d.\n\nPower off & on to boot it.",
-             a ? a->name : "Firmware", s_store_installed_slot);
+             st.name[0] ? st.name : "Firmware", s_store_installed_slot);
     lv_label_set_text(s_info, text);
     add_row(s_scr, 0, 180, "BACK TO LIST");
     rows_refresh(1, 0);
@@ -748,7 +639,7 @@ static void page_store_done_build(void)
     lv_screen_load(s_scr);
 }
 
-// P4b 取消确认页:进入时下载仍在后台进行,三选一决策(取消/重试/继续等)。
+// P4b 取消确认页:进入时上传仍在后台进行,二选一决策(取消/继续等)。
 static void page_store_cancel_build(void)
 {
     s_scr = ui_pixel_screen_create("CANCEL?");
@@ -758,44 +649,29 @@ static void page_store_cancel_build(void)
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
     lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    meta_store_api_progress_t p;
-    meta_store_api_poll(&p);
-    char text[96];
-    snprintf(text, sizeof(text), "Download at %d%%.\nCancel it?",
-             p.progress_pct > 0 ? p.progress_pct : 0);
-    lv_label_set_text(s_info, text);
+    lv_label_set_text(s_info, "Cancel upload?\nWritten data is erased.");
 
-    add_row(s_scr, 0, 136, "CANCEL");   // 继续取消:作废半成品槽位
-    add_row(s_scr, 1, 180, "RETRY");    // 重试:取消当前,终态时自动重新安装
-    add_row(s_scr, 2, 224, "BACK");     // 返回:不作取消,继续等下载
-    rows_refresh(3, 0);
-    s_sel = 0;
+    add_row(s_scr, 0, 136, "CANCEL");   // 取消:作废半成品(flash 动过即槽位 INVALID)
+    add_row(s_scr, 1, 180, "BACK");     // 返回:不作取消,继续等上传
+    s_sel = 1;                          // 默认 BACK(安全侧,同启动确认页纪律)
+    rows_refresh(2, s_sel);
     add_battery(s_scr);
     store_touch();
     s_store_timer = lv_timer_create(store_tick, 250, NULL);
     lv_screen_load(s_scr);
 }
 
-// P4 失败页(与下载页共用骨架,信息换失败文案)。
-static void page_store_dl_fail(const char *msg)
-{
-    if (s_info) lv_label_set_text(s_info, "Install failed:");
-    if (s_status_line) lv_label_set_text(s_status_line, msg);
-    // 行 0 复用为 BACK(对象尚不存在则新建)。
-    add_row(s_scr, 0, 164, "BACK");
-    rows_refresh(1, 0);
-    s_sel = 0;
-}
-
-// 定时器回调:按页面轮询网络/作业状态并驱动页面迁移。
+// 定时器回调:按页面轮询网络/安装会话状态并驱动页面迁移。
 // 会话到期不自动关闭:置 s_store_expired 并出提示浮层,是否退出由用户按键决策
-// (OK = 保留会话,OK LONG = 退出回列表;见 on_key)。作业进行中自动延续计时。
+// (OK = 保留会话,OK LONG = 退出回列表;见 on_key)。上传进行中自动延续计时。
 static void store_tick(lv_timer_t *t)
 {
     (void)t;
-    meta_store_net_job_t j;
-    meta_store_net_job_poll(&j);
-    const bool busy = (j.state == SN_JOB_RUNNING);
+    meta_install_session_status_t ist;
+    meta_install_session_poll(&ist);
+    const char *ist_state = ist.state ? ist.state : "";
+    // 上传进行中视为用户活动:每拍续期,超时浮层不得打断传输。
+    const bool busy = (strcmp(ist_state, "uploading") == 0);
     if (busy) store_touch();
 
     if (s_store_expired) return;   // 等待用户决策:冻结自动迁移,网络保持原状
@@ -813,7 +689,7 @@ static void store_tick(lv_timer_t *t)
         // 配网/连接是显式用户活动:每拍续期,300s 超时浮层不得在此触发 ——
         // 浮层会冻结面板在最后一帧(v13 真机"Syncing clock 卡 200s"的根因:
         // 凭证路径 busy=false,浮层照常触发,画面停在旧文字,任务其实早已
-        // 结束)。超时语义保留给 P1 之后的闲置(输入页/进度页照旧问用户)。
+        // 结束)。超时语义保留给 P1 之后的闲置(扫码页/进度页照旧问用户)。
         if (st.state == SN_STATE_AP_UP || st.state == SN_STATE_CONNECTING
             || st.state == SN_STATE_ERROR) {
             store_touch();
@@ -847,10 +723,15 @@ static void store_tick(lv_timer_t *t)
                     lv_label_set_text(s_info, text);
                 }
             }
-            // 停留 2s 让用户看清连的哪个网,然后自动进 P1;r10.1:取消自动
-            // 翻页的唯一方式是双击 UP(明确改网意图)——单击/误按不拦截。
+            // 停留 2s 让用户看清连的哪个网,然后进 P1(§6.1 步骤 3/4):先起
+            // 本地 install 服务,再签发 token/配对码;起服务失败粘滞上屏
+            // (无服务时 QR 无意义,文字交代后果)。
             if (esp_timer_get_time() / 1000 - s_net_online_at >= 2000) {
-                store_goto(PAGE_STORE_ID);
+                s_qr_service_failed = (meta_install_net_start() != ESP_OK);
+                if (!s_qr_service_failed) {
+                    (void)meta_install_token_start();
+                }
+                store_goto(PAGE_STORE_QR);
             }
         } else if (st.state == SN_STATE_AP_UP) {
             // AP_UP:配网信息。若 8s 内发生过连接失败,顶部加一行原因 ——
@@ -873,9 +754,9 @@ static void store_tick(lv_timer_t *t)
         } else {
             // CONNECTING/ERROR:凭证已到手,实时刷新状态(此前这两态没有任何
             // 显示分支,屏钉死在配网文字上 —— 真机"提交后设备像死了"的直接
-            // 原因)。CONNECTING 附带已耗时:任务侧上限 ~35s(30s 连接 + 5s 时钟),
-            // 数字继续涨 = 任务挂死,一眼可判;归零/跳变 = 状态在走。ERROR 记入
-            // 粘滞横幅,回落 AP 后仍可见 8s。
+            // 原因)。CONNECTING 附带已耗时:任务侧上限 ~30s,数字继续涨 =
+            // 任务挂死,一眼可判;归零/跳变 = 状态在走。ERROR 记入粘滞横幅,
+            // 回落 AP 后仍可见 8s。
             if (st.state == SN_STATE_CONNECTING) {
                 if (!s_net_connecting_at) {
                     s_net_connecting_at = esp_timer_get_time() / 1000;
@@ -905,82 +786,63 @@ static void store_tick(lv_timer_t *t)
         break;
     }
 
-    case PAGE_STORE_INFO: {
-        if (s_info_filled) break;
-        meta_store_net_job_t j;
-        meta_store_net_job_poll(&j);
-        if (j.state == SN_JOB_RUNNING) break;   // 计时延续在 store_tick 顶部统一处理
-        const meta_store_analysis_t *a = meta_store_net_analysis();
-        if (a) {
-            // analyze 成功(包括 P4 安装失败返回的本页:作业 DONE_FAIL 是安装残留,
-            // 分析结果仍有效,直接展示,不被失败态覆盖)。
-            store_info_fill(a);
-        } else if (j.state == SN_JOB_DONE_FAIL && s_info) {
-            // r10.4:analyze 失败页(a==NULL 的真路径)—— reason 码 + 层位
-            // detail 都上屏,行 0 = RETRY(重新 analyze)、行 1 = BACK。
-            s_info_filled = true;   // 失败也是终态:填充一次后停手
-            char text[160];
-            if (j.detail[0]) {
-                snprintf(text, sizeof(text), "Failed: %.47s\n%.63s",
-                         j.message, j.detail);
-            } else {
-                snprintf(text, sizeof(text), "Failed:\n%.47s", j.message);
-            }
-            lv_label_set_text(s_info, text);
-            lv_obj_t *retry_lbl = lv_obj_get_child(s_rows[0], 0);
-            lv_label_set_text(retry_lbl, "RETRY");
-            add_row(s_scr, 1, 240, "BACK");
-            s_sel = 0;
-            rows_refresh(2, s_sel);
+    case PAGE_STORE_QR: {
+        // 手机 prepare 到货:取一次快照进 P2。confirmed 时不迁(防御:
+        // 正常路径 confirmed 只发生在 P3 之后)。
+        if (ist.offer_ready && !ist.confirmed && !s_offer_valid
+            && meta_install_offer_copy(&s_offer)) {
+            s_offer_valid = true;
+            store_goto(PAGE_STORE_INFO);
+            break;
+        }
+        if (s_status_line) {
+            lv_label_set_text(s_status_line,
+                              ist.message[0] ? ist.message : "waiting for phone...");
         }
         break;
     }
 
+    case PAGE_STORE_INFO:
+        // 纯决策页:offer 在进入时已填充,无轮询迁移。
+        break;
+
+    case PAGE_STORE_SLOT:
+        // 同上:选槽是纯决策;确认动作在 on_key。
+        break;
+
     case PAGE_STORE_DL: {
-        meta_store_api_progress_t p;
-        meta_store_api_poll(&p);
+        // 终态迁移:done → P5;cancelled(手机侧)→ 回扫码页等新 offer;
+        // failed 停留本页,状态行给出原因,OK 短按回扫码页(见 on_key)。
+        if (strcmp(ist_state, "done") == 0) {
+            store_goto(PAGE_STORE_DONE);
+            break;
+        }
+        if (strcmp(ist_state, "cancelled") == 0) {
+            store_goto(PAGE_STORE_QR);
+            break;
+        }
         if (s_status_line) {
-            char line[64];
-            if (p.active && !p.verify_phase) {
-                snprintf(line, sizeof(line), "%d%%  %lu/%lu KB",
-                         p.progress_pct,
-                         (unsigned long)(p.received / 1024),
-                         (unsigned long)(p.expected / 1024));
+            char line[80];
+            if (strcmp(ist_state, "failed") == 0) {
+                snprintf(line, sizeof(line), "failed: %.30s", ist.message);
+            } else if (ist.session_opened) {
+                snprintf(line, sizeof(line), "%u / %u KB",
+                         (unsigned)(ist.offset / 1024),
+                         (unsigned)(ist.expected / 1024));
             } else {
-                snprintf(line, sizeof(line), "%s", p.message);
+                snprintf(line, sizeof(line), "waiting session...");
             }
             lv_label_set_text(s_status_line, line);
-        }
-        meta_store_net_job_t j;
-        meta_store_net_job_poll(&j);
-        if (j.state == SN_JOB_DONE_OK) {
-            s_store_retry = false;   // 取消请求晚于完成到达,重试标记不得残留
-            store_goto(PAGE_STORE_DONE);
-        } else if (j.state == SN_JOB_DONE_FAIL) {
-            if (s_store_retry) {
-                // P4b 选了 RETRY:当前下载已作废,立即重新安装同玩法同槽位。
-                s_store_retry = false;
-                if (meta_store_net_cmd_install(s_play_id, s_store_installed_slot)
-                    == ESP_OK) {
-                    break;   // 重新入队成功;进度快照由新 install 刷新
-                }
-                // 重新入队失败(不应发生:仍 ONLINE):落到下方失败页
-            }
-            if (!s_rows[0]) {
-                page_store_dl_fail(j.message);   // 失败态只铺一次,行 0 = BACK
-            }
         }
         break;
     }
 
     case PAGE_STORE_CANCEL: {
-        // 决策期间下载可能已自行终结:完成 → P5;失败 → 回 P4 铺失败页/消费重试。
-        meta_store_net_job_t j;
-        meta_store_net_job_poll(&j);
-        if (j.state == SN_JOB_DONE_OK) {
-            s_store_retry = false;
+        // 决策期间上传可能已自行终结:完成 → P5;失败/取消 → 回 P4 呈现事实。
+        if (strcmp(ist_state, "done") == 0) {
             store_goto(PAGE_STORE_DONE);
-        } else if (j.state == SN_JOB_DONE_FAIL) {
+        } else if (strcmp(ist_state, "failed") == 0
+                   || strcmp(ist_state, "cancelled") == 0) {
             store_goto(PAGE_STORE_DL);
         }
         break;
@@ -1005,7 +867,7 @@ static void goto_page(page_t page)
     case PAGE_CONFIRM_DEL:  page_confirm_del_build();    break;
     case PAGE_EGG:      page_egg_build();                break;
     case PAGE_STORE_NET: page_store_net_build();         break;
-    case PAGE_STORE_ID:  page_store_id_build();          break;
+    case PAGE_STORE_QR:  page_store_qr_build();          break;
     case PAGE_STORE_INFO: page_store_info_build();       break;
     case PAGE_STORE_SLOT: page_store_slot_build();       break;
     case PAGE_STORE_DL:  page_store_dl_build();          break;
@@ -1037,7 +899,7 @@ static void store_goto(page_t page)
     s_sel = 0;
     switch (page) {
     case PAGE_STORE_NET:  page_store_net_build();   break;
-    case PAGE_STORE_ID:   page_store_id_build();    break;
+    case PAGE_STORE_QR:   page_store_qr_build();    break;
     case PAGE_STORE_INFO: page_store_info_build();  break;
     case PAGE_STORE_SLOT: page_store_slot_build();  break;
     case PAGE_STORE_DL:   page_store_dl_build();    break;
@@ -1085,7 +947,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                     s_detail_slot = slot;
                     goto_page(PAGE_DETAIL);
                 } else {
-                    if (meta_store_net_init(s_slots) == ESP_OK
+                    if (meta_store_net_init() == ESP_OK
                         && meta_store_net_begin() == ESP_OK) {
                         goto_page(PAGE_STORE_NET);
                     }
@@ -1210,64 +1072,36 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             }
         }
         if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            goto_page(PAGE_LIST);   // 退出商店(商店统一出口,见 P1 同款)
+            goto_page(PAGE_LIST);   // 退出商店(商店统一出口)
         }
         break;
 
-    case PAGE_STORE_ID:
-        if (ev == BSP_BTN_CLICK) {
-            bool changed = false;
-            if (btn == BSP_BTN_UP) {
-                mpd_idedit_move_ring(&s_idedit, -1);   // 短按 UP = 选中键环上逆行(高亮可见移动)
-                changed = true;
-            } else if (btn == BSP_BTN_DOWN) {
-                mpd_idedit_move_ring(&s_idedit, +1);   // 短按 DOWN = 环上顺行
-                changed = true;
-            } else if (btn == BSP_BTN_OK) {
-                changed = mpd_idedit_press(&s_idedit);
-                if (s_idedit.commit_req) {
-                    s_idedit.commit_req = false;
-                    id_commit();
-                    break;
-                }
-            }
-            if (changed) id_refresh_text();
-        } else if (ev == BSP_BTN_LONG
-                   && (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
-            // 长按 = 换行(UP 上一行 / DOWN 下一行,环绕,列尽量保持)。
-            mpd_idedit_move_row(&s_idedit, btn == BSP_BTN_DOWN ? +1 : -1);
-            id_refresh_text();
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            goto_page(PAGE_LIST);   // 退出商店(r10:不再是回 P0 —— P0 在线会自动
-            // 回 P1,曾经死循环;商店唯一稳定出口统一为 OK LONG → 列表页)
+    case PAGE_STORE_QR:
+        // 扫码页无行项:UP/DOWN/OK 短按无动作;OK LONG = 退出商店。
+        // 闲置提示交给会话超时浮层(OK=继续等,LONG=退出)。
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            goto_page(PAGE_LIST);
         }
         break;
 
     case PAGE_STORE_INFO:
         if (ev == BSP_BTN_CLICK) {
-            const meta_store_analysis_t *a = meta_store_net_analysis();
-            // BUG-20:形态判定与渲染同源(meta_store_info_classify)—— 行数、
-            // 行 0 标签、OK 语义不再可能互相矛盾(supported 页曾有 CONFIRM
-            // 消失/标签与行为相反两种表现)。
-            const meta_store_info_kind_t kind = meta_store_info_classify(a, false);
-            const int items = meta_store_info_row_count(kind);
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                s_sel = (s_sel + 1) % items;
-                rows_refresh(items, s_sel);
+                s_sel = (s_sel + 1) % 2;   // 两行:CONFIRM / BACK
+                rows_refresh(2, s_sel);
             } else if (btn == BSP_BTN_OK) {
-                if (meta_store_info_ok_advances(kind, s_sel)) {
-                    if (kind == META_INFO_RETRY) {
-                        s_info_filled = false;   // RETRY:重新 analyze 同一玩法
-                        store_info_retry();      // r10.7:失败只提示,不清输入不翻页
-                    } else {
-                        store_goto(PAGE_STORE_SLOT);   // INSTALL:进槽位页
-                    }
+                if (s_sel == 0) {
+                    store_goto(PAGE_STORE_SLOT);   // 进槽位选择
                 } else {
-                    store_goto(PAGE_STORE_ID);   // BACK = 重新输 ID
+                    // 设备侧拒绝 offer(§6.4):清 offer 回 pairing,
+                    // 手机可重新 prepare(同 token)。
+                    meta_install_offer_reject();
+                    store_goto(PAGE_STORE_QR);
                 }
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            store_goto(PAGE_STORE_ID);
+            meta_install_offer_reject();   // 全局返回语义 = 拒绝并回扫码页
+            store_goto(PAGE_STORE_QR);
         }
         break;
 
@@ -1278,60 +1112,58 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
                 rows_refresh(META_SLOT_COUNT, s_sel);
             } else if (btn == BSP_BTN_OK && s_slot_fit[s_sel]) {
-                if (meta_store_net_cmd_install(s_play_id, s_sel) == ESP_OK) {
+                // 物理确认(§6.4/§8):只有这一步能解锁手机侧上传 session。
+                if (meta_install_confirm_slot((int8_t)s_sel) == ESP_OK) {
                     s_store_installed_slot = s_sel;   // P5 展示用(store_goto 会清 s_sel)
-                    s_store_retry = false;            // 新安装:清掉上次会话可能的残留
                     store_goto(PAGE_STORE_DL);
+                } else if (s_status_line) {
+                    lv_label_set_text(s_status_line, "cannot confirm slot");
                 }
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            store_goto(PAGE_STORE_INFO);
+            store_goto(PAGE_STORE_INFO);   // 返回确认页(offer 仍在途)
         }
         break;
 
     case PAGE_STORE_DL:
-        // 下载中 OK LONG = 想取消 → 进确认页三选一(取消/重试/继续等);
-        // 失败后会出现在行 0 的 BACK。
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK && s_rows[0]) {
-            store_goto(PAGE_STORE_INFO);   // 失败态 BACK:回详情重试/换槽
+        // 失败态 OK 短按 = 回扫码页(手机可重新 prepare);
+        // OK LONG = 想取消 → 决策页(CANCEL/BACK)。
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+            meta_install_session_status_t st;
+            meta_install_session_poll(&st);
+            if (st.state && strcmp(st.state, "failed") == 0) {
+                store_goto(PAGE_STORE_QR);
+            }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            meta_store_net_job_t j;
-            meta_store_net_job_poll(&j);
-            if (j.state == SN_JOB_RUNNING) {
+            meta_install_session_status_t st;
+            meta_install_session_poll(&st);
+            if (!st.state || strcmp(st.state, "done") != 0) {
                 store_goto(PAGE_STORE_CANCEL);
-            } else {
-                store_goto(PAGE_STORE_INFO);
             }
         }
         break;
 
-    case PAGE_STORE_CANCEL: {
-        // 后台下载不停,此处只做决策:取消 / 重试 / 返回继续等。
+    case PAGE_STORE_CANCEL:
+        // 后台上传不停,此处只做决策:取消 / 返回继续等。
         if (ev == BSP_BTN_CLICK) {
-            if (btn == BSP_BTN_UP)   s_sel = (s_sel + 2) % 3;
-            if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % 3;
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                rows_refresh(3, s_sel);
+                s_sel = (s_sel + 1) % 2;   // 两行:CANCEL / BACK
+                rows_refresh(2, s_sel);
             } else if (btn == BSP_BTN_OK) {
-                if (s_sel == 0) {              // CANCEL:继续取消,作废半成品槽位
-                    meta_store_api_request_cancel();
-                    store_goto(PAGE_STORE_DL);
-                } else if (s_sel == 1) {       // RETRY:取消当前,终态时自动重装
-                    s_store_retry = true;
-                    meta_store_api_request_cancel();
-                    store_goto(PAGE_STORE_DL);
-                } else {                       // BACK:不取消,继续等下载
-                    store_goto(PAGE_STORE_DL);
+                if (s_sel == 0) {
+                    meta_install_cancel();   // 作废半成品(flash 动过即槽位 INVALID)
+                    store_goto(PAGE_STORE_QR);
+                } else {
+                    store_goto(PAGE_STORE_DL);   // BACK:不作取消,继续等
                 }
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            store_goto(PAGE_STORE_DL);   // 全局返回语义 = 不作取消,继续等
+            store_goto(PAGE_STORE_DL);   // 全局返回语义 = 不作取消
         }
         break;
-    }
 
     case PAGE_STORE_DONE:
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+        if (btn == BSP_BTN_OK) {   // 短按/长按均回列表(离店 teardown 停网络)
             goto_page(PAGE_LIST);
         }
         break;
@@ -1376,8 +1208,10 @@ void app_main(void)
     }
 
     meta_store_scan(s_slots);
-    // 软失败不阻塞启动器;进入 STORE 时(button 回调)会以 s_slots 重试一次。
-    meta_store_net_init(s_slots);
+    // feat/mota 净切:net_init 只备好配网/上线(无 WAN 作业链);LAN install
+    // 通道在此登记槽位注册表(安装成功回写),生命周期覆盖整个启动器。
+    meta_store_net_init();
+    meta_install_net_init(s_slots);
 
     if (bsp_lvgl_lock(1000)) {
         page_list_build();

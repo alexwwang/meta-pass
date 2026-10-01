@@ -37,6 +37,10 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # --- LVGL(瘦身裁剪) ---
 CONFIG_LV_COLOR_DEPTH_16=y
+# QR 码(meta_install QR 配对页)与 canvas 基类:lv_qrcode 基于 lv_canvas 实现,
+# 裁 canvas 会连带裁掉 qrcode。I1 绘制默认开启,无需额外配置。
+CONFIG_LV_USE_CANVAS=y
+CONFIG_LV_USE_QRCODE=y
 # 两种字体都在用:20px 供标题牌(ui_pixel_screen_create 每页标题),14px 供正文/行项。
 # 16px 未使用,不启用。
 CONFIG_LV_FONT_MONTSERRAT_14=y
@@ -56,7 +60,6 @@ CONFIG_LV_BUILD_EXAMPLES=n
 # CONFIG_LV_USE_CALENDAR is not set
 # CONFIG_LV_USE_CALENDAR_HEADER_ARROW is not set
 # CONFIG_LV_USE_CALENDAR_HEADER_DROPDOWN is not set
-# CONFIG_LV_USE_CANVAS is not set
 # CONFIG_LV_USE_CHART is not set
 # CONFIG_LV_USE_CHECKBOX is not set
 # CONFIG_LV_USE_DROPDOWN is not set
@@ -104,31 +107,14 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # CONFIG_BT_NIMBLE_ENABLED is not set
 
 # --- 商店下载通道(TLS + SNTP) ---
-# r10.16 下载提速收敛:lwIP TCP 窗口 5760(4×MSS 默认)→ 32768;65535 会让
-# Cloudflare 一次突发 ~43 个 TCP 段,超过 WiFi 动态 RX 缓冲池,802.11 层丢帧后
-# 进入 RTO 指数退避(真机 v46 日志:4KB 读 9-27s 锯齿)。32768(~23 段)配 48 个
-# 动态 RX 缓冲保留余量;LWIP_WND_SCALE 依赖 PSRAM(C3 无),不可用。
-# SND_BUF 同步放大;RECVMBOX 32→64 保 RX 不掉队。
+# LAN 上传收敛(lwIP 窗口调优):TCP 窗口 5760(4×MSS 默认)偏小;32KB 窗口
+# 让手机 HTTP PUT 上传的 TCP 流更快灌满缓冲,配 48 个动态 RX 缓冲保留余量;
+# LWIP_WND_SCALE 依赖 PSRAM(C3 无),不可用。SND_BUF 同步放大;RECVMBOX
+# 32→64 保 RX 不掉队。r10.16 为 WAN 下载调的同一组值,通道切换后原样保留。
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48
 CONFIG_LWIP_TCP_WND_DEFAULT=32768
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
-# SNTP 双服务器(ntp.aliyun.com 主 + pool.ntp.org 备)需要 >=2。
-CONFIG_LWIP_SNTP_MAX_SERVERS=2
-# 设备只连 metapass.chuanxilu.net(Cloudflare,GTS Root R4 ← 链)与其可能的
-# ISRG 备用链,故用自定义证书包(main/certs/*.pem,双根 ~2.3KB),替代默认
-# Mozilla 全量包(省 ~60KB+ 固件体积)。
-# r10.5 事实教训:"# CONFIG_..._DEFAULT_FULL is not set" 注释行压不住 Kconfig
-# choice 的默认值(FULL 是默认选中项)—— 必须显式选 DEFAULT_NONE 才能关闭
-# 默认包;否则 CUSTOM 只是"追加",v26 实际打进了全量 Mozilla 包(实测
-# sdkconfig.h 无 CUSTOM 行、app 体积多 ~70KB)。
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_NONE=y
-CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y
-CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH="main/certs"
-# 证书链校验 mbedTLS 默认开;mbedTLS_HAVE_TIME_DATE 默认启用 = 校验证书有效期,
-# 所以 SNTP 必须先于任何 TLS(meta_store_net.c 强制该顺序)。
-
 # r10.8(BUG-19 加固):TLS 重协商默认就不开 —— Kconfig 括号里写"不推荐",历史
 # 版本曾因默认变量(全量 bundle)在菜单里翻到过 ON。显式钉死 = 攻击面与栈峰值可控。
 CONFIG_MBEDTLS_SSL_RENEGOTIATION=n

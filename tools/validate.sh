@@ -65,44 +65,24 @@ PY
         tests/test_meta_store_json.c main/meta_store_json.c \
         -o "${test_dir}/test_meta_store_json"
     "${test_dir}/test_meta_store_json"
+    # LAN 安装通道纯逻辑(install offer 解析/本地几何复核/session/chunk/finalize
+    # 判定;真机 meta_store_install.c 与本测试链接同一份 meta_install_model.c)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_install_model.c main/meta_install_model.c \
+        main/meta_store_json.c \
+        -o "${test_dir}/test_meta_install_model"
+    "${test_dir}/test_meta_install_model"
     # 配网纯逻辑(WiFi 表单解析/断连原因文案/SSID 转义/DNS 门户报文;
     # 与真机链接同一份 meta_store_prov.c)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
         tests/test_meta_store_prov.c main/meta_store_prov.c \
         -o "${test_dir}/test_meta_store_prov"
     "${test_dir}/test_meta_store_prov"
-    # analyze 传输失败分类(阶段×时钟矩阵;真机同一份 meta_store_api_fail.c)
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
-        tests/test_meta_store_api_fail.c main/meta_store_api_fail.c \
-        -o "${test_dir}/test_meta_store_api_fail"
-    "${test_dir}/test_meta_store_api_fail"
-    # P2 详情页三形态判定(BUG-20;真机 main.c 渲染/路由共用同一份纯逻辑)
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
-        tests/test_meta_store_info_page.c main/meta_store_info_page.c \
-        -o "${test_dir}/test_meta_store_info_page"
-    "${test_dir}/test_meta_store_info_page"
-    # P1 玩法 ID 编辑模型(插入光标/退格/换行;真机同一份 meta_store_idedit.c)
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_meta_store_idedit.c main/meta_store_idedit.c \
-        -o "${test_dir}/test_meta_store_idedit"
-    "${test_dir}/test_meta_store_idedit"
-    # 商店通道 analyze 响应合同测试(解析器 = 真机同一份 meta_store_analysis.c;
-    # 样本锁定本地 server.mjs 真实响应形态与契约漂移拒收)
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
-        tests/test_store_analyze_contract.c main/meta_store_analysis.c \
-        main/meta_store_json.c \
-        -o "${test_dir}/test_store_analyze_contract"
-    "${test_dir}/test_store_analyze_contract"
-    # HTTP Content-Range 续传协议(纯逻辑;真机同一份 parser)
-    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
-        tests/test_meta_store_range.c main/meta_store_range.c \
-        -o "${test_dir}/test_meta_store_range"
-    "${test_dir}/test_meta_store_range"
     # 商店通道 ESP-IDF 模块 host 语法检查(桩头在 tests/esp_stubs,对齐 IDF 5.x
     # 签名;不链接,只验证类型/声明/警告级问题,真机构建仍由 --firmware 负责)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -fsyntax-only \
         -Itests/esp_stubs -Imain -DHOST_TEST \
-        main/meta_store_net.c main/meta_store_api.c
+        main/meta_store_net.c main/meta_store_install.c
     # 开机策略纯逻辑(单次会话模型规则引擎,bootloader hook 与宿主共享)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_boot_policy.c \
@@ -123,15 +103,8 @@ PY
         tests/esp_stubs/meta_sign_stub.c \
         -o "${test_dir}/test_meta_store_scan"
     "${test_dir}/test_meta_store_scan"
-    # HTTP 访问器契约(r10.8/BUG-19;IDF checkout 存在时校验契约本身,缺失时用
-    # 记录的契约片段,CI 裸 checkout 兼容)
-    python3 tests/test_http_contract.py
     # 扫描静默校验门(r10.11/BUG-21;同上,IDF checkout 缺失时跳过源码事实检查)
     python3 tests/test_bug21_scan_silent.py
-    # 下载吞吐配置门(r10.12;省电关闭×2 路径/4KB 块/lwIP 窗口与邮箱,防回退)
-    python3 tests/test_download_speed_config.py
-    # 下载续传门(r10.17;EAGAIN 读级容忍 + Range 断点重连,真机停顿病例驱动)
-    python3 tests/test_download_retry_gate.py
     python3 tests/test_verify_firmware.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin

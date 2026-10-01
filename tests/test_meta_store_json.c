@@ -165,6 +165,48 @@ static void test_unsupported_shape(void)
     printf("PASS unsupported shape\n");
 }
 
+// 对象数组读取(install offer 的 slots 契约,文档 §6.4)。
+static void test_array_fields(void)
+{
+    size_t n = 99;
+    assert(meta_store_json_get_array_count(SAMPLE, SAMPLE_LEN, "slots", &n));
+    assert(n == 2);
+
+    int64_t v = -1;
+    assert(meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "slots", 0, "slot", &v));
+    assert(v == 0);
+    assert(meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "slots", 0, "limit", &v));
+    assert(v == 1921024);
+    assert(meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "slots", 1, "slot", &v));
+    assert(v == 1);
+    assert(meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "slots", 1, "limit", &v));
+    assert(v == 2093056);
+
+    bool b = false;
+    assert(meta_store_json_get_array_bool(SAMPLE, SAMPLE_LEN, "slots", 0, "fit", &b) && b);
+    assert(meta_store_json_get_array_bool(SAMPLE, SAMPLE_LEN, "slots", 1, "fit", &b) && b);
+
+    // 下标越界 / 字段缺失 / 非对象元素 / 键不存在 / 空数组
+    assert(!meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "slots", 2, "slot", &v));
+    assert(!meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "slots", 0, "nope", &v));
+    assert(!meta_store_json_get_array_bool(SAMPLE, SAMPLE_LEN, "slots", 0, "slot", &b));
+    assert(!meta_store_json_get_array_int(SAMPLE, SAMPLE_LEN, "extracted", 0, "slot", &v));
+    assert(!meta_store_json_get_array_count(SAMPLE, SAMPLE_LEN, "nope", &n));
+    assert(meta_store_json_get_array_count("{\"a\":[]}", 8, "a", &n) && n == 0);
+    // null/标量不是数组
+    assert(!meta_store_json_get_array_count(SAMPLE_UNSUPPORTED,
+                                            sizeof(SAMPLE_UNSUPPORTED) - 1,
+                                            "slots", &n));
+    assert(!meta_store_json_get_array_count(SAMPLE, SAMPLE_LEN, "suggestedSlot", &n));
+    // 非对象元素
+    assert(!meta_store_json_get_array_int("{\"a\":[1,2]}", 11, "a", 0, "slot", &v));
+    // 逗号/闭合破损
+    assert(!meta_store_json_get_array_int("{\"a\":[{\"x\":1}{\"x\":2}]}", 23,
+                                          "a", 1, "x", &v));
+
+    printf("PASS array fields\n");
+}
+
 int main(void)
 {
     test_happy_path();
@@ -172,6 +214,7 @@ int main(void)
     test_sha256_hex();
     test_string_escapes_and_buffer_bounds();
     test_unsupported_shape();
+    test_array_fields();
     printf("ALL meta_store_json TESTS PASSED\n");
     return 0;
 }

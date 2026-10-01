@@ -6,6 +6,29 @@
 
 ## Unreleased
 
+- **v3.2-r10.22 (2026-10-01) LAN phone-assisted install — device-side cutover (`feat/mota`)**:
+  the store-download channel moves off the device. The launcher now shows a QR page
+  (120px `lv_qrcode` + IP + 6-digit pair code, text fallback) served with a token; the
+  phone web module scans it, runs market search/analyze/download/extraction, and uploads
+  the app image to the device over LAN HTTP. Device side: `meta_store_install.{c,h}` —
+  a port-80 install HTTP service (prepare/session/chunk/finalize/status/cancel/pair +
+  boot page, mutually exclusive with the provisioning portal) with 128-bit one-shot
+  upload tokens, mandatory `X-Meta-Session`, same-origin Origin checks, streaming 4KB
+  chunk writes with SHA-256 + `esp_image_verify`, upload gated behind physical slot
+  confirmation, and INVALID slot marking on failure; `meta_install_model.{c,h}` — the
+  pure-logic manifest/session/chunk/finalize rules, host-tested by the new
+  `tests/test_meta_install_model.c`. Removed: the numeric play-ID keypad page, ID edit
+  model, analyze parser/client and info page (`meta_store_{api,api_fail,analysis,
+  info_page,idedit,range}`), WAN TLS/SNTP/certificate-bundle dependencies
+  (`esp_http_client`, `esp-tls`, `main/certs/`, SNTP config), and their gates/tools
+  (`test_http_contract.py`, `test_download_{speed_config,retry_gate}.py`,
+  `e2e-production.mjs`, `verify-crt-bundle-match.py`, `e2e-feed-fixture.c`).
+  `sdkconfig.defaults` enables `LV_USE_CANVAS`/`LV_USE_QRCODE` (qrcode builds on the
+  canvas class); the lwIP 32KB window stays — LAN upload benefits the same way WAN
+  download did. The phone module (`install-slot/`) and Worker (`_worker.js`) are
+  unchanged in this cutover; `tests/worker_contract.mjs` still pins the Worker API
+  surface.
+
 - **v3.2-r10.21 (2026-09-30) Fast zombie-connection kill during OTA**: the first on-device
   run of the r10.17-r10.19 stack (v50, play 675) proved resume end-to-end —
   `install resume 2/6 at 900188/2664256`, 2.4s TLS reconnect, no full restart, image

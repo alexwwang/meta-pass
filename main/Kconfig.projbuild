@@ -10,14 +10,7 @@ menu "meta-pass launcher"
         range 30000 86400000
         help
             商店流程无操作超时时间。到期不会直接关闭:先提示用户选择
-            "OK = 保留会话 / OK LONG = 退出";作业(analyze/下载)进行中自动延续。
-
-    config META_STORE_HTTP_TIMEOUT_MS
-        int "Store HTTP request timeout (ms)"
-        default 30000
-        range 5000 120000
-        help
-            analyze / extracted 单次 HTTP 请求超时。下载按块循环,此值约束的是
-            单个块的等待上限,总时长 = 块数 × 此值量级,与会话超时相互独立。
+            "OK = 保留会话 / OK LONG = 退出";上传(Preparing/Uploading)
+            进行中每拍自动延续。
 
 endmenu

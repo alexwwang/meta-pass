@@ -1,8 +1,10 @@
 // main/meta_store_net.c —— 实现见头文件注释。
-// 事件流:begin() → [有凭证] STA 连接等 IP_EVENT_STA_GOT_IP → SNTP 同步 → ONLINE;
+// 事件流:begin() → [有凭证] STA 连接等 IP_EVENT_STA_GOT_IP → ONLINE;
 //         begin() → [无凭证/连接失败] SoftAP(APSTA,后台周期扫 AP)+ httpd
 //         (页面/扫描列表/凭证提交 + 302 兜底)+ DNS 劫持(Captive Portal 弹窗)→
-//         POST /api/wifi → 停 AP/启 STA(同上)。作业经队列进网络任务执行。
+//         POST /api/wifi → 停 AP/启 STA(同上)。
+// feat/mota 净切:WAN analyze/install 作业链与 SNTP 同步已移除 —— 设备不再经
+// TLS 出网;ONLINE 后由 UI 启动本地 LAN install 服务(meta_store_install)。
 #include "meta_store_net.h"
 
 #include "meta_store_prov.h"
@@ -15,12 +17,10 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
-#include "esp_netif_sntp.h"
 #include "esp_random.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
-#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"   // Captive Portal 的 DNS 劫持用 BSD socket API
 #include "nvs_flash.h"
@@ -30,12 +30,9 @@ static const char *TAG = "store_net";
 
 #define AP_MAX_CONN        1
 #define STA_CONNECT_MS     30000
-#define SNTP_SYNC_MS       5000    // 单轮等待上限:可达时<1s;总预算 3 轮(r10.14)
-#define JOB_QUEUE_LEN      2
-// r10.8:8192→10240 —— 样例恢复器(真机验证)用 10240 跑同款 TLS 栈,8K 在
-// 握手峰值 + 响应解析叠加时压线。F2 对齐实测值。
-#define JOB_STACK          10240  // analyze/install(TLS+mbedTLS 握手峰值 + 响应解析)在此任务内跑
-#define JOB_PRIO           5
+// 网络任务只做 WiFi 启停/凭证接力/teardown(无 TLS 作业),栈与配网 httpd 同档。
+#define NET_TASK_STACK     4096
+#define NET_TASK_PRIO      5
 
 // 商店会话超时:构建期默认(Kconfig),运行时可覆盖(见头文件注释);
 // host 桩编译无 sdkconfig,保留同值回退。
@@ -61,18 +58,13 @@ uint32_t meta_store_session_timeout_ms(void)
 
 // ---- 模块状态(网络任务写,UI 只读快照;与 meta_net 同一纪律) ----
 
-static meta_slot_info_t  *s_slots;          // 启动器槽位注册表(install 成功回写)
 static httpd_handle_t     s_httpd;
 static esp_netif_t       *s_netif;          // 当前生效的 wifi netif(AP 或 STA)
 static bool               s_wifi_up;
-static bool               s_initialized;    // init() 完成(任务/队列/event handler 在)
-static TaskHandle_t       s_job_task;
-static QueueHandle_t      s_job_queue;
+static bool               s_initialized;    // init() 完成(任务/event handler 在)
+static TaskHandle_t       s_net_task;
 static EventGroupHandle_t s_events;
 static meta_store_net_status_t s_status;
-static meta_store_net_job_t    s_job;
-static meta_store_analysis_t   s_analysis;  // 最近一次 analyze 成功结果
-static bool               s_analysis_valid;
 
 // s_events 位
 #define EV_GOT_IP      BIT0
@@ -89,21 +81,6 @@ static void set_state(sn_state_t st, const char *msg)
 {
     s_status.state = st;
     snprintf(s_status.message, sizeof(s_status.message), "%s", msg);
-}
-
-static void set_job(sn_job_state_t st, const char *msg)
-{
-    s_job.state = st;
-    snprintf(s_job.message, sizeof(s_job.message), "%s", msg);
-    s_job.detail[0] = '\0';   // 默认清空;失败带层位时由调用方紧跟 set_job_detail
-}
-
-// r10.4:失败层位入快照(msg = reason 码,detail = 服务端诊断句/分类文案)。
-static void set_job_detail(sn_job_state_t st, const char *msg, const char *detail)
-{
-    s_job.state = st;
-    snprintf(s_job.message, sizeof(s_job.message), "%s", msg);
-    snprintf(s_job.detail, sizeof(s_job.detail), "%s", detail ? detail : "");
 }
 
 // ---- WiFi 事件 ----
@@ -529,7 +506,7 @@ fail:
     return err;
 }
 
-// STA 连接 + SNTP 同步;成功返回 ESP_OK 并置 ONLINE。
+// STA 连接;拿到 IP 即置 ONLINE(feat/mota:已无 SNTP/TLS 依赖)。
 static esp_err_t sta_online(const char *ssid, const char *pass)
 {
     wifi_teardown();
@@ -600,45 +577,10 @@ static esp_err_t sta_online(const char *ssid, const char *pass)
         goto fail;
     }
 
-    // SNTP:证书时间校验取决于 CONFIG_MBEDTLS_HAVE_TIME_DATE(Kconfig 默认 n,
-    // 本仓未开)—— 即便如此时钟仍要同步:日志时间戳、TLV 相对时间、后续策略
-    // 都依赖它。若未来开启 TIME_DATE,BADCERT_FUTURE 将由这里前置拦截。
-    // 服务器:ntp.aliyun.com 为主(国内 <1s;pool.ntp.org 全球轮询,国内常 2-10s
-    // 甚至丢包),pool.ntp.org 备份;LWIP_SNTP_MAX_SERVERS 需 >=2(sdkconfig)。
-    set_state(SN_STATE_CONNECTING, "Syncing clock...");
-    // 双服务器:主 ntp.aliyun.com(国内 <1s),备 pool.ntp.org。不走 MULTIPLE
-    // 宏 —— 花括号内的逗号会被预处理器当宏参数分隔,是坑;直接字段赋值。
-    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("ntp.aliyun.com");
-    sntp_cfg.servers[1] = "pool.ntp.org";   // CONFIG_LWIP_SNTP_MAX_SERVERS=2
-    sntp_cfg.num_of_servers = 2;
-    err = esp_netif_sntp_init(&sntp_cfg);
-    if (err != ESP_OK) goto fail;
-    // r10.14:有界重试。lwIP SNTP 客户端内部本就按退避重发请求,旧代码单轮
-    // 5s sync_wait 只等到第一次发包超时就 deinit —— 把内部重试掐死在
-    // 第一次握手(aliyun 通常 <1s,pool.ntp.org 可达需 2-10s,首包丢失偶发)。
-    // 总预算 3×5s=15s,成功即提前退出;仍失败不致命(TIME_DATE 未开,TLS 不
-    // 校验时间),只诚实上屏。
-    bool synced = false;
-    for (int i = 0; i < 3 && !synced; i++) {
-        const esp_err_t w = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(SNTP_SYNC_MS));
-        if (w == ESP_OK) {
-            synced = true;
-        } else {
-            ESP_LOGW(TAG, "SNTP 等待第 %d/3 轮: %s", i + 1, esp_err_to_name(w));
-        }
-    }
-    esp_netif_sntp_deinit();
-    if (!synced) {
-        err = ESP_ERR_TIMEOUT;
-        ESP_LOGW(TAG, "SNTP 同步超时(%s),时钟可能未同步", esp_err_to_name(err));
-        set_state(SN_STATE_CONNECTING, "Clock unsynced (TLS may fail).");
-    }
-
     creds_save(ssid, pass);
-    // r10.15c:回源诊断 —— 真机日志与 host 对照显示同一端点 host 侧快/设备侧
-    // 慢 10 倍时,差距不在服务端而在设备到 CF 之间的链路(实测案例:路由器
-    // Fake-IP 代理劫持 DNS,设备流量进代理隧道被节流)。resolve 后把目标 IP
-    // 打上串口:198.18.x/198.19.x = Fake-IP 段 = 流量必经代理,一眼定罪。
+    // r10.15c:回源诊断 —— resolve 后把 DNS 目标 IP 打上串口:198.18.x/198.19.x
+    // = Fake-IP 段 = 流量进代理隧道(路由器劫持 DNS 场景一眼定罪)。
+    // LAN 安装模式下此日志仍保留:配网链路异常时是第一手证据。
     {
         esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
         esp_netif_dns_info_t dns = {0};
@@ -655,56 +597,13 @@ fail:
     return err;
 }
 
-// ---- 网络任务:凭证处理 + 作业队列 ----
-
-typedef struct {
-    uint8_t  cmd;          // 1=analyze 2=install
-    uint32_t play_id;
-    int      slot;
-} job_msg_t;
-
-static void job_run_analyze(uint32_t play_id)
-{
-    set_job(SN_JOB_RUNNING, "Fetching info...");
-    meta_store_analysis_t out;
-    if (meta_store_api_analyze(play_id, &out) == ESP_OK) {
-        s_analysis = out;
-        s_analysis_valid = true;
-        set_job(SN_JOB_DONE_OK, "OK");
-    } else {
-        s_analysis_valid = false;
-        // r10.4:失败原因 + 层位 detail 都入快照 —— 服务端诊断句
-        // ("upstream 503 (metadata)")或设备分类文案("TLS failed (clock
-        // unsynced).")不再被丢弃,UI 能一次定位失败层。
-        set_job_detail(SN_JOB_DONE_FAIL, out.reason, out.detail);
-    }
-}
-
-static void job_run_install(uint32_t play_id, int slot)
-{
-    if (!s_analysis_valid) {
-        set_job(SN_JOB_DONE_FAIL, "analyze first");
-        return;
-    }
-    set_job(SN_JOB_RUNNING, "Installing...");
-    esp_err_t err = meta_store_api_install(play_id, slot, &s_analysis, s_slots);
-    if (err == ESP_OK) {
-        set_job(SN_JOB_DONE_OK, "Installed.");
-    } else {
-        // 上屏用 install 落进进度快照的精准文案(Cancelled. / Checksum mismatch. / ...),
-        // esp_err_to_name 只作兜底。
-        meta_store_api_progress_t p;
-        meta_store_api_poll(&p);
-        set_job(SN_JOB_DONE_FAIL, p.message[0] ? p.message : esp_err_to_name(err));
-    }
-}
+// ---- 网络任务:配网凭证接力与 teardown 接力(feat/mota:无 WAN 作业队列) ----
 
 static void job_task_main(void *arg)
 {
     (void)arg;
-    job_msg_t msg;
     for (;;) {
-        // 等作业或配网凭证(两者共用事件组等待,凭证优先处理)。
+        // 等配网凭证或 teardown 请求(共用事件组等待,凭证优先处理)。
         const EventBits_t bits = xEventGroupWaitBits(
             s_events, EV_CREDENTIALS | EV_STOP, pdTRUE, pdFALSE,
             pdMS_TO_TICKS(500));
@@ -725,9 +624,7 @@ static void job_task_main(void *arg)
             char ssid[33], pass[65];
             snprintf(ssid, sizeof(ssid), "%s", s_prov_ssid);
             snprintf(pass, sizeof(pass), "%s", s_prov_pass);
-            if (sta_online(ssid, pass) == ESP_OK) {
-                xQueueReset(s_job_queue);   // 换网络后旧作业作废
-            } else {
+            if (sta_online(ssid, pass) != ESP_OK) {
                 char fail_buf[32];   // 未知原因码的格式化缓冲
                 set_state(SN_STATE_ERROR, meta_store_wifi_fail_text(s_last_disconnect_reason, fail_buf, sizeof(fail_buf)));
                 ESP_LOGW(TAG, "STA 连接失败(reason=%d),回落配网页",
@@ -743,44 +640,32 @@ static void job_task_main(void *arg)
         // r8 教训:跨任务接力 + 空结果分支不取记录,残留扫描态既冻结节后
         // 所有扫描,也卡死 STA 连接;收尾与起扫必须在同一处。
         vTaskDelay(pdMS_TO_TICKS(200));
-
-        if (s_status.state != SN_STATE_ONLINE) continue;
-
-        while (xQueueReceive(s_job_queue, &msg, 0) == pdTRUE) {
-            if (msg.cmd == 1) job_run_analyze(msg.play_id);
-            else if (msg.cmd == 2) job_run_install(msg.play_id, msg.slot);
-        }
     }
 }
 
 // ---- 对外 API ----
 
-esp_err_t meta_store_net_init(meta_slot_info_t slots[META_SLOT_COUNT])
+esp_err_t meta_store_net_init(void)
 {
-    if (!slots) return ESP_ERR_INVALID_ARG;
     if (s_initialized) return ESP_OK;
-    s_slots = slots;
 
     esp_err_t err = net_prepare();
     if (err != ESP_OK) return err;
 
     s_events = xEventGroupCreate();
     if (!s_events) return ESP_ERR_NO_MEM;
-    s_job_queue = xQueueCreate(JOB_QUEUE_LEN, sizeof(job_msg_t));
-    if (!s_job_queue) return ESP_ERR_NO_MEM;
 
     err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &on_wifi_event, NULL);
     if (err != ESP_OK) return err;
     err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &on_wifi_event, NULL);
     if (err != ESP_OK) return err;
 
-    const BaseType_t t = xTaskCreate(job_task_main, "store_net", JOB_STACK, NULL,
-                                     JOB_PRIO, &s_job_task);
+    const BaseType_t t = xTaskCreate(job_task_main, "store_net", NET_TASK_STACK, NULL,
+                                     NET_TASK_PRIO, &s_net_task);
     if (t != pdPASS) return ESP_ERR_NO_MEM;
 
     s_initialized = true;
     set_state(SN_STATE_IDLE, "");
-    set_job(SN_JOB_IDLE, "");
     return ESP_OK;
 }
 
@@ -795,7 +680,7 @@ esp_err_t meta_store_net_begin(void)
 
     char ssid[33], pass[65];
     if (creds_load(ssid, pass)) {
-        // 异步连:作业任务只处理 EV_CREDENTIALS,这里直接投递一个"内部连接"消息,
+        // 异步连:网络任务只处理 EV_CREDENTIALS,这里直接投递一个"内部连接"消息,
         // 复用同一处理路径(经 s_prov_* 传递凭证)。
         snprintf(s_prov_ssid, sizeof(s_prov_ssid), "%s", ssid);
         snprintf(s_prov_pass, sizeof(s_prov_pass), "%s", pass);
@@ -818,47 +703,12 @@ void meta_store_net_stop(void)
     // 天然互斥。置 STOP + s_teardown_req,任务在下一个 500ms 节拍收尾。
     s_teardown_req = true;
     xEventGroupSetBits(s_events, EV_STOP);
-    xQueueReset(s_job_queue);
     set_state(SN_STATE_IDLE, "");
-    set_job(SN_JOB_IDLE, "");
-    s_analysis_valid = false;
-}
-
-esp_err_t meta_store_net_cmd_analyze(uint32_t play_id)
-{
-    if (s_status.state != SN_STATE_ONLINE) return ESP_ERR_INVALID_STATE;
-    if (s_job.state == SN_JOB_RUNNING) return ESP_ERR_INVALID_STATE;
-    const job_msg_t msg = { .cmd = 1, .play_id = play_id, .slot = -1 };
-    if (xQueueSend(s_job_queue, &msg, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
-    // 入队即置 RUNNING(网络任务真正执行前,UI 不应再看到上一个作业的残留终态)。
-    set_job(SN_JOB_RUNNING, "Queued.");
-    return ESP_OK;
-}
-
-esp_err_t meta_store_net_cmd_install(uint32_t play_id, int slot)
-{
-    if (s_status.state != SN_STATE_ONLINE) return ESP_ERR_INVALID_STATE;
-    if (s_job.state == SN_JOB_RUNNING || !s_analysis_valid) return ESP_ERR_INVALID_STATE;
-    if (slot < 0 || slot >= META_SLOT_COUNT) return ESP_ERR_INVALID_ARG;
-    const job_msg_t msg = { .cmd = 2, .play_id = play_id, .slot = slot };
-    if (xQueueSend(s_job_queue, &msg, 0) != pdTRUE) return ESP_ERR_TIMEOUT;
-    set_job(SN_JOB_RUNNING, "Queued.");
-    return ESP_OK;
-}
-
-const meta_store_analysis_t *meta_store_net_analysis(void)
-{
-    return s_analysis_valid ? &s_analysis : NULL;
 }
 
 void meta_store_net_poll(meta_store_net_status_t *out)
 {
     if (out) *out = s_status;
-}
-
-void meta_store_net_job_poll(meta_store_net_job_t *out)
-{
-    if (out) *out = s_job;
 }
 
 esp_err_t meta_store_net_reset_wifi(void)

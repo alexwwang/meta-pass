@@ -6,6 +6,25 @@
 
 ## Unreleased
 
+- **v3.2-r10.22 (2026-10-01) LAN 手机辅助安装 —— 设备端净切(`feat/mota`)**:商店下载
+  通道撤出设备。启动器改为展示 QR 页(120px `lv_qrcode` + IP + 6 位配对码,文本回退),
+  附一次性 token;手机端网页模块扫码后完成市场搜索/analyze/下载/镜像提取,经 LAN
+  HTTP 把应用镜像上传到设备。设备端:`meta_store_install.{c,h}` —— 80 端口本地安装
+  HTTP 服务(prepare/session/chunk/finalize/status/cancel/pair + boot 页,与配网门户
+  生命周期互斥),128-bit 一次性上传 token、强制 `X-Meta-Session`、同源 Origin 校验、
+  4KB 流式 chunk 写入 + SHA-256 + `esp_image_verify`,上传先于物理槽位确认不放行,
+  失败路径槽位标 INVALID;`meta_install_model.{c,h}` —— 纯逻辑
+  manifest/session/chunk/finalize 判定,新增 host 测试 `tests/test_meta_install_model.c`
+  钉死。删除:数字玩法 ID 键盘页、ID 编辑模型、analyze 解析/客户端与详情页
+  (`meta_store_{api,api_fail,analysis,info_page,idedit,range}`)、WAN 用的
+  TLS/SNTP/证书包依赖(`esp_http_client`、`esp-tls`、`main/certs/`、SNTP 配置)及其
+  门禁/工具(`test_http_contract.py`、`test_download_{speed_config,retry_gate}.py`、
+  `e2e-production.mjs`、`verify-crt-bundle-match.py`、`e2e-feed-fixture.c`)。
+  `sdkconfig.defaults` 启用 `LV_USE_CANVAS`/`LV_USE_QRCODE`(qrcode 基于 canvas 类
+  实现);lwIP 32KB 窗口保留 —— LAN 上传与当年 WAN 下载同样受益。手机端模块
+  (`install-slot/`)与 Worker(`_worker.js`)本期不动;`tests/worker_contract.mjs`
+  继续钉死 Worker API 面。
+
 - **v3.2-r10.21 (2026-09-30) OTA 僵尸连接快速判死**:r10.17-r10.19 栈的首次真机运行
   (v50,675)端到端证明了续传 —— `install resume 2/6 at 900188/2664256`,2.4s TLS
   重连,无整包重来,镜像校验通过 —— 但第一条死连接在宣告死亡前烧了 ~150s:3x30s

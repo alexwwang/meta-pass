@@ -20,6 +20,17 @@ bool meta_store_json_get_int(const char *json, size_t len, const char *path,
 bool meta_store_json_get_bool(const char *json, size_t len, const char *path,
                               bool *out);
 
+// 顶层对象下「对象数组」的有界读取(install offer 的 slots 契约,文档 §6.4)。
+// key 为顶层数组键;idx 为元素下标;field 为元素对象内的键。
+// 任何结构/类型/越界偏差一律 false 且不改 out(与上方同一纪律)。
+// count 返回数组元素个数(空数组 = 0,合法)。
+bool meta_store_json_get_array_count(const char *json, size_t len, const char *key,
+                                     size_t *out);
+bool meta_store_json_get_array_int(const char *json, size_t len, const char *key,
+                                   size_t idx, const char *field, int64_t *out);
+bool meta_store_json_get_array_bool(const char *json, size_t len, const char *key,
+                                    size_t idx, const char *field, bool *out);
+
 // SHA-256 的 64 字符小写 hex 串解析为 32 字节(契约中 extracted.sha256 字段)。
 // 任何非 [0-9a-f] 字符或长度不足 64 都返回 false。
 bool meta_store_json_parse_sha256(const char *hex, size_t len, uint8_t out[32]);

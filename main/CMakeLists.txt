@@ -9,22 +9,18 @@ idf_component_register(
          "meta_store.c"
          "meta_sign.c"
          "meta_store_json.c"
-         "meta_store_analysis.c"
-         "meta_store_info_page.c"
          "meta_store_prov.c"
-         "meta_store_idedit.c"
-         "meta_store_api.c"
-                "meta_store_api_fail.c"
-         "meta_store_range.c"
          "meta_store_net.c"
+         "meta_store_install.c"
+         "meta_install_model.c"
     INCLUDE_DIRS "."
-    # 相比基线:去掉 bt(启动器不用 BLE),保留 esp_http_server(配网页)、
-    # app_update/esp_partition(槽位与回滚)、mbedtls(SHA-256);
-    # 商店下载通道新增 esp_http_client(底层 esp-tls 自动带入)。
+    # 相比基线:去掉 bt(启动器不用 BLE),保留 esp_http_server(配网页 +
+    # 本地安装服务)、app_update/esp_partition(槽位与回滚)、mbedtls(install.c
+    # 引 mbedtls/sha256.h,配网页也用其 RNG);WAN 下载通道已删,不再需要
+    # esp_http_client / esp-tls / esp_crt_bundle(证书包随通道一并移除)。
     REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
-             esp_http_server esp_http_client app_update esp_partition mbedtls
-             esp-tls   # r10.5:esp_crt_bundle(自定义证书包 main/certs 的构建集成)
-             lwip      # r10.7:OPEN 死因分类的 SOCK errno(ECONNREFUSED 等)
+             esp_http_server app_update esp_partition mbedtls
+             lwip      # install httpd 的 socket 层(自 v5.1 起需显式声明)
 )
 
 # BUG-14 教训:UB 警告(越界写)在构建日志里躺了三个版本没人看 —— 本组件
