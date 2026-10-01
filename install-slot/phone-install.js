@@ -978,6 +978,18 @@ export function boot(opts = {}) {
   }
   function clearPanel() { panelOpen = false; $("mp-panel").innerHTML = ""; }
 
+  // 失败/不支持信息进浮层(真机反馈:列表滚了几屏后,搜索栏下方的状态行
+  // 不在视口内,用户看不到"无法安装"的提示)。浮层 fixed 定位,任何滚动
+  // 位置都可见;同时状态行也留一份(层级内用户同样受益)。
+  function failSheet(title, msg) {
+    setPanel(`<section class=mp-panel>
+      <h4>${esc(title)}</h4>
+      <p class=mp-sub style="margin-bottom:14px">${esc(msg)}</p>
+      <button id=mp-fail-x class=mp-btn style="width:100%">知道了</button>
+    </section>`);
+    $("mp-fail-x").onclick = clearPanel;
+  }
+
   function showDetail(p) {
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "—";
     setPanel(`<section class=mp-panel>
@@ -1000,7 +1012,11 @@ export function boot(opts = {}) {
     stage("检查兼容性");
     const meta = await preflightMeta(p.id, { stage });
     if (!meta.ok) {
-      log(`✗ ${meta.stage === "analyze" ? "该玩法不支持本设备" : "预检失败"}: ${meta.reason}`, "err");
+      const msg = meta.stage === "analyze"
+        ? `该玩法不支持本设备: ${meta.reason}`
+        : `预检失败: ${meta.reason}`;
+      log(`✗ ${msg}`, "err");
+      failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
     showSlotPicker(meta, p);
@@ -1015,7 +1031,11 @@ export function boot(opts = {}) {
     });
     const fit = opts.filter((o) => o.fit);
     if (fit.length === 0) {
-      log("✗ 该玩法的固件超出所有槽位容量,无法安装", "err");
+      const msg = Number.isFinite(imageLen)
+        ? `固件 ${fmtMB(imageLen)} 超出所有槽位上限,无法安装`
+        : "槽位容量信息缺失,无法安装";
+      log(`✗ ${msg}`, "err");
+      failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
     const suggested = fit.some((o) => o.slot === a?.suggestedSlot)
@@ -1100,8 +1120,8 @@ export function boot(opts = {}) {
     stage("下载固件");
     const pre = await prepareImage(meta, slot, { stage: (s) => { stageEl.textContent = s; } }, userName);
     if (!pre.ok) {
-      setPanel("");
       log(`✗ 安装失败 [${pre.stage}]: ${pre.reason}`, "err");
+      failSheet("安装失败", `${meta.play.name}\n[${pre.stage}] ${pre.reason}`);
       return;
     }
     stageEl.textContent = "上传";
@@ -1120,10 +1140,11 @@ export function boot(opts = {}) {
       log(`✓ 已安装到槽位 ${r.slot}。设备断电重开后在列表中选择启动。`, "ok");
       stageEl.textContent = "完成";
     } else {
-      setPanel("");
       log(`✗ 安装失败 [${r.stage}]: ${r.reason}`, "err");
-      if (r.stage === "confirm") log("设备在等待确认 —— 旧固件需在设备屏选槽按 OK;刷 v62+ 后手机上即可完成全部操作", "err");
-      if (r.stage === "token") log("提示: 重新扫码或重新配对(token 每店一次性)", "err");
+      let msg = `[${r.stage}] ${r.reason}`;
+      if (r.stage === "confirm") msg += "\n设备在等待确认 —— 旧固件需在设备屏选槽按 OK;刷 v62+ 后手机上即可完成全部操作";
+      if (r.stage === "token") msg += "\n重新扫码或重新配对(token 每店一次性)";
+      failSheet("安装失败", `${pre.offer.name}\n${msg}`);
     }
   }
 

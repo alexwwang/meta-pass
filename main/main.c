@@ -85,6 +85,8 @@ static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(�
 static meta_install_manifest_t s_offer;          // P2/P3 展示中的 install offer 快照
 static bool s_offer_valid;                       // s_offer 是否有效(页面重建复用)
 static bool s_qr_service_failed;                 // P1 起本地 install 服务失败的粘滞提示
+// 跨页键事件吞咽:P5→列表等迁移后,同一次物理按压的尾随 CLICK 不应落在新页。
+static int64_t s_list_arm_at;                    // 列表页 OK 在此时间戳前忽略(ms)
 // QR 直绘静态缓冲(qrcodegen 工作/输出 + RGB565 画布)。bss 共 ~37KB:
 // 不上栈(UI 任务栈吃不下),也不上堆(页面构建期一次性使用)。
 static uint8_t s_qr_tmp[qrcodegen_BUFFER_LEN_MAX];
@@ -1006,6 +1008,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 list_refresh();
                 ui_pixel_mascot_jump(s_mascot);
             } else if (btn == BSP_BTN_OK) {
+                if (esp_timer_get_time() / 1000 < s_list_arm_at) break;   // 吞咽尾随 CLICK
                 if (s_sel < META_SLOT_COUNT) {
                     const int slot = s_sel;
                     s_detail_slot = slot;
@@ -1227,7 +1230,13 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
 
     case PAGE_STORE_DONE:
-        if (btn == BSP_BTN_OK) {   // 短按/长按均回列表(离店 teardown 停网络)
+        // 只认 CLICK/LONG —— 原实现不判事件类型,一次物理按压的 PRESS(按下)
+        // 与 CLICK(抬起)各触发一次:PRESS 先进列表页,CLICK 尾随落在列表页
+        // OK 上,选中行 0 = slot0 → 直接弹 slot0 启动确认页(真机:"BACK TO
+        // TO LIST 的 OK 总有双击效果")。400ms 吞咽窗同时兜住 LONG 释放后的
+        // 尾随 CLICK。
+        if ((ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) && btn == BSP_BTN_OK) {
+            s_list_arm_at = esp_timer_get_time() / 1000 + 400;
             goto_page(PAGE_LIST);
         }
         break;
