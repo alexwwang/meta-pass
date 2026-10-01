@@ -472,6 +472,15 @@ static void page_store_qr_build(void)
         } else {
             lv_obj_set_pos(qr, 60, 46);
             ESP_LOGI(TAG, "qr rendered 120px at (60,46)");
+            // 回读画布像素给 QR 不可见定论:中心_finder 区(30,30)应深、
+            // quiet zone(2,2)应浅。两样本都对而屏上无物 = 显示/刷新链路
+            // 问题;样本不对 = 编码/调色板问题。lv_canvas_get_px 为本地坐标,
+            // LVGL 9.5 返回 lv_color32_t(非 lv_color_t)。
+            const lv_color32_t px_dark = lv_canvas_get_px(qr, 30, 30);
+            const lv_color32_t px_light = lv_canvas_get_px(qr, 2, 2);
+            ESP_LOGI(TAG, "qr px(30,30)=%08x px(2,2)=%08x (ink=%06x paper=%06x)",
+                     (unsigned)px_dark.full, (unsigned)px_light.full,
+                     UI_INK, UI_PAPER);
         }
     }
 

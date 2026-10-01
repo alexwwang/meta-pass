@@ -52,10 +52,31 @@ WRANGLER_CONFIG = os.path.expanduser("~/Library/Preferences/.wrangler/config/def
 def oauth_token():
     if not os.path.exists(WRANGLER_CONFIG):
         sys.exit(f"wrangler 配置不存在: {WRANGLER_CONFIG}(先跑一次 wrangler login)")
-    m = re.search(rb'oauth_token = "([^"]+)"', open(WRANGLER_CONFIG, "rb").read())
+    raw = open(WRANGLER_CONFIG, "rb").read()
+    m = re.search(rb'oauth_token = "([^"]+)"', raw)
     if not m:
         sys.exit("default.toml 里找不到 oauth_token")
-    return m.group(1).decode()
+    tok = m.group(1).decode()
+    # access token 1h 过期;401 时用 refresh_token 换新并回写配置
+    # (wrangler 同源常量:client_id 54d11594-…,端点 /oauth2/token)。
+    r = requests.get(f"{API}/accounts/{ACCOUNT}/pages/projects/{PROJECT}",
+                     headers={"Authorization": f"Bearer {tok}"}, timeout=60)
+    if r.status_code == 401:
+        rt = re.search(rb'refresh_token = "([^"]+)"', raw)
+        if not rt:
+            sys.exit("oauth_token 过期且没有 refresh_token —— 重新 wrangler login")
+        x = requests.post("https://dash.cloudflare.com/oauth2/token", data={
+            "grant_type": "refresh_token",
+            "refresh_token": rt.group(1).decode(),
+            "client_id": "54d11594-84e4-41aa-b438-e81b8fa78ee7",
+        }, timeout=60)
+        x.raise_for_status()
+        tok = x.json()["access_token"]
+        raw = re.sub(rb'oauth_token = "[^"]*"',
+                     b'oauth_token = "' + tok.encode() + b'"', raw)
+        open(WRANGLER_CONFIG, "wb").write(raw)
+        print("oauth_token refreshed")
+    return tok
 
 
 def stage_install_slot():
