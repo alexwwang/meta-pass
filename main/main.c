@@ -521,9 +521,8 @@ static void page_store_qr_build(void)
             const uint8_t *b = (const uint8_t *)&ip;   // 网络字节序,内存序即 a.b.c.d
             snprintf(ip_txt, sizeof(ip_txt), "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
         }
-        char text[128];
-        snprintf(text, sizeof(text),
-                 "scan QR, or open:\nhttp://%s\npair code: %s\nStay here while installing",
+        char text[96];
+        snprintf(text, sizeof(text), "scan QR, or open:\nhttp://%s\npair code: %s",
                  ip_txt, (pair && !token_hex) ? "-" : (pair ? pair : "-"));
         lv_label_set_text(s_info, text);
     }
@@ -533,7 +532,9 @@ static void page_store_qr_build(void)
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    lv_label_set_text(s_status_line, token_hex ? "waiting for phone..." : "token error");
+    // 提示语放状态行(信息窗只有 4 行高,塞第 4 行会跟状态行叠字 —— 真机
+    // bug):默认即"安装期间停留本页",会话消息出现时再让位。
+    lv_label_set_text(s_status_line, token_hex ? "Stay here while installing" : "token error");
 
     add_battery(s_scr);
     store_touch();
@@ -835,6 +836,11 @@ static void store_tick(lv_timer_t *t)
     }
 
     case PAGE_STORE_QR: {
+        // 扫码页不设闲置超时:手机浏览市场期间设备收不到任何请求,按键才
+        // 有的 store_touch 会把会话超时空投掉,手机页面随之作废(真机:
+        // "time out 导致手机页面失效")。常驻期间由用户按键退出收尾;
+        // 安装中的停滞判定仍在(upload_idle_ms)不受影响。
+        store_touch();
         // 手机 prepare 到货:取一次快照进 P2。confirmed 时不迁(防御:
         // 正常路径 confirmed 只发生在 P3 之后)。
         if (ist.offer_ready && !ist.confirmed && !s_offer_valid
@@ -851,7 +857,7 @@ static void store_tick(lv_timer_t *t)
         }
         if (s_status_line) {
             lv_label_set_text(s_status_line,
-                              ist.message[0] ? ist.message : "waiting for phone...");
+                              ist.message[0] ? ist.message : "stay here while installing");
         }
         break;
     }
