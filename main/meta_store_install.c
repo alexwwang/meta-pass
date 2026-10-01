@@ -697,7 +697,7 @@ static const char SHELL_HTML[] =
 ".catch(function(){ps.textContent='pair failed';});}"
 "</script>"
 "<script type=module "
-"src=https://metapass.chuanxilu.net/phone-install/loader.v1.js></script>";
+"src=https://metapass.chuanxilu.net/phone-install.js></script>";
 
 static esp_err_t h_boot_index(httpd_req_t *req)
 {

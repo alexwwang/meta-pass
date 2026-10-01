@@ -375,6 +375,13 @@ text. The device screen shows the same progress.
 The old implementation remains in the previous branch/history. `feat/mota` is a
 clean cutover, not a compatibility mode.
 
+> Implementation note (2026-10-01, phone side): the v1 phone module MVP has landed as
+> `install-slot/phone-install.js`, served by the Worker at `GET /phone-install.js`
+> (CORS `*`, no-store) and loaded by the device boot page. The search/preflight/session
+> flow follows §5/§6; the module ships its own pure-JS SHA-256 for plain-HTTP origins
+> and is pinned by `tests/test_phone_install.mjs`. The `loader.v1.js` filename is
+> reserved for a future versioned-loader split.
+
 ### Retained and reused
 
 - WiFi credential storage and provisioning;

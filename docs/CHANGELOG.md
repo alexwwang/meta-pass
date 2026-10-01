@@ -6,6 +6,25 @@
 
 ## Unreleased
 
+- **v3.2-r10.22b (2026-10-01) Phone web module MVP — the metapass side of the LAN install**:
+  `install-slot/phone-install.js` is the first remotely-loaded module served by the
+  Worker (`GET /phone-install.js`, `access-control-allow-origin: *`, no-store; the
+  device boot page now points at this URL). Single-file module with a built-in pure-JS
+  SHA-256 (`crypto.subtle` is unavailable on the device's plain-HTTP origin) whose 9
+  vectors are cross-checked against node:crypto. Flow per design doc §5/§6: market
+  search (`q` forwarded through `/api/plays`), detail metadata normalized with the
+  fallback chain and the no-firmware-fields = uninstallable gate; integrated preflight
+  (analyze → merged-image download via the whitelisted `/api/firmware` → store SHA-256
+  verify → local factory extraction → local hash → exact match against analyze → slot
+  fit table from the shared `SLOT_GEOMETRY`); then the device session driver —
+  prepare, poll for the physical confirmation (slot taken from the device, never the
+  phone), session open, sequential chunks with in-place retry (3 no-progress attempts)
+  and resume from the device-reported offset after a half-written chunk, finalize,
+  terminal-state poll. Refusals: no token, protocol mismatch, busy device, confirm
+  timeout (never opens an upload session). Pinned by `tests/test_phone_install.mjs`
+  (18 checks against a mock device that mirrors `meta_store_install.c`'s exact HTTP
+  contract); registered in `validate.sh --static`.
+
 - **v3.2-r10.22 (2026-10-01) LAN phone-assisted install — device-side cutover (`feat/mota`)**:
   the store-download channel moves off the device. The launcher now shows a QR page
   (120px `lv_qrcode` + IP + 6-digit pair code, text fallback) served with a token; the

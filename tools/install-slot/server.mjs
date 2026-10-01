@@ -63,6 +63,8 @@ const PAGE_VERSION = pageVersion();
 const STATIC_FILES = new Map([
   ["/extract-app-image.js", { file: "extract-app-image.js", type: "text/javascript; charset=utf-8" }],
   ["/name-blob.js", { file: "name-blob.js", type: "text/javascript; charset=utf-8" }],
+  ["/store-analyze.js", { file: "store-analyze.js", type: "text/javascript; charset=utf-8" }],
+  ["/phone-install.js", { file: "phone-install.js", type: "text/javascript; charset=utf-8" }],
   ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   ["/launcher-upgrade.js", { file: "launcher-upgrade.js", type: "text/javascript; charset=utf-8" }],
   // 本地化的 esptool-js 及其依赖(jsdelivr +esm 构建,国内 CDN 不可达时页面整体卡死)
@@ -161,6 +163,9 @@ const server = http.createServer((req, res) => {
     fs.createReadStream(path.join(PAGE_DIR, staticEntry.file)).pipe(res);
     return;
   }
+
+  // (phone-install.js 已入上方白名单;CORS 由白名单通道统一处理 —— 本地 dev
+  // 页面同源加载,手机安装模块仅在 metapass/设备源加载,不需本地 CORS。)
 
   // GET /api/plays → 玩法列表（JSON 透传）
   if (pathname === "/api/plays") {

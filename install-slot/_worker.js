@@ -499,6 +499,21 @@ export default {
       }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
     }
 
+    // ── 手机安装模块(设计文档 §4.2:metapass 供版本化 JS,CORS *) ──
+    // 设备 boot 页(meta_store_install.c SHELL_HTML)以
+    // <script type=module src=.../phone-install.js> 加载。单文件入口(内含
+    // sha256 纯 JS 实现),同源 import extract-app-image/name-blob/
+    // store-analyze(ASSETS 静态服务)。版本策略 = no-store + 设备协议握手
+    // (status.protocol)双保险;大改版换文件名(boot 页 URL 随固件走)。
+    if (path === "/phone-install.js") {
+      const asset = await env.ASSETS.fetch(new Request(new URL("/phone-install.js", req.url), req));
+      if (!asset.ok) return err(404, "phone-install module missing from bundle");
+      const headers = new Headers(asset.headers);
+      headers.set("access-control-allow-origin", "*");
+      headers.set("cache-control", "no-store");
+      return new Response(asset.body, { status: asset.status, headers });
+    }
+
     // ── 静态文件服务 ─────────────────────────────────────────────────
     if (path === "/" || path === "") {
       // ASSETS 对 .html 文件会做规范化重定向(307),跟随获取最终内容

@@ -6,6 +6,20 @@
 
 ## Unreleased
 
+- **v3.2-r10.22b (2026-10-01) 手机网页模块 MVP —— LAN 安装的 metapass 侧**:
+  `install-slot/phone-install.js` 是第一个由 Worker 远程下发的安装模块
+  (`GET /phone-install.js`,`access-control-allow-origin: *`,no-store;设备 boot 页
+  改指此 URL)。单文件内置纯 JS SHA-256(设备纯 HTTP 源上 `crypto.subtle` 不可用),
+  9 组向量与 node:crypto 逐字节对拍。流程按设计文档 §5/§6:市场搜索(`q` 经
+  `/api/plays` 转发)、详情元数据回退链归一 + 无固件字段 = 不可安装门;一体化预检
+  (analyze → 白名单 `/api/firmware` 下载合并镜像 → 商店 SHA-256 校验 → 本地解包
+  factory 镜像 → 本地哈希 → 与 analyze 精确比对 → 共享 `SLOT_GEOMETRY` 槽位 fit 表);
+  然后是设备会话驱动 —— prepare、轮询物理确认(槽位取设备值,手机不得改)、开
+  session、顺序 chunk(原地重试至多 3 次无进展;半块写失败从设备上报 offset 续传)、
+  finalize、终态轮询。拒绝面:无 token、协议不符、设备忙、确认超时(绝不打开上传
+  session)。`tests/test_phone_install.mjs` 钉死(18 项,mock 设备逐条复现
+  `meta_store_install.c` 的 HTTP 契约);已登记 `validate.sh --static`。
+
 - **v3.2-r10.22 (2026-10-01) LAN 手机辅助安装 —— 设备端净切(`feat/mota`)**:商店下载
   通道撤出设备。启动器改为展示 QR 页(120px `lv_qrcode` + IP + 6 位配对码,文本回退),
   附一次性 token;手机端网页模块扫码后完成市场搜索/analyze/下载/镜像提取,经 LAN

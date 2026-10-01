@@ -116,6 +116,9 @@ PY
         "${node_bin}" tools/install-slot/test-extract.mjs
         "${node_bin}" tools/install-slot/test-store-analyze.mjs
         "${node_bin}" tests/worker_contract.mjs
+        # 手机安装模块(设计文档 §4.2/§6):SHA-256 对拍、preflight 三道门、
+        # 设备会话全流程与续传语义(mock 设备契约 = meta_store_install.c)。
+        "${node_bin}" tests/test_phone_install.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs

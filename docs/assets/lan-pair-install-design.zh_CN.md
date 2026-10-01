@@ -360,6 +360,12 @@ POST /api/install/cancel
 
 旧实现保留在上一分支/历史中。`feat/mota` 是干净切换,不是兼容模式。
 
+> 实现注记(2026-10-01,手机侧):v1 手机模块 MVP 已落地为
+> `install-slot/phone-install.js`,由 Worker 以 `GET /phone-install.js` 下发
+> (CORS `*`,no-store),设备 boot 页加载。搜索/预检/会话流程按 §5/§6;模块自带
+> 纯 JS SHA-256(纯 HTTP 源用),`tests/test_phone_install.mjs` 钉死。
+> `loader.v1.js` 文件名预留给未来的版本化 loader 拆分。
+
 ### 保留并复用
 
 - WiFi 凭证存储与配网;
