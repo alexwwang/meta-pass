@@ -28,7 +28,9 @@
   the real Worker route table and executes `q` filtering; new regression tests (boot
   payload, resume-at-imageLen, done-poll timeout); `worker_contract.mjs` gains gates
   for query forwarding, streaming, no-store modules, and phone-path↔Worker-route
-  matching. Firmware rebuild pending (local ESP-IDF toolchain incomplete).
+  matching. Toolchain note: the local ESP-IDF env was fixed without installing
+  unused Xtensa toolchains (`IDF_SKIP_TOOLS_CHECK=1`, see the `idf()` shell
+  helper); firmware rebuilt and verified — `meta-pass_v1.0.0-58-gcf0fa8f.bin`.
 
 - **v3.2-r10.22b (2026-10-01) Phone web module MVP — the metapass side of the LAN install**:
   `install-slot/phone-install.js` is the first remotely-loaded module served by the
