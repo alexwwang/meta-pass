@@ -816,6 +816,12 @@ static void store_tick(lv_timer_t *t)
             store_goto(PAGE_STORE_INFO);
             break;
         }
+        // 交互 v2:prepare 带手机选定槽位 → 设备已直接 confirmed(跳过
+        // P2/P3),扫码页直进上传页,避免屏停在"waiting for phone"。
+        if (ist.offer_ready && ist.confirmed) {
+            store_goto(PAGE_STORE_DL);
+            break;
+        }
         if (s_status_line) {
             lv_label_set_text(s_status_line,
                               ist.message[0] ? ist.message : "waiting for phone...");

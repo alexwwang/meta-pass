@@ -900,14 +900,29 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         session_unlock();
         return reply(req, "409 Conflict", "already confirmed");
     }
+    // 交互 v2:prepare 带手机选定的 slot → 本地几何复核后直接 confirmed,
+    // 设备跳过 P2/P3(用户决策:安装交互全部收拢到手机,与 metapass 网页装
+    // 的选槽→确认一致);不带 slot 的旧 manifest 走原物理确认流程。
+    const bool phone_picked = (m.phone_slot >= 0);
+    if (phone_picked && !meta_install_model_slot_fit(&g, m.phone_slot, m.image_len)) {
+        session_unlock();
+        return reply(req, "400 Bad Request", "chosen slot does not fit");
+    }
     offer_and_upload_clear();          // 覆盖旧 offer 时清残留(未确认路径)
     s_session.manifest = m;
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
-    status_set("offer", "confirm on device");
+    if (phone_picked) {
+        s_session.confirmed_slot = m.phone_slot;
+        s_session.confirmed = true;   // 先写槽位,后置标志(读侧以标志为序)
+        status_set("confirmed", "slot chosen on phone");
+    } else {
+        status_set("offer", "confirm on device");
+    }
     session_unlock();
-    ESP_LOGI(TAG, "offer ready: %s (%u bytes)", m.name, m.image_len);
+    ESP_LOGI(TAG, "offer ready: %s (%u bytes, slot %s)", m.name, m.image_len,
+             phone_picked ? "phone-picked" : "device-confirm");
     return reply(req, "200 OK", "ok");
 }
 

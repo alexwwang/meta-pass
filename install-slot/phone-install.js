@@ -217,21 +217,28 @@ export async function getPlayDetail(id) {
   return normalizePlay(d?.play);
 }
 
-// ── 安装预检(§6.3,单入口九步) ───────────────────────────────────────
-// 返回 {ok, offer, ...} 或 {ok:false, stage, reason, ...}。data 为合并镜像
-// Uint8Array,调用方(boot/runInstall)持有并在确认后上传。
-export async function preflight(id, hooks = {}) {
+// ── 安装预检(§6.3,两阶段) ───────────────────────────────────────────
+// 交互 v2:点 Install 先进 preflightMeta(轻:analyze+详情,亚秒级),手机
+// 弹出槽位选择器;用户选槽确认后才跑 prepareImage(重:数 MB 下载/校验/剥离)。
+// preflight(id) 保留为两阶段连跑的兼容入口(测试与旧调用)。
+export async function preflightMeta(id, hooks = {}) {
   const stage = (s) => hooks.stage?.(s);
   stage("analyze");
   const a = await mpJson(`/api/analyze?id=${encodeURIComponent(id)}`);
   if (!a || a.supported !== true) {
     return { ok: false, stage: "analyze", reason: a?.reason ?? "unsupported", detail: a?.detail ?? null };
   }
-
   stage("market");
   const play = await getPlayDetail(id);
   if (!play) return { ok: false, stage: "market", reason: "play metadata missing firmware fields" };
+  return { ok: true, analyze: a, play };
+}
 
+// meta = preflightMeta 结果;slot = 用户选定槽位(>=0;交互 v2 设备直确认,
+// -1 = 旧流程设备物理确认)。
+export async function prepareImage(meta, slot, hooks = {}) {
+  const stage = (s) => hooks.stage?.(s);
+  const { analyze: a, play } = meta;
   stage("download");
   let merged;
   try {
@@ -274,13 +281,16 @@ export async function preflight(id, hooks = {}) {
   }
 
   // 槽位 fit 表:仓库单一事实源(store-analyze.js SLOT_GEOMETRY)− 4KB 尾 sector。
-  const slots = SLOT_GEOMETRY.map(({ slot, partSize }) => {
+  const slots = SLOT_GEOMETRY.map(({ slot: s, partSize }) => {
     const limit = partSize - TAIL_SECTOR;
-    return { slot, limit, fit: ext.length <= limit };
+    return { slot: s, limit, fit: ext.length <= limit };
   });
   const fitSlots = slots.filter((s) => s.fit);
   if (fitSlots.length === 0) {
     return { ok: false, stage: "preflight", reason: "image larger than every slot" };
+  }
+  if (slot >= 0 && !fitSlots.some((s) => s.slot === slot)) {
+    return { ok: false, stage: "preflight", reason: `chosen slot ${slot} does not fit` };
   }
   const suggestedSlot = fitSlots.some((s) => s.slot === a.suggestedSlot)
     ? a.suggestedSlot : fitSlots[0].slot;
@@ -294,10 +304,17 @@ export async function preflight(id, hooks = {}) {
     imageLen: ext.length,
     sha256: appSha,
     suggestedSlot,
+    slot,               // 交互 v2:手机选定槽位;-1 = 设备物理确认
     slots,
     reason: typeof a.reason === "string" && a.reason ? a.reason : "ok",
   };
   return { ok: true, offer, merged, ext, analyze: a, play };
+}
+
+export async function preflight(id, hooks = {}) {
+  const meta = await preflightMeta(id, hooks);
+  if (!meta.ok) return meta;
+  return prepareImage(meta, -1, hooks);
 }
 
 // 设备端 name 契约:≤32 可打印 ASCII。逐级回退,sanitize 后为空再降级,
@@ -462,91 +479,182 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   return { ok: true, slot };
 }
 
-// ── 最小自动 UI(boot 页加载本模块后自动挂载;§4.1 shell 是本地桥) ────
-// 产品级 UI 后续迭代;MVP 目标:扫码 → 搜 → 装,全程手机可见状态。
+// ── 手机安装 UI(设备 launcher 同款 pixel 世界:ink/paper/sky/grass) ─────
+// 设计依据 impeccable(Operate 模式):工具消失进任务;accent 只给主动作;
+// 每个交互件六态俱全(default/hover/focus/active/disabled/loading/error);
+// 空态教学;错误命名问题+恢复路径;动效 150ms 只传达状态;无 emoji 图标,
+// chevron 用作者 SVG 单一笔画;对比度正文 ≥4.5:1。
+const MP_STYLE = `
+#mp-install-root{--paper:#F4F4EA;--card:#FFFDF6;--ink:#17202A;--ink2:#45566B;
+--line:rgba(23,32,42,.16);--sky:#1689E8;--sky-dark:#0872C9;--grass:#82BE2D;
+--grass-dark:#4E8A19;--red:#C02B20;--r:6px;
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Noto Sans SC",sans-serif;
+color:var(--ink);background:var(--paper);max-width:30em;margin:0 auto;
+padding:20px 16px 56px;-webkit-text-size-adjust:100%}
+#mp-install-root *,#mp-install-root *::before,#mp-install-root *::after{box-sizing:border-box}
+#mp-install-root ::selection{background:var(--ink);color:var(--paper)}
+#mp-install-root :focus-visible{outline:2px solid var(--sky-dark);outline-offset:2px}
+#mp-install-root button{font:inherit}   /* 不设 color:ID 优先级会压过 .mp-btn 的 paper 文字色 */
+#mp-install-root button:disabled{opacity:.42;cursor:not-allowed}
+.mp-wordmark{display:flex;align-items:center;gap:9px;margin:2px 0 2px}
+.mp-wordmark b{font-size:18px;font-weight:700;letter-spacing:-.01em}
+.mp-dot{flex:none;width:9px;height:9px;border-radius:50%;background:var(--ink2)}
+.mp-dot.on{background:var(--grass-dark)}
+.mp-sub{margin:0 0 14px;font-size:12.5px;color:var(--ink2)}
+.mp-status{margin:12px 2px 0;font-size:13px;color:var(--ink2);min-height:1.5em}
+.mp-status.err{color:var(--red)}
+.mp-status.ok{color:var(--grass-dark)}
+.mp-search{display:flex;gap:8px}
+.mp-search input{flex:1;min-width:0;font:inherit;padding:10px 12px;border:2px solid var(--ink);
+border-radius:var(--r);background:var(--card);color:var(--ink);caret-color:var(--sky-dark)}
+.mp-search input::placeholder{color:var(--ink2)}
+.mp-btn{padding:10px 16px;border:2px solid var(--ink);border-radius:var(--r);
+background:var(--ink);color:var(--paper);font-weight:600;line-height:1.2}
+.mp-btn:not(:disabled):active{transform:translateY(1px)}
+.mp-btn.ghost{background:var(--card);color:var(--ink)}
+.mp-list{list-style:none;margin:14px 0 0;padding:0;border-top:1px solid var(--line)}
+.mp-row{display:flex;align-items:center;gap:10px;width:100%;padding:12px 4px;
+background:none;border:0;border-bottom:1px solid var(--line);text-align:left;cursor:pointer}
+.mp-row .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.mp-row .sz{font-size:12.5px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.mp-row:hover .nm{color:var(--sky-dark)}
+.mp-row:active{background:rgba(23,32,42,.06)}
+.mp-empty{margin:22px 4px;padding:18px 16px;border:2px dashed var(--line);border-radius:var(--r);
+font-size:13.5px;color:var(--ink2)}
+.mp-count{margin:10px 2px 0;font-size:12.5px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.mp-more{display:block;width:100%;margin-top:10px}
+.mp-panel{border:2px solid var(--ink);border-radius:var(--r);background:var(--card);
+padding:16px;margin-top:14px;animation:mp-in .18s ease-out}
+@keyframes mp-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.mp-panel h4{margin:0 0 4px;font-size:16px;letter-spacing:-.01em}
+.mp-meta{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:10px 0 14px;
+font-size:13px}
+.mp-meta dt{color:var(--ink2)}
+.mp-meta dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.mp-slots{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.mp-slot{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;
+border:2px solid var(--line);border-radius:var(--r);background:var(--paper);
+color:var(--ink);text-align:left;cursor:pointer}
+.mp-slot .rd{flex:none;width:18px;height:18px;border:2px solid var(--ink);border-radius:50%;position:relative}
+.mp-slot[aria-checked="true"]{border-color:var(--ink);background:var(--card)}
+.mp-slot[aria-checked="true"] .rd::after{content:"";position:absolute;inset:3px;
+border-radius:50%;background:var(--ink)}
+.mp-slot .lb{font-weight:600}
+.mp-slot .rec{flex:none;font-size:11px;font-weight:700;background:var(--grass);
+color:var(--ink);padding:2px 7px;border-radius:999px}
+.mp-slot .cap{margin-left:auto;font-size:12.5px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.mp-slot[disabled]{opacity:.45;cursor:not-allowed}
+.mp-actions{display:flex;gap:8px;margin-top:4px}
+.mp-actions .mp-btn{flex:1}
+.mp-prog{margin:12px 0 4px}
+.mp-prog progress{width:100%;height:14px;border:2px solid var(--ink);border-radius:var(--r);
+background:var(--paper);overflow:hidden}
+.mp-prog progress::-webkit-progress-bar{background:var(--paper)}
+.mp-prog progress::-webkit-progress-value{background:var(--ink)}
+.mp-prog progress::-moz-progress-bar{background:var(--ink)}
+.mp-prog .lb{display:flex;justify-content:space-between;margin-top:6px;font-size:12.5px;
+color:var(--ink2);font-variant-numeric:tabular-nums}
+`;
+
+const MP_CHEVRON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtMB = (n) => `${(n / 1048576).toFixed(1)} MB`;
+
 export function boot(opts = {}) {
   if (typeof document === "undefined") throw new Error("boot() requires a browser document");
   const deviceOrigin = opts.deviceOrigin ?? detectDeviceOrigin();
   let token = opts.token ?? detectToken();
   let bridge = createBridge(deviceOrigin, token);
 
-  const root = document.createElement("div");
-  root.id = "mp-install-root";
-  root.style.cssText = "font-family:sans-serif;max-width:26em;margin:1em auto;padding:0 8px";
-  root.innerHTML = `
-    <h3 style="margin:.4em 0">meta-pass install</h3>
-    <div id=mp-log style="color:#555;white-space:pre-wrap;min-height:1.2em"></div>
-    <div id=mp-search-row style="display:${deviceOrigin ? "flex" : "none"};gap:6px;margin:.5em 0">
-      <input id=mp-q style="flex:1" placeholder="search plays… (empty = browse all)">
-      <button id=mp-go>Search</button>
-    </div>
-    <div id=mp-dev-row style="display:${deviceOrigin ? "none" : "block"};margin:.5em 0">
-      device address not detected — enter e.g. http://192.168.1.23
-      <input id=mp-dev placeholder="http://192.168.x.x" style="width:100%">
-      <button id=mp-dev-go>Connect</button>
-    </div>
-    <ul id=mp-list style="list-style:none;padding:0;margin:.5em 0"></ul>
-    <div id=mp-count style="color:#777;font-size:.9em;min-height:1.1em"></div>
-    <button id=mp-more style="display:none;width:100%;margin:.3em 0;padding:8px">
-      load more…</button>
-    <div id=mp-detail style="margin:.5em 0"></div>
-    <div id=mp-bar-wrap style="display:none;margin:.5em 0">
-      <progress id=mp-bar style="width:100%" value=0 max=1></progress>
-    </div>`;
-  (opts.mount ?? document.body).appendChild(root);
-  const $ = (id) => root.querySelector(`#${id}`);
-  const log = (msg) => { $("mp-log").textContent = msg; };
-
-  if (!deviceOrigin) {
-    $("mp-dev-go").onclick = () => {
-      const o = $("mp-dev").value.trim().replace(/\/$/, "");
-      if (!/^http:\/\/\d+\.\d+\.\d+\.\d+$/.test(o)) { log("enter device address like http://192.168.1.23"); return; }
-      bridge = createBridge(o, token);
-      $("mp-dev-row").style.display = "none";
-      $("mp-search-row").style.display = "flex";
-      log("connected (token " + (token ? "from link" : "MISSING — pair by code below the device page") + ")");
-    };
-  } else if (!token) {
-    log("no session token in link — enter the 6-digit pairing code on the device page first, then reload");
+  if (!document.getElementById("mp-style")) {
+    const st = document.createElement("style");
+    st.id = "mp-style";
+    st.textContent = MP_STYLE;
+    document.head.appendChild(st);
   }
 
-  // 分页浏览状态机(官方契约:offset+limit,pagination.{total,hasMore}):
-  // 新搜索重置;翻页追加去重;load more 按钮 + IntersectionObserver 自动加载
-  // (不支持 IO 的环境退化为纯按钮)。空关键词 = 浏览全量目录。
+  const root = document.createElement("div");
+  root.id = "mp-install-root";
+  root.innerHTML = `
+    <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b></header>
+    <p class=mp-sub>LAN install${
+      deviceOrigin ? " · " + esc(deviceOrigin.replace(/^http:\/\//, "")) : ""}</p>
+    <div id=mp-dev-row class=mp-search style="display:${deviceOrigin ? "none" : "flex"}">
+      <input id=mp-dev placeholder="http://192.168.x.x" inputmode=url>
+      <button id=mp-dev-go class=mp-btn>Connect</button>
+    </div>
+    <div class=mp-search>
+      <input id=mp-q placeholder="搜索玩法,输入 ID 直达;留空浏览全部" enterkeyhint=search>
+      <button id=mp-go class=mp-btn>搜索</button>
+    </div>
+    <p id=mp-status class=mp-status role=status></p>
+    <ul id=mp-list class=mp-list></ul>
+    <div id=mp-empty class=mp-empty style="display:none">
+      没有可安装的玩法。换个关键词,或清空输入框浏览全部。</div>
+    <div id=mp-count class=mp-count></div>
+    <button id=mp-more class="mp-btn ghost mp-more" style="display:none">加载更多</button>
+    <div id=mp-panel></div>`;
+  (opts.mount ?? document.body).appendChild(root);
+  const $ = (id) => root.querySelector(`#${id}`);
+  const statusEl = $("mp-status");
+  const log = (msg, cls = "") => {
+    statusEl.textContent = msg;
+    statusEl.className = `mp-status ${cls}`.trim();
+  };
+
+  if (!deviceOrigin) {
+    log("输入设备地址(如 http://192.168.1.23)后 Connect");
+    $("mp-dev-go").onclick = () => {
+      const o = $("mp-dev").value.trim().replace(/\/$/, "");
+      if (!/^http:\/\/\d+\.\d+\.\d+\.\d+$/.test(o)) { log("地址格式: http://192.168.1.23", "err"); return; }
+      bridge = createBridge(o, token);
+      $("mp-dev-row").style.display = "none";
+      $("mp-dot").classList.add("on");
+      log(token ? "已连接(token 来自链接)" : "已连接,但无 token —— 先在设备页输入配对码", token ? "ok" : "err");
+    };
+  } else if (!token) {
+    log("链接里没有会话 token —— 先在设备页输入 6 位配对码,页面会自动刷新", "err");
+  } else {
+    log("已连接,正在加载玩法目录…");
+  }
+
+  // 分页浏览状态机(官方契约:offset+limit,pagination.{total,hasMore})。
   let lastQ = "";
-  let items = [];          // 已累积的归一化结果(去重后)
+  let items = [];
   let hasMore = false;
-  let total = null;        // 服务端过滤后总数(pagination.total,未知为 null)
+  let total = null;
   let loading = false;
   const seen = new Set();
 
   function renderRow(p) {
     const li = document.createElement("li");
-    li.style.cssText = "padding:6px 0;border-bottom:1px solid #eee;cursor:pointer";
-    li.textContent = `${p.name} · ${(p.size / 1048576).toFixed(1)}MB`;
-    li.onclick = () => showDetail(p);
+    const btn = document.createElement("button");
+    btn.className = "mp-row";
+    btn.innerHTML = `<span class=nm>${esc(p.name)}</span><span class=sz>${fmtMB(p.size)}</span>${MP_CHEVRON}`;
+    btn.onclick = () => showDetail(p);
+    li.appendChild(btn);
     $("mp-list").appendChild(li);
   }
 
   function refreshCount() {
-    $("mp-count").textContent = items.length === 0 ? "no installable results"
-      : `${items.length}${total != null ? " / " + total : ""} result(s)` +
-        (hasMore ? " — scroll or tap for more" : "");
+    $("mp-empty").style.display = items.length === 0 && !loading ? "block" : "none";
+    $("mp-count").textContent = items.length === 0 ? ""
+      : `已加载 ${items.length}${total != null ? " / " + total : ""} 个` + (hasMore ? " · 下滑加载更多" : "");
     $("mp-more").style.display = hasMore ? "block" : "none";
   }
 
   async function fetchPage(offset) {
     if (loading) return;
     loading = true;
-    $("mp-more").textContent = "loading…";
+    $("mp-more").textContent = "加载中…";
     try {
       let cur = offset;
-      // 整页被滤/重复时按 limit 步进跳页(上游数据漂移),500 页硬顶防死循环。
       for (let guard = 0; guard < 500; guard++) {
         const r = await searchPlays(lastQ, cur);
         let added = 0;
         for (const p of r.list) {
-          if (seen.has(p.id)) continue;   // 翻页间隙数据漂移防护
+          if (seen.has(p.id)) continue;
           seen.add(p.id);
           items.push(p);
           renderRow(p);
@@ -560,42 +668,38 @@ export function boot(opts = {}) {
       }
       refreshCount();
     } catch (e) {
-      log(`page load failed: ${e.message}`);
+      log(`目录加载失败: ${e.message}`, "err");
     } finally {
       loading = false;
-      $("mp-more").textContent = "load more…";
+      $("mp-more").textContent = "加载更多";
+      refreshCount();
     }
   }
 
   $("mp-go").onclick = async () => {
     const q = $("mp-q").value.trim();
     if (loading) return;
-    // 纯数字 = play ID:官方 q 搜索只匹配标题文本,按 id 找不到;直接走
-    // 详情→安装(真机反馈:搜索不支持玩法 id)。
-    if (/^\d{1,7}$/.test(q)) {
-      log(`play id ${q} — fetching detail…`);
+    $("mp-panel").innerHTML = "";
+    if (/^\d{1,7}$/.test(q)) {          // 纯数字 = play ID 直达
+      log(`玩法 ID ${q} — 获取详情…`);
       try {
         const det = await getPlayDetail(Number(q));
-        if (!det) { log(`play ${q} not found or not installable (no firmware metadata)`); return; }
+        if (!det) { log(`玩法 ${q} 不存在或无可安装固件元数据`, "err"); return; }
         showDetail(det);
-        log(`play ${q}: ${det.name} — tap Install below`);
+        log(`玩法 ${q}: ${det.name}`, "ok");
       } catch (e) {
-        log(`play ${q} fetch failed: ${e.message}`);
+        log(`玩法 ${q} 获取失败: ${e.message}`, "err");
       }
       return;
     }
     lastQ = q;
     items = []; hasMore = false; total = null; seen.clear();
     $("mp-list").innerHTML = "";
-    $("mp-detail").textContent = "";
-    log(q ? `searching "${q}"…` : "browsing full catalog…");
     await fetchPage(0);
-    if (items.length === 0 && !hasMore) log("no installable results");
-    else log("");
+    if (items.length === 0) log("没有结果", "");
+    else if (q) log("");
   };
-  // 进页即浏览全量目录(真机反馈:不知道空关键词能浏览;官方市场的首屏
-  // 就是内容列表,不是空白+搜索框)。
-  fetchPage(0);
+  fetchPage(0);                        // 首屏即目录(官方市场首屏=内容)
   $("mp-more").onclick = () => fetchPage(items.length);
   if (typeof IntersectionObserver !== "undefined") {
     const io = new IntersectionObserver((entries) => {
@@ -604,52 +708,125 @@ export function boot(opts = {}) {
     io.observe($("mp-more"));
   }
 
-  async function showDetail(p) {
-    // §5/§6.2 元数据契约:name/size/revisionId/updatedAt/sha256(审计 M8)。
-    const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "?";
-    $("mp-detail").textContent = `${p.name}\nsize ${(p.size / 1048576).toFixed(1)}MB · rev ${p.revisionId ?? "?"} · updated ${updated}\nsha256 ${p.sha256.slice(0, 16)}…`;
-    const btn = document.createElement("button");
-    btn.textContent = "Install";
-    btn.onclick = () => install(p);
-    $("mp-detail").appendChild(document.createElement("br"));
-    $("mp-detail").appendChild(btn);
+  function setPanel(html) { $("mp-panel").innerHTML = html; }
+  function clearPanel() { $("mp-panel").innerHTML = ""; }
+
+  function showDetail(p) {
+    const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "—";
+    setPanel(`<section class=mp-panel>
+      <h4>${esc(p.name)}</h4>
+      <dl class=mp-meta>
+        <dt>大小</dt><dd>${fmtMB(p.size)}</dd>
+        <dt>修订</dt><dd>${p.revisionId ?? "—"}</dd>
+        <dt>更新</dt><dd>${esc(updated)}</dd>
+      </dl>
+      <button id=mp-install class=mp-btn style="width:100%">安装</button>
+      <p class=mp-status style="margin-top:8px">安装前会校验设备兼容性并选择槽位</p>
+    </section>`);
+    $("mp-install").onclick = () => install(p);
+    $("mp-panel").scrollIntoView?.({ behavior: "smooth", block: "nearest" });
   }
 
+  // 交互 v2:analyze(轻)→ 手机选槽 → 确认后才下载/校验/剥离(重)。
   async function install(p) {
-    // 分阶段耗时日志:preflight 要下载数 MB 合并镜像 + 纯 JS sha256,真机
-    // 十几秒只有一行静态文字 = "点了没反应"。每阶段打点开始,失败即停。
     const t0 = Date.now();
-    const stage = (s) => log(`preflight: ${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-    stage("analyze");
-    $("mp-bar-wrap").style.display = "block";
-    const pre = await preflight(p.id, { stage });
-    if (!pre.ok) {
-      $("mp-bar-wrap").style.display = "none";
-      log(`✗ preflight failed [${pre.stage}]: ${pre.reason}`);
+    const stage = (s) => log(`${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    stage("检查兼容性");
+    const meta = await preflightMeta(p.id, { stage });
+    if (!meta.ok) {
+      log(`✗ ${meta.stage === "analyze" ? "该玩法不支持本设备" : "预检失败"}: ${meta.reason}`, "err");
       return;
     }
-    // 可装性提示(真机反馈:看不到是否能装):fit 表来自 analyze+本地几何,
-    // 槽位最终选择仍在设备屏(§6.4 物理确认门控)。
-    const fits = pre.offer.slots.filter((s) => s.fit).map((s) => s.slot).join(", ");
-    log(`✓ ${pre.offer.name} — fits slot(s): ${fits}`);
-    log("Now pick the slot ON THE DEVICE screen and press OK.");
-    // 上传体 = 剥离后的 app 镜像(merged 是完整合并镜像,长度必不等于
-    // offer.imageLen;runInstall 只收 ext.data —— 真机回归:审计 B1)。
-    const r = await runInstall(bridge, pre.offer, pre.ext, {
-      status: (s) => { if (s.confirmed) log(`device confirmed slot ${s.slot} — uploading…`); },
-      progress: (off, total) => { $("mp-bar").value = off / total; },
-      resume: (off) => log(`resuming at ${off}`),
-    });
-    $("mp-bar-wrap").style.display = "none";
-    log(r.ok
-      ? `installed to slot ${r.slot}. Power off & on the device to boot it.`
-      : `install failed [${r.stage}]: ${r.reason}`);
-    if (!r.ok && r.stage === "token") log("hint: re-scan the device QR code (token is one-shot per visit).");
+    showSlotPicker(meta, p);
   }
 
-  // 配对成功后 shell 会写 hash 并 reload;hashchange 监听是双保险 —— 即便
-  // 某个 shell 变体不 reload,模块也能即时拿到 token(审计:paired 后页面
-  // 不跳转的根因就是模块加载时以空 token 初始化且再无更新通道)。
+  function showSlotPicker(meta, p) {
+    const a = meta.analyze;
+    const imageLen = a?.extracted?.imageLen;
+    const opts = SLOT_GEOMETRY.map(({ slot, partSize }) => {
+      const limit = partSize - TAIL_SECTOR;
+      return { slot, limit, fit: Number.isFinite(imageLen) && imageLen <= limit };
+    });
+    const fit = opts.filter((o) => o.fit);
+    if (fit.length === 0) {
+      log("✗ 该玩法的固件超出所有槽位容量,无法安装", "err");
+      return;
+    }
+    const suggested = fit.some((o) => o.slot === a?.suggestedSlot)
+      ? a.suggestedSlot : fit[0].slot;
+    let chosen = suggested;
+
+    const render = () => {
+      setPanel(`<section class=mp-panel>
+        <h4>选择安装槽位</h4>
+        <p class=mp-sub style="margin-bottom:0">${esc(p.name)} · 剥离后 ${Number.isFinite(imageLen) ? fmtMB(imageLen) : "?"}</p>
+        <div class=mp-slots role=radiogroup>
+          ${opts.map((o) => `
+          <button class=mp-slot role=radio aria-checked="${o.slot === chosen}"
+            data-slot="${o.slot}" ${o.fit ? "" : "disabled"}>
+            <span class=rd></span><span class=lb>槽位 ${o.slot}</span>
+            ${o.slot === suggested ? '<span class=rec>建议</span>' : ""}
+            <span class=cap>${o.fit ? `上限 ${fmtMB(o.limit)}` : "空间不足"}</span>
+          </button>`).join("")}
+        </div>
+        <div class=mp-actions>
+          <button id=mp-confirm class=mp-btn disabled>确认安装</button>
+          <button id=mp-cancel class="mp-btn ghost">取消</button>
+        </div>
+      </section>`);
+      root.querySelectorAll(".mp-slot:not([disabled])").forEach((el) => {
+        el.onclick = () => { chosen = Number(el.dataset.slot); render(); };
+      });
+      const confirm = $("mp-confirm");
+      confirm.disabled = false;
+      confirm.onclick = () => continueInstall(meta, chosen);
+      $("mp-cancel").onclick = clearPanel;
+    };
+    render();
+    log("选择槽位后点「确认安装」");
+  }
+
+  async function continueInstall(meta, slot) {
+    const t0 = Date.now();
+    const stage = (s) => log(`${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    setPanel(`<section class=mp-panel>
+      <div class=mp-prog>
+        <progress id=mp-bar value=0 max=1></progress>
+        <div class=lb><span id=mp-stage>准备中</span><span id=mp-pct>预检…</span></div>
+      </div>
+    </section>`);
+    const bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
+    stage("下载固件");
+    const pre = await prepareImage(meta, slot, { stage: (s) => { stageEl.textContent = s; } });
+    if (!pre.ok) {
+      setPanel("");
+      log(`✗ 安装失败 [${pre.stage}]: ${pre.reason}`, "err");
+      return;
+    }
+    stageEl.textContent = "上传";
+    log(`✓ ${pre.offer.name} → 槽位 ${slot},开始上传`);
+    const r = await runInstall(bridge, pre.offer, pre.ext, {
+      status: (s) => { if (s.confirmed) stageEl.textContent = "设备已确认,上传中"; },
+      progress: (off, totalB) => {
+        bar.value = off / totalB;
+        pctEl.textContent = `${(off / totalB * 100).toFixed(0)}% · ${(off / 1024) | 0}/${(totalB / 1024) | 0} KB`;
+      },
+      resume: (off) => { stageEl.textContent = "断点续传"; pctEl.textContent = `从 ${(off / 1024) | 0} KB 恢复`; },
+    });
+    if (r.ok) {
+      bar.value = 1;
+      pctEl.textContent = "100%";
+      log(`✓ 已安装到槽位 ${r.slot}。设备断电重开后在列表中选择启动。`, "ok");
+      stageEl.textContent = "完成";
+    } else {
+      setPanel("");
+      log(`✗ 安装失败 [${r.stage}]: ${r.reason}`, "err");
+      if (r.stage === "confirm") log("设备在等待确认 —— 旧固件需在设备屏选槽按 OK;刷 v62+ 后手机上即可完成全部操作", "err");
+      if (r.stage === "token") log("提示: 重新扫码或重新配对(token 每店一次性)", "err");
+    }
+  }
+
+  // 配对成功后 shell 会写 hash 并 reload;hashchange 监听是双保险。
   if (typeof window !== "undefined") {
     window.addEventListener("hashchange", () => {
       const t = detectToken();
@@ -657,7 +834,7 @@ export function boot(opts = {}) {
     });
   }
 
-  return { root, setToken: (t) => { token = t; bridge = createBridge(deviceOrigin ?? $("mp-dev").value, t); } };
+  return { root, setToken: (t) => { token = t; bridge = createBridge(deviceOrigin ?? $("mp-dev").value, t); $("mp-dot")?.classList.add("on"); } };
 }
 
 // 浏览器直开(设备 boot 页 module script)时自动挂载;import 测试环境无 document。
