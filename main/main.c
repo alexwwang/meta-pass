@@ -461,11 +461,17 @@ static void page_store_qr_build(void)
         lv_qrcode_set_dark_color(qr, lv_color_hex(UI_INK));
         lv_qrcode_set_light_color(qr, lv_color_hex(UI_PAPER));
         lv_qrcode_set_quiet_zone(qr, true);
-        if (lv_qrcode_update(qr, url, (uint32_t)strlen(url)) != LV_RESULT_OK) {
-            // 编码失败(理论上 URL 长度远低于上限):不留半渲染对象。
+        // 诊断(真机 bring-up):lv_qrcode_update 此前静默失败时页面只剩文字、
+        // 串口无任何线索 —— 两个分支都必须留痕。
+        ESP_LOGI(TAG, "qr: encoding %u-byte url", (unsigned)strlen(url));
+        const lv_result_t qr_rc = lv_qrcode_update(qr, url, (uint32_t)strlen(url));
+        if (qr_rc != LV_RESULT_OK) {
+            ESP_LOGE(TAG, "qr update failed: rc=%d url=%u bytes (token=%s)",
+                     (int)qr_rc, (unsigned)strlen(url), token_hex);
             lv_obj_delete(qr);
         } else {
             lv_obj_set_pos(qr, 60, 46);
+            ESP_LOGI(TAG, "qr rendered 120px at (60,46)");
         }
     }
 
@@ -670,8 +676,13 @@ static void store_tick(lv_timer_t *t)
     meta_install_session_status_t ist;
     meta_install_session_poll(&ist);
     const char *ist_state = ist.state ? ist.state : "";
-    // 上传进行中视为用户活动:每拍续期,超时浮层不得打断传输。
-    const bool busy = (strcmp(ist_state, "uploading") == 0);
+    // 上传活动续期(审计 M6):只有 chunk 活动才算"传输中";uploading 是闩锁
+    // 状态,手机消失后它永远为真。停滞超阈值即停止续期,由下面的死线检查
+    // 出超时浮层 —— 设计 §6.5"中断保持会话到超时或显式取消"的超时半边。
+    const bool uploading = (strcmp(ist_state, "uploading") == 0);
+    const bool stalled = uploading &&
+        ist.upload_idle_ms >= (int64_t)META_INSTALL_UPLOAD_STALL_MS;
+    const bool busy = uploading && !stalled;
     if (busy) store_touch();
 
     if (s_store_expired) return;   // 等待用户决策:冻结自动迁移,网络保持原状

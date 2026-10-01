@@ -220,4 +220,43 @@ console.log("PASS 13: cold-path persistence (edge/R2/meta) runs in ctx.waitUntil
 }
 console.log("PASS 14: rate limit wired via RATE_KV binding; Range resume uses the 3600s ticket window");
 
+// 15. 审计修复契约(docs/assets/mota-implementation-audit.md):
+//     B3 /api/plays 必须透传 query;M3 proxy 流式(无 arrayBuffer 全量缓冲);
+//     M4 手机模块全部静态 import 与入口同走 no-store;B2 手机 getPlayDetail
+//     路径必须命中 Worker 真实路由(而不是只存在于 mock 里的路径)。
+{
+  assert.ok(workerSrc.includes('proxy("/api/plays" + url.search)'),
+            "/api/plays must forward the query string (audit B3)");
+  const proxyBlock = workerSrc.slice(workerSrc.indexOf("async function proxy"),
+                                     workerSrc.indexOf("// analyze/extracted 的 id 校验"));
+  assert.ok(!proxyBlock.includes("arrayBuffer"),
+            "proxy must stream upstream.body, never buffer the whole image (audit M3)");
+  assert.ok(proxyBlock.includes("new Response(upstream.body"),
+            "proxy returns the upstream stream (audit M3)");
+  for (const m of ["/phone-install.js", "/extract-app-image.js",
+                   "/store-analyze.js", "/name-blob.js"]) {
+    assert.ok(workerSrc.includes(`path === "${m}"`),
+              `module ${m} must be routed explicitly (audit M4)`);
+  }
+  const modBlock = workerSrc.slice(workerSrc.indexOf('path === "/phone-install.js"'),
+                                   workerSrc.indexOf("// ── 静态文件服务"));
+  assert.ok(!modBlock.includes("max-age=14400") && modBlock.includes('headers.set("cache-control", "no-store")'),
+            "all phone modules are no-store, matching the entry (audit M4)");
+  const serverSrc = readFileSync(path.join(ROOT, "tools", "install-slot", "server.mjs"), "utf8");
+  assert.ok(serverSrc.includes('proxyFetch("/api/plays" + urlObj.search'),
+            "server.mjs must forward the query string too (audit B3)");
+  // B2:手机模块发往 metapass 的每条 API 路径都必须命中一条 Worker 路由。
+  const phoneSrc = readFileSync(path.join(ROOT, "install-slot", "phone-install.js"), "utf8");
+  const phonePaths = [...phoneSrc.matchAll(/mpJson\(`([^`]+)`\)/g)].map((m) => m[1]);
+  assert.ok(phonePaths.length >= 3, "phone module API paths must be extractable");
+  for (const p of phonePaths) {
+    const route = p.split("?")[0];
+    assert.ok(workerSrc.includes(`path === "${route}"`),
+              `phone path ${route} has no Worker route (audit B2 class)`);
+  }
+  assert.ok(phoneSrc.includes('mpJson(`/api/play?id='),
+            "getPlayDetail must use the Worker-routed /api/play?id= (audit B2)");
+}
+console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules no-store, phone paths routed");
+
 console.log("ALL WORKER CONTRACT TESTS PASSED");

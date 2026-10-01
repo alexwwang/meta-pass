@@ -25,6 +25,10 @@ page: architecture design, decision records, protocol conventions, and similar m
 - `play563-appstore-download-reverse.md` / `play563-appstore-download-reverse.zh_CN.md` —
   reverse analysis of the hosted AppStore play 563 download path, with host/device evidence
   and actionable meta-pass improvements.
+- `mota-implementation-audit.md` / `mota-implementation-audit.zh_CN.md` — audit of the
+  `feat/mota` LAN-install implementation against the design doc: five blocking and nine
+  non-blocking findings (all fixed in-round), test-suite blind spots closed, and the
+  production deployment note.
 
 ## For AI agents
 

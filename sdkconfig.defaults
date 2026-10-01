@@ -24,9 +24,8 @@ CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
 
 # --- 日志(瘦身) ---
 # 默认 WARN:INFO 级日志字符串占用大量 .rodata;按需用 esp_log_level_set() 临时调高。
-# r10.7:默认 INFO(3)。WARN 会把 esp_http_client/esp-tls 组件自己的连接
-# 诊断(DNS 解析目标、TLS 握手过程)编出二进制,真机排障时串口无料可用;
-# INFO 级的额外 flash 开销可忽略,排障价值远大于体积。
+# r10.7:默认 INFO(3)。WARN 会把 WiFi/网络组件自己的连接诊断编出二进制,
+# 真机排障时串口无料可用;INFO 级的额外 flash 开销可忽略,排障价值远大于体积。
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_LOG_DEFAULT_LEVEL=3
 
@@ -106,7 +105,7 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # CONFIG_BT_ENABLED is not set
 # CONFIG_BT_NIMBLE_ENABLED is not set
 
-# --- 商店下载通道(TLS + SNTP) ---
+# --- LAN 上传通道(lwIP 窗口调优) ---
 # LAN 上传收敛(lwIP 窗口调优):TCP 窗口 5760(4×MSS 默认)偏小;32KB 窗口
 # 让手机 HTTP PUT 上传的 TCP 流更快灌满缓冲,配 48 个动态 RX 缓冲保留余量;
 # LWIP_WND_SCALE 依赖 PSRAM(C3 无),不可用。SND_BUF 同步放大;RECVMBOX

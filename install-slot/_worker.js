@@ -103,16 +103,14 @@ async function proxy(upstreamPath) {
     if (!upstream.ok) {
       return err(502, `upstream ${upstream.status}: ${upstream.statusText}`);
     }
-    const ct = upstream.headers.get("content-type") || "application/octet-stream";
-    const body = await upstream.arrayBuffer();
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "content-type": ct,
-        "content-length": String(body.byteLength),
-        "access-control-allow-origin": "*",
-      },
-    });
+    const headers = {
+      "content-type": upstream.headers.get("content-type") || "application/octet-stream",
+      "access-control-allow-origin": "*",
+    };
+    // 流式转发(设计 §4.3 item 4):不把数 MB 合并镜像整包缓冲进 isolate 内存。
+    const len = upstream.headers.get("content-length");
+    if (len != null) headers["content-length"] = len;
+    return new Response(upstream.body, { status: 200, headers });
   } catch (e) {
     return err(502, `proxy failed: ${e.message}`);
   }
@@ -208,7 +206,9 @@ export default {
     const path = url.pathname;
 
     // ── API 反向代理(浏览器安装页用) ─────────────────────────────────
-    if (path === "/api/plays") return proxy("/api/plays");
+    // /api/plays 透传 query(设计 §4.3 item 1:q/multiDevice 必须到达上游,
+    // 否则搜索退化为全量列表客户端切片 —— 审计 B3,生产实测已复现)。
+    if (path === "/api/plays") return proxy("/api/plays" + url.search);
 
     if (path === "/api/play") {
       const id = url.searchParams.get("id");
@@ -505,8 +505,12 @@ export default {
     // sha256 纯 JS 实现),同源 import extract-app-image/name-blob/
     // store-analyze(ASSETS 静态服务)。版本策略 = no-store + 设备协议握手
     // (status.protocol)双保险;大改版换文件名(boot 页 URL 随固件走)。
-    if (path === "/phone-install.js") {
-      const asset = await env.ASSETS.fetch(new Request(new URL("/phone-install.js", req.url), req));
+    // 入口与其静态 import 必须同走 no-store(审计 M4):入口 no-store 而 import
+    // max-age=14400 时,部署后 4h 内手机会拿新入口配旧依赖,设备握手覆盖不到
+    // 跨模块错位。
+    if (path === "/phone-install.js" || path === "/extract-app-image.js" ||
+        path === "/store-analyze.js" || path === "/name-blob.js") {
+      const asset = await env.ASSETS.fetch(new Request(new URL(path, req.url), req));
       if (!asset.ok) return err(404, "phone-install module missing from bundle");
       const headers = new Headers(asset.headers);
       headers.set("access-control-allow-origin", "*");

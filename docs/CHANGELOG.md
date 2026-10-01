@@ -6,6 +6,30 @@
 
 ## Unreleased
 
+- **v3.2-r10.23 (2026-10-01) mota implementation audit + fixes**: full audit of the
+  `feat/mota` LAN-install implementation against the design doc (report:
+  `docs/assets/mota-implementation-audit.md`, bilingual) — five blocking and nine
+  non-blocking findings, all fixed in-round. Flow-breaking: the boot UI uploaded the
+  merged image instead of the extracted app image (`runInstall` length guard always
+  tripped), `getPlayDetail` called an unrouted `/api/plays/id/<id>` path (live 404 vs
+  200 on `/api/play?id=`), and the Worker `/api/plays` proxy dropped the query string
+  (search returned the unfiltered 673-play catalog; live-verified). Device-side: the
+  UI-task cancel path raced in-flight chunk writes (`esp_ota_abort` frees a live OTA
+  handle — heap UAF, verified against IDF 5.5.3 `esp_ota_ops.c`); fixed with a session
+  mutex serializing UI-task entry points with the httpd upload path, plus
+  `flash_touched` set before `esp_ota_begin` (the erase window left destroyed slots
+  unmarked). Also: prepare re-checks `confirmed` after the body read (a late prepare
+  could erase a completed physical confirmation); MNAM name-write failure now fails
+  finalize; upload activity (chunk arrivals) instead of the latched `uploading` state
+  renews the store deadline, with a 30 s stall threshold; runInstall treats a missing
+  `done` as failure and accepts resume at exactly `imageLen`; the Worker proxy streams
+  `/api/firmware` (no full buffering) and serves all phone-module imports no-store;
+  detail view shows `updatedAt`. Test blind spots closed: the metapass mock now mirrors
+  the real Worker route table and executes `q` filtering; new regression tests (boot
+  payload, resume-at-imageLen, done-poll timeout); `worker_contract.mjs` gains gates
+  for query forwarding, streaming, no-store modules, and phone-path↔Worker-route
+  matching. Firmware rebuild pending (local ESP-IDF toolchain incomplete).
+
 - **v3.2-r10.22b (2026-10-01) Phone web module MVP — the metapass side of the LAN install**:
   `install-slot/phone-install.js` is the first remotely-loaded module served by the
   Worker (`GET /phone-install.js`, `access-control-allow-origin: *`, no-store; the

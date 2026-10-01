@@ -16,6 +16,7 @@
 // 运行:node tests/test_phone_install.mjs(仓库根)。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -146,6 +147,9 @@ function analyzeJson() {
 function urlOf(r) { return typeof r === "string" ? r : r.url; }
 
 // metapass mock:按 URL 分发;设备 mock:完整状态机(见 makeDevice)。
+// 路由表镜像线上 Worker(_worker.js):/api/plays(带 query)、/api/play?id=
+// (代理到上游 /api/plays/id/<id>)、/api/analyze、/api/firmware。审计教训:
+// mock 镜像手机模块的期望而非 Worker 真实路由,把 B2(详情 404)挡在绿外。
 function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = MERGED } = {}) {
   const calls = [];
   const realFetch = globalThis.fetch;
@@ -154,11 +158,17 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
     const u = new URL(url, "http://device.local");
     calls.push(u.pathname + u.search);
     if (u.origin === "https://metapass.chuanxilu.net" || u.origin === "https://metapass.example") {
-      if (u.pathname === "/api/plays" && u.searchParams.get("q") != null) {
-        return new Response(JSON.stringify({ ok: true, plays }), { status: 200 });
+      if (u.pathname === "/api/plays") {
+        // Worker 契约:url.search 原样转发(审计 B3);mock 也必须执行 q 过滤,
+        // 否则"query 被丢弃"在测试里同样不可见。
+        const q = u.searchParams.get("q");
+        const filtered = q
+          ? plays.filter((p) => JSON.stringify(p).includes(q))
+          : plays;
+        return new Response(JSON.stringify({ ok: true, plays: filtered }), { status: 200 });
       }
-      if (u.pathname.startsWith("/api/plays/id/")) {
-        const id = Number(u.pathname.split("/").pop());
+      if (u.pathname === "/api/play") {
+        const id = Number(u.searchParams.get("id"));
         const play = plays.find((p) => p.id === id);
         return play
           ? new Response(JSON.stringify({ ok: true, play }), { status: 200 })
@@ -182,7 +192,7 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
 // 设备 mock:严格复现 meta_store_install.c 的请求→响应契约(§6.5)。
 function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
                       failChunkAt = -1, failTimes = 1, finalOk = true,
-                      autoConfirm = true } = {}) {
+                      autoConfirm = true, resumeOffset = 0, neverDone = false } = {}) {
   const calls = [];
   const d = {
     protocol: 1, state: "pairing", message: "",
@@ -230,8 +240,8 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
       let r = need(); if (r) return new Response(r.text, { status: r.status });
       const body = JSON.parse(init.body);
       assert.equal(body.slot, 0);
-      d.session = true; d.state = "uploading"; d.offset = 0;
-      return new Response(JSON.stringify({ state: "ready", offset: 0, maxChunk }),
+      d.session = true; d.state = "uploading"; d.offset = resumeOffset;
+      return new Response(JSON.stringify({ state: "ready", offset: resumeOffset, maxChunk }),
         { status: 200 });
     }
     if (pathn === "/api/install/chunk" && method === "POST") {
@@ -250,6 +260,9 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
     if (pathn === "/api/install/finalize" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
       if (d.offset !== imageLen) return new Response("finalize failed", { status: 500 });
+      // neverDone(审计 M1 回归):finalize 接受但状态永远不到 done —— 手机侧
+      // 必须报失败,而不是静默成功。
+      if (neverDone) return new Response("ok", { status: 200 });
       d.state = finalOk ? "done" : "failed";
       d.message = finalOk ? "" : "sha mismatch";
       return new Response(finalOk ? "ok" : "finalize failed", { status: finalOk ? 200 : 500 });
@@ -559,7 +572,49 @@ function bigFixtures() {
   assert.equal(det.id, 563);
   assert.ok(globalThis.fetch.calls.some((c) => c.startsWith("/api/plays?") && c.includes("q=")),
     "search forwards q");
+  assert.ok(globalThis.fetch.calls.some((c) => c === "/api/play?id=563"),
+    "detail goes through the Worker-routed /api/play?id= (audit B2)");
   console.log("PASS 7: searchPlays forwards q and filters uninstallable plays; getPlayDetail works");
+}
+
+// ── 8. 审计回归(见 docs/assets/mota-implementation-audit.md) ───────────
+// 8a. B1:boot 路径上传体 = ext(剥离镜像),merged 必被 runInstall 长度守卫拒绝。
+{
+  const src = readFileSync(new URL("../install-slot/phone-install.js", import.meta.url), "utf8");
+  assert.ok(src.includes("runInstall(bridge, pre.offer, pre.ext"),
+    "boot() must pass the extracted app image (pre.ext), not pre.merged");
+  const dev = makeDevice();
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const pre = await phone.preflight(563);
+  const bad = await phone.runInstall(bridge, pre.offer, pre.merged, {});
+  assert.equal(bad.ok, false);
+  assert.equal(bad.stage, "upload");
+  assert.match(bad.reason, /length mismatch/);
+  console.log("PASS 8a: boot payload regression — merged rejected, ext required (audit B1)");
+}
+// 8b. M2:设备 offset 恰 = imageLen(上次传完未 finalize)→ 跳过上传直接 finalize。
+{
+  const dev = makeDevice({ resumeOffset: APP.length });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const pre = await phone.preflight(563);
+  const r = await phone.runInstall(bridge, pre.offer, pre.ext.data, {});
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(dev.calls.includes("POST /api/install/finalize"), true);
+  assert.equal(dev.calls.filter((c) => c === "POST /api/install/chunk").length, 0,
+    "no chunks re-sent when device already has the full image");
+  console.log("PASS 8b: resume at exactly imageLen skips upload, goes to finalize (audit M2)");
+}
+// 8c. M1:finalize 已接受但设备永远不到 done → 报失败而非成功。
+{
+  const dev = makeDevice({ neverDone: true });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const pre = await phone.preflight(563);
+  const r = await phone.runInstall(bridge, pre.offer, pre.ext.data,
+    { doneTimeoutMs: 800 });
+  assert.equal(r.ok, false, "must not report success when device never reaches done");
+  assert.equal(r.stage, "finalize");
+  assert.match(r.reason, /did not reach done/);
+  console.log("PASS 8c: finalize accepted but no done state → failure, not success (audit M1)");
 }
 
 console.log("ALL phone-install TESTS PASSED");

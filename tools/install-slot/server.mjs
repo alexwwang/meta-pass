@@ -167,9 +167,9 @@ const server = http.createServer((req, res) => {
   // (phone-install.js 已入上方白名单;CORS 由白名单通道统一处理 —— 本地 dev
   // 页面同源加载,手机安装模块仅在 metapass/设备源加载,不需本地 CORS。)
 
-  // GET /api/plays → 玩法列表（JSON 透传）
+  // GET /api/plays → 玩法列表（JSON 透传;query 原样转发,审计 B3）
   if (pathname === "/api/plays") {
-    proxyFetch("/api/plays", res);
+    proxyFetch("/api/plays" + urlObj.search, res);
     return;
   }
 

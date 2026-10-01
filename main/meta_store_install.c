@@ -36,6 +36,8 @@
 #include <esp_partition.h>
 #include <esp_netif.h>
 #include <mbedtls/sha256.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "meta_store.h"
 #include "meta_store_json.h"
@@ -86,6 +88,7 @@ typedef struct {
     esp_ota_handle_t ota;
     bool     ota_open;
     bool     flash_touched;      // esp_ota_begin 成功过 = 旧内容已擦,失败必作废
+    int64_t  last_activity_ms;   // 上次上传活动(session 打开/末次 chunk;停滞判定基准)
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -93,8 +96,31 @@ static httpd_handle_t    s_httpd;            // 本地 install httpd(端口 80,S
 static bool              s_init;             // init 完成
 static session_token_t   s_token;
 static install_session_t s_session;
+// 会话互斥锁(审计 B4):httpd 任务(chunk/finalize/session/prepare)与 UI 任务
+// (confirm/reject/cancel/teardown)跨任务碰 s_session;esp_ota_abort/sha256_free
+// 与在途 esp_ota_write/sha256_update 无锁并发 = heap UAF(IDF esp_ota_ops.c:438-448
+// free 无锁)。凡写 s_session 的执行态(ota/sha/offset/flags)必须持锁;持锁期间
+// 不做网络读。status/poll 只读快照字段(原子字宽/常量字面量),不上锁。
+static SemaphoreHandle_t s_session_mu;
 
 // ---- 小工具 ----
+
+static int64_t now_ms(void) { return esp_timer_get_time() / 1000; }
+
+// 执行态锁(审计 B4)。凡改 ota/sha/offset/confirmed 等执行态必须先 take;
+// 持锁期间不做网络读(chunk 处理器把 recv 放在锁外,锁内只 flash 写)。
+// httpd_stop 会先排干在途 handler,net_stop 内再加锁不会自死锁。
+static void session_lock(void)
+{
+    if (s_session_mu) xSemaphoreTake(s_session_mu, portMAX_DELAY);
+}
+static void session_unlock(void)
+{
+    if (s_session_mu) xSemaphoreGive(s_session_mu);
+}
+
+static esp_err_t confirm_slot_locked(int8_t slot);   // 定义见 offer 状态机节
+static esp_err_t finalize_locked(void);              // 定义见 finalize 节
 
 static void status_set(const char *state, const char *msg)
 {
@@ -247,6 +273,8 @@ esp_err_t meta_install_token_start(void)
 void meta_install_token_stop(void)
 {
     // 离店:在途会话终止;flash 被动过即槽位 INVALID(§8),token/配对码全作废。
+    // 持执行态锁(审计 B4):与在途 chunk 写互斥后清场,abort 不再撞在途 write。
+    session_lock();
     if (s_session.flash_touched && s_session.confirmed_slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[s_session.confirmed_slot]);
     }
@@ -254,6 +282,7 @@ void meta_install_token_stop(void)
     memset(&s_token, 0, sizeof(s_token));
     s_session.active = false;
     status_set("idle", "");
+    session_unlock();
 }
 
 bool meta_install_token_from_hex(const char *hex, size_t hex_len)
@@ -316,9 +345,22 @@ void meta_install_session_poll(meta_install_session_status_t *out)
     memcpy(out->name, s_session.name, sizeof(out->name));
     out->state   = s_session.state;
     out->message = s_session.message;
+    out->upload_idle_ms = 0;
+    if (s_session.state && strcmp(s_session.state, "uploading") == 0) {
+        const int64_t idle = now_ms() - s_session.last_activity_ms;
+        out->upload_idle_ms = idle > 0 ? idle : 0;
+    }
 }
 
 esp_err_t meta_install_confirm_slot(int8_t slot)
+{
+    session_lock();
+    const esp_err_t rc = confirm_slot_locked(slot);
+    session_unlock();
+    return rc;
+}
+
+static esp_err_t confirm_slot_locked(int8_t slot)
 {
     if (!s_init || !s_session.manifest_valid || !s_session.offer_ready) {
         return ESP_ERR_INVALID_STATE;
@@ -340,16 +382,19 @@ esp_err_t meta_install_confirm_slot(int8_t slot)
 
 esp_err_t meta_install_offer_reject(void)
 {
+    session_lock();
+    esp_err_t rc = ESP_OK;
     if (!s_session.manifest_valid || !s_session.offer_ready) {
-        return ESP_ERR_INVALID_STATE;
+        rc = ESP_ERR_INVALID_STATE;
+    } else if (s_session.confirmed || s_session.session_opened) {
+        rc = ESP_ERR_INVALID_STATE;   // 已确认的走 cancel,不走拒绝
+    } else {
+        offer_and_upload_clear();
+        s_session.name[0] = '\0';
+        status_set("pairing", "offer declined on device");
     }
-    if (s_session.confirmed || s_session.session_opened) {
-        return ESP_ERR_INVALID_STATE;   // 已确认的走 cancel,不走拒绝
-    }
-    offer_and_upload_clear();
-    s_session.name[0] = '\0';
-    status_set("pairing", "offer declined on device");
-    return ESP_OK;
+    session_unlock();
+    return rc;
 }
 
 // ---- 手机侧动作(由 HTTP handler 调用) ----
@@ -357,28 +402,35 @@ esp_err_t meta_install_offer_reject(void)
 esp_err_t meta_install_session_open(const meta_install_session_req_t *req)
 {
     if (!req) return ESP_ERR_INVALID_ARG;
+    // 执行态锁(审计 B4):sha init/会话标志与取消/离店互斥。
+    session_lock();
+    esp_err_t rc = ESP_OK;
     if (!s_session.manifest_valid || !s_session.offer_ready) {
-        return ESP_ERR_INVALID_STATE;
+        rc = ESP_ERR_INVALID_STATE;
+    } else if (!s_session.confirmed) {       // 上传不得先于确认(§8)
+        rc = ESP_ERR_INVALID_STATE;
+    } else if (s_session.session_opened) {   // 单 session(§8)
+        rc = ESP_ERR_INVALID_STATE;
+    } else {
+        meta_install_geom_t g;
+        geom_refresh(&g);
+        if (!meta_install_model_session_ok(&s_session.manifest, s_session.confirmed_slot,
+                                           req, &g)) {
+            rc = ESP_ERR_INVALID_ARG;
+        } else {
+            s_session.session_opened = true;
+            s_session.session_offset = 0;
+            s_session.ota_open = false;
+            s_session.flash_touched = false;
+            mbedtls_sha256_init(&s_session.sha);
+            mbedtls_sha256_starts(&s_session.sha, 0);
+            s_session.sha_started = true;
+            s_session.last_activity_ms = now_ms();   // 停滞判定基准(审计 M6)
+            status_set("confirmed", "upload session ready");
+        }
     }
-    if (!s_session.confirmed) return ESP_ERR_INVALID_STATE;      // 上传不得先于确认(§8)
-    if (s_session.session_opened) return ESP_ERR_INVALID_STATE;  // 单 session(§8)
-
-    meta_install_geom_t g;
-    geom_refresh(&g);
-    if (!meta_install_model_session_ok(&s_session.manifest, s_session.confirmed_slot,
-                                       req, &g)) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    s_session.session_opened = true;
-    s_session.session_offset = 0;
-    s_session.ota_open = false;
-    s_session.flash_touched = false;
-    mbedtls_sha256_init(&s_session.sha);
-    mbedtls_sha256_starts(&s_session.sha, 0);
-    s_session.sha_started = true;
-    status_set("confirmed", "upload session ready");
-    return ESP_OK;
+    session_unlock();
+    return rc;
 }
 
 esp_err_t meta_install_chunk_accept(uint32_t offset, uint32_t length, bool *duplicate)
@@ -399,47 +451,70 @@ esp_err_t meta_install_chunk_accept(uint32_t offset, uint32_t length, bool *dupl
 
 esp_err_t meta_install_chunk_write(const void *data, uint32_t length)
 {
-    if (!s_session.session_opened || !s_session.sha_started) {
-        return ESP_ERR_INVALID_STATE;
-    }
     if (!data || length == 0) return ESP_ERR_INVALID_ARG;
+
+    // 执行态锁覆盖 begin+write 全程(审计 B4):UI 取消/离店的 abort 与 free
+    // 必须等锁内完成,esp_ota_abort 才不释放仍在写的 handle。网络 recv 在
+    // 调用方(handler)锁外进行,锁内无网络读。
+    session_lock();
+    esp_err_t rc = ESP_OK;
+    if (!s_session.session_opened || !s_session.sha_started) {
+        rc = ESP_ERR_INVALID_STATE;
+        goto out;
+    }
 
     if (!s_session.ota_open) {
         const esp_partition_t *part = meta_store_slot_partition(s_session.confirmed_slot);
         if (!part) {
             fail_locked("partition missing");
-            return ESP_ERR_INVALID_STATE;
+            rc = ESP_ERR_INVALID_STATE;
+            goto out;
         }
-        // begin 即擦除旧内容:从这一刻起失败路径必须作废槽位。
+        // begin 内部即同步擦除旧内容(IDF esp_ota_ops.c:189-197),擦除一
+        // 开始槽位就已被摧毁:flash_touched 必须先于 begin 置位(审计 B5),
+        // 否则擦除窗口内到来的取消既不 abort 也不标 INVALID,状态还会复活。
+        s_session.flash_touched = true;
         const esp_err_t err = esp_ota_begin(part, s_session.manifest.image_len,
                                             &s_session.ota);
         if (err != ESP_OK) {
-            s_session.flash_touched = true;
             ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
             fail_locked("flash begin failed");
-            return err;
+            rc = err;
+            goto out;
         }
         s_session.ota_open = true;
-        s_session.flash_touched = true;
     }
 
     mbedtls_sha256_update(&s_session.sha, data, length);
-    const esp_err_t err = esp_ota_write(s_session.ota, data, length);
-    if (err != ESP_OK) {
+    const esp_err_t werr = esp_ota_write(s_session.ota, data, length);
+    if (werr != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_write failed at offset %u: %s",
-                 s_session.session_offset, esp_err_to_name(err));
+                 s_session.session_offset, esp_err_to_name(werr));
         fail_locked("flash write failed");
-        return err;
+        rc = werr;
+        goto out;
     }
 
     s_session.session_offset += length;
+    s_session.last_activity_ms = now_ms();   // 停滞判定:活动戳而非闩锁状态(审计 M6)
     if (strcmp(s_session.state, "uploading") != 0) {
         status_set("uploading", "uploading");
     }
-    return ESP_OK;
+out:
+    session_unlock();
+    return rc;
 }
 
 esp_err_t meta_install_finalize(void)
+{
+    // 执行态锁(审计 B4):sha finish/free 与 ota_end 不得与取消/离店并发。
+    session_lock();
+    esp_err_t rc = finalize_locked();
+    session_unlock();
+    return rc;
+}
+
+static esp_err_t finalize_locked(void)
 {
     if (!s_session.session_opened) return ESP_ERR_INVALID_STATE;
 
@@ -520,7 +595,9 @@ esp_err_t meta_install_finalize(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。
+    // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让
+    // finalize 失败(审计 M5):注册表已标 VALID 而显示名缺失的槽位会通过
+    // 校验却没有名字 —— 设计要求 blob 写入成功才算安装完成。
     {
         const uint32_t tail_off = meta_sign_sector_offset(meta.image_len);
         if (tail_off + META_SIG_SECTOR <= part->size) {
@@ -533,8 +610,13 @@ esp_err_t meta_install_finalize(void)
                     werr = esp_partition_write(part, tail_off + META_NAME_BLOB_OFF,
                                                window, sizeof(window));
                 }
-                ESP_LOGI(TAG, "MNAM write on slot %d: %s", slot,
-                         (werr == ESP_OK) ? "ok" : "failed");
+                if (werr != ESP_OK) {
+                    ESP_LOGE(TAG, "MNAM write on slot %d failed: %s", slot,
+                             esp_err_to_name(werr));
+                    fail_locked("name write failed");
+                    return ESP_ERR_INVALID_STATE;
+                }
+                ESP_LOGI(TAG, "MNAM write on slot %d: ok", slot);
             }
         }
     }
@@ -552,6 +634,9 @@ esp_err_t meta_install_finalize(void)
 esp_err_t meta_install_cancel(void)
 {
     // 取消(§6.5 status/cancel):中止 OTA;flash 被动过即槽位 INVALID。
+    // 持执行态锁(审计 B4):abort/sha free 与在途 chunk 写严格互斥 ——
+    // 这是 OK 长按取消路径,UAF 风险点就在这。
+    session_lock();
     const int8_t slot = s_session.confirmed_slot;
     const bool touched = s_session.flash_touched;
     offer_and_upload_clear();
@@ -561,6 +646,7 @@ esp_err_t meta_install_cancel(void)
     }
     s_session.name[0] = '\0';
     status_set("cancelled", "cancelled");
+    session_unlock();
     return ESP_OK;
 }
 
@@ -671,6 +757,9 @@ static const char SHELL_HTML[] =
 "<span id=ps></span></div>"
 "<script>"
 "var T=new URLSearchParams(location.hash.slice(1)).get('s')||'';"
+// 已有 token(QR 扫码进入,或配对成功后的 reload):配对框已完成使命,收起,
+// 市场模块(phone-install.js)以带 token 状态启动。
+"if(T)document.getElementById('pair').style.display='none';"
 "function bridge(path,opt){opt=opt||{};var h={};"
 "var oh=opt.headers||{};Object.keys(oh).forEach(function(k){h[k]=oh[k];});"
 "if(T)h['X-Meta-Session']=T;"
@@ -693,7 +782,13 @@ static const char SHELL_HTML[] =
 "body:JSON.stringify({code:pc.value})})"
 ".then(function(r){return r.text().then(function(t){return [r.ok,t];});})"
 ".then(function(a){if(a[0]){T=JSON.parse(a[1]).token;location.hash='s='+T;"
-"ps.textContent='paired';}else ps.textContent='pair rejected';})"
+"ps.textContent='paired';"
+// 配对成功后 reload:模块在页面加载时已按空 token 初始化,不刷新它永远拿不到
+// 新 token(真机 bring-up 实证:提示 paired 但市场页无任何反应)。hash 跨
+// reload 保留,重载后模块带 token 启动、配对框收起。一次性配对码第二次
+// 必 rejected(§8),reload 前留 600ms 让用户看到 paired。
+"setTimeout(function(){location.reload();},600);}"
+"else ps.textContent='pair rejected';})"
 ".catch(function(){ps.textContent='pair failed';});}"
 "</script>"
 "<script type=module "
@@ -798,12 +893,20 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         return reply(req, "400 Bad Request", "manifest rejected");
     }
 
+    // 复查确认态(审计 M7):入口检查到 body 读完之间用户可能已完成物理确认,
+    // 此时绝不可清场 —— 否则确认被抹掉,UI 死等 upload、手机 session 409。
+    session_lock();
+    if (s_session.confirmed || s_session.session_opened) {
+        session_unlock();
+        return reply(req, "409 Conflict", "already confirmed");
+    }
     offer_and_upload_clear();          // 覆盖旧 offer 时清残留(未确认路径)
     s_session.manifest = m;
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
     status_set("offer", "confirm on device");
+    session_unlock();
     ESP_LOGI(TAG, "offer ready: %s (%u bytes)", m.name, m.image_len);
     return reply(req, "200 OK", "ok");
 }
@@ -934,6 +1037,8 @@ esp_err_t meta_install_net_init(meta_slot_info_t slots[META_SLOT_COUNT])
     memset(&s_session, 0, sizeof(s_session));
     s_session.confirmed_slot = -1;
     status_set("idle", "");
+    if (!s_session_mu) s_session_mu = xSemaphoreCreateMutex();
+    if (!s_session_mu) return ESP_ERR_NO_MEM;
     s_init = true;
     return ESP_OK;
 }

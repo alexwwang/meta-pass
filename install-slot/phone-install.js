@@ -203,7 +203,10 @@ export async function searchPlays(q, limit = 20) {
 }
 
 export async function getPlayDetail(id) {
-  const d = await mpJson(`/api/plays/id/${encodeURIComponent(id)}`);
+  // Worker 路由表只有 /api/plays(列表)与 /api/play?id=(详情,代理到上游
+  // /api/plays/id/<id>);手机直接打 /api/plays/id/<id> 会落到 ASSETS 404
+  // (生产实测,审计 B2)。
+  const d = await mpJson(`/api/play?id=${encodeURIComponent(id)}`);
   return normalizePlay(d?.play);
 }
 
@@ -377,7 +380,9 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   const sess = parseJsonReply(se);
   let offset = Number.isFinite(sess?.offset) ? sess.offset : 0;
   const maxChunk = Math.min(Number(sess?.maxChunk) || MAX_CHUNK, MAX_CHUNK);
-  if (offset >= offer.imageLen) {
+  // offset == imageLen:上次上传已完成但 finalize 未发出(§6.5 设备 offset 为
+  // 事实的续传场景),跳过上传直接 finalize;只有 > 才算坏状态(审计 M2)。
+  if (offset > offer.imageLen) {
     return fail("session", `device offset ${offset} already beyond image length`);
   }
 
@@ -437,10 +442,15 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   }
 
   hooks.stage?.("done");
+  // 完成轮询超时/不可读 ≠ 成功(审计 M1):finalize 已被接受但设备未到 done
+  // (或 status 失联)时如实报错,让用户去设备上核对,而不是报成功。
   const doneState = await pollUntil(bridge, (s) => s.state === "done" || s.state === "failed",
-    hooks, 30000).catch(() => null);
-  if (doneState && doneState.state === "failed") {
-    return fail("finalize", doneState.message || "device reported failure");
+    hooks, Number(hooks.doneTimeoutMs) || 30000).catch(() => null);
+  if (!doneState || doneState.state !== "done") {
+    return fail("finalize",
+      doneState?.state === "failed"
+        ? (doneState.message || "device reported failure")
+        : "device did not reach done (finalize accepted but no confirmation)");
   }
   return { ok: true, slot };
 }
@@ -514,7 +524,9 @@ export function boot(opts = {}) {
   };
 
   async function showDetail(p) {
-    $("mp-detail").textContent = `${p.name}\nsize ${(p.size / 1048576).toFixed(1)}MB · rev ${p.revisionId ?? "?"}\nsha256 ${p.sha256.slice(0, 16)}…`;
+    // §5/§6.2 元数据契约:name/size/revisionId/updatedAt/sha256(审计 M8)。
+    const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "?";
+    $("mp-detail").textContent = `${p.name}\nsize ${(p.size / 1048576).toFixed(1)}MB · rev ${p.revisionId ?? "?"} · updated ${updated}\nsha256 ${p.sha256.slice(0, 16)}…`;
     const btn = document.createElement("button");
     btn.textContent = "Install";
     btn.onclick = () => install(p);
@@ -531,7 +543,9 @@ export function boot(opts = {}) {
       return;
     }
     log(`offer: ${pre.offer.name} → device. Confirm the slot on the device screen.`);
-    const r = await runInstall(bridge, pre.offer, pre.merged, {
+    // 上传体 = 剥离后的 app 镜像(merged 是完整合并镜像,长度必不等于
+    // offer.imageLen;runInstall 只收 ext.data —— 真机回归:审计 B1)。
+    const r = await runInstall(bridge, pre.offer, pre.ext, {
       status: (s) => { if (s.confirmed) log(`device confirmed slot ${s.slot} — uploading…`); },
       progress: (off, total) => { $("mp-bar").value = off / total; },
       resume: (off) => log(`resuming at ${off}`),
@@ -541,6 +555,16 @@ export function boot(opts = {}) {
       ? `installed to slot ${r.slot}. Power off & on the device to boot it.`
       : `install failed [${r.stage}]: ${r.reason}`);
     if (!r.ok && r.stage === "token") log("hint: re-scan the device QR code (token is one-shot per visit).");
+  }
+
+  // 配对成功后 shell 会写 hash 并 reload;hashchange 监听是双保险 —— 即便
+  // 某个 shell 变体不 reload,模块也能即时拿到 token(审计:paired 后页面
+  // 不跳转的根因就是模块加载时以空 token 初始化且再无更新通道)。
+  if (typeof window !== "undefined") {
+    window.addEventListener("hashchange", () => {
+      const t = detectToken();
+      if (t && t !== token) setToken(t);
+    });
   }
 
   return { root, setToken: (t) => { token = t; bridge = createBridge(deviceOrigin ?? $("mp-dev").value, t); } };

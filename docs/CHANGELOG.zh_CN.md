@@ -6,6 +6,25 @@
 
 ## Unreleased
 
+- **v3.2-r10.23 (2026-10-01) mota 实现审计 + 修复**：对 `feat/mota` 局域网安装实现
+  对照设计文档做全面审计（报告：`docs/assets/mota-implementation-audit.md`，双语），
+  5 项阻塞 + 9 项非阻塞发现，本轮全部修复。阻断流程的：boot UI 上传的是合并镜像
+  而非剥离后 app 镜像（`runInstall` 长度守卫必触发）；`getPlayDetail` 调了 Worker
+  从未路由的 `/api/plays/id/<id>`（生产实测 404，改走 `/api/play?id=`）；Worker
+  `/api/plays` 代理丢弃 query string（搜索退化为未过滤全量列表，生产实测复现）。
+  设备侧：UI 任务取消路径与在途 chunk 写竞争（`esp_ota_abort` 释放在用的 OTA
+  handle —— heap UAF，已核对 IDF 5.5.3 `esp_ota_ops.c`）；以会话互斥锁串行化
+  UI 任务入口与 httpd 上传路径修复，`flash_touched` 提前到 `esp_ota_begin` 之前
+  （擦除窗口内取消曾导致槽位被毁却不标 INVALID）。另有：prepare 读完 body 后复查
+  确认态（迟到 prepare 曾抹掉已完成的物理确认）；MNAM 显示名写失败现在令
+  finalize 失败；上传续期挂在 chunk 活动而非闩锁的 uploading 状态上，停滞阈值
+  30s；runInstall 对未到达 done 报失败、接受恰在 imageLen 处的续传；Worker 代理
+  流式转发 `/api/firmware`，手机模块全部 import 同走 no-store；详情页补 updatedAt。
+  测试盲区关闭：metapass mock 镜像 Worker 真实路由表并执行 q 过滤；新增 boot
+  payload / imageLen 续传 / done 轮询超时三组回归；`worker_contract.mjs` 新增
+  query 转发、流式、no-store、手机路径↔Worker 路由匹配四道门。固件 rebuild 待补
+  （本地 ESP-IDF 工具链不完整）。
+
 - **v3.2-r10.22b (2026-10-01) 手机网页模块 MVP —— LAN 安装的 metapass 侧**:
   `install-slot/phone-install.js` 是第一个由 Worker 远程下发的安装模块
   (`GET /phone-install.js`,`access-control-allow-origin: *`,no-store;设备 boot 页

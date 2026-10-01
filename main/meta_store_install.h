@@ -38,6 +38,10 @@
 #define META_INSTALL_PAIR_TTL_MS     300000u  // 5 分钟内未用即作废
 #define META_INSTALL_PAIR_MAX_TRIES  5        // 连续错误达到即作废(重新进店才再生成)
 
+// 上传停滞阈值(审计 M6):uploading 态下超过此时长无 chunk 活动,store 死线
+// 不再续期 —— 手机消失后由正常超时浮层询问用户,而不是无限吊住 WiFi/OTA。
+#define META_INSTALL_UPLOAD_STALL_MS 30000u
+
 // 会话状态快照(UI 轮询与 /api/install/status 同源)。
 typedef struct {
     bool     active;         // 店内 token 会话存活(进店到离店)
@@ -50,6 +54,8 @@ typedef struct {
     char     name[META_NAME_LEN + 1];  // offer/完成展示名(done 态保留供 P5)
     const char *state;       // pairing/offer/confirmed/uploading/done/failed/cancelled
     const char *message;     // 最近一次提示/失败短句(空串 = 无)
+    int64_t  upload_idle_ms; // state=="uploading" 时起算的无活动毫秒(停滞判定,审计 M6;
+                             // 其他状态为 0;负值 = 时钟异常按 0 处理)
 } meta_install_session_status_t;
 
 // ---- 服务生命周期 ----
