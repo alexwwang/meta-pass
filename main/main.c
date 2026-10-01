@@ -478,8 +478,9 @@ static void page_store_qr_build(void)
             // LVGL 9.5 返回 lv_color32_t(非 lv_color_t)。
             const lv_color32_t px_dark = lv_canvas_get_px(qr, 30, 30);
             const lv_color32_t px_light = lv_canvas_get_px(qr, 2, 2);
-            ESP_LOGI(TAG, "qr px(30,30)=%08x px(2,2)=%08x (ink=%06x paper=%06x)",
-                     (unsigned)px_dark.full, (unsigned)px_light.full,
+            ESP_LOGI(TAG, "qr px(30,30)=%02x%02x%02x px(2,2)=%02x%02x%02x (ink=%06x paper=%06x)",
+                     px_dark.red, px_dark.green, px_dark.blue,
+                     px_light.red, px_light.green, px_light.blue,
                      UI_INK, UI_PAPER);
         }
     }
