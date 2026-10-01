@@ -73,7 +73,7 @@ same `tools/pages-deploy.py` REST path as local production deploys. Firmware art
   phone-selected slot: prepare arrives pre-confirmed, skipping the device's P2/P3
   physical confirmation; absent/-1 = the legacy device-physical flow, so old firmware
   stays compatible). Phone side: a slot selector with oversized slots disabled
-  ("需 x.xMB > 上限 x.xMB"); full UI redesign in the impeccable Operate mode with the
+  ("needs x.x MB > limit x.x MB"); full UI redesign in the impeccable Operate mode with the
   device pixel palette (ink/paper/sky/grass); the panel becomes an overlay (bottom
   drawer on mobile, centered on desktop, mask-tap closes); category first-level menu
   (All + per-category counts) with tag chips = discoveryTags via `tag=` filtering
