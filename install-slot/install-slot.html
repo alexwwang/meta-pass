@@ -59,7 +59,13 @@
   #log .ok { color: #a5d6a7; }
   #log .warn { color: #ffd180; }
   /* 语言切换:右上角固定 */
-  #lang-switch { position: fixed; top: 12px; right: 24px; display: flex; gap: 4px; }
+  #lang-switch { display: flex; gap: 4px; }
+  #top-right-dock { position: fixed; top: 12px; right: 24px; z-index: 40;
+    display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  #coffee-support { text-align: center; line-height: 1.3; }
+  #coffee-support img { width: 96px; height: 96px; object-fit: cover;
+    border: 1px solid #d0d7de; border-radius: 8px; display: block; }
+  #coffee-support .cap { font-size: 11px; color: #57606a; margin-top: 4px; }
   #lang-switch button {
     font-size: 12px; padding: 3px 10px; border-radius: 4px;
     background: transparent; border: 1px solid #ccd0d5; color: #606770;
@@ -68,9 +74,15 @@
 </style>
 </head>
 <body>
-<div id="lang-switch">
-  <button id="lang-en" type="button">EN</button>
-  <button id="lang-zh" type="button">中文</button>
+<div id="top-right-dock">
+  <div id="lang-switch">
+    <button id="lang-en" type="button">EN</button>
+    <button id="lang-zh" type="button">中文</button>
+  </div>
+  <figure id="coffee-support">
+    <img src="./author-coffee.jpg" alt="请作者喝咖啡" width="96" height="96">
+    <figcaption class="cap">请作者喝咖啡</figcaption>
+  </figure>
 </div>
 <main>
   <h1 data-i18n="title_page">meta-pass · USB Slot Installer</h1>
