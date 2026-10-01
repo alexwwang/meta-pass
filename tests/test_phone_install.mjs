@@ -175,10 +175,7 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
           ok: true,
           plays: filtered.slice(offset, offset + limit),
           pagination: { total: filtered.length, hasMore: offset + limit < filtered.length },
-          discoveryTags: [
-            { key: "games", name: { zh: "游戏", en: "Games" }, sortOrder: 0 },
-            { key: "learning", name: { zh: "学习", en: "Learning" }, sortOrder: 1 },
-          ],
+          categoryCounts: { games: 3, learning: 2 },
         }), { status: 200 });
       }
       if (u.pathname === "/api/play") {
@@ -620,7 +617,7 @@ function bigFixtures() {
   assert.equal(p1.hasMore, false);
   const ids0 = new Set(p0.list.map((p) => p.id));
   assert.ok(p1.list.every((p) => !ids0.has(p.id)), "pages must not overlap");
-  assert.ok(Array.isArray(p0.tags) && p0.tags.length >= 2, "discoveryTags surfaced");
+  assert.ok(p0.categoryCounts && p0.categoryCounts.games === 3, "categoryCounts surfaced");
   console.log("PASS 7b: pagination — page 1 (20, hasMore) → page 2 (5, end), no overlap");
 }
 // 7c. 分类过滤:category 参数服务端过滤(生产实测生效)。
@@ -705,6 +702,18 @@ function bigFixtures() {
   const pre2 = await phone.prepareImage(meta, 0, {}, "雷达Name");
   assert.match(pre2.offer.name, /^[\x20-\x7e]{1,32}$/, "sanitized to printable ASCII ≤32");
   console.log("PASS 8e: user-edited install name wins; non-ASCII stripped");
+}
+// 8f. 设备显示名链:社区 slug(community-*)降级,英文标题优先(真机:满屏 community- 名)。
+{
+  globalThis.fetch = installMockFetch();
+  const meta = await phone.preflightMeta(563);
+  const slugMeta = { ...meta, analyze: { ...meta.analyze, name: "community-ecc02169" } };
+  const pre = await phone.prepareImage(slugMeta, 0);
+  assert.equal(pre.offer.name, PLAY.title.en, "en title beats community- slug");
+  const mnamMeta = { ...meta, analyze: { ...meta.analyze, name: "Radar Pro" } };
+  const pre2 = await phone.prepareImage(mnamMeta, 0);
+  assert.equal(pre2.offer.name, "Radar Pro", "MNAM name still first");
+  console.log("PASS 8f: device name chain — MNAM > en title > community- slug");
 }
 
 console.log("ALL phone-install TESTS PASSED");

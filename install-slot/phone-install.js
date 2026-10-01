@@ -178,6 +178,7 @@ export function normalizePlay(p) {
     id: p.id,
     revisionId: Number.isFinite(p.revisionId) ? p.revisionId : null,
     name: name.trim(),
+    enName: (typeof t === "object" && typeof t.en === "string") ? t.en.trim() : "",
     size,
     sha256: sha.toLowerCase(),
     downloadUrl: url,
@@ -209,7 +210,8 @@ export async function searchPlays(q, offset = 0, limit = 20, category = "") {
     list: plays.map(normalizePlay).filter((p) => p),
     hasMore: pagination.hasMore === true,
     total: Number.isFinite(pagination.total) ? pagination.total : null,
-    tags: Array.isArray(d?.discoveryTags) ? d.discoveryTags : null,
+    categoryCounts: (d?.categoryCounts && typeof d.categoryCounts === "object")
+      ? d.categoryCounts : null,
   };
 }
 
@@ -236,6 +238,23 @@ export async function preflightMeta(id, hooks = {}) {
   const play = await getPlayDetail(id);
   if (!play) return { ok: false, stage: "market", reason: "play metadata missing firmware fields" };
   return { ok: true, analyze: a, play };
+}
+
+// 设备显示名链(真机问题:社区固件无 MNAM,analyze 名退回 slug
+// "community-xxxx";而手机侧受 MNAM ≤32 可打印 ASCII 契约限制,中文标题被
+// 剥空,于是满屏 community- 名)。规则:MNAM 真名 > 英文标题 > slug >
+// 中文标题(sanitize 剥空自动跳过)> play <id>。slug-ish(community- 前缀,
+// 即 analyze 的 slug 兜底)降级到英文标题之后。
+const slugish = (s) => !s || /^community-/i.test(s);
+export function displayNameFor(analyzeName, play, userName = "") {
+  return pickDisplayName(
+    userName || null,
+    slugish(analyzeName) ? "" : analyzeName,
+    play?.enName || "",
+    analyzeName,
+    play?.name,
+    play?.id,
+  );
 }
 
 // meta = preflightMeta 结果;slot = 用户选定槽位(>=0;交互 v2 设备直确认,
@@ -304,7 +323,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
     protocol: PROTOCOL_V1,
     playId: play.id,
     revisionId: a.revisionId ?? play.revisionId ?? 0,
-    name: pickDisplayName(userName || null, a.name, play.name, play.id),
+    name: displayNameFor(a.name, play, userName),
     storeSha256: play.sha256,
     imageLen: ext.length,
     sha256: appSha,
@@ -494,8 +513,11 @@ const MP_STYLE = `
 --line:rgba(23,32,42,.16);--sky:#1689E8;--sky-dark:#0872C9;--grass:#82BE2D;
 --grass-dark:#4E8A19;--red:#C02B20;--r:6px;
 font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Noto Sans SC",sans-serif;
-color:var(--ink);background:var(--paper);max-width:30em;margin:0 auto;
+color:var(--ink);background:var(--paper);max-width:min(30em,100%);margin:0 auto;
 padding:20px 16px 56px;-webkit-text-size-adjust:100%}
+/* iOS:内容撑宽文档时 layout viewport 变宽,position:fixed 浮层随之超屏(真机
+   bug:浮层宽于手机屏幕,捏合缩放才恢复)。根上防撑宽 + 双保险裁溢出。 */
+html,body{max-width:100%;overflow-x:hidden}
 #mp-install-root *,#mp-install-root *::before,#mp-install-root *::after{box-sizing:border-box}
 #mp-install-root ::selection{background:var(--ink);color:var(--paper)}
 #mp-install-root :focus-visible{outline:2px solid var(--sky-dark);outline-offset:2px}
@@ -551,7 +573,8 @@ padding:16px;margin-top:14px;animation:mp-in .18s ease-out}
 display:flex;align-items:flex-end;justify-content:center;animation:mp-fade .15s ease-out}
 @keyframes mp-fade{from{opacity:0}}
 .mp-sheet{background:var(--card);border:2px solid var(--ink);border-bottom:0;
-border-radius:12px 12px 0 0;width:100%;max-width:30em;max-height:84vh;
+border-radius:12px 12px 0 0;width:100%;max-width:min(30em,100vw);
+box-sizing:border-box;max-height:84vh;
 overflow-y:auto;padding:18px 16px calc(24px + env(safe-area-inset-bottom));
 animation:mp-sheet .18s ease-out}
 @media(min-width:520px){
@@ -686,9 +709,13 @@ export function boot(opts = {}) {
   // panelOpen:详情/槽位面板展开期间挂起自动加载 —— 面板在列表下方,
   // 不挂起的话"加载更多"按钮因面板出现而进入视区,IO 无限加载把面板
   // 越顶越远,永远够不到确认键(真机反馈)。
+  // 分类 = 一级列表(chips 行),键取官方 categoryCounts(服务端 category=
+  // 过滤只认这些键);discoveryTags 是另一套标签体系(multiplayer 等不是
+  // 合法 category 值,点了必失败 —— 真机 bug)。搜索与分类互相独立:搜索
+  // 清 lastCat,chips 归「全部」;点分类清空搜索框与 lastQ。
   let lastQ = "";
   let lastCat = "";            // 官方分类键;"" = 全部(服务端过滤,实测生效)
-  let catTags = null;          // discoveryTags(官方分类目录,含中英文名)
+  let catTags = null;          // categoryCounts(官方分类目录:键 → 数量)
   let items = [];
   let hasMore = false;
   let total = null;
@@ -696,19 +723,22 @@ export function boot(opts = {}) {
   let panelOpen = false;
   const seen = new Set();
 
-  const FALLBACK_TAGS = [   // discoveryTags 缺失时的兜底(与官方 categoryCounts 对齐)
-    ["games", "游戏"], ["learning", "学习"], ["information", "资讯"],
-    ["productivity", "效率"], ["media", "媒体"], ["child-friendly", "儿童"],
-    ["social", "社交"], ["developer", "开发者"], ["multi-device", "多设备"],
-    ["must-play", "必玩"],
-  ];
+  // 官方 categoryCounts 已观测键的中文名(与生产实测一致;未知键回退原名)。
+  const CATEGORY_NAMES = {
+    "games": "游戏", "learning": "学习", "information": "资讯",
+    "productivity": "效率工具", "media": "媒体", "child-friendly": "亲子益智",
+    "social": "社交", "developer": "开发者", "multi-device": "多设备",
+    "must-play": "必玩精选",
+  };
+  // 上游黑名单(生产逐键实测 502):这三个伪分类键会把上游打崩,手机侧
+  // 直接不出 —— 否则点了必"目录加载失败"(真机 bug 的另一半根因)。
+  const CATEGORY_BLOCKED = new Set(["child-friendly", "multi-device", "must-play"]);
   function tagList() {
-    if (catTags && catTags.length) {
-      return catTags.filter((t) => t && typeof t.key === "string")
-        .sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99))
-        .map((t) => [t.key, t.name?.zh || t.name?.en || t.key]);
-    }
-    return FALLBACK_TAGS;
+    const keys = (catTags && Object.keys(catTags).length)
+      ? Object.keys(catTags)
+      : Object.keys(CATEGORY_NAMES);
+    return keys.filter((k) => !CATEGORY_BLOCKED.has(k))
+      .map((k) => [k, CATEGORY_NAMES[k] || k]);
   }
 
   function renderCatChips() {
@@ -727,7 +757,10 @@ export function boot(opts = {}) {
       b.textContent = label;
       b.onclick = () => {
         if (loading || key === lastCat) return;
+        // 进入该分类(一级 → 二级):与搜索视图互相独立,清空搜索条件。
         lastCat = key;
+        lastQ = "";
+        $("mp-q").value = "";
         renderCatChips();
         items = []; hasMore = false; total = null; seen.clear();
         $("mp-list").innerHTML = "";
@@ -766,7 +799,7 @@ export function boot(opts = {}) {
       let cur = offset;
       for (let guard = 0; guard < 500; guard++) {
         const r = await searchPlays(lastQ, cur, 20, lastCat);
-        if (r.tags && !catTags) { catTags = r.tags; renderCatChips(); }
+        if (r.categoryCounts && !catTags) { catTags = r.categoryCounts; renderCatChips(); }
         let added = 0;
         for (const p of r.list) {
           if (seen.has(p.id)) continue;
@@ -783,7 +816,9 @@ export function boot(opts = {}) {
       }
       refreshCount();
     } catch (e) {
-      log(`目录加载失败: ${e.message}`, "err");
+      log(lastCat
+        ? `分类加载失败: ${e.message}(可换其它分类或「全部」)`
+        : `目录加载失败: ${e.message}`, "err");
     } finally {
       loading = false;
       $("mp-more").textContent = "加载更多";
@@ -808,6 +843,8 @@ export function boot(opts = {}) {
       return;
     }
     lastQ = q;
+    lastCat = "";            // 搜索是独立视图:不带分类过滤,chips 归「全部」
+    renderCatChips();
     items = []; hasMore = false; total = null; seen.clear();
     $("mp-list").innerHTML = "";
     await fetchPage(0);
@@ -879,14 +916,14 @@ export function boot(opts = {}) {
     const suggested = fit.some((o) => o.slot === a?.suggestedSlot)
       ? a.suggestedSlot : fit[0].slot;
     let chosen = suggested;
-    let nameVal = pickDisplayName(a?.name, p.name, p.id);   // 重选槽位重渲染时保留用户已改名
+    let nameVal = displayNameFor(a?.name, p);   // 重选槽位重渲染时保留用户已改名
 
     const render = () => {
       setPanel(`<section class=mp-panel>
         <h4>安装到设备</h4>
         <p class=mp-sub style="margin-bottom:0">${esc(p.name)} · 剥离后 ${Number.isFinite(imageLen) ? fmtMB(imageLen) : "?"}</p>
-        <label class=mp-note for=mp-name style="display:block;margin:12px 0 4px">安装名称(显示在设备列表)</label>
-        <input id=mp-name maxlength=64 value="${esc(nameVal)}" style="width:100%;font:inherit;padding:10px 12px;border:2px solid var(--ink);border-radius:var(--r);background:var(--paper);color:var(--ink)">
+        <label class=mp-note for=mp-name style="display:block;margin:12px 0 4px">安装名称(仅英文、数字与连接符号 - _ . ,≤32 字符)</label>
+        <input id=mp-name maxlength=64 value="${esc(nameVal)}" autocomplete=off style="width:100%;font:inherit;padding:10px 12px;border:2px solid var(--ink);border-radius:var(--r);background:var(--paper);color:var(--ink)">
         <div class=mp-note style="text-align:right;margin-top:2px"><span id=mp-nch>0</span>/32</div>
         <div class=mp-slots role=radiogroup>
           ${opts.map((o) => `
@@ -903,9 +940,26 @@ export function boot(opts = {}) {
         </div>
       </section>`);
       const nameEl = $("mp-name"), nch = $("mp-nch");
+      // 中文输入法组词期间绝不可回写 value(会打断 composition,把已上屏
+      // 字符再吞一遍 —— 真机 bug:输入 shic 回显 shicshic)。组词中只更新
+      // 计数;过滤发生在输入停止(compositionend/blur)与确认时。
+      const cleanName = (s) => (s || "").replace(/[^\x20-\x7e]/g, "")
+        .replace(/[^A-Za-z0-9._\- ]/g, "").slice(0, 32);
+      let composing = false;
+      nameEl.addEventListener("compositionstart", () => { composing = true; });
+      nameEl.addEventListener("compositionend", () => {
+        composing = false;
+        nameEl.value = cleanName(nameEl.value);
+        nameVal = nameEl.value;
+        nch.textContent = String(nameEl.value.length);
+      });
+      nameEl.addEventListener("blur", () => {
+        nameEl.value = cleanName(nameEl.value);
+        nameVal = nameEl.value;
+        nch.textContent = String(nameEl.value.length);
+      });
       const updCount = () => {
-        // 设备契约:≤32 可打印 ASCII(MNAM 同源);输入即过滤,计数显示截断后长度。
-        nameEl.value = sanitizeDisplayName(nameEl.value);
+        if (composing) { nch.textContent = String(cleanName(nameEl.value).length); return; }
         nameVal = nameEl.value;
         nch.textContent = String(nameEl.value.length);
       };
@@ -917,7 +971,10 @@ export function boot(opts = {}) {
       });
       const confirm = $("mp-confirm");
       confirm.disabled = false;
-      confirm.onclick = () => continueInstall(meta, chosen, nameEl.value.trim());
+      confirm.onclick = () => {
+        nameVal = cleanName(nameEl.value);           // 确认时再滤一次(防漏网)
+        continueInstall(meta, chosen, nameVal.trim());
+      };
       $("mp-cancel").onclick = clearPanel;
     };
     render();
@@ -942,7 +999,8 @@ export function boot(opts = {}) {
       return;
     }
     stageEl.textContent = "上传";
-    log(`✓ ${pre.offer.name} → 槽位 ${slot},开始上传`);
+    log("✓ " + pre.offer.name + " → 槽位 " + slot + ",开始上传");
+    log("⚠ 安装期间请保持设备停留在商店页,勿退出 SCAN ME —— 离开会作废会话,需重新扫码");
     const r = await runInstall(bridge, pre.offer, pre.ext, {
       status: (s) => { if (s.confirmed) stageEl.textContent = "设备已确认,上传中"; },
       progress: (off, totalB) => {
