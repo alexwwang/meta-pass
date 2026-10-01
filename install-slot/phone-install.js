@@ -570,6 +570,20 @@ export function boot(opts = {}) {
   $("mp-go").onclick = async () => {
     const q = $("mp-q").value.trim();
     if (loading) return;
+    // 纯数字 = play ID:官方 q 搜索只匹配标题文本,按 id 找不到;直接走
+    // 详情→安装(真机反馈:搜索不支持玩法 id)。
+    if (/^\d{1,7}$/.test(q)) {
+      log(`play id ${q} — fetching detail…`);
+      try {
+        const det = await getPlayDetail(Number(q));
+        if (!det) { log(`play ${q} not found or not installable (no firmware metadata)`); return; }
+        showDetail(det);
+        log(`play ${q}: ${det.name} — tap Install below`);
+      } catch (e) {
+        log(`play ${q} fetch failed: ${e.message}`);
+      }
+      return;
+    }
     lastQ = q;
     items = []; hasMore = false; total = null; seen.clear();
     $("mp-list").innerHTML = "";
@@ -579,6 +593,9 @@ export function boot(opts = {}) {
     if (items.length === 0 && !hasMore) log("no installable results");
     else log("");
   };
+  // 进页即浏览全量目录(真机反馈:不知道空关键词能浏览;官方市场的首屏
+  // 就是内容列表,不是空白+搜索框)。
+  fetchPage(0);
   $("mp-more").onclick = () => fetchPage(items.length);
   if (typeof IntersectionObserver !== "undefined") {
     const io = new IntersectionObserver((entries) => {
@@ -599,14 +616,23 @@ export function boot(opts = {}) {
   }
 
   async function install(p) {
-    log("preflight: analyze → download → verify → extract…");
+    // 分阶段耗时日志:preflight 要下载数 MB 合并镜像 + 纯 JS sha256,真机
+    // 十几秒只有一行静态文字 = "点了没反应"。每阶段打点开始,失败即停。
+    const t0 = Date.now();
+    const stage = (s) => log(`preflight: ${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    stage("analyze");
     $("mp-bar-wrap").style.display = "block";
-    const pre = await preflight(p.id, { stage: (s) => log(`preflight: ${s}…`) });
+    const pre = await preflight(p.id, { stage });
     if (!pre.ok) {
-      log(`preflight failed [${pre.stage}]: ${pre.reason}`);
+      $("mp-bar-wrap").style.display = "none";
+      log(`✗ preflight failed [${pre.stage}]: ${pre.reason}`);
       return;
     }
-    log(`offer: ${pre.offer.name} → device. Confirm the slot on the device screen.`);
+    // 可装性提示(真机反馈:看不到是否能装):fit 表来自 analyze+本地几何,
+    // 槽位最终选择仍在设备屏(§6.4 物理确认门控)。
+    const fits = pre.offer.slots.filter((s) => s.fit).map((s) => s.slot).join(", ");
+    log(`✓ ${pre.offer.name} — fits slot(s): ${fits}`);
+    log("Now pick the slot ON THE DEVICE screen and press OK.");
     // 上传体 = 剥离后的 app 镜像(merged 是完整合并镜像,长度必不等于
     // offer.imageLen;runInstall 只收 ext.data —— 真机回归:审计 B1)。
     const r = await runInstall(bridge, pre.offer, pre.ext, {
