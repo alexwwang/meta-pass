@@ -4,7 +4,86 @@
 
 # Changelog
 
-## Unreleased
+## v1.1.0 (2026-10-02)
+
+商店安装版本：旗舰功能是应用商店安装链 —— 手机网页模块（搜索 → 分析 → 下载 →
+校验 → 剥离 → 槽位适配 → 上传）驱动设备端 LAN 安装服务，生产 metapass 站点
+（`metapass.chuanxilu.net`）提供 Worker 代理并远程下发手机模块。槽位交互收拢到
+列表页：OK 一键启动高亮槽位（签名与否同权；警告/详情/删除确认页全部移除 ——
+上游 48e85590 语义），彩蛋挂在高亮槽位上。移植两个上游修复：子固件深睡唤醒
+（GPIO hold + otadata 续期）与 QR/WiFi 可靠性轮次。v1.0.0 冻结的四项契约
+（MPUPV2 单文件、备份 manifest v1、签名格式、3 槽分区布局）不变；设备↔手机
+协议向后兼容（`manifest.slot` 可选 —— 旧固件忽略该字段，保持物理确认流程）。
+CI 与本地生产部署统一走 `tools/pages-deploy.py` REST 路径。固件产物：
+`build/meta-pass_v1.1.0.bin`。
+
+- **v3.2-r10.37 (2026-10-02) CI 统一 + glibc 修复**：`workers.yml` 改走与每次生产
+  部署相同的 `tools/pages-deploy.py` REST 路径（弃用 wrangler-action —— wrangler
+  4.145.0 `pages deploy` 上传后挂起，本机实测）；脚本支持 `CF_API_TOKEN` 供 CI
+  使用，本地 OAuth + refresh_token 轮换路径不变。首次 push main 暴露两个仅 CI
+  可见的问题：ubuntu-latest 未预装 bun（补 setup-bun 步骤，SHA 钉住）；
+  `meta_store_prov.c` 的 `strtok_r` 在 glibc `-std=c11` 下需要
+  `_POSIX_C_SOURCE` 特性宏（macOS 宽松，本地 `--static` 一直绿）。
+
+- **v3.2-r10.35 (2026-10-02) 一键启动 —— 详情页与删除确认页移除（用户定稿）**：
+  槽位列表成为唯一槽位交互页。OK 直接启动高亮槽位（签名与否同权、零确认；
+  不可启动槽位静默无动作）；彩蛋成为唯一隐藏流程 —— 高亮槽位上快速连按
+  UP UP DOWN DOWN（PRESS 判定，与 CLICK 行导航零干扰）。设备端删除不再存在
+  （网页重灌覆盖替代）。与上游 48e85590 语义对齐，并保留本分支商店流程。
+
+- **v3.2-r10.34 (2026-10-02) 上游移植 —— 深睡唤醒 + 未签名快速启动**：
+  来自 `jiandanc/meta-pass`。(1) 子固件休眠唤醒有两处独立缺陷：子固件留下的
+  GPIO hold 复位后仍生效、吞掉 launcher 全部 SPI 命令（背光亮但屏黑 —— 修复：
+  SPI 接管前先释放全局+逐 pin hold，然后 0x11 SLPOUT + 120ms 再复位面板，
+  废弃先 SWRESET 的顺序）；深睡唤醒 = 完整启动，子固件 otadata 副本仍是
+  PENDING_VERIFY → 被回滚逻辑判 ABORTED 掉回 factory（修复：bootloader hook
+  按复位原因分支 —— 深睡唤醒时 CRC 复核后把运行中子固件副本续期为 VALID，
+  先擦后写；冷复位保持原回滚策略）。上游 6 例唤醒契约测试 + `must_resume`
+  全状态覆盖已入 `--static`。(2) 未签名固件启动不再弹警告页（48e85590 语义，
+  本轮按用户要求只移除确认页；全部页面移除落于 r10.35）。
+
+- **v3.2-r10.33 (2026-10-01) 撤销 R2 固件物化（用户定稿）**：`/api/firmware` 回归
+  纯流式 CORS 代理 —— 服务端不缓存、不物化、不 strip。理由：手机侧 strip 仅
+  ~2ms + 双哈希 0.3~1s（实测 45MB/s），占总安装 <5%，且商店 sha256 门必须
+  手机侧过（信任链）；缓存只省源站下载一腿却引入缓存复杂度。R2 `firmware/` 下
+  6 个孤儿对象已逐个删除。
+
+- **v3.2-r10.31/r10.32 (2026-10-01) 设备 UI 打磨**：DONE 页槽位改显实际安装的
+  `st.slot`（原为硬编码 slot0）；SCAN ME 面板校正为 104px 真容 —— 4 行内容 +
+  状态行，标题/QR/面板 5px 等距（y=171）；BACK TO LIST 双击修复 —— DONE 只认
+  CLICK/LONG（PRESS+CLICK 各触发一次迁移），加 400ms 吞咽窗
+  （`s_list_arm_at`）；SCAN ME 闲置超时常驻续期（手机浏览期间设备零请求，按键
+  touch 会空投会话）。
+
+- **v3.2-r10.30 (2026-10-01) 手机安装页重做 —— 安装交互收拢手机（用户定稿）**：
+  `manifest.slot` 成为可选协议字段（≥0 = 手机选槽：prepare 即 confirmed，
+  跳过设备 P2/P3 物理确认；缺省 -1 = 设备物理确认旧流程，旧固件向后兼容）。
+  手机侧：槽位选择器（不可用槽禁用显示"需 x.xMB > 上限 x.xMB"）；UI 按
+  impeccable Operate 模式 + 设备 pixel 色板（ink/paper/sky/grass）重设计；
+  面板改浮层（移动端底部抽屉、桌面居中，遮罩关闭）；分类一级菜单（全部 +
+  各分类带数量），chips = discoveryTags 标签经 `tag=` 过滤（生产实测
+  `tag=multiplayer` 有效；3 个伪分类键因上游 502 黑名单）；offset+limit 分页
+  （官方契约：`page/pageSize` 被静默忽略，`limit≥100` 上游 502）+
+  IntersectionObserver 自动加载；安装名称可改（composition 感知防中文 IME
+  重复输入，≤32 可打印 ASCII）；`displayNameFor` 链（MNAM 真名 > title.en >
+  剥 community- 前缀的 slug > 中文标题 > play \<id\>）；不支持/超限/下载流水线/
+  runInstall 失败全进 failSheet 浮层；hero 三行说明。关键修复：
+  `extractAppImage` 默认上限硬编码 2MB 槽（SLOT_CAPACITY 2093056）—— play 792
+  （extracted 2245952B）检查推荐 slot2、安装炸"exceeds max 2093056"的根因；
+  改为显式传 `max(partSize)-TAIL_SECTOR` = 2740224（生产实测通过，PASS 8g 钉死）。
+  咖啡 QR（`author-coffee.jpg`）右上角固定坞 + 图注 i18n。Worker 新增
+  `/api/play?id=`、`/api/analyze`（CORS ✓），`/api/firmware` 以
+  `new Response(upstream.body)` 流式转发（白名单 `/api/download/` 前缀）。
+
+- **v3.2-r10.24–r10.25 (2026-10-01) 设备可靠性 —— QR 与 WiFi**：SCAN ME 的 QR
+  空白之谜：`lv_qrcode_update` 在 I1 画布上静默失败（`lv_canvas_get_px` 对 I1
+  走 default 返全零，探测读数无效）—— 弃用 lv_qrcode widget，改 qrcodegen
+  固定 v5 直编码 + RGB565 原生画布 `lv_canvas_set_px` 手绘（静态缓冲 ~37KB
+  bss：`s_qr_tmp/s_qr_data/s_qr_canvas_buf`）。WiFi：ONLINE 态 `EV_DISCONNECT`
+  自动重连（ssid/pass 快照，3 次限，清残留位防误触发）。"商店重进凭证丢失"
+  真相：凭证从未丢 —— 退出时 `ap_start()` 残留热点 + `begin()` 见 AP_UP 幂等
+  返回；修复：`s_ap_after_teardown` 仅 reset_wifi 置位、`begin()` 有凭证拆热点
+  走 STA。凭证双写 NVS + 裸 flash 备份（0x35A000 空隙，magic + crc）。
 
 - **v3.2-r10.23 (2026-10-01) mota 实现审计 + 修复**：对 `feat/mota` 局域网安装实现
   对照设计文档做全面审计（报告：`docs/assets/mota-implementation-audit.md`，双语），
