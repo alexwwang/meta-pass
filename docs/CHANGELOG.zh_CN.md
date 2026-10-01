@@ -22,8 +22,9 @@
   流式转发 `/api/firmware`，手机模块全部 import 同走 no-store；详情页补 updatedAt。
   测试盲区关闭：metapass mock 镜像 Worker 真实路由表并执行 q 过滤；新增 boot
   payload / imageLen 续传 / done 轮询超时三组回归；`worker_contract.mjs` 新增
-  query 转发、流式、no-store、手机路径↔Worker 路由匹配四道门。固件 rebuild 待补
-  （本地 ESP-IDF 工具链不完整）。
+  query 转发、流式、no-store、手机路径↔Worker 路由匹配四道门。工具链备注:本地
+  ESP-IDF 环境已修复(不装用不到的 Xtensa 工具链,`IDF_SKIP_TOOLS_CHECK=1`,
+  见 shell 的 `idf()` 辅助);固件已重建验证 —— `meta-pass_v1.0.0-58-gcf0fa8f.bin`。
 
 - **v3.2-r10.22b (2026-10-01) 手机网页模块 MVP —— LAN 安装的 metapass 侧**:
   `install-slot/phone-install.js` 是第一个由 Worker 远程下发的安装模块
