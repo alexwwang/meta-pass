@@ -34,6 +34,10 @@ typedef struct {
     uint32_t image_len;                         // 剥离后 app image 字节数
     uint8_t  sha256[32];                        // 剥离后 app image SHA-256(上传终点比对)
     int8_t   suggested_slot;                    // 手机建议槽位;-1 = 无
+    int8_t   phone_slot;                        // >=0 = 手机侧已选定槽位(交互 v2:选槽/确认
+                                                // 都在手机完成,设备跳过物理确认直达上传;
+                                                // 旧固件忽略未知 JSON 字段 → 自动回退设备选槽);
+                                                // -1 = 设备侧物理确认(旧流程)
     uint8_t  slots_count;                       // 下方 slots 长度(1..META_SLOT_COUNT)
     struct {
         int8_t   slot;                          // 槽位编号(0..META_SLOT_COUNT-1,不重复)

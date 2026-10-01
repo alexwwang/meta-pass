@@ -22,6 +22,7 @@ bool meta_install_model_parse(const char *json, size_t len,
 
     memset(out, 0, sizeof(*out));
     out->suggested_slot = -1;
+    out->phone_slot = -1;
 
     int64_t v;
 
@@ -101,6 +102,13 @@ bool meta_install_model_parse(const char *json, size_t len,
                                             &out->slots[i].fit)) {
             return false;
         }
+    }
+
+    // slot 可选(交互 v2:手机侧选定槽位)。缺省 -1 = 设备物理确认旧流程;
+    // 越界即拒绝,防手机侧 bug 把镜像写进不存在的槽。
+    if (meta_store_json_get_int(json, len, "slot", &v)) {
+        if (v < -1 || v >= META_SLOT_COUNT) return false;
+        out->phone_slot = (int8_t)v;
     }
     return true;
 }

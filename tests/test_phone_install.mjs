@@ -242,12 +242,18 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
       assert.equal(offer.imageLen, imageLen);
       assert.equal(offer.sha256, sha256);
       d.offer = true; d.state = "offer"; d.message = "confirm on device";
+      // 交互 v2:prepare 带手机选定槽位 → 设备立即 confirmed(无需轮询等待);
+      // 不带 slot(旧流程)→ 由 status 轮询模拟用户物理确认。
+      if (Number.isInteger(offer.slot) && offer.slot >= 0) {
+        d.confirmed = true; d.slot = offer.slot; d.state = "confirmed";
+        d.message = "slot chosen on phone";
+      }
       return new Response("ok", { status: 200 });
     }
     if (pathn === "/api/install/session" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
       const body = JSON.parse(init.body);
-      assert.equal(body.slot, 0);
+      assert.equal(body.slot, d.slot);   // session 槽位必须 = 已确认槽位(设备值)
       d.session = true; d.state = "uploading"; d.offset = resumeOffset;
       return new Response(JSON.stringify({ state: "ready", offset: resumeOffset, maxChunk }),
         { status: 200 });
@@ -316,6 +322,7 @@ const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
     imageLen: APP.length,
     sha256: APP_SHA,
     suggestedSlot: 0,
+    slot: -1,               // 兼容入口不选槽 → 设备物理确认旧流程
     slots: SLOT_LIMITS,
     reason: "ok",
   });
@@ -647,6 +654,21 @@ function bigFixtures() {
   assert.equal(r.stage, "finalize");
   assert.match(r.reason, /did not reach done/);
   console.log("PASS 8c: finalize accepted but no done state → failure, not success (audit M1)");
+}
+
+// 8d. 交互 v2:prepare 带手机选定槽位 → 设备立即 confirmed,无需任何人机轮询。
+{
+  const dev = makeDevice({ autoConfirm: false });   // 无人物理确认
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const meta = await phone.preflightMeta(563);
+  assert.equal(meta.ok, true);
+  const pre = await phone.prepareImage(meta, 2);    // 用户选槽 2
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  assert.equal(pre.offer.slot, 2);
+  const r = await phone.runInstall(bridge, pre.offer, pre.ext, {});
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.slot, 2);
+  console.log("PASS 8d: phone-picked slot → device pre-confirms, install completes without device interaction");
 }
 
 console.log("ALL phone-install TESTS PASSED");

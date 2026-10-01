@@ -71,6 +71,7 @@ static bool mutated_offer(mutated_t *m, const char *from, const char *to)
 static void test_parse_happy(void)
 {
     meta_install_manifest_t m;
+    mutated_t mu;
     assert(meta_install_model_parse(OFFER, OFFER_LEN, &m));
     assert(m.protocol == META_INSTALL_PROTOCOL_V1);
     assert(m.play_id == 563);
@@ -84,6 +85,11 @@ static void test_parse_happy(void)
     assert(m.slots[2].slot == 2 && m.slots[2].limit == 2740224 && m.slots[2].fit);
     assert(strcmp(m.reason, "ok") == 0);
     assert(m.sha256[0] == 0x18 && m.sha256[31] == 0xc4);
+    // 交互 v2:slot 可选,缺省 -1(设备物理确认旧流程)。
+    assert(m.phone_slot == -1);
+    assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": 2,"));
+    assert(meta_install_model_parse(mu.buf, mu.len, &m));
+    assert(m.phone_slot == 2);                                      // 手机选定槽位
     printf("PASS parse happy path\n");
 }
 
@@ -122,6 +128,10 @@ static void test_parse_rejects(void)
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 槽位重复
     assert(mutated_offer(&mu, "\"suggestedSlot\": 0", "\"suggestedSlot\": 3"));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 建议槽位越界
+    assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": 3,"));
+    assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 手机选定槽位越界
+    assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": -2,"));
+    assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // slot < -1 非法
     assert(mutated_offer(&mu, "  \"reason\": \"ok\"\n", ""));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 缺 reason
     assert(!meta_install_model_parse(OFFER, OFFER_LEN - 3, &m));     // 截断
