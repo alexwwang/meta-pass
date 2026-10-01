@@ -521,8 +521,9 @@ static void page_store_qr_build(void)
             const uint8_t *b = (const uint8_t *)&ip;   // 网络字节序,内存序即 a.b.c.d
             snprintf(ip_txt, sizeof(ip_txt), "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
         }
-        char text[96];
-        snprintf(text, sizeof(text), "scan QR, or open:\nhttp://%s\npair code: %s",
+        char text[128];
+        snprintf(text, sizeof(text),
+                 "scan QR, or open:\nhttp://%s\npair code: %s\nStay here while installing",
                  ip_txt, (pair && !token_hex) ? "-" : (pair ? pair : "-"));
         lv_label_set_text(s_info, text);
     }
