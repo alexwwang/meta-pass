@@ -227,15 +227,19 @@ export async function getPlayDetail(id) {
 // 交互 v2:点 Install 先进 preflightMeta(轻:analyze+详情,亚秒级),手机
 // 弹出槽位选择器;用户选槽确认后才跑 prepareImage(重:数 MB 下载/校验/剥离)。
 // preflight(id) 保留为两阶段连跑的兼容入口(测试与旧调用)。
+// 轻量预检:analyze 与详情互相独立,并行发起 —— 点安装到出槽位抽屉的
+// 延迟 ≈ 两者较慢者;串行则叠加(真机反馈:点安装响应慢的一半来源)。
 export async function preflightMeta(id, hooks = {}) {
   const stage = (s) => hooks.stage?.(s);
   stage("analyze");
-  const a = await mpJson(`/api/analyze?id=${encodeURIComponent(id)}`);
+  const [aRes, play] = await Promise.all([
+    mpJson(`/api/analyze?id=${encodeURIComponent(id)}`),
+    getPlayDetail(id),
+  ]);
+  const a = aRes;
   if (!a || a.supported !== true) {
     return { ok: false, stage: "analyze", reason: a?.reason ?? "unsupported", detail: a?.detail ?? null };
   }
-  stage("market");
-  const play = await getPlayDetail(id);
   if (!play) return { ok: false, stage: "market", reason: "play metadata missing firmware fields" };
   return { ok: true, analyze: a, play };
 }
@@ -247,11 +251,15 @@ export async function preflightMeta(id, hooks = {}) {
 // 即 analyze 的 slug 兜底)降级到英文标题之后。
 const slugish = (s) => !s || /^community-/i.test(s);
 export function displayNameFor(analyzeName, play, userName = "") {
+  // 兜底 slug 剥掉 "community-" 前缀(纯装饰,无信息);真无更好候选时短一点
+  // 是一点。设备契约仍是 ≤32 可打印 ASCII —— 中文标题在设备端存不了,
+  // 这是 MNAM 契约决定,不是取不到(网页版只给自己看,无此约束)。
+  const slugClean = (analyzeName || "").replace(/^community-/i, "");
   return pickDisplayName(
     userName || null,
     slugish(analyzeName) ? "" : analyzeName,
     play?.enName || "",
-    analyzeName,
+    slugClean || null,
     play?.name,
     play?.id,
   );
@@ -263,7 +271,7 @@ export function displayNameFor(analyzeName, play, userName = "") {
 export async function prepareImage(meta, slot, hooks = {}, userName = "") {
   const stage = (s) => hooks.stage?.(s);
   const { analyze: a, play } = meta;
-  stage("download");
+  stage("下载固件");
   let merged;
   try {
     const r = await fetch(`${METAPASS}/api/firmware?path=${encodeURIComponent(play.downloadUrl)}`,
@@ -278,7 +286,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
              reason: `size mismatch: store=${play.size} got=${merged.length}` };
   }
 
-  stage("verify");
+  stage("校验完整性");
   const digest = await sha256Hex(merged);
   if (digest !== play.sha256) {
     return { ok: false, stage: "verify", reason: "store sha256 mismatch", got: digest };
@@ -287,7 +295,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
     return { ok: false, stage: "extract", reason: "not an esp merged image" };
   }
 
-  stage("extract");
+  stage("解包");
   let ext;
   try {
     ext = extractAppImage(merged);
@@ -295,7 +303,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
   }
 
-  stage("hash");
+  stage("本地复核");
   const appSha = await sha256Hex(ext.data);
   // §6.3.7:本地解包长度/哈希必须与 analyze 一致,不一致即拒绝(不信任半截数据)。
   if (!a.extracted || ext.length !== a.extracted.imageLen || appSha !== a.extracted.sha256) {
@@ -535,7 +543,7 @@ html,body{max-width:100%;overflow-x:hidden}
 .mp-coffee img{display:block;width:84px;height:84px;object-fit:cover;border:2px solid var(--ink);border-radius:var(--r)}
 .mp-coffee span{display:block;margin-top:4px;font-size:11px;color:var(--ink2)}
 .mp-coffee-lg{text-align:center}
-.mp-coffee-lg img{width:min(240px,70vw);height:auto;border:2px solid var(--ink);border-radius:var(--r)}
+.mp-coffee-lg img{width:min(280px,78vw);height:auto;border:2px solid var(--ink);border-radius:var(--r)}
 .mp-coffee-lg p{margin:10px 0 14px;font-size:14px}
 /* 回到顶部浮层:右下角,滚动后现身。 */
 .mp-top{position:fixed;right:16px;bottom:calc(20px + env(safe-area-inset-bottom));z-index:40;
@@ -635,7 +643,7 @@ export function boot(opts = {}) {
   root.innerHTML = `
     <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b></header>
     <div class=mp-hero>
-      <p class=steps><b>①</b> 设备进商店页,扫码或输配对码连接<br><b>②</b> 搜索/浏览玩法,点条目看详情<br><b>③</b> 选槽、可改名,点「确认安装」</p>
+      <p class=steps><b>①</b> 搜索/浏览玩法,点条目查看详情和安装<br><b>②</b> 安装期间请保持本页与设备商店页(SCAN ME)常驻,勿退出</p>
       <button class=mp-coffee id=mp-coffee aria-label="请作者喝咖啡">
         <img src="${METAPASS}/author-coffee.jpg" alt="请作者喝咖啡" width=84 height=84 loading=lazy>
         <span>请作者喝咖啡</span>
@@ -663,6 +671,14 @@ export function boot(opts = {}) {
     </button>`;
   (opts.mount ?? document.body).appendChild(root);
   const $ = (id) => root.querySelector(`#${id}`);
+  // 壳页(SHELL_HTML)的 "meta-pass install" 标题与 "device IP · session" 行
+  // 与模块 UI 重复(真机反馈两次):挂载后隐藏壳页头,保留配对区与 noscript。
+  if (typeof document !== "undefined") {
+    for (const sel of ["body > h3", "body > #st"]) {
+      const el = document.querySelector(sel);
+      if (el) el.style.display = "none";
+    }
+  }
   // 咖啡码:点击放大成浮层(手机扫码需要近距离)。
   $("mp-coffee").onclick = () => {
     setPanel(`<section class="mp-panel mp-coffee-lg">
@@ -709,13 +725,14 @@ export function boot(opts = {}) {
   // panelOpen:详情/槽位面板展开期间挂起自动加载 —— 面板在列表下方,
   // 不挂起的话"加载更多"按钮因面板出现而进入视区,IO 无限加载把面板
   // 越顶越远,永远够不到确认键(真机反馈)。
-  // 分类 = 一级列表(chips 行),键取官方 categoryCounts(服务端 category=
-  // 过滤只认这些键);discoveryTags 是另一套标签体系(multiplayer 等不是
-  // 合法 category 值,点了必失败 —— 真机 bug)。搜索与分类互相独立:搜索
-  // 清 lastCat,chips 归「全部」;点分类清空搜索框与 lastQ。
+  // 分类一级菜单 + chips 快捷标签 + 搜索,三者视图独立(真机定稿):
+  //   首屏 = 分类菜单(全部 + 各分类,带数量);点分类进二级玩法列表(顶部
+  //   「返回分类」);chips 行保留原布局,点击等同进二级;搜索独立,返回后
+  //   回菜单。
   let lastQ = "";
-  let lastCat = "";            // 官方分类键;"" = 全部(服务端过滤,实测生效)
-  let catTags = null;          // categoryCounts(官方分类目录:键 → 数量)
+  let lastCat = "";
+  let catTags = null;
+  let menuMode = true;
   let items = [];
   let hasMore = false;
   let total = null;
@@ -755,19 +772,7 @@ export function boot(opts = {}) {
       b.className = "mp-btn" + (key === lastCat ? "" : " ghost");
       b.style.cssText = "flex:none;padding:6px 12px;font-size:13px;border-radius:999px";
       b.textContent = label;
-      b.onclick = () => {
-        if (loading || key === lastCat) return;
-        // 进入该分类(一级 → 二级):与搜索视图互相独立,清空搜索条件。
-        lastCat = key;
-        lastQ = "";
-        $("mp-q").value = "";
-        renderCatChips();
-        items = []; hasMore = false; total = null; seen.clear();
-        $("mp-list").innerHTML = "";
-        clearPanel();
-        log(key ? `分类「${label}」加载中…` : "浏览全部玩法…");
-        fetchPage(0);
-      };
+      b.onclick = () => enterCat(key, label);
       host.appendChild(b);
     };
     mk("", "全部");
@@ -785,10 +790,62 @@ export function boot(opts = {}) {
   }
 
   function refreshCount() {
+    if (menuMode) {
+      $("mp-empty").style.display = "none";
+      $("mp-count").textContent = "选择分类,进入玩法列表";
+      $("mp-more").style.display = "none";
+      return;
+    }
     $("mp-empty").style.display = items.length === 0 && !loading ? "block" : "none";
     $("mp-count").textContent = items.length === 0 ? ""
       : `已加载 ${items.length}${total != null ? " / " + total : ""} 个` + (hasMore ? " · 下滑加载更多" : "");
     $("mp-more").style.display = hasMore ? "block" : "none";
+  }
+
+  // 一级菜单:全部 + 各分类行(数量来自官方 categoryCounts)。
+  function renderMenu() {
+    menuMode = true;
+    $("mp-list").innerHTML = "";
+    const mk = (key, label, count) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.className = "mp-row";
+      const cnt = count != null ? ` · ${count} 个` : "";
+      btn.innerHTML = `<span class=nm>${esc(label)}</span><span class=sz>${esc(cnt)}</span>${MP_CHEVRON}`;
+      btn.onclick = () => enterCat(key, label);
+      li.appendChild(btn);
+      $("mp-list").appendChild(li);
+    };
+    const sum = catTags ? Object.values(catTags).reduce((a, b) => a + b, 0) : null;
+    mk("", "全部玩法", sum);
+    for (const [k, label] of tagList()) mk(k, label, catTags?.[k]);
+    refreshCount();
+    log("选择分类,或点「全部玩法」浏览完整目录");
+  }
+
+  // 二级列表:顶部「返回分类」行 + 该分类玩法(可分页)。
+  function renderBackRow() {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.className = "mp-row";
+    btn.innerHTML = `<span class=nm style="color:var(--sky-dark)">‹ 返回分类</span>`;
+    btn.onclick = renderMenu;
+    li.appendChild(btn);
+    $("mp-list").prepend(li);
+  }
+
+  function enterCat(key, label) {
+    if (loading) return;
+    menuMode = false;
+    lastCat = key;
+    lastQ = "";                       // 分类视图与搜索独立:互清
+    $("mp-q").value = "";
+    renderCatChips();
+    items = []; hasMore = false; total = null; seen.clear();
+    $("mp-list").innerHTML = "";
+    renderBackRow();
+    log(key ? `分类「${label}」加载中…` : "浏览全部玩法…");
+    fetchPage(0);
   }
 
   async function fetchPage(offset) {
@@ -799,7 +856,11 @@ export function boot(opts = {}) {
       let cur = offset;
       for (let guard = 0; guard < 500; guard++) {
         const r = await searchPlays(lastQ, cur, 20, lastCat);
-        if (r.categoryCounts && !catTags) { catTags = r.categoryCounts; renderCatChips(); }
+        if (r.categoryCounts && !catTags) {
+          catTags = r.categoryCounts;
+          renderCatChips();
+          if (menuMode) renderMenu();   // 菜单带上数量重渲染
+        }
         let added = 0;
         for (const p of r.list) {
           if (seen.has(p.id)) continue;
@@ -844,19 +905,21 @@ export function boot(opts = {}) {
     }
     lastQ = q;
     lastCat = "";            // 搜索是独立视图:不带分类过滤,chips 归「全部」
+    menuMode = false;
     renderCatChips();
     items = []; hasMore = false; total = null; seen.clear();
     $("mp-list").innerHTML = "";
+    renderBackRow();
     await fetchPage(0);
     if (items.length === 0) log("没有结果", "");
     else if (q) log("");
   };
-  renderCatChips();                    // 首屏先给兜底分类,拿到 discoveryTags 后替换
-  fetchPage(0);                        // 首屏即目录(官方市场首屏=内容)
-  $("mp-more").onclick = () => { if (!panelOpen) fetchPage(items.length); };
+  renderCatChips();
+  renderMenu();                        // 首屏 = 分类一级菜单
+  $("mp-more").onclick = () => { if (!panelOpen && !menuMode) fetchPage(items.length); };
   if (typeof IntersectionObserver !== "undefined") {
     const io = new IntersectionObserver((entries) => {
-      if (!panelOpen && entries.some((e) => e.isIntersecting)) fetchPage(items.length);
+      if (!panelOpen && !menuMode && entries.some((e) => e.isIntersecting)) fetchPage(items.length);
     }, { rootMargin: "120px" });
     io.observe($("mp-more"));
   }
@@ -931,7 +994,8 @@ export function boot(opts = {}) {
             data-slot="${o.slot}" ${o.fit ? "" : "disabled"}>
             <span class=rd></span><span class=lb>槽位 ${o.slot}</span>
             ${o.slot === suggested ? '<span class=rec>建议</span>' : ""}
-            <span class=cap>${o.fit ? `上限 ${fmtMB(o.limit)}` : "空间不足"}</span>
+            <span class=cap>${o.fit ? `上限 ${fmtMB(o.limit)}`
+              : (Number.isFinite(imageLen) ? `需 ${fmtMB(imageLen)} > 上限 ${fmtMB(o.limit)}` : "空间不足")}</span>
           </button>`).join("")}
         </div>
         <div class=mp-actions>
@@ -1000,7 +1064,6 @@ export function boot(opts = {}) {
     }
     stageEl.textContent = "上传";
     log("✓ " + pre.offer.name + " → 槽位 " + slot + ",开始上传");
-    log("⚠ 安装期间请保持设备停留在商店页,勿退出 SCAN ME —— 离开会作废会话,需重新扫码");
     const r = await runInstall(bridge, pre.offer, pre.ext, {
       status: (s) => { if (s.confirmed) stageEl.textContent = "设备已确认,上传中"; },
       progress: (off, totalB) => {
