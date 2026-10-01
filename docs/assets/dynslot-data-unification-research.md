@@ -83,6 +83,44 @@ Facts this establishes:
 - Child-facing contract (`main/metapass_hook.h`) exposes **no storage APIs
   at all** — only signature self-diagnostic and return-to-launcher.
 
+### 2.4 Recording & retro-console deep-dive (measured)
+
+These are exactly the categories the question asks about — firmware whose
+function depends on multi-megabyte flash data archives. Five more binaries
+decoded at byte level:
+
+| Play | App | Declared data partitions | Access pattern (from binary strings) |
+|---|---|---|---|
+| 录音笔 (28) | factory 1,536K | `recordings` **6,592K** (0x81 = FAT, all-0xFF at ship) | FatFS: `esp_vfs_fat_spiflash_mount_rw_wl`, mount error string names `partition_label='%s'` — **mounted by label** (T1). Web UI exports recordings as WAV, supports delete — pure user data, runtime-generated |
+| GameBoy 掌机 (494) | game_app 3,072K | `roms` 4,096K (0x40, magic `FGBR` = bundled ROM pack) + `saves` 960K (0x82 = SPIFFS, mounted at `/saves`) | SPIFFS (`esp_spiffs.c`) + POSIX `/saves` paths + NVS blobs — **label-addressed** (T1). Two data classes: bundled content shipped in-image + runtime save archive |
+| 小小游戏机 (115) | factory 1,536K | `storage` 5,568K (0x82, magic `NESPACK1` = bundled NES ROM pack) | label `storage` present in strings; NVS for BLE — T1 |
+| 口袋游戏厅 (204) | factory 3,072K | none (template-aware: cardid + recovery) | child-compatible as-is |
+| 掌上游戏厅 (793) | factory **8,128K** | none | whole-flash standalone, not a child |
+
+Facts this establishes:
+
+1. **Archive-carrying plays are label-addressed (T1) without exception** —
+   FatFS/SPIFFS mounts by partition label through standard IDF APIs. M1
+   aliasing covers them with zero child changes.
+2. **The IDF filesystem mounts are size-dynamic**: `esp_vfs_fat_*` /
+   `esp_vfs_spiffs_*` derive the backing size from the partition table entry.
+   A carve may therefore **downsize** a declared data partition (e.g.
+   `recordings` 6,592K → 4M) and the firmware keeps working — no author
+   rebuild — as long as the firmware never hard-codes the size. (Correctness
+   of a shrunken FAT/SPIFFS *image* only matters when in-image content ships;
+   an empty-at-ship archive formats cleanly at any size.)
+3. **Capacity is the binding constraint** (pool 6,766,592 B):
+   - 录音笔: app + recordings = 1,572,864 + 6,753,280 ≈ 8.1 MB → full-size
+     child impossible; **downsized recordings carve works** (pool − app −
+     tails ≈ 4.9 MB available). Demonstrable v1 case.
+   - GameBoy: 3M + 4M + 960K ≈ 7.9 MB → impossible without the author
+     trimming the bundled `roms` pack; `saves` then rides M5 below.
+   - 小小游戏机: 1.5M + 5.5M ≈ 7.1 MB → author trim needed.
+4. **Two archive classes need different lifecycles**: bundled content
+   (shipped bytes, disposable — reinstall restores it) vs. runtime archives
+   (recordings, saves — must survive play upgrades and ideally uninstall).
+   This split drives M5.
+
 ## 3. Why runtime interception is off the table
 
 | Candidate | Why it fails |
@@ -152,25 +190,61 @@ the play's own carve by label convention, KV API backed by the play's NVS
 carve). Better ergonomics and a place to hang quotas/sharing, but purely
 cooperative — adapted children only. Not required for M1/M2 to work.
 
-### M4 — Shared zone for cross-play data
+### M4 — Shared partitions, generalized (size = device config item)
 
-One label-fixed `share` data partition (e.g., 256K–1M, carved once, outside
-any slot) for genuinely cross-play data (recordings, common assets).
-Convention + documentation; children address it by the fixed label. Size is
-a carve-time decision, so it costs pool space — make it optional and small by
-default.
+Generalized dedupe rule: carve partitions are unique per `(label, type)`;
+plays declaring an identical `(label, type)` pair map to the **same**
+partition (e.g., two recording apps both declaring `recordings`/fat share one
+archive). The old fixed `share` partition becomes just a convention label
+under this rule.
+
+**Size is a device configuration item**, decided per the user, not hard-coded:
+each shared partition's size is a fixed carve record in the store metadata,
+adjustable from the launcher UI / phone page (a carve change, so one reboot).
+Default: no shared partitions (0 B); range clamped (e.g. 256K–2M); runtime
+archives like recordings are the intended use. Bundled-content partitions are
+excluded from sharing — their `(label, type)` matches only when the in-image
+bytes match (sha256 in the analyze output), else they get private carves.
+
+### M5 — Detached data-carve lifecycle (runtime archives)
+
+Data carve records are **keyed by play identity (slug), not by slot index**,
+so they outlive the app image they belong to:
+
+```
+data_record = { slug, label, type, subtype, offset, size,
+                declared_sha256, state: PRISTINE | DIRTY | ARCHIVED }
+```
+
+- **First install**: allocate per analyze; install in-image content (state
+  PRISTINE; `declared_sha256` pins the pristine bytes).
+- **Reinstall / upgrade of the same slug**: records with matching labels are
+  **kept as-is** — saves and recordings survive the upgrade. Labels the new
+  version dropped become ARCHIVED; new labels allocate fresh.
+- **Runtime writes**: the play flips its records DIRTY (soft signal via the
+  launcher-visible tail sector or simply implied by play boot); DIRTY content
+  is not sha256-verifiable, so backup/restore relies on FS-level integrity
+  (FatFS WL / SPIFFS gc). PRISTINE records can always be restored from the
+  install image and need no backup.
+- **Resize** (new version declares a different size): v1 = allocate a new
+  record, copy in-pool, ARCHIVE the old (reclaimed under pool pressure).
+  In-place growth lands with the compaction phase.
+- **Uninstall**: default ARCHIVE (user data kept, reclaimable); explicit
+  "erase data" choice erases. Bundled-content records default to erase.
 
 ## 5. Unified model (schema delta on dynslot store metadata)
 
 ```
 slot[i] += data_count, data[j] = { label, type, subtype, offset, size, sha256 }
-carve  += optional fixed records: { label:"share", ... }
+carve  += shared_partitions[k] = { label, type, size }   // device config items
 ```
 
+Detached runtime archives (M5) live outside `slot[i]` in a top-level
+`data_records[]` keyed by slug, so they survive slot recarving.
+
 Lifecycle hooks in the launcher: install (M1 alias + content restore),
-uninstall (erase the slot's data carve records; archive optionally), boot
-(NVS whitelist sweep under M2), migration (dynslot compaction moves data
-records with their slots).
+uninstall (M5 archive/erase policy), boot (NVS whitelist sweep under M2),
+migration (dynslot compaction moves data records with their slots).
 
 ## 6. Boundaries and limitations
 
@@ -179,7 +253,10 @@ records with their slots).
   raw offsets; meta-pass itself relocates its only offender (MPCK).
 - D2: Whole-flash standalone plays (~8 MB factory, the majority of the
   catalog) are out of scope for child data management entirely — they are
-  not children.
+  not children. Archive-heavy plays (GameBoy, 小小游戏机) exceed the pool
+  even as children and need author-trimmed builds; M1's size-dynamic carve
+  can absorb moderate downsizes without rebuilds, bundled-content shrinks
+  cannot.
 - D3: Default-`nvs` children without namespace discipline share 24K with
   system credentials; M2 caps but does not eliminate the risk. Eradication
   requires children to adopt M1-style own partitions or M3.
@@ -191,13 +268,24 @@ records with their slots).
 - D6: The unified model is only as strong as analyze's parsing of the
   child's embedded table — malformed child tables are rejected at install
   (existing format gate), not reinterpreted.
+- D7: Shared partitions (M4) couple plays that share them: erasing the
+  shared `recordings` archive to satisfy one play's uninstall affects the
+  others — hence ARCHIVE-by-default and user-visible config.
+- D8: Downsize-by-carve (§2.4-2) assumes the firmware derives FS size from
+  the partition table, which standard IDF mounts do but a firmware with its
+  own size constant would not; analyze cannot detect that statically — first
+  hardware run per such play is the verification.
 
 ## 7. Recommendation
 
-1. Fold **data carve records** into the dynslot store metadata schema now
-   (reserved fields, zero cost).
-2. Ship **M1** with dynslot v1 — it is the same carve mechanism, just more
-   entry types; it also repairs the dropped-data-partition gap.
+1. Fold **data carve records** (M1/M5 schema) into the dynslot store metadata
+   now — reserved fields, zero cost.
+2. Ship **M1** with dynslot v1 — same carve mechanism, more entry types;
+   repairs the dropped-data-partition gap; demonstrable with 录音笔
+   (recordings carve downsized to fit the pool).
 3. Ship **M2** (namespace whitelist sweep) with dynslot v1 — cheap, caps the
    known nvs hazard.
-4. **M3/M4** as follow-ups; **runtime interception: never**.
+4. Ship **M5** lifecycle (survive-upgrade saves/recordings) with dynslot v1 —
+   it is metadata policy plus allocator rules, no new mechanisms.
+5. **M4** shared partitions as a device config item lands with the carve-UI
+   phase; **M3** as follow-up; **runtime interception: never**.
