@@ -165,17 +165,29 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
         // 在测试里同样不可见。
         const q = u.searchParams.get("q");
         const cat = u.searchParams.get("category");
+        const tag = u.searchParams.get("tag");
         const offset = Number(u.searchParams.get("offset") ?? 0) || 0;
         const limit = Number(u.searchParams.get("limit") ?? 20) || 20;
         let filtered = q
           ? plays.filter((p) => JSON.stringify(p).includes(q))
           : plays.slice();
         if (cat) filtered = filtered.filter((p) => p.category === cat);
+        if (tag) {
+          // 官方 tag= 语义(生产实测):must-play → mustPlay 标志,其余按 tags 数组。
+          filtered = filtered.filter((p) =>
+            tag === "must-play" ? p.mustPlay === true
+            : tag === "child-friendly" ? p.childFriendly === true
+            : Array.isArray(p.tags) && p.tags.includes(tag));
+        }
         return new Response(JSON.stringify({
           ok: true,
           plays: filtered.slice(offset, offset + limit),
           pagination: { total: filtered.length, hasMore: offset + limit < filtered.length },
           categoryCounts: { games: 3, learning: 2 },
+          discoveryTags: [
+            { key: "must-play", name: { zh: "必玩精选", en: "Must-play" }, sortOrder: 0, enabled: true },
+            { key: "multiplayer", name: { zh: "多人玩法", en: "Multiplayer" }, sortOrder: 1, enabled: true },
+          ],
         }), { status: 200 });
       }
       if (u.pathname === "/api/play") {
@@ -637,6 +649,26 @@ function bigFixtures() {
   console.log("PASS 7c: category filter server-side (4/6 games, param forwarded)");
 }
 
+// 7d. 标签过滤:tag= 走官方语义(mustPlay 标志 / tags 数组),与分类互斥。
+{
+  const many = [
+    { id: 3001, title: { zh: "甲" }, tags: ["multiplayer"], category: "games",
+      firmware: { url: "/api/download/x", size: 1024, sha256: "ab".repeat(32) } },
+    { id: 3002, title: { zh: "乙" }, mustPlay: true, category: "learning",
+      firmware: { url: "/api/download/x", size: 1024, sha256: "ab".repeat(32) } },
+    { id: 3003, title: { zh: "丙" }, category: "games",
+      firmware: { url: "/api/download/x", size: 1024, sha256: "ab".repeat(32) } },
+  ];
+  globalThis.fetch = installMockFetch({ plays: many });
+  const mp = await phone.searchPlays("", 0, 20, "", "multiplayer");
+  assert.deepEqual(mp.list.map((p) => p.id), [3001]);
+  const mvp = await phone.searchPlays("", 0, 20, "", "must-play");
+  assert.deepEqual(mvp.list.map((p) => p.id), [3002]);
+  assert.ok(globalThis.fetch.calls.some((c) => c.includes("tag=must-play")),
+    "tag param forwarded");
+  console.log("PASS 7d: tag filter (multiplayer / must-play semantics, param forwarded)");
+}
+
 // ── 8. 审计回归(见 docs/assets/mota-implementation-audit.md) ───────────
 // 8a. B1:boot 路径上传体 = ext(剥离镜像),merged 必被 runInstall 长度守卫拒绝。
 {
@@ -714,6 +746,33 @@ function bigFixtures() {
   const pre2 = await phone.prepareImage(mnamMeta, 0);
   assert.equal(pre2.offer.name, "Radar Pro", "MNAM name still first");
   console.log("PASS 8f: device name chain — MNAM > en title > community- slug");
+}
+
+// 8g. 解包上限一致性(真机 bug:AI随行导游 2.2MB,检查推荐 slot2、安装报
+// "exceeds max 2093056" —— extractAppImage 默认上限硬编码 2MB 槽,与 fit 表
+// 的真实槽几何不一致)。2.2MB 级夹具走完整 prepareImage 必须成功。
+const HUGE_APP = buildAppImage(2200000, 64);
+const HUGE_MERGED = buildMerged(HUGE_APP);
+const HUGE_APP_SHA = createHash("sha256").update(HUGE_APP).digest("hex");
+const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
+{
+  const hugeAnalyze = {
+    ...analyzeJson(),
+    store: { size: HUGE_MERGED.length, sha256: HUGE_MERGED_SHA },
+    extracted: { imageLen: HUGE_APP.length, sha256: HUGE_APP_SHA },
+    suggestedSlot: 2,
+  };
+  const hugePlay = JSON.parse(JSON.stringify(PLAY));
+  hugePlay.firmware.size = HUGE_MERGED.length;
+  hugePlay.firmware.sha256 = HUGE_MERGED_SHA;
+  globalThis.fetch = installMockFetch({ plays: [hugePlay], analyze: hugeAnalyze, firmware: HUGE_MERGED });
+  const meta = await phone.preflightMeta(563);
+  assert.equal(meta.ok, true);
+  const pre = await phone.prepareImage(meta, 2, {});
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  assert.equal(pre.offer.imageLen, HUGE_APP.length);
+  assert.ok(pre.offer.slots[2].fit && !pre.offer.slots[1].fit);
+  console.log(`PASS 8g: 2.2MB app extracts with true slot geometry (len=${HUGE_APP.length})`);
 }
 
 console.log("ALL phone-install TESTS PASSED");
