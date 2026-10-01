@@ -508,7 +508,7 @@ static void page_store_qr_build(void)
         }
     }
 
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 172, 216, 88, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 158, 216, 104, UI_PAPER);
     s_info = lv_label_create(panel);
     lv_obj_set_width(s_info, 196);
     lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
@@ -521,8 +521,12 @@ static void page_store_qr_build(void)
             const uint8_t *b = (const uint8_t *)&ip;   // 网络字节序,内存序即 a.b.c.d
             snprintf(ip_txt, sizeof(ip_txt), "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
         }
-        char text[96];
-        snprintf(text, sizeof(text), "scan QR, or open:\nhttp://%s\npair code: %s",
+        // 4 行信息(3 行连接信息 + 常驻提醒)与底部状态行并存:面板加高到
+        // 104px 真容纳 4×17 + 17 = 85px(旧 88px 面板塞第 4 行必与状态行
+        // 叠字 —— 真机 bug,靠加高解决而不是减行)。
+        char text[128];
+        snprintf(text, sizeof(text),
+                 "scan QR, or open:\nhttp://%s\npair code: %s\nStay here while installing",
                  ip_txt, (pair && !token_hex) ? "-" : (pair ? pair : "-"));
         lv_label_set_text(s_info, text);
     }
@@ -532,9 +536,7 @@ static void page_store_qr_build(void)
     lv_obj_set_style_text_font(s_status_line, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_status_line, lv_color_hex(UI_SKY_DARK), 0);
     lv_obj_align(s_status_line, LV_ALIGN_BOTTOM_LEFT, 2, -2);
-    // 提示语放状态行(信息窗只有 4 行高,塞第 4 行会跟状态行叠字 —— 真机
-    // bug):默认即"安装期间停留本页",会话消息出现时再让位。
-    lv_label_set_text(s_status_line, token_hex ? "Stay here while installing" : "token error");
+    lv_label_set_text(s_status_line, token_hex ? "waiting for phone..." : "token error");
 
     add_battery(s_scr);
     store_touch();
@@ -857,7 +859,7 @@ static void store_tick(lv_timer_t *t)
         }
         if (s_status_line) {
             lv_label_set_text(s_status_line,
-                              ist.message[0] ? ist.message : "stay here while installing");
+                              ist.message[0] ? ist.message : "waiting for phone...");
         }
         break;
     }

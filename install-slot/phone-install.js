@@ -198,12 +198,14 @@ async function mpJson(path) {
   return r.json();
 }
 
-export async function searchPlays(q, offset = 0, limit = 20, category = "") {
+export async function searchPlays(q, offset = 0, limit = 20, category = "", tag = "") {
   // 官方上游分页契约(生产实测):只认 offset+limit(page/pageSize 被静默忽略),
   // 响应 pagination.{total,hasMore};limit=20 ≈ 100KB/页,limit>=100 上游 502。
-  // category 为官方分类键(games/information/…,服务端过滤,实测生效)。
+  // category= 官方分类过滤(实测生效);tag= 官方标签过滤(实测生效:
+  // discoveryTags 的键,如 multiplayer)。category 与 tag 互斥使用。
   const cat = category ? `&category=${encodeURIComponent(category)}` : "";
-  const d = await mpJson(`/api/plays?multiDevice=false&q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}${cat}`);
+  const tg = tag ? `&tag=${encodeURIComponent(tag)}` : "";
+  const d = await mpJson(`/api/plays?multiDevice=false&q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}${cat}${tg}`);
   const plays = Array.isArray(d?.plays) ? d.plays : [];
   const pagination = d?.pagination ?? {};
   return {
@@ -212,6 +214,7 @@ export async function searchPlays(q, offset = 0, limit = 20, category = "") {
     total: Number.isFinite(pagination.total) ? pagination.total : null,
     categoryCounts: (d?.categoryCounts && typeof d.categoryCounts === "object")
       ? d.categoryCounts : null,
+    discoveryTags: Array.isArray(d?.discoveryTags) ? d.discoveryTags : null,
   };
 }
 
@@ -298,7 +301,12 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
   stage("解包");
   let ext;
   try {
-    ext = extractAppImage(merged);
+    // 解包上限 = 最大槽位上限(0x29E000-4KB=2740224)。extractAppImage
+    // 的默认上限是硬编码 2MB 槽(2093056)——用它解 2.2MB 应用必炸,
+    // 而 fit 表按真实槽几何说 slot2 可装:两条判断逻辑不一致(真机 bug:
+    // 检查推荐 slot2,安装报"最大 2093056";根因在此,不在任何 fit 判定)。
+    const maxSlotLimit = Math.max(...SLOT_GEOMETRY.map((s) => s.partSize)) - TAIL_SECTOR;
+    ext = extractAppImage(merged, maxSlotLimit);
   } catch (e) {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
   }
@@ -643,7 +651,7 @@ export function boot(opts = {}) {
   root.innerHTML = `
     <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b></header>
     <div class=mp-hero>
-      <p class=steps><b>①</b> 搜索/浏览玩法,点条目查看详情和安装<br><b>②</b> 安装期间请保持本页与设备商店页(SCAN ME)常驻,勿退出</p>
+      <p class=steps><b>①</b> 搜索/浏览玩法,点条目查看详情和安装<br><b>②</b> 选槽、可改名,点「确认安装」<br><b>③</b> 安装期间请保持本页与设备商店页(SCAN ME)常驻,勿退出</p>
       <button class=mp-coffee id=mp-coffee aria-label="请作者喝咖啡">
         <img src="${METAPASS}/author-coffee.jpg" alt="请作者喝咖啡" width=84 height=84 loading=lazy>
         <span>请作者喝咖啡</span>
@@ -725,13 +733,16 @@ export function boot(opts = {}) {
   // panelOpen:详情/槽位面板展开期间挂起自动加载 —— 面板在列表下方,
   // 不挂起的话"加载更多"按钮因面板出现而进入视区,IO 无限加载把面板
   // 越顶越远,永远够不到确认键(真机反馈)。
-  // 分类一级菜单 + chips 快捷标签 + 搜索,三者视图独立(真机定稿):
+  // 分类一级菜单(官方 category= 过滤)+ 标签 chips(官方 tag= 过滤,
+  // discoveryTags 键如 multiplayer —— 生产实测生效)+ 搜索,三者视图独立。
   //   首屏 = 分类菜单(全部 + 各分类,带数量);点分类进二级玩法列表(顶部
-  //   「返回分类」);chips 行保留原布局,点击等同进二级;搜索独立,返回后
-  //   回菜单。
+  //   「返回分类」);chips 标签行保留原布局,点击以 tag 过滤进二级;
+  //   搜索独立,返回后回菜单。
   let lastQ = "";
   let lastCat = "";
-  let catTags = null;
+  let lastTag = "";            // discoveryTags 键;与 category 互斥
+  let catTags = null;          // categoryCounts(分类目录:键 → 数量)
+  let discTags = null;         // discoveryTags(标签目录:键 + 中英文名)
   let menuMode = true;
   let items = [];
   let hasMore = false;
@@ -740,21 +751,33 @@ export function boot(opts = {}) {
   let panelOpen = false;
   const seen = new Set();
 
-  // 官方 categoryCounts 已观测键的中文名(与生产实测一致;未知键回退原名)。
+  // 分类 chips 数据源:官方 categoryCounts 键的中文名(未知键回退原名)。
   const CATEGORY_NAMES = {
     "games": "游戏", "learning": "学习", "information": "资讯",
-    "productivity": "效率工具", "media": "媒体", "child-friendly": "亲子益智",
-    "social": "社交", "developer": "开发者", "multi-device": "多设备",
-    "must-play": "必玩精选",
+    "productivity": "效率工具", "media": "媒体",
+    "social": "社交", "developer": "开发者",
   };
-  // 上游黑名单(生产逐键实测 502):这三个伪分类键会把上游打崩,手机侧
-  // 直接不出 —— 否则点了必"目录加载失败"(真机 bug 的另一半根因)。
-  const CATEGORY_BLOCKED = new Set(["child-friendly", "multi-device", "must-play"]);
-  function tagList() {
+  // 标签 chips 数据源:discoveryTags(官方标签目录)。兜底仅用于首帧未拿到
+  // 响应时(与生产实测的 enabled 标签对齐;未知键回退原名)。
+  const FALLBACK_DISC = [
+    ["must-play", "必玩精选"], ["multiplayer", "多人玩法"],
+    ["child-friendly", "亲子益智"], ["family", "亲子同乐"],
+  ];
+  function tagList() {           // 标签 chips
+    if (discTags && discTags.length) {
+      return discTags.filter((t) => t && typeof t.key === "string" && t.enabled !== false)
+        .sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99))
+        .map((t) => [t.key, t.name?.zh || t.name?.en || t.key]);
+    }
+    return FALLBACK_DISC;
+  }
+  function catList() {           // 分类菜单
     const keys = (catTags && Object.keys(catTags).length)
       ? Object.keys(catTags)
       : Object.keys(CATEGORY_NAMES);
-    return keys.filter((k) => !CATEGORY_BLOCKED.has(k))
+    // 上游黑名单(生产逐键实测 502):这三个伪分类键会把上游打崩,不出。
+    const blocked = new Set(["child-friendly", "multi-device", "must-play"]);
+    return keys.filter((k) => !blocked.has(k))
       .map((k) => [k, CATEGORY_NAMES[k] || k]);
   }
 
@@ -772,7 +795,7 @@ export function boot(opts = {}) {
       b.className = "mp-btn" + (key === lastCat ? "" : " ghost");
       b.style.cssText = "flex:none;padding:6px 12px;font-size:13px;border-radius:999px";
       b.textContent = label;
-      b.onclick = () => enterCat(key, label);
+      b.onclick = () => enterTag(key, label);
       host.appendChild(b);
     };
     mk("", "全部");
@@ -818,12 +841,12 @@ export function boot(opts = {}) {
     };
     const sum = catTags ? Object.values(catTags).reduce((a, b) => a + b, 0) : null;
     mk("", "全部玩法", sum);
-    for (const [k, label] of tagList()) mk(k, label, catTags?.[k]);
+    for (const [k, label] of catList()) mk(k, label, catTags?.[k]);
     refreshCount();
     log("选择分类,或点「全部玩法」浏览完整目录");
   }
 
-  // 二级列表:顶部「返回分类」行 + 该分类玩法(可分页)。
+  // 二级列表:顶部「返回分类」行 + 该分类/标签的玩法(可分页)。
   function renderBackRow() {
     const li = document.createElement("li");
     const btn = document.createElement("button");
@@ -834,17 +857,33 @@ export function boot(opts = {}) {
     $("mp-list").prepend(li);
   }
 
-  function enterCat(key, label) {
+  function enterCat(key, label) {          // 分类(一级菜单进入)
     if (loading) return;
     menuMode = false;
     lastCat = key;
-    lastQ = "";                       // 分类视图与搜索独立:互清
+    lastTag = "";
+    lastQ = "";
     $("mp-q").value = "";
     renderCatChips();
     items = []; hasMore = false; total = null; seen.clear();
     $("mp-list").innerHTML = "";
     renderBackRow();
     log(key ? `分类「${label}」加载中…` : "浏览全部玩法…");
+    fetchPage(0);
+  }
+
+  function enterTag(key, label) {          // 标签(chips 点击)
+    if (loading || (key === lastTag && !menuMode)) return;
+    menuMode = false;
+    lastTag = key;
+    lastCat = "";
+    lastQ = "";
+    $("mp-q").value = "";
+    renderCatChips();
+    items = []; hasMore = false; total = null; seen.clear();
+    $("mp-list").innerHTML = "";
+    renderBackRow();
+    log(key ? `标签「${label}」加载中…` : "浏览全部玩法…");
     fetchPage(0);
   }
 
@@ -855,11 +894,13 @@ export function boot(opts = {}) {
     try {
       let cur = offset;
       for (let guard = 0; guard < 500; guard++) {
-        const r = await searchPlays(lastQ, cur, 20, lastCat);
-        if (r.categoryCounts && !catTags) {
-          catTags = r.categoryCounts;
+        const r = await searchPlays(lastQ, cur, 20, lastCat, lastTag);
+        let fresh = false;
+        if (r.categoryCounts && !catTags) { catTags = r.categoryCounts; fresh = true; }
+        if (r.discoveryTags && !discTags) { discTags = r.discoveryTags; fresh = true; }
+        if (fresh) {           // 官方目录到手:chips 换真名,菜单带数量
           renderCatChips();
-          if (menuMode) renderMenu();   // 菜单带上数量重渲染
+          if (menuMode) renderMenu();
         }
         let added = 0;
         for (const p of r.list) {
@@ -904,7 +945,8 @@ export function boot(opts = {}) {
       return;
     }
     lastQ = q;
-    lastCat = "";            // 搜索是独立视图:不带分类过滤,chips 归「全部」
+    lastCat = "";            // 搜索是独立视图:不带分类/标签过滤,chips 归「全部」
+    lastTag = "";
     menuMode = false;
     renderCatChips();
     items = []; hasMore = false; total = null; seen.clear();
