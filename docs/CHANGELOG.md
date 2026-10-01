@@ -4,7 +4,107 @@
 
 # Changelog
 
-## Unreleased
+## v1.1.0 (2026-10-02)
+
+Store install release: the flagship feature is the market install chain — the phone
+web module (search → analyze → download → verify → extract → slot-fit → upload) drives
+the device's LAN install service, and the production metapass site (`metapass.
+chuanxilu.net`) serves the Worker proxy plus the remotely-loaded phone module. Slot
+interaction collapses to the list page: OK boots the highlighted slot in one press
+(signed or unsigned; the warning/detail/delete-confirm pages are gone — upstream
+48e85590 semantics), and the easter egg lives on the highlighted slot. Two upstream
+fixes ported: child-firmware deep-sleep wake (GPIO holds + otadata renewal) and the
+QR/wifi reliability rounds. The four contracts frozen at v1.0.0 (hybrid single-file
+MPUPV2, backup manifest v1, signature format, 3-slot partition layout) are unchanged;
+the device↔phone protocol is backward compatible (`manifest.slot` is optional — old
+firmware ignores it and keeps the physical-confirmation flow). CI deploys through the
+same `tools/pages-deploy.py` REST path as local production deploys. Firmware artifact:
+`build/meta-pass_v1.1.0.bin`.
+
+- **v3.2-r10.37 (2026-10-02) CI unification + glibc fix**: `workers.yml` now deploys
+  through the same `tools/pages-deploy.py` REST path used for every production deploy
+  (wrangler-action dropped — wrangler 4.145.0 `pages deploy` hangs after upload,
+  verified locally); the script accepts `CF_API_TOKEN` for CI while the local OAuth +
+  refresh-token rotation path is unchanged. First main push surfaced two CI-only
+  failures: bun is not preinstalled on ubuntu-latest (setup-bun step added, SHA-pinned),
+  and `strtok_r` in `meta_store_prov.c` needs `_POSIX_C_SOURCE` under `-std=c11` on
+  glibc (macOS is lenient, so local `--static` stayed green).
+
+- **v3.2-r10.35 (2026-10-02) one-press boot — detail and delete-confirm pages removed
+  (user final)**: the slot list is now the only slot-interaction page. OK boots the
+  highlighted slot directly (signed or unsigned, zero confirmation; unbootable slots
+  silently no-op); the easter egg is the sole hidden flow — UP UP DOWN DOWN rapid presses
+  (PRESS-qualified, zero interference with CLICK row navigation) on the highlighted slot.
+  Device-side delete is gone (web re-flash covers it). Aligns with upstream 48e85590
+  semantics plus this branch's store flow.
+
+- **v3.2-r10.34 (2026-10-02) upstream ports — deep-sleep wake + unsigned quick-boot**:
+  from `jiandanc/meta-pass`. (1) Child-firmware deep-sleep wake had two independent
+  defects: the child's GPIO holds survive reset and swallow all launcher SPI commands
+  (backlight on, black screen — fixed by releasing global + per-pin holds before SPI
+  takeover, then 0x11 SLPOUT + 120 ms before panel reset, abandoning the SWRESET-first
+  order); and wake-from-deep-sleep is a full boot, so the child's otadata copy still
+  read PENDING_VERIFY and the rollback logic marked it ABORTED, dropping to factory
+  (fixed by branching on reset reason in the bootloader hook — deep-sleep wake renews
+  the running child's copy to VALID after CRC re-check, erase-before-write; cold reset
+  keeps the original rollback policy). Upstream's 6-case wake-contract test +
+  `must_resume` full-state coverage imported into `--static`. (2) Unsigned firmware
+  boot no longer shows a warning page (48e85590 semantics, user-trimmed this round to
+  the confirm page only; the full page set removal landed in r10.35).
+
+- **v3.2-r10.33 (2026-10-01) R2 firmware materialization dropped (user decision)**:
+  `/api/firmware` is a pure streaming CORS proxy again — no server-side cache,
+  materialization, or strip. Rationale: phone-side strip costs ~2 ms + double hash
+  0.3–1 s at the measured 45 MB/s (<5% of total install time), and the store SHA-256
+  gate must run phone-side anyway (trust chain); caching only saved the origin
+  download leg while adding cache complexity. The 6 orphan `firmware/*` R2 objects
+  were deleted one by one.
+
+- **v3.2-r10.31/r10.32 (2026-10-01) device UI polish**: DONE page shows the actual
+  installed `st.slot` (was hardcoded slot0); SCAN ME panel trued to 104 px — 4 content
+  rows + status line, title/QR/panel at equal 5 px gaps (y=171); BACK TO LIST
+  double-fire fix — DONE judged by CLICK/LONG (not event type, since PRESS+CLICK each
+  fired a migration) plus a 400 ms swallow window (`s_list_arm_at`); SCAN ME page
+  renews its idle deadline (zero requests while the phone browses; a button touch
+  would otherwise air-drop the session).
+
+- **v3.2-r10.30 (2026-10-01) phone install UX overhaul — interaction moves to the
+  phone (user decision)**: `manifest.slot` becomes an optional protocol field (≥0 =
+  phone-selected slot: prepare arrives pre-confirmed, skipping the device's P2/P3
+  physical confirmation; absent/-1 = the legacy device-physical flow, so old firmware
+  stays compatible). Phone side: a slot selector with oversized slots disabled
+  ("需 x.xMB > 上限 x.xMB"); full UI redesign in the impeccable Operate mode with the
+  device pixel palette (ink/paper/sky/grass); the panel becomes an overlay (bottom
+  drawer on mobile, centered on desktop, mask-tap closes); category first-level menu
+  (All + per-category counts) with tag chips = discoveryTags via `tag=` filtering
+  (verified live: `tag=multiplayer` works; three pseudo-category keys blacklisted for
+  upstream 502s); offset+limit pagination per the official contract (`page/pageSize`
+  silently ignored; `limit≥100` → 502) with IntersectionObserver auto-load; install
+  rename with composition awareness (IME double-input guard, ≤32 printable ASCII);
+  `displayNameFor` chain (MNAM real name > title.en > community- prefix-stripped slug >
+  Chinese title > `play <id>`); every failure (unsupported / oversized / download
+  pipeline / runInstall) lands in the failSheet overlay; hero gets a three-line guide.
+  Critical fix: `extractAppImage`'s default cap was hardcoded to the 2 MB slot
+  (SLOT_CAPACITY 2093056) — the root cause of play 792 (2245952 B extracted)
+  passing the fit check for slot2 then failing install with "exceeds max 2093056";
+  now passes explicitly `max(partSize) - TAIL_SECTOR` = 2740224 (live-verified, PASS
+  8g pins it). Coffee QR (`author-coffee.jpg`) in a fixed top-right dock with i18n
+  caption. The Worker gains `/api/play?id=`, `/api/analyze` (CORS), and streams
+  `/api/firmware` via `new Response(upstream.body)` with a `/api/download/` prefix
+  whitelist.
+
+- **v3.2-r10.24–r10.25 (2026-10-01) device reliability — QR and WiFi**: the SCAN ME
+  QR rendered blank because `lv_qrcode_update` silently fails on the I1 canvas (and
+  `lv_canvas_get_px` reads all-zero on I1, so the probe was invalid) — the lv_qrcode
+  widget is replaced by qrcodegen fixed-version-5 direct encoding drawn pixel-by-pixel
+  via `lv_canvas_set_px` on an RGB565 canvas (~37 KB static bss: `s_qr_tmp/s_qr_data/
+  s_qr_canvas_buf`). WiFi: ONLINE-state `EV_DISCONNECT` now auto-reconnects (ssid/pass
+  snapshot, 3-attempt cap, stale bits cleared to avoid false triggers). The "store
+  re-entry credential loss" mystery solved — credentials were never lost: exiting the
+  store left `ap_start()`'s AP running and `begin()` saw AP_UP and returned
+  idempotently; fixed by setting `s_ap_after_teardown` only in `reset_wifi` and having
+  `begin()` tear down the AP when credentials exist. Credentials are now dual-written:
+  NVS plus a raw-flash backup at the 0x35A000 gap (magic + CRC).
 
 - **v3.2-r10.23 (2026-10-01) mota implementation audit + fixes**: full audit of the
   `feat/mota` LAN-install implementation against the design doc (report:
