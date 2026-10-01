@@ -99,6 +99,19 @@ CONFIG_FREERTOS_HZ=1000
 # otadata 收编存量)——任何重启(崩溃/断电/看门狗)后 bootloader 自动回退 factory。
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
+# --- 深睡唤醒"续玩"不需要额外 Kconfig(2026-09-24) ---
+# 子固件按自身空闲超时(如 60s)息屏进 deep sleep 后,按键唤醒由本项目 bootloader
+# hook(bootloader_components/meta_boot_hooks/)处理:把该槽位 PENDING_VERIFY 的
+# otadata 副本续期为 VALID,bootloader 随即正常引导回该槽位。冷启动(断电/看门狗/
+# 崩溃/软件重启)仍走 VALID 擦除策略,回 factory 列表页,单次会话模型不变。
+#
+# 曾尝试 CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y,已废弃:它把"上次引导的
+# 分区"记在 RTC 快速内存顶部(rtc_retain_mem_t),而子固件各自的构建默认不含
+# CONFIG_BOOTLOADER_RESERVE_RTC_MEM —— 其链接脚本不为 bootloader 预留该区域
+# (RTC 定时器数据正好覆盖这条记录),子固件一运行记录即失效,快速引导静默回退
+# 常规路径,仍回 factory(真机实测:唤醒后落到启动器列表页)。该选项要求每个
+# 子固件配合,与 AGENTS.md"系统级策略不得委托子固件"冲突;改写 otadata 无此依赖。
+
 # --- Bluetooth LE ---
 # meta-pass 启动器不使用 BLE(Wi-Fi SoftAP 导入;BLE 协议栈占 ~150KB),整块移除。
 # 子固件在各自分支自行配置。
