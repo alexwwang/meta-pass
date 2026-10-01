@@ -1,5 +1,7 @@
 // main/meta_store_prov.c —— 实现见头文件注释。零 IDF 依赖:host 单测
 // (tests/test_meta_store_prov.c)与真机(meta_store_net.c)链接同一份代码。
+#define _POSIX_C_SOURCE 200809L   // strtok_r:glibc + -std=c11 需显式 POSIX 宏
+                                  // (macOS 宽松故本地不炸,CI ubuntu gcc 炸,实测)
 #include "meta_store_prov.h"
 
 #include <stdio.h>
