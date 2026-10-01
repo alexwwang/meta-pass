@@ -216,62 +216,14 @@ export default {
       return proxy(`/api/plays/id/${id}`);
     }
 
-    // ── 手机安装固件下载(浏览器代理 + 边缘/R2 物化) ────────────────────
-    // 手机链路此前直连上游,每次冷拉数 MB 且 R2 零增长(真机审计发现)。
-    // 现按 path 物化:边缘(短 TTL,防同 path 重发布陈旧)→ R2(冷拉 tee 写入,
-    // 同 path 内容更新时冷拉即覆写)→ 上游冷拉。字节信任仍归手机侧
-    // (商店 sha256 三道门不受影响)。
+    // ── 手机安装固件下载(纯 CORS 代理,无服务端缓存) ────────────────────
+    // 用户定稿:不物化市场固件。手机经此代理直连官方市场下载(官方无 CORS
+    // 头,浏览器读响应必须代一趟),剥离与写入全在手机/设备侧完成;字节信任
+    // = 手机侧商店 sha256 三道门。历史 R2 中的 firmware/* 孤儿对象已清理。
     if (path === "/api/firmware") {
       const p = url.searchParams.get("path") ?? "";
       if (!p.startsWith("/api/download/")) return err(403, "forbidden path");
-      const fwCors = (resp) => {
-        const h = new Headers(resp.headers);
-        h.set("access-control-allow-origin", "*");
-        return new Response(resp.body, { status: resp.status, headers: h });
-      };
-      const edgeKey = new Request(`${url.origin}/cache/firmware?path=${encodeURIComponent(p)}`);
-      try {
-        const hit = await caches.default.match(edgeKey);
-        if (hit) return fwCors(hit);
-        const r2k = `firmware${p}.bin`;
-        if (env.meta_pass_extracted) {
-          const obj = await env.meta_pass_extracted.get(r2k);
-          if (obj) {
-            const hitHeaders = { "content-type": "application/octet-stream", "x-source": "r2",
-                                 "cache-control": "public, max-age=3600" };
-            ctx.waitUntil(caches.default.put(edgeKey, new Response(obj.body, {
-              status: 200, headers: hitHeaders,
-            })).catch(() => {}));
-            return fwCors(new Response(obj.body, { status: 200, headers: hitHeaders }));
-          }
-        }
-        const upstream = await fetch(BACKEND + p, { redirect: "follow" });
-        if (!upstream.ok) return err(502, `upstream ${upstream.status}: ${upstream.statusText}`);
-        const body = await upstream.arrayBuffer();   // 冷路径一次性缓冲,供响应+物化双写
-        const ct = upstream.headers.get("content-type") || "application/octet-stream";
-        // R2 写内联( awaited ):跨 colo 共享,是热路径的保底;写失败要可见
-        // (此前 waitUntil 静默吞错,生产表现为"R2 永不增长"却无法诊断)。
-        let matErr = "";
-        let matOk = "no-binding";
-        if (env.meta_pass_extracted) {
-          try {
-            await env.meta_pass_extracted.put(r2k, body.slice(0), { customMetadata: { path: p } });
-            matOk = "r2-put-ok";
-          } catch (e) {
-            matErr = String(e && e.message ? e.message : e).slice(0, 80);
-          }
-        }
-        ctx.waitUntil(caches.default.put(edgeKey, new Response(body.slice(0), {
-          status: 200,
-          headers: { "content-type": ct, "x-source": "cold", "cache-control": "public, max-age=3600" },
-        })).catch(() => {}));
-        const respHeaders = { "content-type": ct, "content-length": String(body.byteLength),
-                              "x-source": "cold", "x-mat": matOk };
-        if (matErr) respHeaders["x-mat-err"] = matErr;
-        return fwCors(new Response(body, { status: 200, headers: respHeaders }));
-      } catch (e) {
-        return err(502, `firmware failed: ${e.message}`);
-      }
+      return proxy(p);
     }
 
     // ── 设备端 OTA 商店通道(与 tools/install-slot/server.mjs 同契约) ──
