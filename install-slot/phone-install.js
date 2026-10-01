@@ -525,7 +525,20 @@ font-size:13.5px;color:var(--ink2)}
 .mp-more{display:block;width:100%;margin-top:10px}
 .mp-panel{border:2px solid var(--ink);border-radius:var(--r);background:var(--card);
 padding:16px;margin-top:14px;animation:mp-in .18s ease-out}
+.mp-panel-slot{position:relative}   /* 保留 DOM 位置占位,内容由浮层呈现 */
 @keyframes mp-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.mp-overlay{position:fixed;inset:0;z-index:50;background:rgba(23,32,42,.48);
+display:flex;align-items:flex-end;justify-content:center;animation:mp-fade .15s ease-out}
+@keyframes mp-fade{from{opacity:0}}
+.mp-sheet{background:var(--card);border:2px solid var(--ink);border-bottom:0;
+border-radius:12px 12px 0 0;width:100%;max-width:30em;max-height:84vh;
+overflow-y:auto;padding:18px 16px calc(24px + env(safe-area-inset-bottom));
+animation:mp-sheet .18s ease-out}
+@media(min-width:520px){
+.mp-overlay{align-items:center;padding:16px}
+.mp-sheet{border-radius:var(--r);border-bottom:2px solid var(--ink);max-height:80vh}}
+@keyframes mp-sheet{from{transform:translateY(24px)}to{transform:none}}
+.mp-sheet .mp-panel{border:0;padding:0;margin-top:0;animation:none}   /* 面板进浮层后去重边框 */
 .mp-panel h4{margin:0 0 4px;font-size:16px;letter-spacing:-.01em}
 .mp-meta{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;margin:10px 0 14px;
 font-size:13px}
@@ -620,11 +633,15 @@ export function boot(opts = {}) {
   }
 
   // 分页浏览状态机(官方契约:offset+limit,pagination.{total,hasMore})。
+  // panelOpen:详情/槽位面板展开期间挂起自动加载 —— 面板在列表下方,
+  // 不挂起的话"加载更多"按钮因面板出现而进入视区,IO 无限加载把面板
+  // 越顶越远,永远够不到确认键(真机反馈)。
   let lastQ = "";
   let items = [];
   let hasMore = false;
   let total = null;
   let loading = false;
+  let panelOpen = false;
   const seen = new Set();
 
   function renderRow(p) {
@@ -700,16 +717,25 @@ export function boot(opts = {}) {
     else if (q) log("");
   };
   fetchPage(0);                        // 首屏即目录(官方市场首屏=内容)
-  $("mp-more").onclick = () => fetchPage(items.length);
+  $("mp-more").onclick = () => { if (!panelOpen) fetchPage(items.length); };
   if (typeof IntersectionObserver !== "undefined") {
     const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting)) fetchPage(items.length);
+      if (!panelOpen && entries.some((e) => e.isIntersecting)) fetchPage(items.length);
     }, { rootMargin: "120px" });
     io.observe($("mp-more"));
   }
 
-  function setPanel(html) { $("mp-panel").innerHTML = html; }
-  function clearPanel() { $("mp-panel").innerHTML = ""; }
+  // 面板以浮层(底部抽屉,桌面端居中弹层)呈现,盖在列表上方 —— 列表可以
+  // 很长,内联在列表下方会被无限加载越顶越远(真机反馈)。点遮罩关闭。
+  function setPanel(html) {
+    panelOpen = html !== "";
+    $("mp-panel").innerHTML = html
+      ? `<div class=mp-overlay id=mp-overlay><div class=mp-sheet>${html}</div></div>`
+      : "";
+    const ov = $("mp-overlay");
+    if (ov) ov.onclick = (e) => { if (e.target === ov) clearPanel(); };
+  }
+  function clearPanel() { panelOpen = false; $("mp-panel").innerHTML = ""; }
 
   function showDetail(p) {
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "—";
@@ -724,7 +750,6 @@ export function boot(opts = {}) {
       <p class=mp-status style="margin-top:8px">安装前会校验设备兼容性并选择槽位</p>
     </section>`);
     $("mp-install").onclick = () => install(p);
-    $("mp-panel").scrollIntoView?.({ behavior: "smooth", block: "nearest" });
   }
 
   // 交互 v2:analyze(轻)→ 手机选槽 → 确认后才下载/校验/剥离(重)。
