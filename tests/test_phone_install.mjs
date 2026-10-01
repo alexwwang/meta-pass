@@ -159,20 +159,26 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
     calls.push(u.pathname + u.search);
     if (u.origin === "https://metapass.chuanxilu.net" || u.origin === "https://metapass.example") {
       if (u.pathname === "/api/plays") {
-        // Worker 契约:url.search 原样转发(审计 B3);mock 也必须执行 q 过滤
-        // 与 offset/limit 分页(生产实测契约:只认 offset+limit,响应
-        // pagination.{total,hasMore}),否则"query 被丢弃/翻页失效"在
-        // 测试里同样不可见。
+        // Worker 契约:url.search 原样转发(审计 B3);mock 也必须执行 q 过滤、
+        // category 过滤(生产实测服务端生效)与 offset/limit 分页(响应
+        // pagination.{total,hasMore}),否则"query 被丢弃/分类失效/翻页失效"
+        // 在测试里同样不可见。
         const q = u.searchParams.get("q");
+        const cat = u.searchParams.get("category");
         const offset = Number(u.searchParams.get("offset") ?? 0) || 0;
         const limit = Number(u.searchParams.get("limit") ?? 20) || 20;
-        const filtered = q
+        let filtered = q
           ? plays.filter((p) => JSON.stringify(p).includes(q))
           : plays.slice();
+        if (cat) filtered = filtered.filter((p) => p.category === cat);
         return new Response(JSON.stringify({
           ok: true,
           plays: filtered.slice(offset, offset + limit),
           pagination: { total: filtered.length, hasMore: offset + limit < filtered.length },
+          discoveryTags: [
+            { key: "games", name: { zh: "游戏", en: "Games" }, sortOrder: 0 },
+            { key: "learning", name: { zh: "学习", en: "Learning" }, sortOrder: 1 },
+          ],
         }), { status: 200 });
       }
       if (u.pathname === "/api/play") {
@@ -601,6 +607,7 @@ function bigFixtures() {
   const many = Array.from({ length: 25 }, (_, i) => ({
     id: 1000 + i,
     title: { zh: `玩法${i}` },
+    category: i % 2 ? "games" : "learning",
     firmware: { url: "/api/download/x", size: 1024, sha256: "ab".repeat(32) },
   }));
   globalThis.fetch = installMockFetch({ plays: many });
@@ -613,7 +620,24 @@ function bigFixtures() {
   assert.equal(p1.hasMore, false);
   const ids0 = new Set(p0.list.map((p) => p.id));
   assert.ok(p1.list.every((p) => !ids0.has(p.id)), "pages must not overlap");
+  assert.ok(Array.isArray(p0.tags) && p0.tags.length >= 2, "discoveryTags surfaced");
   console.log("PASS 7b: pagination — page 1 (20, hasMore) → page 2 (5, end), no overlap");
+}
+// 7c. 分类过滤:category 参数服务端过滤(生产实测生效)。
+{
+  const many = Array.from({ length: 6 }, (_, i) => ({
+    id: 2000 + i,
+    title: { zh: `分类玩法${i}` },
+    category: i < 4 ? "games" : "learning",
+    firmware: { url: "/api/download/x", size: 1024, sha256: "ab".repeat(32) },
+  }));
+  globalThis.fetch = installMockFetch({ plays: many });
+  const g = await phone.searchPlays("", 0, 20, "games");
+  assert.equal(g.total, 4);
+  assert.ok(g.list.every((p) => p.category === "games"));
+  assert.ok(globalThis.fetch.calls.some((c) => c.includes("category=games")),
+    "category param forwarded");
+  console.log("PASS 7c: category filter server-side (4/6 games, param forwarded)");
 }
 
 // ── 8. 审计回归(见 docs/assets/mota-implementation-audit.md) ───────────
@@ -669,6 +693,18 @@ function bigFixtures() {
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.slot, 2);
   console.log("PASS 8d: phone-picked slot → device pre-confirms, install completes without device interaction");
+}
+
+// 8e. 安装名改写:用户输入优先生效;非 ASCII 被剥(设备 MNAM ≤32 可打印 ASCII 契约)。
+{
+  globalThis.fetch = installMockFetch();
+  const meta = await phone.preflightMeta(563);
+  const pre = await phone.prepareImage(meta, 0, {}, "My-Radar-01");
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  assert.equal(pre.offer.name, "My-Radar-01");
+  const pre2 = await phone.prepareImage(meta, 0, {}, "雷达Name");
+  assert.match(pre2.offer.name, /^[\x20-\x7e]{1,32}$/, "sanitized to printable ASCII ≤32");
+  console.log("PASS 8e: user-edited install name wins; non-ASCII stripped");
 }
 
 console.log("ALL phone-install TESTS PASSED");

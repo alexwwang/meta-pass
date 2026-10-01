@@ -14,10 +14,12 @@
 #include <string.h>
 
 #include "esp_event.h"
+#include "esp_flash.h"      // 裸 flash 凭证备份(读/写/擦 sector)
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_random.h"
+#include "esp_rom_crc.h"    // 凭证备份 CRC32
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -80,6 +82,10 @@ static char s_last_ssid[33];
 static char s_last_pass[65];
 static bool s_was_online;                        // sta_online 成功过(重连前置)
 static volatile bool s_teardown_req;   // stop()/reset_wifi() 请求:任务内 teardown+回落 AP
+static volatile bool s_ap_after_teardown; // 仅 reset_wifi(改网意图)要求 teardown 后重开 AP;
+                                         // 普通离店(teardown)不得留热点 —— 否则重进商店时
+                                         // begin() 见 AP_UP 幂等返回,用户被永远卡在配网页,
+                                         // 而 WiFi 凭证明明还在(真机 bug,会话三观察全吻合)。
 
 static void set_state(sn_state_t st, const char *msg)
 {
@@ -110,26 +116,99 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
 
 static const char k_nvs_ns[] = "metapass";
 
+// 裸 flash 凭证备份:cardid(0x356000+0x4000)与 ota_1(0x360000)之间的
+// 未分配空隙 0x35A000..0x360000(24KB,无分区认领,任何子固件都不会初始化
+// 它)。真机 bug:子固件(社区玩法)启动会把共享 nvs 分区格式化,WiFi 凭证
+// 随子固件槽位注册表一起被抹 → 重进商店要求重新配网。对策 = 双写:
+// NVS 主读(快),裸区备份(nvs 读不到时自愈恢复)。单 sector 擦写,
+// magic+len+crc 校验,ssid 空即视为无效。
+#define CRED_BAK_OFFSET   0x35A000u
+#define CRED_BAK_MAGIC    0x4B43504Du   // "MPCK"
+#define CRED_BAK_SSID_MAX 33
+#define CRED_BAK_PASS_MAX 65
+
+typedef struct {
+    uint32_t magic;
+    uint32_t ssid_len;
+    uint32_t pass_len;
+    uint32_t crc32;      // 覆盖 ssid_len/pass_len + ssid + pass
+    char     ssid[CRED_BAK_SSID_MAX];
+    char     pass[CRED_BAK_PASS_MAX];
+} cred_backup_t;
+
+static uint32_t cred_crc(const cred_backup_t *b)
+{
+    // esp_rom_crc32_le 初值 0 兼容标准 CRC-32/MPEG 校验用途,自洽即可。
+    uint32_t c = esp_rom_crc32_le(0, (const uint8_t *)&b->ssid_len,
+                                  sizeof(b->ssid_len) + sizeof(b->pass_len));
+    c = esp_rom_crc32_le(c, (const uint8_t *)b->ssid, b->ssid_len);
+    c = esp_rom_crc32_le(c, (const uint8_t *)b->pass, b->pass_len);
+    return c;
+}
+
+static bool cred_backup_load(char ssid[33], char pass[65])
+{
+    cred_backup_t b;
+    if (esp_flash_read(NULL, &b, CRED_BAK_OFFSET, sizeof(b)) != ESP_OK) return false;
+    if (b.magic != CRED_BAK_MAGIC) return false;
+    if (b.ssid_len == 0 || b.ssid_len >= CRED_BAK_SSID_MAX
+        || b.pass_len >= CRED_BAK_PASS_MAX) return false;
+    if (cred_crc(&b) != b.crc32) return false;
+    if (b.ssid[b.ssid_len] != '\0' || (b.pass_len > 0 && b.pass[b.pass_len] != '\0')) return false;
+    memcpy(ssid, b.ssid, b.ssid_len + 1);
+    memcpy(pass, b.pass, b.pass_len + 1);
+    return true;
+}
+
+static void cred_backup_save(const char *ssid, const char *pass)
+{
+    cred_backup_t b;
+    memset(&b, 0xFF, sizeof(b));   // 与擦除态一致,未用字节不引入垃圾
+    b.magic = CRED_BAK_MAGIC;
+    b.ssid_len = (uint32_t)strlen(ssid);
+    b.pass_len = (uint32_t)strlen(pass);
+    if (b.ssid_len == 0 || b.ssid_len >= CRED_BAK_SSID_MAX
+        || b.pass_len >= CRED_BAK_PASS_MAX) return;
+    memcpy(b.ssid, ssid, b.ssid_len);
+    memcpy(b.pass, pass, b.pass_len);
+    b.ssid[b.ssid_len] = '\0';
+    b.pass[b.pass_len] = '\0';
+    b.crc32 = cred_crc(&b);
+    if (esp_flash_erase_region(NULL, CRED_BAK_OFFSET, 4096) != ESP_OK) return;   // 1 sector
+    esp_flash_write(NULL, &b, CRED_BAK_OFFSET, sizeof(b));
+}
+
+static void creds_save(const char *ssid, const char *pass);   // 定义在 creds_load 之后(备份自愈回写用)
+
 static bool creds_load(char ssid[33], char pass[65])
 {
     nvs_handle_t h;
-    if (nvs_open(k_nvs_ns, NVS_READONLY, &h) != ESP_OK) return false;
-    size_t l1 = 33, l2 = 65;
-    const bool ok = nvs_get_str(h, "sta_ssid", ssid, &l1) == ESP_OK
-                 && nvs_get_str(h, "sta_pass", pass, &l2) == ESP_OK
-                 && ssid[0] != '\0';
-    nvs_close(h);
-    return ok;
+    if (nvs_open(k_nvs_ns, NVS_READONLY, &h) == ESP_OK) {
+        size_t l1 = 33, l2 = 65;
+        const bool ok = nvs_get_str(h, "sta_ssid", ssid, &l1) == ESP_OK
+                     && nvs_get_str(h, "sta_pass", pass, &l2) == ESP_OK
+                     && ssid[0] != '\0';
+        nvs_close(h);
+        if (ok) return true;
+    }
+    // NVS 缺失(子固件格式化 nvs 分区):裸区备份自愈 —— 恢复 NVS 主存,
+    // 下次读路径不变。备份也读不到才算真无凭证。
+    if (!cred_backup_load(ssid, pass)) return false;
+    ESP_LOGW(TAG, "NVS 凭证丢失,已从裸 flash 备份恢复(%s)", ssid);
+    creds_save(ssid, pass);
+    return true;
 }
 
 static void creds_save(const char *ssid, const char *pass)
 {
     nvs_handle_t h;
-    if (nvs_open(k_nvs_ns, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_str(h, "sta_ssid", ssid);
-    nvs_set_str(h, "sta_pass", pass);
-    nvs_commit(h);
-    nvs_close(h);
+    if (nvs_open(k_nvs_ns, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, "sta_ssid", ssid);
+        nvs_set_str(h, "sta_pass", pass);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    cred_backup_save(ssid, pass);   // 双写:子固件抹 nvs 后可自愈
 }
 
 // ---- 一次性准备(NVS/netif/event loop,失败绝不自动擦除) ----
@@ -626,7 +705,12 @@ static void job_task_main(void *arg)
                 wifi_teardown();
                 xEventGroupClearBits(s_events, EV_STOP | EV_CREDENTIALS
                                               | EV_GOT_IP | EV_DISCONNECT);
-                ap_start();
+                // 只有明确改网意图(reset_wifi)才重开热点;普通离店归于
+                // IDLE,重进商店由 begin() 决定 STA 自动重连或重新配网。
+                if (s_ap_after_teardown) {
+                    s_ap_after_teardown = false;
+                    ap_start();
+                }
             }
             continue;
         }
@@ -710,13 +794,22 @@ esp_err_t meta_store_net_begin(void)
 {
     if (!s_initialized) return ESP_ERR_INVALID_STATE;
     if (s_status.state == SN_STATE_ONLINE
-        || s_status.state == SN_STATE_CONNECTING
-        || s_status.state == SN_STATE_AP_UP) {
+        || s_status.state == SN_STATE_CONNECTING) {
         return ESP_OK;   // 幂等:流程已在跑
     }
 
     char ssid[33], pass[65];
     if (creds_load(ssid, pass)) {
+        // AP_UP 残留(旧版本离店遗留热点)时,有凭证就拆掉热点走 STA,
+        // 否则会被幂等分支永远卡在配网页。teardown 由 job 任务串行做。
+        if (s_status.state == SN_STATE_AP_UP) {
+            s_teardown_req = true;
+            xEventGroupSetBits(s_events, EV_STOP);
+            for (int i = 0; i < 30 && (s_teardown_req
+                 || s_status.state == SN_STATE_AP_UP); i++) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
+        }
         // 异步连:网络任务只处理 EV_CREDENTIALS,这里直接投递一个"内部连接"消息,
         // 复用同一处理路径(经 s_prov_* 传递凭证)。
         snprintf(s_prov_ssid, sizeof(s_prov_ssid), "%s", ssid);
@@ -725,6 +818,7 @@ esp_err_t meta_store_net_begin(void)
         set_state(SN_STATE_CONNECTING, "Connecting to WiFi...");
         return ESP_OK;
     }
+    if (s_status.state == SN_STATE_AP_UP) return ESP_OK;   // 已在配网态,幂等
     esp_err_t err = ap_start();
     if (err != ESP_OK) {
         set_state(SN_STATE_ERROR, "Setup AP failed.");
@@ -758,6 +852,7 @@ esp_err_t meta_store_net_reset_wifi(void)
     // deinit 会与失败回落 ap_start 撞车。置 s_teardown_req,任务在每个节拍
     // 检查:teardown → 清位 → ap_start,全程单任务串行,天然互斥。
     s_teardown_req = true;
+    s_ap_after_teardown = true;   // 改网意图:teardown 后必须重开热点(job 任务执行)
     xEventGroupSetBits(s_events, EV_STOP);
 
     // 擦凭证:nvs_open RW 失败不致命(可能分区刚初始化),下次配网保存时自然建。
