@@ -277,7 +277,10 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
   stage("下载固件");
   let merged;
   try {
-    const r = await fetch(`${METAPASS}/api/firmware?path=${encodeURIComponent(play.downloadUrl)}`,
+    // sha256 一并下发:Worker 按内容寻址物化(firmware/sha256/<sha>.bin),
+    // 玩法改名/改路径不生成孤儿键,同 id 内容更新自然换键;Worker 冷拉后
+    // 还会核算哈希,不符不入库。
+    const r = await fetch(`${METAPASS}/api/firmware?path=${encodeURIComponent(play.downloadUrl)}&sha256=${encodeURIComponent(play.sha256)}`,
       { redirect: "follow" });
     if (!r.ok) return { ok: false, stage: "download", reason: `firmware download ${r.status}` };
     merged = new Uint8Array(await r.arrayBuffer());
