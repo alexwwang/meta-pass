@@ -14,11 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      # ubuntu-latest 未预装 bun(worker bundle 需要);v2.2.0 = 0c5077e5。
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       # 与本地同一部署路径:tools/pages-deploy.py 直接调 Cloudflare REST API
       # (staging 打版本戳 + blake3 manifest + upsert-hashes + worker bun bundle)。
       # 弃用 wrangler-action:wrangler 4.x pages deploy 在上传后读取响应时挂起
       # (本机实测,4.145.0),REST 路径为唯一验证可用的部署方式。
-      # ubuntu-latest 镜像已预装 bun(worker bundle 需要)。
       - name: Install deploy deps
         run: pip3 install requests blake3
       - name: Deploy to Cloudflare Pages
