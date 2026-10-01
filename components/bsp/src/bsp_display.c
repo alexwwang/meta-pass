@@ -2,6 +2,7 @@
 // 移植自 trae_card/components/platform/platform_esp32/src/disp_st7789.c
 #include "bsp_display.h"
 #include "bsp_pins.h"
+#include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/ledc.h"
 #include "esp_lcd_panel_io.h"
@@ -18,15 +19,72 @@ static esp_lcd_panel_io_handle_t s_io;
 static bool                      s_bl_ready;
 
 // ---------------------------------------------------------------------------
+// 深睡唤醒恢复:槽位固件(如 tianshang)无操作进 deep sleep 前会 gpio_hold_en()
+// 锁住 LCD/背光引脚并 gpio_deep_sleep_hold_en()。hold 可跨复位保留,唤醒后若
+// 不先解除,SPI/LEDC 重新接管引脚时仍被锁在休眠电平上 —— 背光照常点亮(LEDC
+// 单独一路),SPI 上的初始化命令却全部无效,表现为"有背光、界面全黑"。
+// 本次唤醒若由 bootloader 钩子续期 otadata 后直接引导回槽位固件,本函数不会被
+// 调用;它兜住的是仍回退到启动器的路径(子固件未适配、或续期条件不满足)。
+// ---------------------------------------------------------------------------
+static const gpio_num_t s_deep_sleep_pins[] = {
+    BSP_LCD_CS, BSP_LCD_SCLK, BSP_LCD_MOSI, BSP_LCD_DC, BSP_LCD_BL,
+};
+
+// 与 s_deep_sleep_pins 一一对应的休眠期安全电平(CS 拉高,其余拉低)。
+static const uint8_t s_deep_sleep_levels[] = {
+    1, 0, 0, 0, 0,
+};
+
+static esp_err_t display_set_safe_levels(void)
+{
+    esp_err_t first_error = ESP_OK;
+    for (size_t i = 0; i < sizeof(s_deep_sleep_pins) /
+                           sizeof(s_deep_sleep_pins[0]); i++) {
+        gpio_num_t pin = s_deep_sleep_pins[i];
+        if ((int)pin < 0) continue;
+        gpio_config_t cfg = {
+            .pin_bit_mask = 1ULL << (unsigned)pin,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        esp_err_t e = gpio_config(&cfg);
+        if (e == ESP_OK) e = gpio_set_level(pin, s_deep_sleep_levels[i]);
+        if (e != ESP_OK && first_error == ESP_OK) first_error = e;
+    }
+    return first_error;
+}
+
+// 顺序有讲究:先关全局 deep hold,再在【单引脚 hold 仍生效】时写入与休眠期
+// 一致的安全电平,最后逐个解锁 —— 这样解锁瞬间引脚已经处在正确电平上,
+// 不会在 SPI/LEDC 接手前产生毛刺。
+static esp_err_t display_release_deep_sleep_holds(void)
+{
+    gpio_deep_sleep_hold_dis();
+    esp_err_t first_error = display_set_safe_levels();
+    for (size_t i = 0; i < sizeof(s_deep_sleep_pins) /
+                           sizeof(s_deep_sleep_pins[0]); i++) {
+        gpio_num_t pin = s_deep_sleep_pins[i];
+        if ((int)pin < 0) continue;
+        esp_err_t e = gpio_hold_dis(pin);
+        if (e != ESP_OK && first_error == ESP_OK) first_error = e;
+    }
+    return first_error;
+}
+
+// ---------------------------------------------------------------------------
 // ST7789P3 厂商专属初始化序列(porch / power / gamma)。
 // 这些是【面板厂给的参考例程 TFT_init() 里的值】,不是 ST7789 通用默认值 ——
 // 换面板必须找对应厂商要新的一份,照抄这份大概率显示异常。
 //
-// 以下四条由 esp_lcd 内置驱动完成,故此处不重复:
-//   0x11 SLPOUT / 0x3A COLMOD → esp_lcd_panel_init()
-//   0x21 INVON                → esp_lcd_panel_invert_color()
-//   0x29 DISPON               → esp_lcd_panel_disp_on_off()
-//   0x36 MADCTL               → esp_lcd_panel_mirror()(⚠ 别再手动写 0x36,会被它覆盖)
+// 以下三条由 esp_lcd 内置驱动完成,故此处不重复:
+//   0x3A COLMOD    → esp_lcd_panel_init()
+//   0x21 INVON     → esp_lcd_panel_invert_color()
+//   0x29 DISPON    → esp_lcd_panel_disp_on_off()
+//   0x36 MADCTL    → esp_lcd_panel_mirror()(⚠ 别再手动写 0x36,会被它覆盖)
+// 0x11 SLPOUT 本也由 esp_lcd_panel_init() 下发,但深睡唤醒后必须提前到面板复位
+// 之前单独发一次(停振态面板收 SWRESET 会死锁),见 bsp_display_init()。
 // ---------------------------------------------------------------------------
 typedef struct {
     uint8_t  cmd;
@@ -83,6 +141,13 @@ static void backlight_init(void) {
 esp_err_t bsp_display_init(void) {
     if (s_panel) return ESP_OK;
 
+    // 先解除上一次深睡留下的引脚 hold,再让 SPI/LEDC 接管引脚(见上方注释)。
+    const esp_err_t hold_err = display_release_deep_sleep_holds();
+    if (hold_err != ESP_OK) {
+        ESP_LOGE(TAG, "LCD 深睡引脚 hold 解除失败: %s(继续初始化)",
+                 esp_err_to_name(hold_err));
+    }
+
     spi_bus_config_t bus = {
         .mosi_io_num = BSP_LCD_MOSI,
         .sclk_io_num = BSP_LCD_SCLK,
@@ -106,6 +171,13 @@ esp_err_t bsp_display_init(void) {
     };
     e = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_HOST, &io_cfg, &s_io);
     if (e != ESP_OK) { ESP_LOGE(TAG, "panel_io 创建失败: %s", esp_err_to_name(e)); return e; }
+
+    // 面板可能仍停在上次深睡的 SLPIN(0x10)停振态。本板复位脚未接 MCU
+    // (BSP_LCD_RST = -1),只能走 SWRESET 软复位;而停振态的面板收 SWRESET
+    // 不仅无效,还会让 SPI 命令解码状态机死锁。故在创建面板与复位之前先发
+    // 0x11 SLPOUT 退眠,并延时 120ms 等内部振荡器与电荷泵稳定。
+    esp_lcd_panel_io_tx_param(s_io, 0x11, NULL, 0);   // SLPOUT
+    vTaskDelay(pdMS_TO_TICKS(120));
 
     esp_lcd_panel_dev_config_t dev = {
         .reset_gpio_num = BSP_LCD_RST,          // -1 → SWRESET 软复位

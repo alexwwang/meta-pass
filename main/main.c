@@ -46,8 +46,8 @@ static const char *TAG = "meta-pass";
 // 页面枚举:每个页面独立 build/teardown(沿用基线 demo 的建删屏纪律)。
 typedef enum {
     PAGE_LIST = 0,     // 槽位列表 + Store 入口
-    PAGE_DETAIL,       // 槽位详情:Boot / Delete / Back
-    PAGE_CONFIRM_BOOT, // 未签名固件启动警告
+    PAGE_DETAIL,       // 槽位详情:Boot / Delete / Back(启动签名与否都直接
+                       // 运行,不再弹未签名警告 —— 上游 48e85590 语义,按需保留页)
     PAGE_CONFIRM_DEL,  // 删除确认
     PAGE_EGG,          // 彩蛋页:隐藏序列进入,滚动查看 MAEG 文本
     PAGE_STORE_NET,    // P0 商店:配网/连接状态
@@ -274,26 +274,6 @@ static void page_egg_build(void)
 // 启动确认(未签名固件):警告文本 + BOOT/CANCEL 两个按钮行,UP/DOWN 选择,OK 短按确认。
 // 默认停在 CANCEL:不可信固件不允许"一路 OK"误启动,保持原有的刻意操作门槛。
 // OK LONG 沿用全局语义=返回详情页。
-static void page_confirm_boot_build(void)
-{
-    s_scr = ui_pixel_screen_create("BOOT?");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 100, UI_PAPER);
-    lv_obj_t *lbl = lv_label_create(panel);
-    lv_obj_set_width(lbl, 196);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
-    lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, 2, 2);
-    // 未签名固件无法验明来源;签名固件在详情页 OK 直接启动,不会进入本页。
-    lv_label_set_text(lbl, "Unsigned firmware!\nOnly boot if you trust\nthe source.");
-    add_row(s_scr, 0, 164, "BOOT");
-    add_row(s_scr, 1, 208, "CANCEL");
-    s_sel = 1;                    // 默认 CANCEL(安全侧)
-    rows_refresh(2, s_sel);
-    ui_pixel_mascot_create(s_scr, 101, 256);
-    lv_screen_load(s_scr);
-}
-
-// 删除确认:沿用 OK LONG 确认(防误删),OK 短按=取消。
 static void page_confirm_del_build(void)
 {
     s_scr = ui_pixel_screen_create("DELETE?");
@@ -929,7 +909,6 @@ static void goto_page(page_t page)
     switch (page) {
     case PAGE_LIST:     page_list_build();               break;
     case PAGE_DETAIL:   page_detail_build(s_detail_slot); break;
-    case PAGE_CONFIRM_BOOT: page_confirm_boot_build();   break;
     case PAGE_CONFIRM_DEL:  page_confirm_del_build();    break;
     case PAGE_EGG:      page_egg_build();                break;
     case PAGE_STORE_NET: page_store_net_build();         break;
@@ -1000,11 +979,30 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     }
 
     switch (s_page) {
-    case PAGE_LIST:
+    case PAGE_LIST: {
+        // 隐藏彩蛋序列(用户定稿:在列表高亮槽位上激活):快速连按
+        // UP UP DOWN DOWN。以 PRESS 判定 —— 每次物理按下必发;CLICK 会被
+        // 连按折叠(PRESS_REPEAT_DOWN_CHECK),凑不齐四次。与行导航共存:
+        // PRESS 只喂序列,CLICK 才移动高亮。命中后彩蛋页展示高亮槽位。
+        if (ev == BSP_BTN_PRESS &&
+            (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
+            const meta_seq_key_t k = (btn == BSP_BTN_UP) ? META_SEQ_KEY_UP
+                                                         : META_SEQ_KEY_DOWN;
+            if (meta_seq_feed(&s_egg_seq, k,
+                              (uint32_t)(esp_timer_get_time() / 1000))) {
+                s_detail_slot = s_sel < META_SLOT_COUNT ? s_sel : 0;
+                goto_page(PAGE_EGG);
+                break;
+            }
+        } else if (ev == BSP_BTN_LONG) {
+            meta_seq_reset(&s_egg_seq);
+        }
+
         if (ev == BSP_BTN_CLICK) {
             if (btn == BSP_BTN_UP)   s_sel = (s_sel + LIST_ITEMS - 1) % LIST_ITEMS;
             if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % LIST_ITEMS;
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+                s_detail_slot = s_sel < META_SLOT_COUNT ? s_sel : s_detail_slot;
                 list_refresh();
                 ui_pixel_mascot_jump(s_mascot);
             } else if (btn == BSP_BTN_OK) {
@@ -1022,30 +1020,10 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             }
         }
         break;
+    }
 
     case PAGE_DETAIL: {
         const meta_slot_info_t *s = &s_slots[s_detail_slot];
-
-        // 隐藏彩蛋序列: 快速连按 UP UP DOWN DOWN,相邻两键间隔 <0.5s(meta_seq)。
-        // 以 PRESS(按下瞬间)判定:每次物理按下必发、无延迟,快速连按可稳定凑齐四次。
-        // 不能用 CLICK:SINGLE_CLICK 要等抬起后再过 180ms 判窗,窗内再按会被 button
-        // 组件折叠成 DOUBLE/MULTIPLE_CLICK(iot_button.c PRESS_REPEAT_DOWN_CHECK),
-        // 即第 2..4 次连按不再发 CLICK——快速连按永远凑不齐四个 CLICK(历史 bug,
-        // 慢按则会被 PRESS 打断分支清进度,两条路都进不去)。LONG 仍打断序列。
-        // 命中时吞掉第 4 次按下直接进彩蛋页;其后的 CLICK(抬起)落在彩蛋页等效
-        // 一次滚动,属可接受副作用(与旧实现移动选中行同类)。
-        if (ev == BSP_BTN_PRESS &&
-            (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
-            const meta_seq_key_t k = (btn == BSP_BTN_UP) ? META_SEQ_KEY_UP
-                                                         : META_SEQ_KEY_DOWN;
-            if (meta_seq_feed(&s_egg_seq, k,
-                              (uint32_t)(esp_timer_get_time() / 1000))) {
-                goto_page(PAGE_EGG);   // 命中:吞掉第 4 个 CLICK,直接进彩蛋页
-                break;
-            }
-        } else if (ev == BSP_BTN_LONG) {
-            meta_seq_reset(&s_egg_seq);   // 长按(OK 长按=返回列表):打断序列
-        }
 
         if (ev == BSP_BTN_CLICK) {
             if (btn == BSP_BTN_UP)   s_sel = (s_sel + DETAIL_ITEMS - 1) % DETAIL_ITEMS;
@@ -1054,14 +1032,11 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 rows_refresh(DETAIL_ITEMS, s_sel);
             } else if (btn == BSP_BTN_OK) {
                 if (s_sel == 0 && meta_slot_bootable(s)) {          // BOOT
-                    // 签名固件直接启动;未签名固件走 BOOT/CANCEL 菜单确认页
-                    if (s->signed_fw) {
-                        if (meta_store_boot_slot(s_detail_slot) == ESP_OK)
-                            esp_restart();
-                        goto_page(PAGE_DETAIL);
-                    } else {
-                        goto_page(PAGE_CONFIRM_BOOT);
-                    }
+                    // 签名与否都直接启动,不再弹未签名警告(用户定稿,对齐上游
+                    // 48e85590 的快速确认语义;签名结果仍在启动扫描时记录)。
+                    if (meta_store_boot_slot(s_detail_slot) == ESP_OK)
+                        esp_restart();
+                    goto_page(PAGE_DETAIL);
                 } else if (s_sel == 1 && s->state != META_SLOT_EMPTY) { // DELETE
                     goto_page(PAGE_CONFIRM_DEL);
                 } else if (s_sel == 2) {                            // BACK
@@ -1070,37 +1045,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
             }
         } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
             goto_page(PAGE_LIST);
-        }
-        break;
-    }
-
-    case PAGE_CONFIRM_BOOT: {
-        // 隐藏彩蛋序列:与详情页一致,快速连按 UP UP DOWN DOWN(以 PRESS 判定,见上)。
-        // 命中后其后的 CLICK(抬起)会切换一次选中项,属可接受副作用。
-        if (ev == BSP_BTN_PRESS &&
-            (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
-            const meta_seq_key_t k = (btn == BSP_BTN_UP) ? META_SEQ_KEY_UP
-                                                         : META_SEQ_KEY_DOWN;
-            if (meta_seq_feed(&s_egg_seq, k,
-                              (uint32_t)(esp_timer_get_time() / 1000))) {
-                goto_page(PAGE_EGG);   // 命中:吞掉第 4 个 CLICK,直接进彩蛋页
-                break;
-            }
-        }
-        if (ev == BSP_BTN_CLICK) {
-            if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                s_sel = (s_sel + 1) % 2;   // 两项菜单:UP/DOWN 均切换 BOOT/CANCEL
-                rows_refresh(2, s_sel);
-            } else if (btn == BSP_BTN_OK) {
-                if (s_sel == 0) {          // BOOT:设置启动分区并重启,不返回
-                    if (meta_store_boot_slot(s_detail_slot) == ESP_OK) {
-                        esp_restart();
-                    }
-                }
-                goto_page(PAGE_DETAIL);    // CANCEL 或设置失败(如分区损坏):回详情页
-            }
-        } else if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
-            goto_page(PAGE_DETAIL);        // 全局语义:OK LONG=返回,即取消
         }
         break;
     }

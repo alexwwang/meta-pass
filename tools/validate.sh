@@ -88,6 +88,9 @@ PY
         tests/test_meta_boot_policy.c \
         -o "${test_dir}/test_meta_boot_policy"
     "${test_dir}/test_meta_boot_policy"
+    # 深睡唤醒契约(面板唤醒恢复顺序 + bootloader hook 的 otadata 续期路径;
+    # 上游 jiandanc/meta-pass be9ec2e0 的修复,设备实测:休眠唤醒回子固件亮屏)
+    PYTHONDONTWRITEBYTECODE=1 python3 tests/test_display_wake_contract.py
     # 签名段格式解析测试(stub 化 RSA 验签,只测格式)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
         tests/test_meta_sign.c tests/esp_stubs/meta_sign_stub.c \

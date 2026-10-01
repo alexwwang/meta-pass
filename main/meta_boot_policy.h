@@ -33,8 +33,22 @@
  *     都 != 0x2,擦除判定零误伤;擦除态副本 state 读回 0xFFFFFFFF,天然免擦。
  *   - PENDING 一律不碰:保住 IDF 的 trial-run 回滚与崩溃自恢复流程。
  *
- *   复位原因例外(hooks.c 负责):深睡眠唤醒跳过全部检查与写入 —— 唤醒路径
- *   必须零 flash 操作(设备当前不使用深睡眠,此为未来防御)。
+ *   深睡眠唤醒(hooks.c 负责):不执行上面的 VALID 擦除策略(那是冷启动的职责),
+ *   而是把"子固件正在运行"的 PENDING_VERIFY 副本续期为 VALID,使 bootloader 直接
+ *   引导回该槽位 —— 子固件按自身空闲超时息屏后,按键唤醒即"续玩"。判定见
+ *   meta_boot_policy_entry_must_resume()。
+ *
+ *   为什么由启动器侧改写 otadata,而不用 IDF 的快速引导:
+ *   CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP 把"上次引导的分区"记在 RTC
+ *   快速内存顶部(rtc_retain_mem_t)。但子固件各自的构建默认不含
+ *   CONFIG_BOOTLOADER_RESERVE_RTC_MEM,其链接脚本不为 bootloader 预留该区域
+ *   (RTC 定时器数据正好覆盖那条记录),子固件一运行记录即失效 → 快速引导静默
+ *   回退常规路径 → 仍回 factory。该选项因此要求每个子固件配合,与"系统级策略
+ *   不得委托子固件"的原则冲突。改写 otadata 不依赖任何子固件配置。
+ *
+ *   安全性:非深睡复位(断电/看门狗/崩溃/软件重启)一律走上面的 VALID 擦除 →
+ *   仍回 factory 列表页,单次会话模型不变;唤醒路径只把"已在运行的子固件"续期,
+ *   不引入新的跨上电常驻可能(续期出的 VALID 会在下一次冷启动被擦除)。
  *
  * 本头文件只含纯判定逻辑(给定 32 字节副本 → 是否擦除),供 bootloader hook
  * 与宿主测试共享;flash 操作细节在 hooks.c。
@@ -81,6 +95,30 @@ static inline bool meta_boot_policy_entry_must_erase(const meta_otadata_entry_t 
         return false;
     }
     return e->ota_state == META_OTA_IMG_VALID;
+}
+
+/* ── 深睡唤醒判定:该副本是否应被续期为 VALID(继续引导该槽位) ─────
+ * 规则:ota_state == PENDING_VERIFY 且 ota_seq 非空。
+ *
+ * 为什么 PENDING 恰好等价于"正在运行的子固件":PENDING_VERIFY 只可能由
+ * bootloader 在选择某个 OTA 槽时写入(NEW→PENDING,见文件头 otadata 语义),
+ * 应用侧无法产生它。故深睡唤醒时读到 PENDING,即"本机上次引导的是某个子固件、
+ * 且它尚未确认自己"—— 要续的正是这个会话。
+ *
+ * 为什么不检查 CRC:CRC 仅覆盖 ota_seq(4 字节)。若副本恰好损坏,bootloader 的
+ * ota_select_valid 会判其无效并照旧回退 factory,与不续期时的结果一致,零额外
+ * 风险;反之在此重复实现 CRC 只会引入与 IDF 实现漂移的可能。
+ *
+ * 与 must_erase 的关系:两者互斥(VALID vs PENDING),分别服务于"冷启动收编"与
+ * "深睡唤醒续期"两条路径;续期出的 VALID 会在下一次冷启动被 must_erase 擦除,
+ * 故不产生跨上电常驻。 */
+static inline bool meta_boot_policy_entry_must_resume(const meta_otadata_entry_t *e)
+{
+    if (e == NULL) {
+        return false;
+    }
+    return e->ota_state == META_OTA_IMG_PENDING_VERIFY &&
+           e->ota_seq != META_OTADATA_SEQ_EMPTY;
 }
 
 #endif /* META_BOOT_POLICY_H */

@@ -7,8 +7,10 @@
  *   1. 结构体布局与 flash 字节排布一致(offsetof 自检,防字段变更悄悄破坏判定);
  *   2. 策略规则全状态覆盖:VALID 必擦;NEW/PENDING/INVALID/ABORTED/UNDEFINED/
  *      擦除态(全 0xFF)一律不擦;
- *   3. 副本扇区映射(copy 0→扇区 0,copy 1→扇区 1);
- *   4. 从"模拟 flash 读出的原始字节"构造副本,验证端到端判定(小端解码)。
+ *   3. 深睡唤醒续期判定:PENDING 且 seq 非空 → 续期;其余状态(含 PENDING 但
+ *      seq 空、以及所有 must_erase 命中的状态)一律不续期 —— 两条规则互斥;
+ *   4. 副本扇区映射(copy 0→扇区 0,copy 1→扇区 1);
+ *   5. 从"模拟 flash 读出的原始字节"构造副本,验证端到端判定(小端解码)。
  */
 #include <assert.h>
 #include <stddef.h>
@@ -80,6 +82,44 @@ int main(void)
     /* 防御:NULL 不擦 */
     assert(!meta_boot_policy_entry_must_erase(NULL));
 
+    /* ── 深睡唤醒续期判定 ── */
+    /* 唯一应续期的形态:PENDING 且 seq 有效(上次引导了子固件、尚未确认)。 */
+    assert(meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_PENDING_VERIFY }));
+    assert(meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 3, .ota_state = META_OTA_IMG_PENDING_VERIFY }));
+
+    /* PENDING 但 seq 为空:无槽位可续,交给 bootloader 的默认路径。 */
+    assert(!meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = META_OTADATA_SEQ_EMPTY,
+                                 .ota_state = META_OTA_IMG_PENDING_VERIFY }));
+
+    /* 其余状态一律不续期(含 VALID:唤醒路径不碰它,擦除是冷启动的职责)。 */
+    assert(!meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_NEW }));
+    assert(!meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_VALID }));
+    assert(!meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_INVALID }));
+    assert(!meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_ABORTED }));
+    assert(!meta_boot_policy_entry_must_resume(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_UNDEFINED }));
+    assert(!meta_boot_policy_entry_must_resume(&blank));
+    assert(!meta_boot_policy_entry_must_resume(NULL));
+
+    /* 两条规则互斥:任一状态下不可能既该擦又该续(否则唤醒会自相矛盾)。 */
+    {
+        const uint32_t states[] = { META_OTA_IMG_NEW, META_OTA_IMG_PENDING_VERIFY,
+                                    META_OTA_IMG_VALID, META_OTA_IMG_INVALID,
+                                    META_OTA_IMG_ABORTED, META_OTA_IMG_UNDEFINED };
+        for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); ++i) {
+            meta_otadata_entry_t e = make_entry(1, states[i]);
+            assert(!(meta_boot_policy_entry_must_erase(&e) &&
+                     meta_boot_policy_entry_must_resume(&e)));
+        }
+    }
+
     /* ── 副本扇区映射 ── */
     assert(meta_boot_policy_copy_sector(0) == 0);
     assert(meta_boot_policy_copy_sector(1) == 1);
@@ -93,12 +133,13 @@ int main(void)
     meta_otadata_entry_t from_valid = from_bytes(raw);
     assert(meta_boot_policy_entry_must_erase(&from_valid));
 
-    /* PENDING 的原始流 → 不擦(回滚流程存活) */
+    /* PENDING 的原始流 → 不擦(回滚流程存活),且应被深睡唤醒续期 */
     memset(raw, 0xFF, sizeof(raw));
     put_u32le(raw + 0, 1);
     put_u32le(raw + 24, META_OTA_IMG_PENDING_VERIFY);
     meta_otadata_entry_t from_pending = from_bytes(raw);
     assert(!meta_boot_policy_entry_must_erase(&from_pending));
+    assert(meta_boot_policy_entry_must_resume(&from_pending));
 
     /* 擦除态原始流 → 不擦 */
     memset(raw, 0xFF, sizeof(raw));
