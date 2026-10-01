@@ -62,15 +62,24 @@
   #lang-switch { display: flex; gap: 4px; }
   #top-right-dock { position: fixed; top: 12px; right: 24px; z-index: 40;
     display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  #coffee-support { text-align: center; line-height: 1.3; }
+  #coffee-support { margin: 0; text-align: center; line-height: 1.3; }
   #coffee-support img { width: 96px; height: 96px; object-fit: cover;
     border: 1px solid #d0d7de; border-radius: 8px; display: block; }
   #coffee-support .cap { font-size: 11px; color: #57606a; margin-top: 4px; }
   #lang-switch button {
-    font-size: 12px; padding: 3px 10px; border-radius: 4px;
+    font-size: 13px; padding: 7px 14px; border-radius: 6px;
     background: transparent; border: 1px solid #ccd0d5; color: #606770;
   }
   #lang-switch button.active { background: #1877f2; border-color: #1877f2; color: #fff; }
+  /* 移动端:固定层压标题/副标题是"按钮失效"观感根因 —— 窄屏压缩固定层
+     并给 main 右侧留白,文字不再钻进二维码底下。 */
+  @media (max-width: 640px) {
+    body { padding: 16px; }
+    #top-right-dock { top: 8px; right: 12px; gap: 6px; }
+    #coffee-support img { width: 64px; height: 64px; }
+    #coffee-support .cap { font-size: 10px; }
+    main { padding-right: 104px; }
+  }
 </style>
 </head>
 <body>
@@ -81,7 +90,7 @@
   </div>
   <figure id="coffee-support">
     <img src="./author-coffee.jpg" alt="请作者喝咖啡" width="96" height="96">
-    <figcaption class="cap">请作者喝咖啡</figcaption>
+    <figcaption class="cap" data-i18n="coffee_caption">请作者喝咖啡</figcaption>
   </figure>
 </div>
 <main>
@@ -296,6 +305,7 @@ const I18N = {
   en: {
     // 静态文案
     title_page: "meta-pass · USB Slot Installer",
+    coffee_caption: "Buy the author a coffee",
     subtitle: "Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).",
     hint: "Hold <b>UP</b> while powering on to enter download mode, then plug in the USB cable.",
     step_connect: "1. Connect",
@@ -444,6 +454,7 @@ const I18N = {
   zh: {
     // 静态文案
     title_page: "meta-pass · USB 槽位烧录器",
+    coffee_caption: "请作者喝咖啡",
     subtitle: "通过 USB 串口(Chrome + Web Serial)将子固件写入 slot 0 / 1 / 2。",
     hint: "上电时按住 <b>UP</b> 键进入 ROM download mode,然后插入 USB 线。",
     step_connect: "1. 连接设备",
