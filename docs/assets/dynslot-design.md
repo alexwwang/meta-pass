@@ -196,6 +196,27 @@ existing carve: zero extra reboots (same as today).
   comes from the carve instead of a fixed subtype.
 - **Remove**: mark free in the store; re-materialize the table without the
   entry. No data moves (v1).
+- **Free-space reclaim ladder** (what happens to the holes removal leaves):
+  1. **Splittable free extents.** Deleting a play frees its app-slot and
+     data-carve records; the extents rejoin the pool in the store metadata.
+     Because carve boundaries are recomputed per allocation (not fixed bins),
+     a freed 2.6 MB hole can host a 1.5 MB app + a 1 MB data carve — reuse
+     the fixed-slot architecture never allowed. Nothing is erased at
+     delete time; erasure happens at the next write, as today.
+  2. **First-fit**, pool_0 then pool_1, remainder ≥ 128 KB kept as a free
+     extent.
+  3. **On allocation failure, reclaim ARCHIVED data records** (M5:
+     uninstalled/kept archives, oldest first), erase, retry the fit.
+  4. **Last resort, PRISTINE data records**: content reproducible from the
+     play's install image, so the record may be dropped and later
+     re-restored (requires the phone to re-send the image); device asks the
+     user before dropping live play data this way.
+  5. **Reject** with reason `no-fit` and the numbers (needed vs. largest
+     free extent) — the UI can show "remove/archive X first".
+  In-flash copy compaction (moving a resident slot to merge non-adjacent
+  holes) and in-place grow are **deliberately v2**: they need a
+  copy-then-commit crash story of their own, and v1's splittable-extent +
+  archive reclaim ladder covers the realistic catalog.
 
 ### 4.6 Migration
 
