@@ -454,3 +454,64 @@ DIRTY/ARCHIVED).
    a label (not just reserved system labels). Add to `meta_carve_valid`
    or `meta_carve_flash_arc`. **Recommend yes** — otherwise ARC silently
    corrupts another play's data.
+
+## 12. Import Failure Handling (Format Incompatibility)
+
+When users attempt to import an old backup to a new play version, failure
+may occur due to data format incompatibility. Must **accurately inform
+the user of the reason**, not silently discard data.
+
+### 12.1 Format Version Validation
+
+Add `format_version` field to each data record (optional, default 1):
+```c
+typedef struct {
+    uint32_t play_id;
+    uint32_t offset;
+    uint32_t size;
+    uint8_t  state;
+    uint8_t  subtype;
+    uint8_t  type;
+    uint8_t  format_version;   // NEW: data format version (default 1)
+    char     label[META_DATA_LABEL_MAX + 1];
+} meta_carve_data_t;
+```
+
+Play manifest declares expected `data_format_version`.
+
+### 12.2 Import Failure Scenarios & User Notifications
+
+| Failure Scenario | Error Code | User Notification (Example) |
+|---|---|---|
+| `format_version` mismatch | `ERR_DATA_FORMAT_MISMATCH` | "Backup data format incompatible. Current play requires format v2, but backup is v1. Please restore this backup on an old-version play device first, then re-export." |
+| `label` missing in new version | `ERR_DATA_LABEL_MISSING` | "Cannot restore data: 'recordings' partition in backup has been removed or renamed in the new version. Please check the play update notes." |
+| File size exceeds new partition limit | `ERR_DATA_SIZE_EXCEED` | "Backup data size (X KB) exceeds new version partition limit (Y KB). Please delete some data before importing." |
+| Checksum failure | `ERR_DATA_CORRUPT` | "Backup data is corrupted and cannot be restored. Please re-export or contact the play author." |
+
+### 12.3 Downgrade Recovery Path
+
+When format is incompatible, provide **clear downgrade recovery guidance**:
+1. Prompt user to download old-version play (preserves original data format)
+2. Restore backup on old-version device
+3. Re-export data (new format)
+4. Upgrade to latest version
+
+**Key principle**: Do not auto-attempt format conversion (metadata layer doesn't understand business formats). Clearly inform user "this is a play-level issue, require play author to provide migration tool."
+
+### 12.4 UI Interaction Flow
+
+```
+User clicks "Import Backup"
+  → Parse backup file header (check format_version, play_id, labels)
+  → Compare with target play's manifest declaration
+  → If incompatible:
+      · Display specific error reason (which item mismatched)
+      · Provide "View Details" button (expand technical details)
+      · Provide "Downgrade Recovery Guide" link (jump to help page)
+  → If compatible: normal import flow
+```
+
+**Prohibited behaviors**:
+- Silently skip incompatible data (user unaware of loss)
+- Vague error messages (e.g., "Import failed" without reason)
+- Auto-attempt format conversion (may cause data corruption)
