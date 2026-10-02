@@ -485,8 +485,29 @@ Play manifest declares expected `data_format_version`.
 |---|---|---|
 | `format_version` mismatch | `ERR_DATA_FORMAT_MISMATCH` | "Backup data format incompatible. Current play requires format v2, but backup is v1. Please restore this backup on an old-version play device first, then re-export." |
 | `label` missing in new version | `ERR_DATA_LABEL_MISSING` | "Cannot restore data: 'recordings' partition in backup has been removed or renamed in the new version. Please check the play update notes." |
-| File size exceeds new partition limit | `ERR_DATA_SIZE_EXCEED` | "Backup data size (X KB) exceeds new version partition limit (Y KB). Please delete some data before importing." |
 | Checksum failure | `ERR_DATA_CORRUPT` | "Backup data is corrupted and cannot be restored. Please re-export or contact the play author." |
+| **Insufficient space after import** (ARC reclaimed but still not enough) | `ERR_POOL_INSUFFICIENT` | "Device space insufficient. Please **delete some plays** on device to free space, then retry import." |
+
+### 12.3 Space Insufficient Handling Flow
+
+When import requires additional space and ARC reclamation is still insufficient:
+1. Calculate gap = import data size - current free space
+2. Prompt user to delete some plays (show list of deletable plays and their space usage)
+3. After user deletes, recalculate space
+4. If still insufficient, prompt again (may need to delete more plays)
+
+**Key principle**: Clearly tell user "how much space needs to be freed" rather than vague "insufficient space" message.
+
+### 12.4 Explanation for Missing Partition Label
+
+**Scenario**: Old play version declared data partition `recordings`, but new version no longer declares it (removed or renamed).
+
+**Reason**: Play author restructured data partitions without providing migration tool.
+
+**Handling**:
+- Detect during import that backup's label is not in new version's manifest
+- Reject import, notify: "The 'recordings' partition in backup has been removed or renamed in the new version. Please check play update notes or contact author for migration tool."
+- **No auto-compatibility** — format conversion is the play author's responsibility
 
 ### 12.3 Downgrade Recovery Path
 
