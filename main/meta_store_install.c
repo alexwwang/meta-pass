@@ -1418,6 +1418,151 @@ static esp_err_t h_backup_import(httpd_req_t *req)
     // 5. TODO: 实现完整的数据解析与空间检查
     return reply(req, "200 OK", "import not yet implemented");
 }
+// 3. 获取当前固件版本(来自 esp_app_get_description)
+    app_desc_t desc;
+    esp_err_t desc_err = esp_app_get_description(&desc);
+    const char *current_version = (desc_err == ESP_OK && desc.version[0] != '\0')
+                                   ? desc.version : "0.0.0-placeholder";
+
+    // 4. 严格版本匹配
+    if (strcmp(import_version, current_version) != 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "version mismatch: backup=%s, device=%s",
+                 import_version, current_version);
+        return reply(req, "400 Bad Request", msg);
+    }
+
+    // 5. 解析备份数据(JSON array of records)
+    const char *data_marker = strstr(body, "\"data\"");
+    if (!data_marker) return reply(req, "400 Bad Request", "missing data array");
+    
+    // Find the array start
+    char *array_start = strchr(data_marker, '[');
+    if (!array_start) return reply(req, "400 Bad Request", "malformed data array");
+    array_start++; // skip '['
+    
+    meta_backup_data_t import_records[META_BACKUP_DATA_MAX];
+    int record_count = 0;
+    
+    // Simple JSON array parsing
+    char *p = array_start;
+    while (*p && record_count < META_BACKUP_DATA_MAX) {
+        // Skip whitespace
+        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+        if (*p != '{') break;
+        
+        meta_backup_data_t rec = {0};
+        
+        // Parse offset
+        char *off_p = strstr(p, "\"offset\"");
+        if (!off_p) break;
+        off_p = strchr(off_p, ':');
+        if (!off_p) break;
+        rec.offset = (uint32_t)strtoul(off_p + 1, &endptr, 10);
+        
+        // Parse size
+        char *size_p = strstr(p, "\"size\"");
+        if (!size_p) break;
+        size_p = strchr(size_p, ':');
+        if (!size_p) break;
+        rec.size = (uint32_t)strtoul(size_p + 1, &endptr, 10);
+        
+        // Parse state
+        char *state_p = strstr(p, "\"state\"");
+        if (!state_p) break;
+        state_p = strchr(state_p, ':');
+        if (!state_p) break;
+        rec.state = (uint8_t)strtoul(state_p + 1, &endptr, 10);
+        
+        // Parse label
+        char *label_p = strstr(p, "\"label\"");
+        if (label_p) {
+            label_p = strchr(label_p, '"');
+            if (label_p) {
+                label_p++; // skip opening quote
+                const char *label_end = strchr(label_p, '"');
+                if (label_end) {
+                    int label_len = (int)(label_end - label_p);
+                    if (label_len > 0 && label_len < (int)sizeof(rec.label)) {
+                        strncpy(rec.label, label_p, label_len);
+                        rec.label[label_len] = '\0';
+                    }
+                }
+            }
+        }
+        
+        // Only accept ARCHIVED records
+        if (rec.state == META_DATA_ARCHIVED && rec.offset != 0 && rec.size != 0) {
+            import_records[record_count++] = rec;
+        }
+        
+        // Skip to next record or end
+        char *brace_end = strchr(p, '}');
+        if (!brace_end) break;
+        p = brace_end + 1;
+    }
+    
+    if (record_count == 0) {
+        return reply(req, "400 Bad Request", "no valid archived records");
+    }
+
+    // 6. 计算总空间需求
+    size_t total_needed = 0;
+    for (int i = 0; i < record_count; i++) {
+        total_needed += import_records[i].size;
+    }
+    
+    // 7. 检查空间(使用 meta_carve_free)
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve not available");
+    
+    uint32_t free_bytes = meta_carve_free(carve);
+    if (free_bytes < (uint32_t)total_needed) {
+        // 尝试 ARC 回收
+        ESP_LOGI(TAG, "pool pressure %lu needed, free %lu, attempting ARC", 
+                 (unsigned long)total_needed, (unsigned long)free_bytes);
+        esp_err_t arc_err = meta_carve_flash_arc(total_needed - free_bytes);
+        if (arc_err != ESP_OK) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
+                     (unsigned long)total_needed, (unsigned long)free_bytes);
+            return reply(req, "507 Insufficient Storage", msg);
+        }
+        // ARC 成功后重新检查
+        free_bytes = meta_carve_free(meta_carve_flash_carve());
+        if (free_bytes < (uint32_t)total_needed) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "space still insufficient after ARC: need %lu, free %lu",
+                     (unsigned long)total_needed, (unsigned long)free_bytes);
+            return reply(req, "507 Insufficient Storage", msg);
+        }
+    }
+    
+    // 8. 更新 carve 表(写入实际数据需要额外 API,目前仅更新元数据)
+    meta_carve_t *mutable_carve = (meta_carve_t *)carve;
+    for (int i = 0; i < record_count; i++) {
+        if (!meta_carve_data_append(mutable_carve, &(meta_carve_data_t){
+            .play_id = play_id,
+            .offset = import_records[i].offset,
+            .size = import_records[i].size,
+            .state = META_DATA_PRISTINE,  // 导入后视为 PRISTINE(等待子固件填充)
+            .type = 1,
+            .subtype = 1,
+        })) {
+            return reply(req, "500 Internal Server Error", "failed to update carve table");
+        }
+    }
+    
+    // 9. 提交 carve 表
+    esp_err_t commit_err = meta_carve_flash_commit(mutable_carve, true);
+    if (commit_err != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "failed to commit carve table");
+    }
+
+    char resp[128];
+    snprintf(resp, sizeof(resp), "{\"records\":%d,\"ok\":true}", record_count);
+    return reply(req, "200 OK", resp);
+}
 
 // ---- 服务生命周期 ----
 
