@@ -97,18 +97,18 @@ export function parseSlots(text) {
 
 ```js
 // launcher-upgrade.js
-export function detectProtocolFromTable(deviceTable) {
-  const partitions = parsePartitionTable(deviceTable);
-  const labels = new Set(partitions.map(p => p.label));
-  // dynslot: 有 pool_0 和 pool_1 作为数据分区
-  if (labels.has('pool_0') && labels.has('pool_1')) return 2;
-  // 固定槽位: 有 ota_0, ota_1, ota_2 作为应用分区
-  if (labels.has('ota_0') && labels.has('ota_1') && labels.has('ota_2')) return 1;
-  // 遗留 FoloToy: 仅 factory，无 ota_*
-  if (labels.has('factory') && !labels.has('ota_0')) return 0; // legacy
-  return -1; // 未知
+// 注意:不能用 pool_0/pool_1 判定 —— 运行中的设备 live 表是 carved 表,池占位
+// 已被 ota_N 槽位 + 数据条目替换;pool_* 只存在于安全表(出厂/未 carve 态)。
+// 稳定判据是 store@0x35A000 条目(carve 记录 A/B 区,FIXED 集成员,两侧表都有);
+// 遗留固定 3 槽表与原厂 FoloToy 表均无 store 分区。
+export function isDynslotLayout(devicePartitions) {
+  return devicePartitions.some(p => p.label === 'store' && p.offset === 0x35A000);
 }
 ```
+
+检测顺序（对应协议版本）：store 条目存在 → dynslot (2)；
+否则有 ota_0/ota_1/ota_2 → fixed-slot (1)；
+否则仅有 factory（无 ota_*）→ legacy FoloToy (0)；其余 unknown (-1)。
 
 此回退仅在 slots API 不可达时使用。
 
@@ -159,10 +159,11 @@ export function upgradeWritePlan(protocolVersion) {
 }
 ```
 
-**表比较规则（dynslot）：** 不是逐字节相等，只比较**受保护区域**
-（nvs、cardid、otadata）并验证包的表具有正确的安全表魔数（pool_0/
-pool_1 存在，无 ota_* 应用条目）。设备上的 carve 表是状态相关的，
-会与安全的表不同。
+**表比较规则（dynslot）：** 逐字节相等不可能（设备上的 carve 表是状态
+相关的）。改为**条目级**比较：FIXED 条目（nvs、phy_init、factory、
+cardid、store、otadata）在两侧必须完全一致（type/subtype/offset/size）；
+carved ota_N 槽位和数据记录是动态内容，不比较。包必须带池占位
+（pool_0/pool_1）——防止把固定槽位包刷进 dynslot 设备。
 
 ```js
 export function comparePartitionTables(deviceTable, bundleTable, protocolVersion) {

@@ -120,12 +120,14 @@ export function isLegacyFactoryLayout(devicePartitions) {
   return hasFactory && !hasOta;
 }
 // 判断设备是否运行 dynslot 布局(动态槽位)。
-// 识别依据:表内有 pool_0 和 pool_1 分区。
+// 识别依据:表内有 store 条目(0x35A000,carve 记录 A/B 区)。
+// 不能用 pool_0/pool_1 判定:运行中的设备 live 表是 carved 表,池占位已被
+// ota_N 槽位 + 数据条目替换,pool_* 只存在于安全表(出厂/未 carve 态)。
+// 遗留固定 3 槽表(partitions.csv)与原厂 FoloToy 表均无 store 分区。
 // devicePartitions: parsePartitionTable(设备表) 的结果。
 export function isDynslotLayout(devicePartitions) {
   if (!Array.isArray(devicePartitions) || devicePartitions.length === 0) return false;
-  const labels = new Set(devicePartitions.map(p => p.label));
-  return labels.has('pool_0') && labels.has('pool_1');
+  return devicePartitions.some(p => p.label === 'store' && p.offset === 0x35A000);
 }
 
 
@@ -389,25 +391,35 @@ export function comparePartitionTables(deviceTable, bundleTable, isDynslot) {
     return { ok: false, reason: "bundle table larger than the device sector" };
   }
   if (isDynslot) {
-    // dynslot:bundle 安全表与设备 carved 表结构不同，仅校验受保护区域
-    // (nvs/cardid/otadata 地址不变)。其余差异属预期（slot 条目动态生成）。
-    const protectedRegs = [
-      { off: 0x9000, sz: 0x6000 },   // nvs
-      { off: 0x356000, sz: 0x4000 }, // cardid
-      { off: 0x7FE000, sz: 0x2000 }, // otadata
-    ];
-    for (const reg of protectedRegs) {
-      for (let j = 0; j < reg.sz && (reg.off + j) < bundleTable.length && (reg.off + j) < deviceTable.length; j++) {
-        if (deviceTable[reg.off + j] !== bundleTable[reg.off + j]) {
-          return { ok: false, reason: `protected region mismatch at 0x${(reg.off + j).toString(16)} — layout changed, refusing upgrade` };
-        }
-      }
+    // dynslot:bundle 是安全表(pool_0/pool_1 占位),设备是 carved 表(ota_N 槽位
+    // + 数据条目)。逐字节必然不等,改做条目级校验:FIXED 条目(nvs/phy_init/
+    // factory/cardid/store/otadata)在两侧必须完全一致(type/subtype/offset/
+    // size),其余条目(槽位/数据/池占位)属动态内容,不比较。另要求 bundle
+    // 含 pool_0+pool_1 占位 —— 防止把固定槽位表刷进 dynslot 设备。
+    let devParts, bundleParts;
+    try {
+      devParts = parsePartitionTable(deviceTable);
+      bundleParts = parsePartitionTable(bundleTable);
+    } catch (e) {
+      return { ok: false, reason: `partition table parse failed: ${e.message}` };
     }
-    // 额外校验 bundle 是有效的安全表
-    const bundleParts = parsePartitionTable(bundleTable);
-    const labels = new Set(bundleParts.map(p => p.label));
-    if (!labels.has('pool_0') || !labels.has('pool_1')) {
+    // 安全表校验:bundle 必须有池占位(carved 表不带 pool_*)
+    const bundleLabels = new Set(bundleParts.map(p => p.label));
+    if (!bundleLabels.has('pool_0') || !bundleLabels.has('pool_1')) {
       return { ok: false, reason: 'bundle table is not a dynslot safe table (missing pool_0/pool_1)' };
+    }
+    // FIXED 条目必须与设备一致(与 main/meta_carve.c FIXED[] 同集)
+    const FIXED_LABELS = ['nvs', 'phy_init', 'factory', 'cardid', 'store', 'otadata'];
+    for (const label of FIXED_LABELS) {
+      const d = devParts.find(p => p.label === label);
+      const b = bundleParts.find(p => p.label === label);
+      if (!d || !b) {
+        return { ok: false, reason: `fixed entry "${label}" missing on ${!d ? 'device' : 'bundle'} — layout changed` };
+      }
+      if (d.type !== b.type || d.subtype !== b.subtype ||
+          d.offset !== b.offset || d.size !== b.size) {
+        return { ok: false, reason: `fixed entry "${label}" differs (device off=0x${d.offset.toString(16)} size=0x${d.size.toString(16)}, bundle off=0x${b.offset.toString(16)} size=0x${b.size.toString(16)}) — refusing upgrade` };
+      }
     }
     return { ok: true };
   }

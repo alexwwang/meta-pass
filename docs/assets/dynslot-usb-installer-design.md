@@ -104,18 +104,21 @@ table directly:
 
 ```js
 // launcher-upgrade.js
-export function detectProtocolFromTable(deviceTable) {
-  const partitions = parsePartitionTable(deviceTable);
-  const labels = new Set(partitions.map(p => p.label));
-  // dynslot: has pool_0 and pool_1 as data partitions
-  if (labels.has('pool_0') && labels.has('pool_1')) return 2;
-  // fixed-slot: has ota_0, ota_1, ota_2 as app partitions
-  if (labels.has('ota_0') && labels.has('ota_1') && labels.has('ota_2')) return 1;
-  // legacy FoloToy: factory only, no ota_*
-  if (labels.has('factory') && !labels.has('ota_0')) return 0; // legacy
-  return -1; // unknown
+// NOTE: pool_0/pool_1 cannot be used as the criterion — the live table on a
+// running device is the CARVED table, where pool placeholders have been
+// replaced by ota_N slot entries + data records; pool_* exists only in the
+// safe table (factory / not-yet-carved state). The stable criterion is the
+// store@0x35A000 entry (carve record A/B area, a FIXED member present on
+// both table flavours); legacy fixed 3-slot tables and stock FoloToy tables
+// have no store partition.
+export function isDynslotLayout(devicePartitions) {
+  return devicePartitions.some(p => p.label === 'store' && p.offset === 0x35A000);
 }
 ```
+
+Detection order (maps to protocol version): store entry present → dynslot (2);
+else ota_0/ota_1/ota_2 present → fixed-slot (1);
+else factory only (no ota_*) → legacy FoloToy (0); anything else → unknown (-1).
 
 This fallback is used only when the slots API is unreachable.
 
@@ -169,11 +172,13 @@ export function upgradeWritePlan(protocolVersion) {
 }
 ```
 
-**Table comparison rule (dynslot):** Instead of byte-for-byte equality,
-compare only the **protected regions** (nvs, cardid, otadata) and verify
-the bundle's table has the correct safe-table magic (pool_0/pool_1 present,
-no ota_* app entries). The carved table on-device is stateful and will
-differ from the safe table.
+**Table comparison rule (dynslot):** Byte-for-byte equality is impossible
+(the carved table on-device is stateful). Compare at the **entry level**:
+the FIXED entries (nvs, phy_init, factory, cardid, store, otadata) must be
+identical (type/subtype/offset/size) on both sides; carved ota_N slots and
+data records are dynamic content and are not compared. The bundle must
+carry the pool placeholders (pool_0/pool_1) — this gates out flashing a
+fixed-slot bundle onto a dynslot device.
 
 ```js
 export function comparePartitionTables(deviceTable, bundleTable, protocolVersion) {
