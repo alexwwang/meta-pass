@@ -131,7 +131,7 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   assert.equal(out.id, 563);
   assert.equal(out.revisionId, 1279);
   assert.equal(out.suggestedSlot, 0, "最小可装槽位");
-  assert.deepEqual(out.slots.map((s) => s.limit), [0x1d5000, 0x1ff000, 0x29d000], "槽位上限");
+  assert.deepEqual(out.slots.map((s) => s.limit), [0x673000], "槽位上限=dynslot 共享池");
   assert.deepEqual(out.slots.map((s) => s.fit), [true, true, true]);
   assert.equal(out.extracted.imageLen, app.length);
   assert.equal(out.extracted.sha256, sha256Sync(app), "extracted sha256 对解包后镜像计算");
