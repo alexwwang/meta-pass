@@ -178,6 +178,13 @@ uint32_t meta_carve_largest_gap(const meta_carve_t *c);
 // 不入阶梯;归档最旧优先的顺序 = data[] 数组序,即分配序)。
 uint32_t meta_carve_reclaimable(const meta_carve_t *c);
 
+// P0-5: 按授权级别拆分可回收字节。ARCHIVED = tier 3 可自动回收;
+// PRISTINE = tier 4 需用户显式同意。no-fit JSON 两字段分别上报,
+// UI 必须能区分"多少无需点头可腾"。
+void meta_carve_reclaimable_split(const meta_carve_t *c,
+                                  uint32_t *out_archived,
+                                  uint32_t *out_pristine);
+
 // 保留标签(与固定表条目同源):子固件声明的这些 label 会先命中系统分区,
 // carve 出同名条目轻则无意义、重则(如 store)把系统区暴露给子固件擦写 ——
 // analyze 跳过、设备端硬拒(双层门禁)。

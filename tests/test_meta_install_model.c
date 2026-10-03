@@ -579,6 +579,183 @@ static void test_geom_from_carve(void)
     printf("PASS geom from carve\n");
 }
 
+static void test_place_offer(void)
+{
+    char js[2048];
+    meta_install_manifest_t m;
+    meta_carve_t cur, next;
+    int idx = -1;
+    bool changed = false;
+    char label[META_DATA_LABEL_MAX + 1];
+    meta_install_no_fit_t nf;
+    memset(&cur, 0, sizeof(cur));
+
+    // image 0x1F000 → need 0x20000(与 carve_ok 用例同源几何)。
+    // ── 全新放置:槽位 + 两条数据,一次 OK ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\"carveOffset\":1572864,\"carveSize\":131072,"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"rec\"},"
+        "{\"playId\":7,\"size\":8192,\"label\":\"cfg\"}],", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(m.data_count == 2);
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_OK);
+    assert(idx == 0 && changed);
+    assert(next.count == 1 && next.slot[0].offset == 0x180000);
+    assert(next.data_count == 2);
+    assert(next.data[0].play_id == 7 && next.data[0].state == META_DATA_PRISTINE);
+    assert(strcmp(next.data[0].label, "rec") == 0);
+    // 数据 first-fit 落在槽位之后(pool_0 先填):rec 紧邻槽尾(0x1A0000);
+    // 数据偏移按 META_CARVE_OFFSET_ALIGN(64KB)对齐 → cfg 跳到下一 64KB 界。
+    assert(next.data[0].offset == 0x1A0000);
+    assert(next.data[1].offset == 0x1B0000);
+    // 纯槽位、无数据 → OK。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_OK);
+    assert(next.data_count == 0 && changed);
+
+    // ── 幂等:提案槽已在 carve → 副本=现状,changed=false ──
+    assert(meta_carve_place(&cur, 0x20000, META_CARVE_KIND_APP, &cur) == 0);
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_OK);
+    assert(idx == 0 && !changed);
+    assert(memcmp(&next, &cur, sizeof(next)) == 0);
+
+    // ── 幂等 + 缺失数据补放:changed=true(旧固件只放槽位的老数据迁移) ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\"carveOffset\":1572864,\"carveSize\":131072,"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"rec\"}],", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_OK);
+    assert(idx == 0 && changed);
+    assert(next.count == 1 && next.data_count == 1);
+    assert(next.data[0].play_id == 7 && strcmp(next.data[0].label, "rec") == 0);
+
+    // ── 保留标签 → REJECTED ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\"carveOffset\":1703936,\"carveSize\":131072,"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"nvs\"}],", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);
+    assert(strcmp(label, "nvs") == 0);
+
+    // ── manifest 内重复 label → REJECTED ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\"carveOffset\":1703936,\"carveSize\":131072,"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"rec\"},"
+        "{\"playId\":7,\"size\":4096,\"label\":\"rec\"}],", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);
+
+    // ── 升级保留:既有 (play_id,label) 记录不重复放置 ──
+    {
+        meta_carve_t with_data = cur;
+        uint32_t off = 0;
+        assert(meta_carve_place_data(&with_data, 0x2000, &off));
+        meta_carve_data_t rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.play_id = 7; rec.offset = off; rec.size = 0x2000;
+        rec.state = META_DATA_DIRTY; rec.type = 1; rec.subtype = 1;
+        strncpy(rec.label, "rec", sizeof(rec.label) - 1);
+        assert(meta_carve_data_append(&with_data, &rec));
+        // 提案槽必须避开既有数据记录(rec@0x1A0000+0x2000,64KB 对齐) → 0x1B0000。
+        assert(build_carve_offer(js, sizeof(js), 0x1F000,
+            "\"carveOffset\":1769472,\"carveSize\":131072,"
+            "\"data\":[{\"playId\":7,\"size\":8192,\"label\":\"rec\"},"
+            "{\"playId\":7,\"size\":4096,\"label\":\"cfg\"}],", 1));
+        assert(meta_install_model_parse(js, strlen(js), &m));
+        assert(meta_install_model_place_offer(&m, &with_data, &next, &idx,
+                                              &changed, label, &nf) == META_PLACE_OK);
+        // rec 保留原偏移/DIRTY;只有 cfg 新放。
+        assert(next.count == 2 && next.data_count == 2);
+        assert(meta_carve_find_data(&next, 7, "rec") >= 0);
+        const meta_carve_data_t *kept = &next.data[meta_carve_find_data(&next, 7, "rec")];
+        assert(kept->offset == off && kept->state == META_DATA_DIRTY);
+        assert(meta_carve_find_data(&next, 7, "cfg") >= 0);
+        assert(next.data[meta_carve_find_data(&next, 7, "cfg")].state == META_DATA_PRISTINE);
+    }
+
+    // ── NO_FIT_SLOT:满载 → 数字(largestGap=0,回收量按状态拆) ──
+    {
+        meta_carve_t full = cur;
+        while (full.count < META_CARVE_MAX_SLOTS) {
+            assert(meta_carve_place(&full, 0x20000, META_CARVE_KIND_APP, &full) >= 0);
+        }
+        // 塞一条 ARCHIVED + 一条 PRISTINE 数据,验证拆分。
+        uint32_t off = 0;
+        assert(meta_carve_place_data(&full, 0x1000, &off));
+        meta_carve_data_t rec; memset(&rec, 0, sizeof(rec));
+        rec.play_id = 9; rec.offset = off; rec.size = 0x1000;
+        rec.state = META_DATA_ARCHIVED; rec.type = 1; rec.subtype = 1;
+        strncpy(rec.label, "old", sizeof(rec.label) - 1);
+        assert(meta_carve_data_append(&full, &rec));
+        assert(meta_carve_place_data(&full, 0x2000, &off));
+        memset(&rec, 0, sizeof(rec));
+        rec.play_id = 9; rec.offset = off; rec.size = 0x2000;
+        rec.state = META_DATA_PRISTINE; rec.type = 1; rec.subtype = 1;
+        strncpy(rec.label, "new", sizeof(rec.label) - 1);
+        assert(meta_carve_data_append(&full, &rec));
+
+        assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                                 "\"carveOffset\":6291456,\"carveSize\":131072,", 7));
+        assert(meta_install_model_parse(js, strlen(js), &m));
+        assert(meta_install_model_place_offer(&m, &full, &next, &idx, &changed,
+                                              label, &nf) == META_PLACE_NO_FIT_SLOT);
+        assert(nf.needed == 0x20000);
+        // 8 槽上限触发的失败:空间其实充足(pool1 全空 0x49E000),数字如实上报
+        // —— 槽位耗尽与空间耗尽由 UI 结合列表 count 区分。
+        assert(nf.largest_gap == 0x49E000);
+        assert(nf.reclaimable_archived == 0x1000);
+        assert(nf.reclaimable_pristine == 0x2000);
+    }
+
+    // ── NO_FIT_DATA:槽位放得下但数据无洞 ──
+    {
+        // 用数据记录把 pool_0 的洞填满,只剩槽位 itself 后的窄缝不够 4KB?直接
+        // 用超大尺寸数据声明:need=0x20000 槽位后,数据要 0x100000,池剩余不足。
+        meta_carve_t roomy = cur;   // 1 槽 @0x180000+0x20000
+        assert(build_carve_offer(js, sizeof(js), 0x1F000,
+            "\"carveOffset\":1703936,\"carveSize\":131072,"
+            "\"data\":[{\"playId\":7,\"size\":6291456,\"label\":\"big\"}],", 1));
+        assert(meta_install_model_parse(js, strlen(js), &m));
+        assert(meta_install_model_place_offer(&m, &roomy, &next, &idx, &changed,
+                                              label, &nf) == META_PLACE_NO_FIT_DATA);
+        assert(strcmp(label, "big") == 0);
+        assert(nf.needed == 6291456);
+        assert(nf.largest_gap < 6291456);
+    }
+
+    // ── 形状/分歧拒绝 ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1703936,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);  // 下标分歧
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1703936,\"carveSize\":196608,", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);  // size != need
+    // NULL/无提案 → REJECTED。
+    assert(meta_install_model_place_offer(NULL, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);
+    assert(build_carve_offer(js, sizeof(js), 0x1F000, "", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);  // 无提案
+
+    printf("PASS place offer\n");
+}
+
 int main(void)
 {
     test_parse_happy();
@@ -595,6 +772,7 @@ int main(void)
     test_geom_from_carve();
     test_parse_remove();
     test_remove_ok();
+    test_place_offer();
     printf("ALL meta_install_model TESTS PASSED\n");
     return 0;
 }

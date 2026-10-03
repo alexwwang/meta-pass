@@ -237,6 +237,154 @@ int meta_install_model_carve_ok(const meta_install_manifest_t *m,
     return idx;
 }
 
+static void fill_no_fit(meta_install_no_fit_t *nf, const meta_carve_t *ctx,
+                        uint32_t needed)
+{
+    if (!nf) return;
+    nf->needed = needed;
+    nf->largest_gap = meta_carve_largest_gap(ctx);
+    meta_carve_reclaimable_split(ctx, &nf->reclaimable_archived,
+                                 &nf->reclaimable_pristine);
+}
+
+// 幂等路径的数据补放:提案槽已在 carve,但 manifest.data[] 中有条目尚无
+// (play_id,label) 记录(旧固件只放槽位的老数据/部分失败迁移)→ 在副本上
+// 补齐;返回是否有新增。槽位本身绝不重复放置。
+static bool idempotent_backfill_data(const meta_install_manifest_t *m,
+                                     const meta_carve_t *cur,
+                                     meta_carve_t *out_next,
+                                     meta_install_no_fit_t *out_nf,
+                                     char *out_label)
+{
+    bool changed = false;
+    *out_next = *cur;
+    for (uint8_t d = 0; d < m->data_count; d++) {
+        const uint32_t pid = m->data[d].play_id;
+        const char *label = m->data[d].label;
+        if (pid == 0) continue;
+        if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 已存在,保留
+        if (meta_carve_data_label_reserved(label)) {
+            if (out_label) {
+                strncpy(out_label, label, META_DATA_LABEL_MAX);
+                out_label[META_DATA_LABEL_MAX] = '\0';
+            }
+            return changed;   // 调用方按 REJECTED 处理(见 place_offer)
+        }
+        uint32_t off = 0;
+        if (!meta_carve_place_data(out_next, m->data[d].size, &off)) {
+            fill_no_fit(out_nf, out_next, m->data[d].size);
+            if (out_label) {
+                strncpy(out_label, label, META_DATA_LABEL_MAX);
+                out_label[META_DATA_LABEL_MAX] = '\0';
+            }
+            return changed;   // 调用方按 NO_FIT_DATA 处理
+        }
+        meta_carve_data_t rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.play_id = pid;
+        rec.offset = off;
+        rec.size = m->data[d].size;
+        rec.state = META_DATA_PRISTINE;
+        rec.type = 1;
+        rec.subtype = 1;
+        strncpy(rec.label, label, sizeof(rec.label) - 1);
+        if (!meta_carve_data_append(out_next, &rec)) return changed;  // 数组满
+        changed = true;
+    }
+    return changed;
+}
+
+meta_install_place_verdict_t meta_install_model_place_offer(
+    const meta_install_manifest_t *m, const meta_carve_t *cur,
+    meta_carve_t *out_next, int *out_idx, bool *out_changed,
+    char *out_label, meta_install_no_fit_t *out_nf)
+{
+    if (out_idx) *out_idx = -1;
+    if (out_changed) *out_changed = false;
+    if (out_label) out_label[0] = '\0';
+    if (!m || !cur || !m->has_carve || !out_next) return META_PLACE_REJECTED;
+    if (m->protocol != META_INSTALL_PROTOCOL_V1) return META_PLACE_REJECTED;
+    const uint32_t need = meta_carve_need(m->image_len);
+    if (need == 0 || m->carve_size != need) return META_PLACE_REJECTED;
+
+    // 幂等:提案槽已存在(复位后手机重发同一 prepare)→ 补放缺失数据后返回。
+    for (uint8_t i = 0; i < cur->count; i++) {
+        const meta_carve_slot_t *s = &cur->slot[i];
+        if (s->kind == META_CARVE_KIND_APP && s->offset == m->carve_offset &&
+            s->size == m->carve_size) {
+            if (m->phone_slot >= 0 && m->phone_slot != (int8_t)i) {
+                return META_PLACE_REJECTED;
+            }
+            const bool ch = idempotent_backfill_data(m, cur, out_next, out_nf, out_label);
+            // backfill 内 REJECTED/NO_FIT 情形由 label/nf 判据区分:label 非空
+            // 但 nf->needed==0 = 保留标签;nf 已填 = no-fit。
+            if (out_label && out_label[0] && !ch) {
+                if (out_nf && out_nf->needed) return META_PLACE_NO_FIT_DATA;
+                return META_PLACE_REJECTED;
+            }
+            if (out_idx) *out_idx = (int)i;
+            if (out_changed) *out_changed = ch;
+            return META_PLACE_OK;
+        }
+    }
+
+    // 放槽位(先放;数据 first-fit 的占用域须看见新槽位)。
+    meta_carve_t next = *cur;
+    const int idx = meta_carve_place(&next, need, META_CARVE_KIND_APP, &next);
+    if (idx < 0) {
+        fill_no_fit(out_nf, cur, need);
+        return META_PLACE_NO_FIT_SLOT;
+    }
+    if (next.slot[idx].offset != m->carve_offset) return META_PLACE_REJECTED;
+    if (m->phone_slot >= 0 && m->phone_slot != (int8_t)idx) return META_PLACE_REJECTED;
+
+    // 放数据条目。
+    for (uint8_t d = 0; d < m->data_count; d++) {
+        const uint32_t pid = m->data[d].play_id;
+        const char *label = m->data[d].label;
+        if (pid == 0) continue;                                     // 声明占位,忽略
+        if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 升级:保留既有记录
+        if (meta_carve_data_label_reserved(label)) {
+            if (out_label) {
+                strncpy(out_label, label, META_DATA_LABEL_MAX);
+                out_label[META_DATA_LABEL_MAX] = '\0';
+            }
+            return META_PLACE_REJECTED;
+        }
+        // manifest 内重复 label(同 play_id 两个同名数据分区)拒。
+        for (uint8_t e = 0; e < d; e++) {
+            if (m->data[e].play_id == pid &&
+                strncmp(m->data[e].label, label, META_DATA_LABEL_MAX) == 0) {
+                return META_PLACE_REJECTED;
+            }
+        }
+        uint32_t off = 0;
+        if (!meta_carve_place_data(&next, m->data[d].size, &off)) {
+            fill_no_fit(out_nf, &next, m->data[d].size);
+            if (out_label) {
+                strncpy(out_label, label, META_DATA_LABEL_MAX);
+                out_label[META_DATA_LABEL_MAX] = '\0';
+            }
+            return META_PLACE_NO_FIT_DATA;
+        }
+        meta_carve_data_t rec;
+        memset(&rec, 0, sizeof(rec));
+        rec.play_id = pid;
+        rec.offset = off;
+        rec.size = m->data[d].size;
+        rec.state = META_DATA_PRISTINE;
+        rec.type = 1;
+        rec.subtype = 1;
+        strncpy(rec.label, label, sizeof(rec.label) - 1);
+        if (!meta_carve_data_append(&next, &rec)) return META_PLACE_REJECTED;  // 数组满
+    }
+
+    *out_next = next;
+    if (out_idx) *out_idx = idx;
+    if (out_changed) *out_changed = true;
+    return META_PLACE_OK;
+}
+
 bool meta_install_geom_from_carve(const meta_carve_t *c,
                                   const meta_install_manifest_t *m,
                                   meta_install_geom_t *g,

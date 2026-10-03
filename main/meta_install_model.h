@@ -115,6 +115,37 @@ bool meta_install_model_slot_fit(const meta_install_geom_t *g, int8_t slot,
 int meta_install_model_carve_ok(const meta_install_manifest_t *m,
                                 const meta_carve_t *cur);
 
+// ── P0-5 提案物化(见 docs/assets/dynslot-install-data-wiring-design.md) ──
+
+// no-fit 上报数字(§4 JSON):needed/largestGap + 按授权级别拆分的可回收量。
+typedef struct {
+    uint32_t needed;               // 所需字节(slot = meta_carve_need;data = 记录尺寸)
+    uint32_t largest_gap;          // 最大单块可分配区间(决策时点的 carve)
+    uint32_t reclaimable_archived; // tier 3 可自动回收(ARCHIVED)
+    uint32_t reclaimable_pristine; // tier 4 需用户同意(PRISTINE)
+} meta_install_no_fit_t;
+
+typedef enum {
+    META_PLACE_OK = 0,    // 成功;*out_changed = out_next 是否异于 cur(决定是否需提交+复位)
+    META_PLACE_NO_FIT_SLOT,  // 槽位放不下;out_nf 填数字
+    META_PLACE_NO_FIT_DATA,  // 数据条目放不下;out_label/out_nf 填
+    META_PLACE_REJECTED,     // 形状/分歧/保留标签/重复标签/数组满;out_label 可填
+} meta_install_place_verdict_t;
+
+// 在副本上重放逐条目放置(纯函数:不动 s_carve,不提交):
+//   1. 形状校验(carve_size == meta_carve_need,protocol);幂等扫描(提案槽已在
+//      carve → 副本=现状,下标返回;缺失的数据记录仍补放并置 *out_changed);
+//   2. meta_carve_place 放槽位(先放;落点/phone_slot 与提案分歧 → REJECTED);
+//   3. 逐条 manifest.data[]:play_id==0 跳过;(play_id,label) 已存在 → 保留
+//      (升级路径,finalize 的 data_copy 负责迁移);保留标签/重复标签 → REJECTED;
+//      place_data + append(PRISTINE);任一条放不下 → NO_FIT_DATA(整体失败,副本丢弃)。
+// out_label 缓冲 ≥ META_DATA_LABEL_MAX+1;NO_FIT_DATA/REJECTED(标签类)时填失败条目。
+// REJECTED 不区分原因码,调用方统一 400(细分对 UI 无决策价值)。
+meta_install_place_verdict_t meta_install_model_place_offer(
+    const meta_install_manifest_t *m, const meta_carve_t *cur,
+    meta_carve_t *out_next, int *out_idx, bool *out_changed,
+    char *out_label, meta_install_no_fit_t *out_nf);
+
 // dynslot 显式删除(design §4.5 Remove / §6,POST /api/install/remove)请求体:
 // {"slot":N[,"eraseData":true]},N ∈ [0, META_SLOT_COUNT)。
 //   - slot:缺字段/越界/类型不符(字符串/小数)一律 false,不动 *out;

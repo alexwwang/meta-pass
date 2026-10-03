@@ -312,16 +312,29 @@ uint32_t meta_carve_largest_gap(const meta_carve_t *c)
 uint32_t meta_carve_reclaimable(const meta_carve_t *c)
 {
     if (!c) return 0;
-    uint32_t sum = 0;
-    for (uint8_t i = 0; i < c->data_count && i < META_DATA_MAX; i++) {
-        // ARCHIVED = 已卸载归档;PRISTINE = 未被运行时碰过的出厂 carve ——
-        // 都是阶梯可回收物;DIRTY = 在用玩法数据,不入阶梯。
-        if (c->data[i].state == META_DATA_ARCHIVED ||
-            c->data[i].state == META_DATA_PRISTINE) {
-            sum += c->data[i].size;
+    uint32_t a = 0, p = 0;
+    meta_carve_reclaimable_split(c, &a, &p);
+    return a + p;
+}
+
+void meta_carve_reclaimable_split(const meta_carve_t *c,
+                                  uint32_t *out_archived,
+                                  uint32_t *out_pristine)
+{
+    uint32_t a = 0, p = 0;
+    if (c) {
+        for (uint8_t i = 0; i < c->data_count && i < META_DATA_MAX; i++) {
+            // ARCHIVED = 已卸载归档;PRISTINE = 未被运行时碰过的出厂 carve ——
+            // 都是阶梯可回收物;DIRTY = 在用玩法数据,不入阶梯。
+            if (c->data[i].state == META_DATA_ARCHIVED) {
+                a += c->data[i].size;
+            } else if (c->data[i].state == META_DATA_PRISTINE) {
+                p += c->data[i].size;
+            }
         }
     }
-    return sum;
+    if (out_archived) *out_archived = a;
+    if (out_pristine) *out_pristine = p;
 }
 
 // 保留标签 = 固定表条目(FIXED)的 label 集合同源:子固件声明的这些名字会

@@ -418,11 +418,12 @@ bool meta_store_json_get_array_string(const char *json, size_t len, const char *
                                       size_t idx, const char *field, char *out, size_t out_sz)
 {
     if (!json || len == 0 || !out || out_sz == 0) return false;
-    // 定位 key[idx].field: key 必须是顶层数组键,field 在元素对象内。
-    char path[256];
-    int n = snprintf(path, sizeof(path), "%.128s[%zu].%.64s", key, idx, field);
-    if (n < 0 || n >= (int)sizeof(path)) return false;
-    return meta_store_json_get_string(json, len, path, out, out_sz);
+    // 与 get_array_int 同路径:key 顶层数组 → idx 元素对象 → field 字符串。
+    // 旧实现拼 "key[idx].field" 走 locate(),而 locate 只按 '/' 分段、不识别
+    // 方括号语法 → 永远找不到键(潜伏 bug:data[] manifest 的 label 解析从未成功)。
+    cur_t c;
+    if (!array_field(json, len, key, idx, field, &c)) return false;
+    return scan_string(&c, out, out_sz, NULL);
 }
 
 bool meta_store_json_parse_sha256(const char *hex, size_t len, uint8_t out[32])
