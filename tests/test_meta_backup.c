@@ -272,6 +272,52 @@ static void test_parse_bad_magic(void)
     assert_false(result.ok, "bad magic rejected");
 }
 
+static void test_filter_import(void)
+{
+    meta_backup_data_t in[4];
+    memset(in, 0, sizeof(in));
+    // [0] 合法 ARCHIVED
+    in[0].play_id = 1; in[0].offset = 0x280000; in[0].size = 0x1000;
+    in[0].state = 2; strcpy(in[0].label, "save");
+    // [1] state=DIRTY → 剔除
+    in[1].play_id = 1; in[1].offset = 0x290000; in[1].size = 0x1000;
+    in[1].state = 1; strcpy(in[1].label, "a");
+    // [2] ARCHIVED 但 label 空 → 剔除
+    in[2].play_id = 1; in[2].offset = 0x2A0000; in[2].size = 0x1000;
+    in[2].state = 2; in[2].label[0] = '\0';
+    // [3] 合法 ARCHIVED
+    in[3].play_id = 1; in[3].offset = 0x2B0000; in[3].size = 0x2000;
+    in[3].state = 2; strcpy(in[3].label, "content");
+
+    meta_backup_data_t out[META_BACKUP_DATA_MAX];
+    int n = meta_backup_filter_import(in, 4, out);
+    assert_eq(n, 2, "only valid ARCHIVED records kept");
+    assert_str_equal(out[0].label, "save", "kept record 0");
+    assert_str_equal(out[1].label, "content", "kept record 1");
+
+    // 空输入 / NULL → 0。
+    assert_eq(meta_backup_filter_import(NULL, 4, out), 0, "null input");
+    assert_eq(meta_backup_filter_import(in, 0, out), 0, "zero count");
+    printf("PASS backup filter import\n");
+}
+
+static void test_import_verdict(void)
+{
+    // 空间足够 → OK。
+    assert_eq(meta_backup_import_verdict(0x10000, 0x8000, 0), META_IMPORT_OK,
+              "enough free");
+    // 不足但有可回收归档 → 先 ARC。
+    assert_eq(meta_backup_import_verdict(0x1000, 0x8000, 0x4000),
+              META_IMPORT_ERR_NEED_ARC, "reclaimable -> arc");
+    // 不足且无可回收 → 507。
+    assert_eq(meta_backup_import_verdict(0x1000, 0x8000, 0),
+              META_IMPORT_ERR_INSUFFICIENT, "no reclaimable -> insufficient");
+    // 无可导入内容 → NO_RECORDS(优先于空间判定)。
+    assert_eq(meta_backup_import_verdict(0, 0, 0), META_IMPORT_ERR_NO_RECORDS,
+              "nothing to import");
+    printf("PASS backup import verdict\n");
+}
+
 static void test_size_consistency(void)
 {
     assert_true(sizeof(meta_backup_header_t) > 0, "header size > 0");
@@ -295,6 +341,8 @@ int main(void)
     test_parse_roundtrip();
     test_parse_truncated();
     test_parse_bad_magic();
+    test_filter_import();
+    test_import_verdict();
     test_size_consistency();
 
     printf("PASS test_meta_backup\n");

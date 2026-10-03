@@ -52,6 +52,30 @@ int meta_backup_serialize(const uint32_t *play_ids, const uint8_t *states,
     return written;
 }
 
+int meta_backup_filter_import(const meta_backup_data_t *in, int count,
+                              meta_backup_data_t out[META_BACKUP_DATA_MAX])
+{
+    if (!in || !out || count <= 0) return 0;
+    int kept = 0;
+    for (int i = 0; i < count && kept < META_BACKUP_DATA_MAX; i++) {
+        if (in[i].state != 2) continue;          // 只导 ARCHIVED
+        if (in[i].offset == 0 || in[i].size == 0) continue;
+        if (in[i].label[0] == '\0') continue;    // label 空 → 建不出 carve 条目
+        out[kept++] = in[i];
+    }
+    return kept;
+}
+
+meta_import_verdict_t meta_backup_import_verdict(uint32_t free_bytes,
+                                                 uint32_t total_needed,
+                                                 uint32_t reclaimable)
+{
+    if (total_needed == 0) return META_IMPORT_ERR_NO_RECORDS;
+    if (free_bytes >= total_needed) return META_IMPORT_OK;
+    if (reclaimable > 0) return META_IMPORT_ERR_NEED_ARC;
+    return META_IMPORT_ERR_INSUFFICIENT;
+}
+
 meta_backup_result_t meta_backup_parse(const uint8_t *data, size_t len)
 {
     meta_backup_result_t result = {0};

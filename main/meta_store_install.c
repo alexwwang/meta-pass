@@ -1345,10 +1345,10 @@ static esp_err_t h_backup_import(httpd_req_t *req)
     if (!array_start) return reply(req, "400 Bad Request", "malformed data array");
     array_start++;
 
-    meta_backup_data_t import_records[META_BACKUP_DATA_MAX];
-    int record_count = 0;
+    meta_backup_data_t raw[META_BACKUP_DATA_MAX];
+    int raw_count = 0;
     p = array_start;
-    while (*p && record_count < META_BACKUP_DATA_MAX) {
+    while (*p && raw_count < META_BACKUP_DATA_MAX) {
         while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
         if (*p != '{') break;
         meta_backup_data_t rec = {0};
@@ -1382,43 +1382,39 @@ static esp_err_t h_backup_import(httpd_req_t *req)
                 }
             }
         }
-        if (rec.state == META_DATA_ARCHIVED && rec.offset != 0 && rec.size != 0 &&
-            rec.label[0] != '\0') {
-            import_records[record_count++] = rec;   // label 空 = 无法建 carve 条目,拒
-        }
+        if (raw_count < META_BACKUP_DATA_MAX) raw[raw_count++] = rec;
         char *brace_end = strchr(p, '}');
         if (!brace_end) break;
         p = brace_end + 1;
     }
 
+    // 筛选与空间判定走纯逻辑(meta_backup.c,host 可测)。
+    meta_backup_data_t import_records[META_BACKUP_DATA_MAX];
+    const int record_count = meta_backup_filter_import(raw, raw_count, import_records);
     if (record_count == 0) return reply(req, "400 Bad Request", "no valid archived records");
 
-    size_t total_needed = 0;
+    uint32_t total_needed = 0;
     for (int i = 0; i < record_count; i++) total_needed += import_records[i].size;
 
     const meta_carve_t *carve = meta_carve_flash_carve();
     if (!carve) return reply(req, "500 Internal Server Error", "carve not available");
 
     uint32_t free_bytes = meta_carve_free(carve);
-    if (free_bytes < (uint32_t)total_needed) {
+    meta_import_verdict_t verdict = meta_backup_import_verdict(
+        free_bytes, total_needed, meta_carve_reclaimable(carve));
+    if (verdict == META_IMPORT_ERR_NEED_ARC) {
+        // meta_carve_flash_arc 返回实际回收字节数(0 = 无可用归档)。回收后重新判定。
         ESP_LOGI(TAG, "pool pressure %lu needed, free %lu, attempting ARC",
                  (unsigned long)total_needed, (unsigned long)free_bytes);
-        // meta_carve_flash_arc 返回实际回收字节数(0 = 无可用归档),不是 esp_err_t ——
-        // 早期代码误当错误码比较,回收成功反而报 507。
-        const uint32_t reclaimed = meta_carve_flash_arc(total_needed - free_bytes);
-        if (reclaimed == 0) {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
-                     (unsigned long)total_needed, (unsigned long)free_bytes);
-            return reply(req, "507 Insufficient Storage", msg);
-        }
+        (void)meta_carve_flash_arc(total_needed - free_bytes);
         free_bytes = meta_carve_free(meta_carve_flash_carve());
-        if (free_bytes < (uint32_t)total_needed) {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "space still insufficient after ARC: need %lu, free %lu",
-                     (unsigned long)total_needed, (unsigned long)free_bytes);
-            return reply(req, "507 Insufficient Storage", msg);
-        }
+        verdict = meta_backup_import_verdict(free_bytes, total_needed, 0);
+    }
+    if (verdict != META_IMPORT_OK) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
+                 (unsigned long)total_needed, (unsigned long)free_bytes);
+        return reply(req, "507 Insufficient Storage", msg);
     }
 
     // 在副本上追加再提交:失败时 s_carve 不被改动(避免内存态与 flash 分歧)。

@@ -68,3 +68,27 @@ int meta_backup_serialize(const uint32_t *play_ids, const uint8_t *states,
 
 // 解析备份数据
 meta_backup_result_t meta_backup_parse(const uint8_t *data, size_t len);
+
+// 导入前的记录筛选(纯逻辑):只保留可导入的记录:
+//   只取 ARCHIVED state=2、offset/size 非零、label 为空(建不出 carve 外
+//   无法建条目)均剔除。写回 out 并返回保留条数。
+// state 非 ARCHIVED / offset=0 / size=0 / label 为空 → 剔除(设计 §12.3)。
+int meta_backup_filter_import(const meta_backup_data_t *in, int count,
+                              meta_backup_data_t out[META_BACKUP_DATA_MAX]);
+
+// 导入空间判定(纯逻辑,对应设计 §12.4):
+//   total_needed = 0            → NO_RECORDS(无可导入内容,调用方映射 400)
+//   free_bytes >= total_needed  → OK(直接导入)
+//   reclaimable > 0             → NEED_ARC(先回收归档再重试)
+//   否则                          → INSUFFICIENT(映射 507)
+// free_bytes/reclaimable 均由调用方从规范 carve 现算。
+typedef enum {
+    META_IMPORT_OK = 0,
+    META_IMPORT_ERR_NO_RECORDS,
+    META_IMPORT_ERR_NEED_ARC,
+    META_IMPORT_ERR_INSUFFICIENT,
+} meta_import_verdict_t;
+
+meta_import_verdict_t meta_backup_import_verdict(uint32_t free_bytes,
+                                                 uint32_t total_needed,
+                                                 uint32_t reclaimable);
