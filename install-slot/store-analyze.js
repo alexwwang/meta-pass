@@ -206,10 +206,11 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     }
 
     let ext;
+    let dataPartitions = []; // M5: 数据分区声明
     try {
       ext = extractAppImage(got.buf, UNPACK_MAX);
       // M5: 解析数据分区(可选,失败不影响主流程)
-      try { entry.dataPartitions = parseDataPartitions(got.buf); } catch (e) { entry.dataPartitions = []; }
+      try { dataPartitions = parseDataPartitions(got.buf); } catch (e) { dataPartitions = []; }
     } catch (err) {
       return { error: mapExtractError(err) };
     }
@@ -245,6 +246,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       reason: supported ? (partitionWarning ? REASON_CUSTOM_PARTITIONS : "ok") : REASON_TOO_LARGE,
       ...(partitionWarning ? { detail: partitionWarning } : {}),
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
+      dataPartitions, // M5: 数据分区声明
     };
     doCache.set(cacheKey, entry);
     return { entry };
