@@ -18,11 +18,6 @@ typedef struct {
 } esp_app_desc_t;
 
 // Stub for host tests: returns placeholder version
-esp_err_t esp_app_get_description(esp_app_desc_t *out_desc)
-{
-    if (out_desc) {
-        memset(out_desc, 0, sizeof(*out_desc));
-        strncpy(out_desc->version, "0.0.0-test", sizeof(out_desc->version) - 1);
-    }
-    return ESP_OK;
-}
+
+// Declaration only (definition provided by IDF for device build, stub for host tests)
+esp_err_t esp_app_get_description(esp_app_desc_t *out_desc);
