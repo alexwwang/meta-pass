@@ -12,6 +12,7 @@ import {
   isFixedSlotLayout,
   isDynslotSafeTable,
   migrationWritePlan,
+  discoverSlots,
   migrationErasePlan,
   slotHasData,
   PARTITION_TABLE_READ_SIZE,
@@ -449,6 +450,58 @@ let packedFromPass7;   // PASS 8 兼容分发用例复用
   const mixed = comparePartitionTables(carvedDevice, safeBundle, false);
   assert.equal(mixed.ok, false, "dynslot tables under fixed byte-compare must differ");
   console.log("PASS 9: dynslot dual-mode — store-based detection, entry-level compare, safe-table gate, fixed path untouched");
+}
+
+// ---- PASS 10: discoverSlots —— 从分区表发现槽位几何(USB 页动态槽位 UI 数据源) ----
+{
+  // 固定 3 槽表 → 3 槽,几何与 legacy 常量一致
+  const fixed = discoverSlots(parsePartitionTable(syntheticPartitionTable()));
+  assert.deepEqual(fixed, [
+    { slot: 0, offset: 0x180000, size: 0x1d6000 },
+    { slot: 1, offset: 0x360000, size: 0x200000 },
+    { slot: 2, offset: 0x560000, size: 0x29e000 },
+  ], "fixed 3-slot discovery matches legacy geometry");
+
+  // carved 表 → 按实际槽位条目(偏移任意、数量可变)
+  const carvedDevice = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["store", 1, 2, 0x35a000, 0x6000],
+    ["ota_1", 0, 0x11, 0x200000, 0x80000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ], 0x1000);
+  const carved = discoverSlots(parsePartitionTable(carvedDevice));
+  assert.deepEqual(carved, [
+    { slot: 0, offset: 0x180000, size: 0x1d6000 },
+    { slot: 1, offset: 0x200000, size: 0x80000 },
+  ], "carved discovery reflects actual slot entries");
+
+  // 乱序条目按 slot 升序;非 ota 条目(nvs/factory/pool/data)被跳过
+  const shuffled = syntheticTable([
+    ["ota_3", 0, 0x13, 0x400000, 0x20000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["data_x", 1, 0x40, 0x360000, 0x1000],
+    ["ota_1", 0, 0x11, 0x200000, 0x80000],
+  ]);
+  const ds = discoverSlots(parsePartitionTable(shuffled));
+  assert.deepEqual(ds.map((s) => s.slot), [0, 1, 3], "sorted by slot index, non-ota skipped");
+
+  // 原厂 factory-only 表(无 ota)→ 空数组,调用方保留 legacy 几何
+  const folotoy = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["recovery", 1, 0x82, 0x700000, 0x100000],
+  ]);
+  assert.deepEqual(discoverSlots(parsePartitionTable(folotoy)), [], "factory-only → empty (caller keeps legacy)");
+
+  // 健壮性
+  assert.deepEqual(discoverSlots(null), []);
+  assert.deepEqual(discoverSlots([]), []);
+  console.log("PASS 10: discoverSlots — fixed/carved/factory-only/robustness");
 }
 
 console.log("All launcher-upgrade tests passed.");

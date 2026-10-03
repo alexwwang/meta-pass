@@ -155,6 +155,21 @@ export function isDynslotLayout(devicePartitions) {
   return devicePartitions.some(p => p.label === 'store' && p.offset === 0x35A000);
 }
 
+// 从设备分区表发现可烧录槽位(ota_N 条目,subtype 0x10+N)。
+// 固定 3 槽布局与 carved 表都通过 ota_N 声明槽位,统一入口:
+// 返回 [{ slot, offset, size }] 按 slot 升序;无 ota 条目返回 []。
+// USB 页连接后用它重建槽位选择 UI,替代写死的 SLOTS 常量(设计 L4)。
+export function discoverSlots(devicePartitions) {
+  if (!Array.isArray(devicePartitions)) return [];
+  const out = [];
+  for (const p of devicePartitions) {
+    if (p.type !== 0 || p.subtype < 0x10 || p.subtype > 0x1f) continue;
+    out.push({ slot: p.subtype - 0x10, offset: p.offset, size: p.size });
+  }
+  out.sort((a, b) => a.slot - b.slot);
+  return out;
+}
+
 
 
 // 判断一块数据是否有"子固件头"的可能(非全 FF 即视为有数据)。

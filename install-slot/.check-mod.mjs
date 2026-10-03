@@ -1,216 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>meta-pass · USB Slot Installer</title>
-<style>
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 24px;
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: #f5f6f8; color: #1c1e21;
-  }
-  main { max-width: 720px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  h2 { font-size: 15px; margin: 0 0 10px; }
-  .subtitle { color: #606770; margin: 0 0 16px; }
-  .hint {
-    background: #fff8e1; border: 1px solid #f0c36d; border-radius: 8px;
-    padding: 10px 12px; margin: 0 0 16px;
-  }
-  section {
-    background: #fff; border: 1px solid #dddfe2; border-radius: 8px;
-    padding: 14px 16px; margin-bottom: 14px;
-  }
-  button {
-    font: inherit; padding: 6px 14px; border-radius: 6px;
-    border: 1px solid #ccd0d5; background: #f0f2f5; cursor: pointer;
-  }
-  button.primary { background: #1877f2; border-color: #1877f2; color: #fff; }
-  button:disabled { opacity: .5; cursor: not-allowed; }
-  label { display: inline-block; margin-right: 16px; }
-  input[type="text"] {
-    font: inherit; padding: 6px 8px; width: 320px; max-width: 100%;
-    border: 1px solid #ccd0d5; border-radius: 6px;
-  }
-  .tabs { display: flex; gap: 6px; margin-bottom: 12px; }
-  .tab.active { background: #1877f2; border-color: #1877f2; color: #fff; }
-  .progress {
-    height: 10px; background: #e4e6eb; border-radius: 5px;
-    overflow: hidden; margin-top: 10px;
-  }
-  #progress-bar { height: 100%; width: 0; background: #31a24c; transition: width .15s; }
-  .error { color: #c00; }
-  .ok { color: #2a7d2a; }
-  .warn { color: #b26a00; }
-  #chip-status, #file-info, #install-status { margin-left: 8px; }
-  #play-info { margin-top: 10px; }
-  #play-info dl { margin: 0; display: grid; grid-template-columns: 90px 1fr; gap: 2px 10px; }
-  #play-info dt { color: #606770; }
-  #play-info dd { margin: 0; word-break: break-all; }
-  #log {
-    font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    background: #1c1e21; color: #d8dadf; border-radius: 6px;
-    padding: 10px 12px; height: 180px; overflow-y: auto; white-space: pre-wrap;
-  }
-  #log .error { color: #ff8a80; }
-  #log .ok { color: #a5d6a7; }
-  #log .warn { color: #ffd180; }
-  /* 语言切换:右上角固定 */
-  #lang-switch { display: flex; gap: 4px; }
-  #top-right-dock { position: fixed; top: 12px; right: 24px; z-index: 40;
-    display: flex; flex-direction: column; align-items: center; gap: 10px; }
-  #coffee-support { margin: 0; text-align: center; line-height: 1.3; }
-  #coffee-support img { width: 96px; height: 96px; object-fit: cover;
-    border: 1px solid #d0d7de; border-radius: 8px; display: block; }
-  #coffee-support .cap { display: block; margin: 4px auto 0; max-width: 96px;
-    font-size: 10.5px; line-height: 1.35; text-align: center; color: #57606a; }
-  #lang-switch button {
-    font-size: 13px; padding: 7px 14px; border-radius: 6px;
-    background: transparent; border: 1px solid #ccd0d5; color: #606770;
-  }
-  #lang-switch button.active { background: #1877f2; border-color: #1877f2; color: #fff; }
-  /* 移动端:固定层压标题/副标题是"按钮失效"观感根因 —— 窄屏压缩固定层
-     并给 main 右侧留白,文字不再钻进二维码底下。 */
-  @media (max-width: 640px) {
-    body { padding: 16px; }
-    #top-right-dock { top: 8px; right: 12px; gap: 6px; }
-    #coffee-support img { width: 64px; height: 64px; }
-    #coffee-support .cap { max-width: 64px; font-size: 10px; }
-    main { padding-right: 104px; }
-  }
-</style>
-</head>
-<body>
-<div id="top-right-dock">
-  <div id="lang-switch">
-    <button id="lang-en" type="button">EN</button>
-    <button id="lang-zh" type="button">中文</button>
-  </div>
-  <figure id="coffee-support">
-    <img src="./author-coffee.jpg" alt="请作者喝咖啡" width="96" height="96">
-    <figcaption class="cap" data-i18n="coffee_caption">请作者喝咖啡</figcaption>
-  </figure>
-</div>
-<main>
-  <h1 data-i18n="title_page">meta-pass · USB Slot Installer</h1>
-  <p class="subtitle" data-i18n="subtitle">Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).</p>
 
-  <p class="hint" data-i18n="hint">Hold <b>UP</b> while powering on to enter download mode, then plug in the USB cable.</p>
-
-  <section>
-    <h2 data-i18n="step_connect">1. Connect</h2>
-    <button id="btn-connect" class="primary" data-i18n="btn_connect">Connect</button>
-    <span id="chip-status"></span>
-    <p id="no-webserial" class="error" hidden data-i18n="no_webserial">
-      Web Serial is not available in this browser/context. Use desktop Chrome or Edge and open
-      this page via <code>http://localhost:4191</code> (a secure context). Headless or non-Chromium
-      browsers cannot access the serial port.
-    </p>
-  </section>
-
-  <section>
-    <h2 data-i18n="step_slot">2. Select slot</h2>
-    <label><input type="radio" name="slot" value="0" checked> <span data-i18n="slot_0">Slot 0</span> <code>0x180000</code></label>
-    <label><input type="radio" name="slot" value="1"> <span data-i18n="slot_1">Slot 1</span> <code>0x360000</code></label>
-    <label><input type="radio" name="slot" value="2"> <span data-i18n="slot_2">Slot 2</span> <code>0x560000</code></label>
-  </section>
-  <section>
-    <h2 data-i18n="step_firmware">3. Firmware source</h2>
-    <div class="tabs">
-      <button class="tab active" data-tab="local" data-i18n="tab_local">Local file</button>
-      <button class="tab" data-tab="community" data-i18n="tab_community">Community play</button>
-    </div>
-    <div id="tab-local">
-      <input type="file" id="file-input" accept=".bin,application/octet-stream">
-      <span id="file-info"></span>
-    </div>
-    <div id="tab-community" hidden>
-      <input type="text" id="play-url" data-i18n-ph="play_url_ph" placeholder="https://ai-passport.folotoy.cn/plays/255 or 255">
-      <button id="btn-fetch-play" data-i18n="btn_fetch">Fetch</button>
-      <div id="play-info"></div>
-    </div>
-  </section>
-
-  <section>
-    <h2 data-i18n="step_install">4. Install</h2>
-  <p>
-    <label for="disp-name" data-i18n="label_disp_name">Display name (optional, shown in the device menu):</label><br>
-    <input type="text" id="disp-name" maxlength="32" data-i18n-ph="ph_disp_name" placeholder="Display name (optional)">
-  </p>
-    <button id="btn-install" class="primary" disabled data-i18n="btn_install">Install</button>
-    <span id="install-status"></span>
-    <div class="progress"><div id="progress-bar"></div></div>
-  </section>
-
-  <section>
-    <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">Backs up the selected slots to a verified zip file on this computer.</p>
-    <p>
-      <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
-      <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
-      <label><input type="checkbox" id="bk-slot2" checked> <span data-i18n="slot_2">Slot 2</span></label>
-    </p>
-    <button id="btn-backup" class="primary" disabled data-i18n="btn_backup">Backup now</button>
-    <span id="backup-status"></span>
-    <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:0.9em;">
-      <input type="checkbox" id="debug-mode"> <span data-i18n="debug_mode">Debug 模式(输出协议级诊断日志)</span>
-    </label>
-    <button id="btn-probe" style="margin-top:6px;" data-i18n="btn_probe">Probe: single 4KB read test</button>
-    <div class="progress"><div id="backup-bar"></div></div>
-  </section>
-
-  <section>
-    <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restores a backup zip onto the device slots, with automatic space and integrity checks.</p>
-    <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
-    <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
-    <div id="restore-slots"></div>
-    <button id="btn-restore" class="primary" disabled data-i18n="btn_restore">Restore</button>
-    <span id="restore-status"></span>
-    <div class="progress"><div id="restore-bar"></div></div>
-  </section>
-
-  <section>
-    <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
-    <p class="subtitle" data-i18n="upgrade_desc">Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.</p>
-    <p><input type="file" id="upgrade-input" accept=".bin,application/octet-stream"> <span data-i18n="upgrade_pick_dir">select the firmware file (meta-pass_v*.bin) — it both installs fresh on the market and upgrades here</span></p>
-    <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
-    <span id="upgrade-status"></span>
-    <p id="upgrade-mode" class="info" style="display:none"></p>
-    <div class="progress"><div id="upgrade-bar"></div></div>
-  </section>
-
-  <section>
-    <h2 data-i18n="step_log">Log</h2>
-    <div id="log"></div>
-  </section>
-</main>
-<p id="module-fail" class="error" hidden>
-  页面脚本未能加载 —— 请勿直接双击打开 HTML 文件(file:// 下浏览器禁止 ES 模块)。
-  请运行 <code>node tools/install-slot/server.mjs</code> 后访问 <code>http://localhost:4191</code>,
-  或打开线上页面。 / Page script failed to load — don't open the HTML file directly (file://
-  blocks ES modules). Run <code>node tools/install-slot/server.mjs</code> and visit
-  <code>http://localhost:4191</code>, or use the deployed page.
-</p>
-<script>
-  // ES module 加载失败兜底:模块末尾会置 __installSlotReady = true。
-  // file:// 直开(模块必然被禁)1.5s 即提示;http(s) 慢网可能超 1.5s
-  // 属正常,宽限到 8s 才提示,避免线上误报(真机反馈:横幅误现)。
-  window.addEventListener("DOMContentLoaded", () => {
-    const delay = location.protocol === "file:" ? 1500 : 8000;
-    setTimeout(() => {
-      if (!window.__installSlotReady) {
-        const el = document.getElementById("module-fail");
-        if (el) el.hidden = false;
-      }
-    }, delay);
-  });
-</script>
-
-<script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, hex } from "./extract-app-image.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
@@ -266,6 +54,7 @@ function applyDiscoveredSlots(parts) {
 // 恢复目标下拉在 zip 加载时按当前 deviceSlots 长度生成,无需重建。
 function rebuildSlotPickers() {
   const n = deviceSlots.length;
+  const slotSection = $("btn-install").closest("section").previousElementSibling;
   // 第 2 步 section:static HTML 中它是 step_slot 标题所在 section
   const sections = document.querySelectorAll("section");
   let slotSec = null;
@@ -508,7 +297,6 @@ const I18N = {
     upgrade_mode_dynslot: "Dynslot mode (dynamic slots)",
     upgrade_mode_fixed: "Fixed-slot mode (3 slots)",
     upgrade_mode_migration: "Fixed-slot → dynslot migration",
-    msg_slots_discovered: "Discovered {count} slot(s) from the device partition table.",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
@@ -663,7 +451,6 @@ const I18N = {
     upgrade_mode_dynslot: "动态槽位模式",
     upgrade_mode_fixed: "固定槽位模式(3 槽)",
     upgrade_mode_migration: "固定槽位 → 动态槽位迁移",
-    msg_slots_discovered: "已从设备分区表发现 {count} 个槽位。",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
@@ -877,8 +664,8 @@ $("btn-upgrade").addEventListener("click", async () => {
     } else if (isLegacyFactoryLayout(devicePartitions)) {
       // 原厂旧布局机:迁移前必须确认没有任何有效子固件数据
       log(t("msg_upgrade_factory_detected"));
-      for (let i = 0; i < deviceSlots.length; i++) {
-        const head = await loader.readFlash(deviceSlots[i].offset, 24);
+      for (let i = 0; i < SLOTS.length; i++) {
+        const head = await loader.readFlash(SLOTS[i].offset, 24);
         if (slotHasData(head)) {
           throw new Error(t("err_upgrade_slot_has_data", { slot: i }));
         }
@@ -1014,13 +801,6 @@ $("btn-connect").addEventListener("click", async () => {
     if (!String(chip).includes("ESP32-C3")) {
       log(t("msg_warn_chip", { chip }), "error");
     }
-    // 槽位几何发现(dynslot carved 槽位偏移任意):读设备分区表重建槽位 UI。
-    // 失败静默保留 legacy 3 槽 —— 旧行为,绝不更差。
-    try {
-      const devTable = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
-      applyDiscoveredSlots(parsePartitionTable(devTable));
-      log(t("msg_slots_discovered", { count: deviceSlots.length }), "ok");
-    } catch { /* 保留 legacy 几何 */ }
   } catch (err) {
     // 失败必须释放本轮已打开的串口:否则下次 open 同一端口会抛
     // "The port is already open",设备从此连不上(只能重开页面)。
@@ -1284,7 +1064,7 @@ $("btn-probe").addEventListener("click", async () => {
     const vendorNew = vf.includes("digest");
     log(`[probe] vendor build: ${vendorNew ? "NEW (per-frame ACK + MD5 digest)" : "OLD — 请强制刷新(Cmd+Shift+R)后再试"}`, vendorNew ? "warn" : "error");
     const t0 = Date.now();
-    const probeAddr = deviceSlots[0].offset;
+    const probeAddr = SLOTS[0].offset;
     const data = await loader.readFlash(probeAddr, PROBE_READ_SIZE);
     const hexAddr = "0x" + probeAddr.toString(16);
     log(`[probe] ${PROBE_READ_SIZE}B @${hexAddr} OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
@@ -1445,7 +1225,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
 
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
-  const slots = deviceSlots.map((_, i) => i).filter((i) => $(`bk-slot${i}`)?.checked);
+  const slots = [0, 1, 2].filter((i) => $(`bk-slot${i}`).checked);
   if (slots.length === 0) {
     $("backup-status").textContent = t("msg_backup_pick_slot");
     return;
@@ -1461,7 +1241,7 @@ $("btn-backup").addEventListener("click", async () => {
     let backedUp = [];
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
-      const s = deviceSlots[slot];
+      const s = SLOTS[slot];
       log(t("msg_backup_reading", { slot, size: fmtBytes(s.size), addr: hex(s.offset) }));
       // 整槽读取:切片需要 tail 之后的全部字节以捕获额外存储数据。
       // 分块读 + 重试:单槽失败只跳过该槽,其余槽位继续(部分成功也产出 zip)。
@@ -1672,7 +1452,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       label.htmlFor = `restore-target-${from}`;
       const sel = document.createElement("select");
       sel.id = `restore-target-${from}`;
-      for (let s = 0; s < deviceSlots.length; s++) {
+      for (let s = 0; s < SLOTS.length; s++) {
         const opt = document.createElement("option");
         opt.value = String(s);
         opt.textContent = s === from ? t("msg_restore_same_slot", { slot: s }) : t(`slot_${s}`);
@@ -1705,7 +1485,7 @@ $("btn-restore").addEventListener("click", async () => {
     let done = 0;
     const restoredSlots = [];
     for (const job of jobs) {
-      const s = deviceSlots[job.to];
+      const s = SLOTS[job.to];
       const files = manifestFilesForSlot(restoreZip.manifest, job.from);
       const dataMap = restoreZip.filesBySlot.get(job.from);
       log(t("msg_restore_checking", { slot: job.to }));
@@ -1838,7 +1618,7 @@ $("btn-install").addEventListener("click", async () => {
   setProgress(0);
   try {
     const slot = Number(document.querySelector('input[name="slot"]:checked').value);
-    const s = deviceSlots[slot];
+    const s = SLOTS[slot];
     const address = s.offset;
     const slotLimit = maxAppImageSize(s.size);
     let image;
@@ -1931,6 +1711,3 @@ window.__installSlotDebug = {
   build: "2026-09-17-probe4",
 };
 window.__installSlotReady = true;   // 模块初始化完成:关闭 file:// 兜底横幅检测
-</script>
-</body>
-</html>
