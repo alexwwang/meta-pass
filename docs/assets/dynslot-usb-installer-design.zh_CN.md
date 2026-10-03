@@ -1,3 +1,6 @@
+<p align="right">
+  <a href="dynslot-usb-installer-design.md">English</a> · <strong>简体中文</strong>
+</p>
 # USB 安装器双模式：动态槽位 vs 固定槽位
 
 日期：2026-10-03

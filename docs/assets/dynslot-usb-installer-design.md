@@ -1,3 +1,6 @@
+<p align="right">
+  <a href="dynslot-usb-installer-design.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
 # USB Installer Dual-Mode: Dynslot vs Fixed-Slot
 
 Date: 2026-10-03
