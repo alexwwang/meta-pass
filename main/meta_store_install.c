@@ -43,8 +43,8 @@
 
 #include "meta_store.h"
 #include "meta_store_json.h"
-#include "meta_carve_flash.h"
-#include "meta_name.h"
+ #include "meta_carve_flash.h"
+ #include "meta_backup.h"
 #include "meta_sign.h"
 #include "nvs.h"
 
@@ -1363,6 +1363,63 @@ static esp_err_t h_install_remove(httpd_req_t *req)
     esp_restart();
     return ESP_OK;                    // 不可达
 }
+// POST /api/backup/import —— 导入归档数据(§M5.12)
+// Body: {"play_id": N, "firmware_version": "...", "data": [...]}
+static esp_err_t h_backup_import(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+
+    static char body[4096];
+    size_t len = 0;
+    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
+    if (rd == ESP_ERR_INVALID_SIZE) {
+        return reply(req, "413 Payload Too Large", "body too large");
+    }
+    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
+
+    // 1. 解析 play_id
+    uint32_t play_id = 0;
+    char *endptr;
+    char *p = strstr(body, "\"play_id\"");
+    if (!p) return reply(req, "400 Bad Request", "missing play_id");
+    p = strchr(p, ':');
+    if (!p) return reply(req, "400 Bad Request", "malformed play_id");
+    play_id = (uint32_t)strtoul(p + 1, &endptr, 10);
+    if (play_id == 0 || *endptr != ',') return reply(req, "400 Bad Request", "invalid play_id");
+
+    // 2. 解析 firmware_version
+    char import_version[33] = {0};
+    p = strstr(body, "\"firmware_version\"");
+    if (!p) return reply(req, "400 Bad Request", "missing firmware_version");
+    p = strchr(p, '"');
+    if (!p) return reply(req, "400 Bad Request", "malformed firmware_version");
+    p++; // skip opening quote
+    const char *end = strchr(p, '"');
+    if (!end) return reply(req, "400 Bad Request", "unterminated firmware_version");
+    int ver_len = (int)(end - p);
+    if (ver_len <= 0 || ver_len >= (int)sizeof(import_version)) {
+        return reply(req, "400 Bad Request", "firmware_version too long");
+    }
+    strncpy(import_version, p, ver_len);
+
+    // 3. 获取当前固件版本
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    const char *current_version = app_desc->version;
+    if (!current_version || strlen(current_version) == 0) {
+        return reply(req, "500 Internal Server Error", "no firmware version");
+    }
+
+    // 4. 严格版本匹配
+    if (strcmp(import_version, current_version) != 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "version mismatch: backup=%s, device=%s",
+                 import_version, current_version);
+        return reply(req, "400 Bad Request", msg);
+    }
+
+    // 5. TODO: 实现完整的数据解析与空间检查
+    return reply(req, "200 OK", "import not yet implemented");
+}
 
 // ---- 服务生命周期 ----
 
@@ -1413,6 +1470,7 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
         { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
+        { "/api/backup/import",   HTTP_POST, h_backup_import,   NULL },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {
