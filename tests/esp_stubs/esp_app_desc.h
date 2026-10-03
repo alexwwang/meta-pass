@@ -19,5 +19,6 @@ typedef struct {
 
 // Stub for host tests: returns placeholder version
 
-// Declaration only (definition provided by IDF for device build, stub for host tests)
-esp_err_t esp_app_get_description(esp_app_desc_t *out_desc);
+// IDF 5.5.3 签名对齐:无参、返回指向只读描述的指针。
+// (此前虚构的 out 参数版只骗过了 host 语法检查,真编译即失败。)
+const esp_app_desc_t *esp_app_get_description(void);

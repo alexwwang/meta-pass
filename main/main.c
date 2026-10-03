@@ -1323,18 +1323,6 @@ void app_main(void)
     meta_store_net_init();
     meta_install_net_init(s_slots);
 
-    // 用户决策①(carve 重启续连):上次安装会话 prepare 后未完成/未离店 →
-    // 自动恢复 STA + install 服务与持久化 token,手机重发 prepare 免重扫 QR
-    // (进度由手机呈现,设备留在列表页;新槽已由 ensure/scan 回填)。
-    if (meta_install_resume_pending()) {
-        ESP_LOGW(TAG, "install resume: restoring WiFi + LAN install service");
-        (void)meta_install_token_start();
-        (void)meta_store_net_begin();
-        if (meta_install_net_start() != ESP_OK) {
-            ESP_LOGE(TAG, "install service resume failed");
-        }
-    }
-
     if (bsp_lvgl_lock(1000)) {
         page_list_build();
         bsp_lvgl_unlock();

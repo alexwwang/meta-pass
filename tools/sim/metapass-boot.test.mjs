@@ -107,7 +107,18 @@ test("meta-pass 完整镜像在 QEMU 里引导并渲染出 240x320 屏幕", () =
   assert.ok(nonZero && nonWhite, "画面不是纯色,显示管线已激活");
 });
 
-test("DOWN 键移动列表选中项(画面随之重绘)", async () => {
+// TODO(dynslot): 本测试假设"4 项环形列表(3 槽 + STORE)"——固定槽位布局语义。
+// dynslot 下 fresh 设备(出厂安全表、无 carve 记录)是 0 槽列表,选择恒在
+// STORE 行,DOWN 在空列表是设计内 no-op(main.c list_cursor_move:n=0 时
+// s_sel 不动),首个 DOWN 画面必然不变。恢复非空列表的两条 sim 路径均受阻:
+//   (a) 预置已提交 carve 记录(store @0x35A000,夹具 tests/fixtures/
+//       carve_store_*.bin)——QEMU 里 bootloader hook 解析到任何合法记录后
+//       引导即停(无帧、周期提前耗尽),连 PROCEED 路径(不修复、只解析)
+//       也停,真机无此现象(m5fix 真机验证过记录态启动)→ 疑为 QEMU wasm
+//       特有,待查(优先:P0-5/USB 迁移的 sim 覆盖取决于它);
+//   (b) 0x8000 替换 legacy 表(种子迁移路径)同死于引导早期。
+// 根因定位后移除本 skip 并恢复按键断言。
+test.skip("DOWN 键移动列表选中项(画面随之重绘) [dynslot 0 槽列表下为 no-op]", async () => {
   // 初始 s_sel = 0(PAGE_LIST 进页时 goto_page 置 0),
   // DOWN 是 s_sel = (s_sel + 1) % 4,所以第一次 DOWN 必然移动。
   const [before, after] = await pressButton("DOWN");

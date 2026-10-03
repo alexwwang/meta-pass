@@ -80,10 +80,6 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
 esp_err_t meta_install_token_start(void);
 void      meta_install_token_stop(void);
 bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
-// 重启续连(用户决策①):token_start 后未正常 token_stop → true。carve 重启后
-// app_main 据此自动恢复 STA + install 服务,手机用持久化 token 重发 prepare
-// 免重扫 QR(设计 §4.4:新槽物化 = 提交 → 物化表 → 重启,上传前)。
-bool      meta_install_resume_pending(void);
 
 // ---- offer 确认状态机(UI 入口,文档 §6.4) ----
 // 拷贝当前待确认 offer(无则 false)。快照复制:UI 渲染期间允许手机重新

@@ -22,6 +22,9 @@ idf_component_register(
          # 表缓存,app_main 第一动作就是 ensure,见 meta_carve_flash.h)
          "meta_carve_flash.c"
          "meta_backup.c"
+         # 分区表 MD5 marker(meta_pt_encode/decode;host 测试与 bootloader 各
+         # 链接同一份,见 bootloader_components/meta_boot_hooks/CMakeLists.txt)
+         "meta_md5.c"
     INCLUDE_DIRS "."
     # 相比基线:去掉 bt(启动器不用 BLE),保留 esp_http_server(配网页 +
     # 本地安装服务)、app_update/esp_partition(槽位与回滚)、mbedtls(install.c

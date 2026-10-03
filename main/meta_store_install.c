@@ -1515,10 +1515,11 @@ static esp_err_t h_backup_import(httpd_req_t *req)
     }
     strncpy(import_version, p, ver_len);
 
-    esp_app_desc_t desc;
-    esp_err_t desc_err = esp_app_get_description(&desc);
-    const char *current_version = (desc_err == ESP_OK && desc.version[0] != '\0')
-                                   ? desc.version : "0.0.0-placeholder";
+    // IDF 5.5.3 签名:const esp_app_desc_t *esp_app_get_description(void)
+    // (host 桩原先虚构了 out 参数版,真编译才暴露分歧)。
+    const esp_app_desc_t *desc = esp_app_get_description();
+    const char *current_version = (desc && desc->version[0] != '\0')
+                                   ? desc->version : "0.0.0-placeholder";
 
     if (strcmp(import_version, current_version) != 0) {
         char msg[128];
