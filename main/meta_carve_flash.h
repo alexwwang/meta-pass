@@ -61,17 +61,20 @@ esp_err_t meta_carve_flash_set_dirty(uint32_t play_id);
 // 调用 meta_carve_flash_remove 前使用此函数;后者只删槽位记录。
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot);
 
-// 显式擦除指定 play_id+label 的数据记录(擦字节 + 移除记录)。
-// 用于用户主动选择"删除数据"时的路径。
+// 显式擦除指定 play_id(+可选 label)的一条数据记录:记录先行 —— 先把条目
+// 移出记录并提交,再擦字节(断电最坏只残留未被引用的空洞)。label 为 NULL
+// 时匹配该 play 的第一条;一次只处理一条,无匹配则幂等 no-op。
 esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 
-// 池压力 ARC:从 ARCHIVED 数据记录中回收至多 target 字节(最旧优先)。
-// 返回实际回收字节数(0 = 无可用归档或全部回收失败)。
+// 池压力 ARC:整条回收 ARCHIVED 数据记录,最旧优先,直到释放 ≥ target 字节。
+// 先提交更新后的记录、再擦字节;返回实际回收字节数(0 = 无可用归档 /
+// 提交失败)。DIRTY(在用)不回收;PRISTINE 属第 4 级(最后手段),不在此回收。
 uint32_t meta_carve_flash_arc(uint32_t target);
 
 // M5: 升级数据迁移 —— 在池内拷贝数据(bytes)并返回结果。
-// src/dst 必须同属一个 pool segment;越界/读失败/写失败 → 错误码。
-// 调用方负责 before commit 调用,失败则 abort upgrade。
+// src/dst 必须同属一个 pool segment 且 64KB 对齐、不重叠,size 为 4KB 粒度;
+// 目标区会先被擦除(NOR 只能 1→0,直接写会静默 AND 损坏)。越界/重叠/粒度
+// 非法/读失败/写失败 → 错误码;调用方失败时应 abort upgrade。
 esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
                                      uint32_t dst_offset);
 

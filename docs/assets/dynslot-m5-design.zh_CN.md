@@ -260,31 +260,20 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
 `meta_carve_place` 失败且 `meta_carve_free(c) < needed` 时，调 ARC：
 
 ```c
-// 从 ARCHIVED 记录中回收至多 target 字节，最旧优先。
-// 足够 → true；耗尽 → false。
-bool meta_carve_flash_arc(uint32_t target)
-{
-    const meta_carve_t *cur = meta_carve_flash_carve();
-    uint32_t reclaimed = 0;
-    for (uint8_t i = 0; i < cur->data_count && reclaimed < target; i++) {
-        if (cur->data[i].state != META_DATA_ARCHIVED) continue;
-        if (cur->data[i].play_id == 0) continue;
-        esp_err_t e = meta_carve_flash_erase_range(
-            cur->data[i].offset, cur->data[i].size);
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "ARC erase failed: %s", esp_err_to_name(e));
-            break;
-        }
-        reclaimed += cur->data[i].size;
-        meta_carve_remove_data(cur, (uint8_t)i);
-        i--;
-    }
-    if (reclaimed >= target) {
-        return meta_carve_flash_commit(cur, false) == ESP_OK;
-    }
-    return false;
-}
+// 整条回收 ARCHIVED 数据记录，最旧优先，直到释放 ≥ target 字节。
+// 返回实际回收字节数（0 = 无可回收，或提交失败）。
+// 只有 ARCHIVED 记录可回收；DIRTY（在用）记录永不触碰。PRISTINE 属第 4 级
+// （最后手段，需用户确认），此处不回收。
+uint32_t meta_carve_flash_arc(uint32_t target);
 ```
+
+**行为**（由 `tests/test_meta_carve_flash.c::test_arc` 钉死）：
+
+- 记录按最旧优先选取（数组序 = 分配序）。
+- 整条回收保证每个擦除区间 4KB 对齐（`esp_flash_erase_region` 要求）；
+  可能略超 `target`，多回收是安全方向。
+- 先提交更新后的记录、**再**擦字节 —— 断电最坏只残留一段未被引用的空洞，
+  绝不会留下指向已擦字节的记录。提交失败则返回 0 且不擦任何字节。
 
 **调用点**：`meta_install_model_slot_fit` 或
 `meta_install_model_default_slot`——在 no-fit 决策前加一次 ARC 重试。
@@ -308,12 +297,9 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot);
 // M5 — 显式擦除特定数据记录（用户主动选择）。
 esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 
-// M5 — 池压力 ARC；从 ARCHIVED 记录回收至多 target 字节。
-// 足够 → true；耗尽 → false。
-bool meta_carve_flash_arc(uint32_t target);
-
-// 内部：擦除池内范围（ARC 与显式擦除共用）。
-esp_err_t meta_carve_flash_erase_range(uint32_t offset, uint32_t size);
+// M5 — 池压力 ARC；整条回收 ARCHIVED 记录直到释放 ≥ target 字节。
+// 返回实际回收字节数（0 = 无）。
+uint32_t meta_carve_flash_arc(uint32_t target);
 
 // 内部：池内字节拷贝（升级迁移共用）。
 esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
@@ -322,7 +308,8 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
 
 ## 9. 测试计划
 
-新主机测试 `tests/test_meta_carve_lifecycle.c`（RAM NOR 模型）：
+主机测试 `tests/test_meta_carve_flash.c`（RAM NOR 模型）；M5 用例断言状态翻转
+在模拟重启后仍成立：
 
 | 用例 | 覆盖 |
 |---|---|
@@ -332,9 +319,10 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
 | `test_upgrade_copy_same_size` | 原地拷贝，state 保持 PRISTINE |
 | `test_upgrade_copy_grow` | 扩容拷贝，旧偏移下次 ARC 回收 |
 | `test_upgrade_shrink_reject` | 缩小 → `ESP_ERR_NOT_SUPPORTED`，无副作用 |
-| `test_arc_archived_records` | 按序回收，释放足够空间 |
-| `test_arc_exhausted` | 全部 ARCHIVED 耗尽 → false |
+| `test_arc_archived_records` | 最旧优先，整条回收，先提交后擦除 |
+| `test_arc_exhausted` | 全部 ARCHIVED 耗尽 → 返回 0 |
 | `test_arc_preserves_dirty` | DIRTY 记录不受 ARC 影响 |
+| `test_data_copy` | 升级拷贝前先擦除目标区（NOR AND 模型） |
 | `test_v1_orphan_data_ignored` | play_id=0 记录全跳过 |
 
 黄金夹具：复用 `tests/fixtures/carve_migration_table.bin` 加扩展 store

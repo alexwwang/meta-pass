@@ -316,37 +316,24 @@ When `meta_carve_place` fails and `meta_carve_free(c) < needed`, call
 ARC:
 
 ```c
-// Reclaim up to 'target' bytes from ARCHIVED data records, oldest-first.
-// Returns true if enough bytes freed; false if exhausted.
-bool meta_carve_flash_arc(const meta_carve_t *target, uint32_t needed)
-{
-    const meta_carve_t *cur = meta_carve_flash_carve();
-    uint32_t reclaimed = 0;
-    for (uint8_t i = 0; i < cur->data_count && reclaimed < needed; i++) {
-        if (cur->data[i].state != META_DATA_ARCHIVED) continue;
-        if (cur->data[i].play_id == 0) continue;  // orphan, not reclaimable
-        // Erase the bytes. Best-effort: if erase fails, stop (conservative).
-        esp_err_t e = meta_carve_flash_erase_range(
-            cur->data[i].offset, cur->data[i].size);
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "ARC erase failed: %s", esp_err_to_name(e));
-            break;
-        }
-        reclaimed += cur->data[i].size;
-        // Remove record (it's gone now — bytes erased, entry dangling).
-        // Actually, simpler: set state to a new META_DATA_REMOVED = 3
-        // and compact. For now, remove_data().
-        meta_carve_remove_data(cur, (uint8_t)i);
-        // Decrement index since array compacted.
-        i--;
-    }
-    if (reclaimed >= needed) {
-        // Re-commit without materializing table (table unchanged).
-        return meta_carve_flash_commit(cur, false) == ESP_OK;
-    }
-    return false;
-}
+// Reclaim whole ARCHIVED data records, oldest-first, until at least 'target'
+// bytes are freed. Returns the number of bytes actually reclaimed
+// (0 = nothing to reclaim, or the commit failed).
+// Only ARCHIVED records are eligible; DIRTY (live) records are never touched.
+// PRISTINE content is tier 4 (last resort, needs user consent) and is not
+// reclaimed here.
+uint32_t meta_carve_flash_arc(uint32_t target);
 ```
+
+**Behaviour** (pinned by `tests/test_meta_carve_flash.c::test_arc`):
+
+- Records are selected oldest-first (array order = allocation order).
+- Whole-record reclaim keeps every erase range 4 KB aligned, which
+  `esp_flash_erase_region` requires; it may overshoot `target`, and
+  over-reclaiming is the safe direction.
+- The updated record is committed **before** the bytes are erased, so a power
+  loss can at worst leave an unreferenced hole, never a record that points at
+  erased bytes. A failed commit returns 0 and erases nothing.
 
 **Caller**: `meta_install_model_slot_fit` or `meta_install_model_default_slot`
 — where the no-fit decision is made, before returning `ESP_ERR_NO_MEM` /
@@ -373,12 +360,9 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot);
 // M5 — erase bytes + remove specific data record (explicit user erase).
 esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 
-// M5 — pool-pressure ARC; reclaims up to target bytes from ARCHIVED records.
-// Returns true iff enough bytes reclaimed.
-bool meta_carve_flash_arc(uint32_t target);
-
-// Internal: erase a range in the pool (used by arc + explicit erase).
-esp_err_t meta_carve_flash_erase_range(uint32_t offset, uint32_t size);
+// M5 — pool-pressure ARC; reclaims whole ARCHIVED records until >= target
+// bytes are freed. Returns the reclaimed byte count (0 = none).
+uint32_t meta_carve_flash_arc(uint32_t target);
 
 // Internal: copy bytes from src→dst in pool (used by upgrade migration).
 esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
@@ -387,7 +371,8 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
 
 ## 9. Test plan
 
-New host tests in `tests/test_meta_carve_lifecycle.c` (RAM NOR model):
+Host tests in `tests/test_meta_carve_flash.c` (RAM NOR model); the M5 cases
+assert state flips survive a simulated restart:
 
 | Test | What it covers |
 |---|---|
@@ -397,9 +382,10 @@ New host tests in `tests/test_meta_carve_lifecycle.c` (RAM NOR model):
 | `test_upgrade_copy_same_size` | In-place copy, state stays PRISTINE post-copy |
 | `test_upgrade_copy_grow` | Grow copy, old offset freed in next ARC pass |
 | `test_upgrade_shrink_reject` | Shrink → `ESP_ERR_NOT_SUPPORTED`, no side effect |
-| `test_arc_archived_records` | Archives reclaimed in order, enough free space created |
-| `test_arc_exhausted` | All ARCHIVED exhausted → returns false |
+| `test_arc_archived_records` | Oldest first, whole-record reclaim, commit before erase |
+| `test_arc_exhausted` | All ARCHIVED exhausted → returns 0 |
 | `test_arc_preserves_dirty` | DIRTY records untouched by ARC |
+| `test_data_copy` | Destination erased before upgrade copy (NOR AND model) |
 | `test_v1_orphan_data_ignored` | play_id=0 records skipped by all lifecycle ops |
 
 Golden fixtures: reuse `tests/fixtures/carve_migration_table.bin` plus an
