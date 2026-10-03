@@ -625,6 +625,42 @@ static esp_err_t finalize_locked(void)
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
 
+    // M5: 升级数据迁移 —— 在 commit 前拷贝旧数据到新偏移
+    if (s_session.manifest_valid && s_session.manifest.data_count > 0) {
+        const meta_carve_t *cur = meta_carve_flash_carve();
+        if (cur) {
+            for (uint8_t i = 0; i < s_session.manifest.data_count; i++) {
+                const uint32_t pid = s_session.manifest.data[i].play_id;
+                const char *label = s_session.manifest.data[i].label;
+                const uint32_t new_size = s_session.manifest.data[i].size;
+                // 查找现有记录
+                int j = meta_carve_find_data(cur, pid, label);
+                if (j < 0) continue;  // 全新安装,无需迁移
+                const meta_carve_data_t *old = &cur->data[j];
+                if (old->state != META_DATA_PRISTINE && old->state != META_DATA_DIRTY) continue;
+                // 尺寸收缩 → 拒绝升级
+                if (new_size < old->size) {
+                    ESP_LOGW(TAG, "data shrink rejected: play_id=%u label=%s %u->%u",
+                             (unsigned)pid, label, (unsigned)old->size, (unsigned)new_size);
+                    return ESP_ERR_NOT_SUPPORTED;
+                }
+                // 尺寸/偏移未变 → 跳过拷贝
+                if (new_size == old->size && old->offset == s_session.manifest.carve_offset) {
+                    continue;
+                }
+                // 拷贝池内数据
+                esp_err_t cp = meta_carve_flash_data_copy(old->offset, old->size,
+                                                           s_session.manifest.carve_offset);
+                if (cp != ESP_OK) {
+                    ESP_LOGE(TAG, "data copy failed: %s", esp_err_to_name(cp));
+                    return ESP_ERR_NOT_SUPPORTED;
+                }
+                ESP_LOGI(TAG, "data migrated: play_id=%u label=%s %u bytes",
+                         (unsigned)pid, label, (unsigned)old->size);
+            }
+        }
+    }
+
     // M5: install 成功 → 标记数据为 DIRTY
     if (s_session.manifest_valid) {
         esp_err_t de = meta_carve_flash_set_dirty(s_session.manifest.play_id);

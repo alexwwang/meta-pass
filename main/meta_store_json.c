@@ -5,6 +5,7 @@
 #include "meta_store_json.h"
 
 #include <string.h>
+#include <stdio.h>
 
 // ---- 游标 ----
 
@@ -411,6 +412,17 @@ bool meta_store_json_get_array_bool(const char *json, size_t len, const char *ke
     cur_t c;
     if (!array_field(json, len, key, idx, field, &c)) return false;
     return scan_bool(&c, out);
+}
+
+bool meta_store_json_get_array_string(const char *json, size_t len, const char *key,
+                                      size_t idx, const char *field, char *out, size_t out_sz)
+{
+    if (!json || len == 0 || !out || out_sz == 0) return false;
+    // 定位 key[idx].field: key 必须是顶层数组键,field 在元素对象内。
+    char path[256];
+    int n = snprintf(path, sizeof(path), "%.128s[%zu].%.64s", key, idx, field);
+    if (n < 0 || n >= (int)sizeof(path)) return false;
+    return meta_store_json_get_string(json, len, path, out, out_sz);
 }
 
 bool meta_store_json_parse_sha256(const char *hex, size_t len, uint8_t out[32])

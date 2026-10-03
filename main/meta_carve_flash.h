@@ -69,5 +69,11 @@ esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 // 返回实际回收字节数(0 = 无可用归档或全部回收失败)。
 uint32_t meta_carve_flash_arc(uint32_t target);
 
+// M5: 升级数据迁移 —— 在池内拷贝数据(bytes)并返回结果。
+// src/dst 必须同属一个 pool segment;越界/读失败/写失败 → 错误码。
+// 调用方负责 before commit 调用,失败则 abort upgrade。
+esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
+                                     uint32_t dst_offset);
+
 // host 测试专用:重置模块状态(模拟重启);真机不调用。
 void meta_carve_flash_test_reset(void);

@@ -31,6 +31,51 @@ static uint8_t s_io[META_CARVE_REC_SIZE];  // 记录扇区读写 + 凭据扇区�
 static meta_carve_rec_t s_best;            // 最新合法记录
 static meta_carve_rec_t s_tmp;             // A/B 比较暂存
 
+// M5: 升级数据迁移 —— 在池内拷贝数据。
+// src/dst 必须同属一个 pool segment且对齐合法;失败 → 错误码。
+esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
+                                     uint32_t dst_offset)
+{
+    if (!size || size > 0x100000) return ESP_ERR_INVALID_SIZE;  // 上限 1MB
+    const meta_pool_desc_t *p = meta_carve_pool();
+    // 验证 src/dst 都在池内且对齐
+    { const uint32_t check_offs[] = {src_offset, dst_offset};
+    for (size_t ci = 0; ci < 2; ci++) {
+        const uint32_t off = check_offs[ci];
+        bool in_pool = false;
+        for (int si = 0; si < 2; si++) {
+            if (off >= p->seg[si].start && off + size <= p->seg[si].end) {
+                in_pool = true;
+                break;
+            }
+        }
+        if (!in_pool) return ESP_ERR_INVALID_ARG;
+        if (off % 0x10000u != 0) return ESP_ERR_INVALID_ARG;  // 64KB 对齐
+        }
+    }
+    if (src_offset == dst_offset) return ESP_OK;  // 同址无操作
+    // 分段拷贝(源/目可能在同一或不同 sector)
+    uint32_t remaining = size;
+    uint32_t src = src_offset;
+    uint32_t dst = dst_offset;
+    while (remaining > 0) {
+        uint32_t chunk = remaining;
+        if (chunk > META_CARVE_REC_SIZE) chunk = META_CARVE_REC_SIZE;
+        if (esp_flash_read(NULL, s_io, src, chunk) != ESP_OK) {
+            ESP_LOGE(TAG, "data_copy read failed @0x%08lx", (unsigned long)src);
+            return ESP_FAIL;
+        }
+        if (esp_flash_write(NULL, s_io, dst, chunk) != ESP_OK) {
+            ESP_LOGE(TAG, "data_copy write failed @0x%08lx", (unsigned long)dst);
+            return ESP_FAIL;
+        }
+        src += chunk;
+        dst += chunk;
+        remaining -= chunk;
+    }
+    return ESP_OK;
+}
+
 void meta_carve_flash_test_reset(void)
 {
     memset(&s_carve, 0, sizeof(s_carve));

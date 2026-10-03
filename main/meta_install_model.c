@@ -3,6 +3,7 @@
 #include "meta_install_model.h"
 
 #include <string.h>
+#include <stdio.h>
 
 // 可打印 ASCII(0x20..0x7E):上屏文本与 MNAM 字节集的同一约束
 // (meta_name.c 拒绝非可打印字节,这里前置拒绝,免得装完名字悄悄丢失)。
@@ -124,6 +125,30 @@ bool meta_install_model_parse(const char *json, size_t len,
         out->carve_offset = (uint32_t)v_off;
         out->carve_size = (uint32_t)v_sz;
     }
+
+    // M5: data[] 迁移声明(可选,仅升级路径携带)
+    size_t data_count = 0;
+    if (meta_store_json_get_array_count(json, len, "data", &data_count)) {
+        if (data_count > META_DATA_MAX) return false;
+        out->data_count = (uint8_t)data_count;
+        for (size_t i = 0; i < data_count; i++) {
+            int64_t v_pid = 0, v_sz2 = 0;
+            char label[META_DATA_LABEL_MAX + 1];
+            if (!meta_store_json_get_array_int(json, len, "data", i, "playId", &v_pid)) return false;
+            if (v_pid < 0 || v_pid > UINT32_MAX) return false;
+            if (!meta_store_json_get_array_int(json, len, "data", i, "size", &v_sz2)) return false;
+            if (v_sz2 <= 0 || v_sz2 > UINT32_MAX) return false;
+            if (!meta_store_json_get_array_string(json, len, "data", i, "label", label, sizeof(label))) return false;
+            if (label[0] == '\0') return false;
+            out->data[i].play_id = (uint32_t)v_pid;
+            out->data[i].size = (uint32_t)v_sz2;
+            strncpy(out->data[i].label, label, sizeof(out->data[i].label) - 1);
+            out->data[i].label[sizeof(out->data[i].label) - 1] = '\0';
+        }
+    } else {
+        out->data_count = 0;
+    }
+
     return true;
 }
 

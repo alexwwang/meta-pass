@@ -53,6 +53,13 @@ typedef struct {
         bool     fit;                           // 手机侧判断该槽位可装
     } slots[META_SLOT_COUNT];
     char     reason[32];                        // 手机侧判断短句(ok / custom-partitions / ...)
+    // M5: 数据分区迁移(design §4.1,可选)
+    uint8_t  data_count;                        // 下方 data[] 长度(0..META_DATA_MAX)
+    struct {
+        uint32_t play_id;                       // 归属玩法 id(>0 有效;0 = 忽略)
+        uint32_t size;                          // 数据分区大小
+        char     label[META_DATA_LABEL_MAX + 1]; // 子固件分区标签(≤16B)
+    } data[META_DATA_MAX];
 } meta_install_manifest_t;
 
 // session 开启请求(文档 §6.5 session body 的三个绑定字段)。
