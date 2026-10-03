@@ -271,17 +271,27 @@ upgrade_mode_legacy: "遗留模式（迁移）",
 
 固定槽位设备首次安装 dynslot launcher 的一次性迁移：
 
-1. 探测检测到 `protocol_version = 1`（固定槽位表存在）。
-2. 手机显示迁移警告："设备使用固定槽位布局。升级到 dynslot 将重构
-   分区。您已安装的游戏将被保留。"
-3. 读取设备分区表 → 检测固定槽位布局。
-4. 运行 `migrationErasePlan()` 清除池区域中的遗留残留。
-5. 写入新安全表（pool_0/pool_1）+ bootloader + factory app。
-6. 设备启动 → launcher 检测到固定槽位表 → 以遗留偏移种子 carve
-   （design §4.6）→ 正常继续。
+1. 表探测：设备分区有 `ota_*` 且无 `store`（`isFixedSlotLayout`）；
+   包分区是 dynslot 安全表（`isDynslotSafeTable`：pool_0/pool_1 + store）。
+2. 手机记录迁移提示：分区表保持不动，已装玩法保留。
+3. 写入计划切换为 `migrationWritePlan()`：**只写 bootloader + factory
+   app + otadata —— 刻意不写 `partition-table.bin`**，也不做任何擦除。
 
-**数据安全**：launcher 的 `meta_carve_seed_legacy()` 在迁移期间保留
-所有现有应用镜像在原始偏移。不会丢失任何游戏数据。
+**为什么不写表/不擦除**（修正自本节初稿）：`meta_carve_flash_ensure()`
+只在 live 表仍是 legacy 表时才从遗留布局种子 carve
+（`meta_pt_equal(live, meta_pt_legacy())` → `meta_carve_seed_legacy`，
+"plays untouched"）。用安全表覆盖后，首次启动会走 "fresh device" 分支
+—— 已装玩法成为 carve 永不引用的孤儿字节（池显示全空，下次安装直接
+覆盖）。同理 `migrationErasePlan()` 的目标是 `0x180000→0x7FE000`，那
+正是已装玩法所在区域；执行它等于销毁迁移承诺保留的数据。
+
+4. 设备启动 → `ensure()` 看到完好的 legacy 表、无 carve 记录 →
+   `seed_legacy` 以相同偏移/尺寸重建 carve → 提交物化 carved 表。
+   所有玩法保持可引导。
+
+**数据安全**：`meta_carve_seed_legacy()` 在原始偏移保留每个现有应用
+镜像。断电最坏情况：记录或表由同一幂等路径在下次启动重建
+（design §4.7）。
 
 ## 8. 错误处理
 

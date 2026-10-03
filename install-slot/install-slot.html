@@ -229,6 +229,9 @@ import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlas
     isErasedTable,
     isLegacyFactoryLayout,
     isDynslotLayout,
+    isFixedSlotLayout,
+    isDynslotSafeTable,
+    migrationWritePlan,
     slotHasData,
     parsePartitionTable,
     parseUpgradeArtifact,
@@ -441,6 +444,7 @@ const I18N = {
     msg_upgrade_start: "Upgrading launcher: reading the device partition table for comparison…",
     msg_upgrade_table_ok: "Partition table matches — layout unchanged, safe to upgrade in place.",
     msg_upgrade_dynslot: "Dynslot layout detected — verifying safe table (pool_0/pool_1 present)...",
+    msg_upgrade_dynslot_migration: "Fixed-slot device + dynslot bundle — migrating: partition table left intact, installed games preserved (re-carved on first boot).",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
@@ -591,6 +595,7 @@ const I18N = {
     msg_upgrade_start: "升级 launcher:正在读回设备分区表进行比对…",
     msg_upgrade_table_ok: "分区表一致 —— 布局未变,可安全原地升级。",
     msg_upgrade_dynslot: "检测到动态槽位布局 —— 验证安全表(pool_0/pool_1 存在)...",
+    msg_upgrade_dynslot_migration: "固定槽位设备 + 动态槽位固件 —— 迁移中:分区表保持不动,已装玩法保留(首次启动重新 carve)。",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
@@ -785,11 +790,17 @@ $("btn-upgrade").addEventListener("click", async () => {
     const isDynslot = isDynslotLayout(devicePartitions);
     const cmp = comparePartitionTables(deviceTable, bundleTable, isDynslot);
     let eraseRegions = [];   // 写入前需清残留的区域(原厂机首次迁移)
+    let writeSteps = null;   // null = 默认 upgradeWritePlan();迁移时用专用计划
     if (cmp.ok) {
       log(isDynslot ? t("msg_upgrade_dynslot") : t("msg_upgrade_table_ok"), "ok");
     } else if (isErasedTable(deviceTable)) {
       // 空白机:没有旧布局可保护,直接安装
       log(t("msg_upgrade_blank"), "ok");
+    } else if (isFixedSlotLayout(devicePartitions) && isDynslotSafeTable(bundlePartitions)) {
+      // fixed→dynslot 迁移:不写分区表、不擦槽位 —— legacy 表留在设备上,
+      // 首启 ensure() 走 seed_legacy("plays untouched") 重建 carve。
+      writeSteps = migrationWritePlan();
+      log(t("msg_upgrade_dynslot_migration"), "ok");
     } else if (isLegacyFactoryLayout(devicePartitions)) {
       // 原厂旧布局机:迁移前必须确认没有任何有效子固件数据
       log(t("msg_upgrade_factory_detected"));
@@ -825,7 +836,7 @@ $("btn-upgrade").addEventListener("click", async () => {
     }
 
     // 3) 按计划写入四项;NVS/cardid/池区域全程不触碰(原厂机残留已单独清理)
-    const steps = upgradeWritePlan(isDynslot);
+    const steps = writeSteps ?? upgradeWritePlan();
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const data = upgradeBundle.get(step.name);

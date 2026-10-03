@@ -287,19 +287,34 @@ check pool_0/pool_1 as preserved regions (§4.6 of dynslot-design.md).
 
 One-time migration when a fixed-slot device installs a dynslot launcher:
 
-1. Probe detects `protocol_version = 1` (fixed-slot table present).
-2. Phone shows migration warning: "Device uses fixed-slot layout. Upgrading
-   to dynslot will restructure partitions. Your installed games will be
-   preserved."
-3. Read device partition table → detect fixed-slot layout.
-4. Run `migrationErasePlan()` to clear legacy residue in pool regions.
-5. Write new safe table (pool_0/pool_1) + bootloader + factory app.
-6. Device boots → launcher detects fixed-slot table → seeds carve with
-   legacy offsets (design §4.6) → continues normally.
+1. Table probe: device partitions have `ota_*` and no `store`
+   (`isFixedSlotLayout`); bundle partitions are a dynslot safe table
+   (`isDynslotSafeTable`: pool_0/pool_1 + store).
+2. Phone logs the migration notice: partition table stays untouched,
+   installed games preserved.
+3. Write plan switches to `migrationWritePlan()`: **bootloader + factory
+   app + otadata only — `partition-table.bin` is deliberately NOT
+   written**, and no erase runs.
 
-**Data safety**: the launcher's `meta_carve_seed_legacy()` preserves all
-existing app images at their original offsets during migration. No game
-data is lost.
+**Why no table write / no erase** (corrected from the original draft of
+this section): `meta_carve_flash_ensure()` only seeds the carve from the
+legacy layout when the live table still *is* the legacy table
+(`meta_pt_equal(live, meta_pt_legacy())` → `meta_carve_seed_legacy`,
+"plays untouched"). Overwriting the table with the safe table makes the
+first boot take the "fresh device" path — installed games become orphan
+bytes the carve never references (pool reads empty, next install
+overwrites them). Likewise `migrationErasePlan()` targets
+`0x180000→0x7FE000`, which is exactly where the installed games live;
+running it would destroy the very data the migration promises to keep.
+
+4. Device boots → `ensure()` sees the intact legacy table, no carve
+   record → `seed_legacy` rebuilds the carve at identical offsets/sizes
+   → commit materializes the carved table. All games remain bootable.
+
+**Data safety**: `meta_carve_seed_legacy()` preserves every existing app
+image at its original offset. Worst case across a power cut: the record
+or the table is re-derived on next boot by the same idempotent path
+(design §4.7).
 
 ## 8. Error handling
 

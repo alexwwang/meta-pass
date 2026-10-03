@@ -21,17 +21,42 @@ export const OTADATA_OFFSET = 0x7FE000;
 
 // 升级写入计划(顺序即写入顺序;地址为 flash 绝对偏移)。
 // 返回 [{ name, offset, why }] —— 页面据此逐文件 writeFlash。
-export function upgradeWritePlan(isDynslot) {
-  // dynslot 模式使用相同四段写入计划,但分区表语义不同(安全表 vs 固定表)
-  // 写入地址完全一致:bootloader@0x0, table@0x8000, app@0x10000, otadata@0x7FE000
-  // 区别在于比较逻辑(comparePartitionTables)和后续行为(擦除计划等)
-  
+export function upgradeWritePlan() {
   return [
     { name: "bootloader.bin", offset: 0x0, why: "second-stage bootloader" },
     { name: "partition-table.bin", offset: PARTITION_TABLE_OFFSET, why: "layout contract" },
     { name: "FoloToy-AI-Passport.bin", offset: 0x10000, why: "factory app" },
     { name: "ota_data_initial.bin", offset: OTADATA_OFFSET, why: "reset OTA selection (boot factory)" },
   ];
+}
+
+// fixed→dynslot 迁移写入计划:不写 partition-table.bin。
+// legacy 表必须留在设备上 —— ensure() 的迁移分支靠 meta_pt_equal(live, legacy)
+// 触发 seed_legacy("plays untouched");表被安全表覆盖则走 fresh 分支,已装
+// 玩法成为孤儿数据(池显示全空,下次安装覆盖)。也不擦除槽位区:槽位内容
+// 正是要保留的玩法。仅写 bootloader + factory + otadata(复位 OTA 选 factory)。
+export function migrationWritePlan() {
+  return [
+    { name: "bootloader.bin", offset: 0x0, why: "second-stage bootloader" },
+    { name: "FoloToy-AI-Passport.bin", offset: 0x10000, why: "factory app (dynslot launcher)" },
+    { name: "ota_data_initial.bin", offset: OTADATA_OFFSET, why: "reset OTA selection (boot factory)" },
+  ];
+}
+
+// 设备是否为 legacy 固定 3 槽布局(meta-pass v1.x:有 ota_*,无 store)。
+// 与 isLegacyFactoryLayout(FoloToy 单固件:有 factory 无 ota_*)互补。
+export function isFixedSlotLayout(devicePartitions) {
+  if (!Array.isArray(devicePartitions) || devicePartitions.length === 0) return false;
+  const labels = new Set(devicePartitions.map(p => p.label));
+  return labels.has('ota_0') && !labels.has('store');
+}
+
+// bundle 是否为 dynslot 安全表(pool_0/pool_1 占位 + store 条目)。
+// carved 表无池占位,固定槽位表无 store —— 三个条件 jointly 锁定安全表。
+export function isDynslotSafeTable(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) return false;
+  const labels = new Set(parts.map(p => p.label));
+  return labels.has('pool_0') && labels.has('pool_1') && labels.has('store');
 }
 
 // 升级包完整性:四个文件必须齐全且非空;分区表必须可解析。

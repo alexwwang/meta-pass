@@ -9,6 +9,9 @@ import {
   isErasedTable,
   isLegacyFactoryLayout,
   isDynslotLayout,
+  isFixedSlotLayout,
+  isDynslotSafeTable,
+  migrationWritePlan,
   migrationErasePlan,
   slotHasData,
   PARTITION_TABLE_READ_SIZE,
@@ -384,12 +387,26 @@ let packedFromPass7;   // PASS 8 兼容分发用例复用
   assert.equal(isDynslotLayout([]), false, "empty table");
   assert.equal(isDynslotLayout(null), false, "null table");
 
-  // 写入计划分流:两种模式同四段同地址(语义差异在比较逻辑,不在写入集)
+  // 写入计划:常规升级四段(含分区表);fixed→dynslot 迁移三段(不含分区表 ——
+  // legacy 表必须留在设备上供 ensure() seed_legacy 检测,写了安全表已装玩法即孤儿)
   assert.deepEqual(
-    upgradeWritePlan(true).map((s) => s.offset),
-    upgradeWritePlan(false).map((s) => s.offset),
-    "dynslot/fixed write plan offsets identical",
+    upgradeWritePlan().map((s) => s.name),
+    ["bootloader.bin", "partition-table.bin", "FoloToy-AI-Passport.bin", "ota_data_initial.bin"],
   );
+  assert.deepEqual(
+    migrationWritePlan().map((s) => s.name),
+    ["bootloader.bin", "FoloToy-AI-Passport.bin", "ota_data_initial.bin"],
+    "migration plan must NOT write partition-table.bin",
+  );
+  assert.ok(!migrationWritePlan().some((s) => s.name === "partition-table.bin"));
+
+  // 布局/包分类:fixed vs safe vs carved 互不混淆
+  assert.equal(isFixedSlotLayout(parsePartitionTable(syntheticPartitionTable())), true, "legacy fixed 3-slot");
+  assert.equal(isFixedSlotLayout(parsePartitionTable(carvedDevice)), false, "carved is not fixed");
+  assert.equal(isFixedSlotLayout(parsePartitionTable(safeBundle)), false, "safe table is not fixed");
+  assert.equal(isDynslotSafeTable(parsePartitionTable(safeBundle)), true, "safe bundle qualifies");
+  assert.equal(isDynslotSafeTable(parsePartitionTable(carvedDevice)), false, "carved lacks pool placeholders");
+  assert.equal(isDynslotSafeTable(parsePartitionTable(syntheticPartitionTable())), false, "fixed bundle lacks pool+store");
 
   // dynslot 比较:carved 设备 vs 安全 bundle → OK(槽位/池条目差异属预期)
   const ok = comparePartitionTables(carvedDevice, safeBundle, true);
