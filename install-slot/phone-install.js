@@ -188,7 +188,7 @@ export function parseSlots(text) {
     }
     slots.push({ slot: s.slot, state: s.state, name: s.name,
                  size: s.size, len: s.len, limit: s.limit, offset: s.offset,
-                 kind: s.kind });
+                 kind: s.kind, arc: s.arc || 0 });
   }
   slots.sort((a, b) => a.slot - b.slot);
   return { count: d.count, free: d.free, slots };
@@ -1150,15 +1150,35 @@ export function boot(opts = {}) {
   }
 
   async function doRemove(slot) {
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在擦除数据并删除…</p></section>`);
+    const slotsData = await bridge.slots();
+    let arcCount = 0;
+    try {
+      const listing = parseSlots(slotsData.text);
+      const s = listing?.slots?.find(x => x.slot === slot);
+      arcCount = s?.arc || 0;
+    } catch {}
+    const arcMsg = arcCount > 0
+      ? `<p class="mp-sub">⚠️ ${arcCount} 条归档数据将保留。仅删除槽位记录。</p>`
+      : `<p class="mp-sub">确认删除槽位 ${slot}?数据已归档可恢复。</p>`;
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>${arcMsg}<div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>确认删除</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
+    $("mp-mgmt-confirm").onclick = async () => {
+      $("mp-mgmt-confirm").disabled = true;
+      $("mp-mgmt-confirm").textContent = "删除中...";
+      await doRemoveCommit(slot);
+    };
+    $("mp-mgmt-x").onclick = clearPanel;
+  }
+
+  async function doRemoveCommit(slot) {
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在归档数据并删除…</p></section>`);
     const r = await bridge.remove(slot);
     if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
     if (r.status === 409) { failSheet("无法删除", "安装进行中 —— 请先完成或取消安装"); return; }
     if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
     if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
     if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
-    // 设备契约(§4.5):200 = 数据已擦 + 记录已提交,150ms 后复位。
-    log(`✓ 槽位 ${slot} 已删除,设备重启中…`, "ok");
+    // M5: 200 = 数据已归档 + 记录已提交,150ms 后复位。
+    log(`✓ 槽位 ${slot} 已删除(数据已归档),设备重启中…`, "ok");
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>已提交,等待设备重启恢复…</p></section>`);
     const back = await waitDeviceBack(bridge, { tries: 25, delayMs: 1200 });
     if (back) {

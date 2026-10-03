@@ -624,6 +624,14 @@ static esp_err_t finalize_locked(void)
     }
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
+
+    // M5: install 成功 → 标记数据为 DIRTY
+    if (s_session.manifest_valid) {
+        esp_err_t de = meta_carve_flash_set_dirty(s_session.manifest.play_id);
+        if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "set_dirty failed: %s", esp_err_to_name(de));
+        }
+    }
     offer_and_upload_clear();
     memcpy(s_session.name, name, sizeof(name));
     s_session.confirmed_slot = slot;
@@ -1046,6 +1054,70 @@ static esp_err_t h_install_cancel(httpd_req_t *req)
 
 
 // Forward declaration for handlers defined after meta_install_net_start
+
+// GET /api/install/slots —— dynslot 槽位列表(含归档数据数)
+static esp_err_t h_install_slots(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+
+    uint32_t free_bytes = meta_carve_free(carve);
+    uint32_t archived_count = 0;
+    for (uint8_t j = 0; j < carve->data_count; j++) {
+        if (carve->data[j].state == META_DATA_ARCHIVED) {
+            archived_count++;
+        }
+    }
+
+    char resp[2048];
+    int off = 0;
+    // Use PRId32 for count (int), PRIu32 for uint32_t
+    off += snprintf(resp + off, sizeof(resp) - off,
+        "{\"count\":%d,\"free\":%" PRIu32 ",\"archived\":%" PRIu32 ",\"slots\":[",
+        carve->count, free_bytes, archived_count);
+
+    bool first = true;
+    for (uint8_t j = 0; j < carve->count; j++) {
+        const meta_carve_slot_t *s = &carve->slot[j];
+        const char *state_str = "empty";
+        if (s->state == META_SLOT_VALID) state_str = "valid";
+        else if (s->state == META_SLOT_INVALID) state_str = "invalid";
+
+        const char *kind_str = "app";
+        if (s->kind == META_CARVE_KIND_STORAGE) kind_str = "storage";
+
+        // Count archived data records for this play
+        uint32_t arc_records = 0;
+        // Note: slots don't have ARCHIVED state, only data does
+        if (s->state == META_SLOT_VALID || s->state == META_SLOT_INVALID) {
+            for (uint8_t k = 0; k < carve->data_count; k++) {
+                if (carve->data[k].play_id == s->play_id &&
+                    carve->data[k].state == META_DATA_ARCHIVED) {
+                    arc_records++;
+                }
+            }
+        }
+
+        if (!first) off += snprintf(resp + off, sizeof(resp) - off, ",");
+        first = false;
+
+        off += snprintf(resp + off, sizeof(resp) - off,
+            "{\"idx\":%d,\"state\":\"%s\",\"name\":\"%s\","
+            "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ",\"limit\":%" PRIu32
+            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32 "}",
+            j, state_str, s->name,
+            s->size, s->image_len, s->size - 0x1000,
+            s->offset, kind_str, arc_records);
+    }
+
+    off += snprintf(resp + off, sizeof(resp) - off, "]}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, off);
+}
+
 static esp_err_t h_install_remove(httpd_req_t *req);
 static esp_err_t h_backup_import(httpd_req_t *req);
 
@@ -1112,7 +1184,7 @@ esp_err_t meta_install_net_start(void)
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 10;    // / + pair/status/prepare/session/chunk/finalize/cancel
+    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/finalize/cancel
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
@@ -1138,6 +1210,7 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
         { "/api/backup/import",   HTTP_POST, h_backup_import,   NULL },
+        { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {
