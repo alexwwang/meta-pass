@@ -41,18 +41,27 @@ M5 让玩法的 flash 用户数据（录音、存档、档案）**在升级时�
   `[0, 4032)`——已处理这些字段；解码拒 `type≠1`、`subtype=0`、
   `play_id=0`、`state>ARCHIVED`（`meta_carve_store.h` §25）。
 
-### 1.2 仍缺失
+### 1.2 实现状态（2026-10-03）
 
-Schema 和分配器已接线，但**没有任何生命周期 API 或调用方**：
+Schema、分配器与生命周期 API 均已实现，并由
+`tests/test_meta_carve_flash.c` 的主机测试覆盖。剩余缺口是安装流的接线
+——创建数据记录、驱动回收阶梯。
 
-| 缺口 | 证据 |
-|---|---|
-| 无 `meta_carve_flash_set_dirty(play_id)` | `meta_carve_flash.h` — 未声明 |
-| 无 `meta_carve_flash_archive_data(play_id)` | `meta_carve_flash.h` — 未声明 |
-| 无新槽升级数据拷贝路径 | `meta_store_install.c:472-503` — 仅处理槽位，无数据 |
-| 无启动时 DIRTY 标记钩子 | `main.c:1306-1320` — 只 sync_states，无数据 |
-| 无卸载归档步骤 | `meta_carve_flash_remove(slot)` 第 167 行 — 数据成孤儿 |
-| 无池压力 ARC 步骤 | `meta_install_model_remove_ok` — 只调 `meta_carve_flash_remove` |
+| 设计项 | 状态 | 证据 |
+|---|---|---|
+| `meta_carve_flash_set_dirty(play_id)` | 已完成 | `meta_carve_flash.h`；finalize 处调用 `meta_store_install.c:666` |
+| `meta_carve_flash_archive_slot_and_data(int slot)` | 已完成 | 已声明/实现；`h_install_remove` 调用 `meta_store_install.c:1188` |
+| `meta_carve_flash_erase_data(play_id, label)` | 已完成，**无调用方** | 已实现；尚无 HTTP 路由 |
+| `meta_carve_flash_arc(target)` | 接线部分 | 已实现；仅 `/api/backup/import` 调用 `meta_store_install.c:1386`；安装 no-fit 路径未接线 |
+| `meta_carve_flash_data_copy` | 已完成 | 已实现；finalize 处调用 `meta_store_install.c:652` |
+| manifest `data[]` 解析 | 已完成 | `meta_install_model.c:131`（`play_id`/`size`/`label`；常量是 `META_DATA_MAX`，非 `META_MANIFEST_DATA_MAX`） |
+| 卸载归档 | 已完成 | `h_install_remove` 先归档再删槽位 |
+| DIRTY 标记时机 | 已完成（finalize 路径） | §5 决策；无启动期钩子（按设计） |
+| 安装时创建数据记录 | **缺失** | 生产代码无 `meta_carve_place_data` 调用方 |
+| 安装 no-fit 时 ARC | **缺失** | 安装路径未调 `meta_carve_flash_arc`；`meta_carve_largest_gap`/`meta_carve_reclaimable` 无调用方 |
+
+生命周期状态翻转跳重启持久化（`tests/test_meta_carve_flash.c` 用模拟重启
+断言）。
 
 ### 1.3 本文档范围
 
@@ -82,10 +91,10 @@ PRISTINE ─────────────────► DIRTY ───�
 | 转换 | 守卫 | 动作 | 失败模式 |
 |---|---|---|---|
 | **安装 → PRISTINE** | `meta_carve_place_data` 分配；内容由 app 写入或手机重发还原 | 记录 `state=PRISTINE` | 池满 → `no-fit`，UI 拒绝 |
-| **启动 → DIRTY** | 槽位 VALID，启动器收到 OK | 翻 `state=DIRTY`；不擦除 | —（尽力而为；失败静默） |
+| **finalize 成功 → DIRTY** | 安装 finalize 成功（§5 决策） | 翻 `state=DIRTY`；不擦除 | —（尽力而为；失败静默） |
 | **升级 → 拷贝 PRISTINE 或新鲜 PRISTINE** | 见 §4 | 池内拷贝字节，或降级到 fresh PRISTINE 下次安装 | 缩小（新 < 旧）→ 拒绝；扩容 → 池内拷贝 + 重新物化表 |
 | **卸载 → ARCHIVED** | `meta_carve_flash_archive_slot_and_data` | 翻 `state=ARCHIVED`；字节留在 flash | — |
-| **池压力 → 擦 ARCHIVED** | `meta_carve_flash_unarchive_oldest`（见 §5） | 擦除字节；移除记录 | 无——尽力循环 |
+| **池压力 → 擦 ARCHIVED** | `meta_carve_flash_arc`（见 §7） | 先提交记录再擦字节；移除记录 | 无——尽力循环 |
 | **显式擦除** | UI 选择 | 擦除字节；移除记录 | 无 |
 
 `DIRTY` 不复原——跨重启持久化。只有卸载或 ARC 把它转到 `ARCHIVED`。
@@ -190,7 +199,11 @@ meta_manifest_data_t data[META_MANIFEST_DATA_MAX];
 固件数据分区映射到 `{play_id, size, label}`（用 `play.revisionId` 作
 play_id）。
 
-## 5. 触点 2：启动（DIRTY 标记）
+## 5. 触点 2：DIRTY 标记
+
+**状态**：按下方决策实现为 finalize 路径标记；未加启动期钩子。
+`meta_carve_flash_set_dirty` 由 `finalize_locked` 调用
+（`meta_store_install.c:666`）。见 §1.2。
 
 `main.c:1306-1320` —— `meta_store_mark_factory_valid` 与
 `meta_carve_flash_sync_states` 之后，扫描即将启动的槽位。当
@@ -214,6 +227,10 @@ if (s_session.manifest.play_id != 0) {
 录翻 `PRISTINE→DIRTY`，重算 CRC，重提交（A/B 轮转）。幂等。
 
 ## 6. 触点 3：卸载 / 移除（归档）
+
+**状态**：实现为 `meta_carve_flash_archive_slot_and_data`（翻转并提交），
+由 `h_install_remove` 在 `meta_carve_flash_remove` 之前调用；两者保持为两
+次独立调用，而非合并成一个函数。见 §1.2。
 
 当前 `meta_carve_flash_remove(int slot)`（第 167 行）只删槽位记录——数
 据记录成孤儿（play_id ≠ 0 仍在 store 但不可达）。替换为：
@@ -260,31 +277,20 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
 `meta_carve_place` 失败且 `meta_carve_free(c) < needed` 时，调 ARC：
 
 ```c
-// 从 ARCHIVED 记录中回收至多 target 字节，最旧优先。
-// 足够 → true；耗尽 → false。
-bool meta_carve_flash_arc(uint32_t target)
-{
-    const meta_carve_t *cur = meta_carve_flash_carve();
-    uint32_t reclaimed = 0;
-    for (uint8_t i = 0; i < cur->data_count && reclaimed < target; i++) {
-        if (cur->data[i].state != META_DATA_ARCHIVED) continue;
-        if (cur->data[i].play_id == 0) continue;
-        esp_err_t e = meta_carve_flash_erase_range(
-            cur->data[i].offset, cur->data[i].size);
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "ARC erase failed: %s", esp_err_to_name(e));
-            break;
-        }
-        reclaimed += cur->data[i].size;
-        meta_carve_remove_data(cur, (uint8_t)i);
-        i--;
-    }
-    if (reclaimed >= target) {
-        return meta_carve_flash_commit(cur, false) == ESP_OK;
-    }
-    return false;
-}
+// 整条回收 ARCHIVED 数据记录，最旧优先，直到释放 ≥ target 字节。
+// 返回实际回收字节数（0 = 无可回收，或提交失败）。
+// 只有 ARCHIVED 记录可回收；DIRTY（在用）记录永不触碰。PRISTINE 属第 4 级
+// （最后手段，需用户确认），此处不回收。
+uint32_t meta_carve_flash_arc(uint32_t target);
 ```
+
+**行为**（由 `tests/test_meta_carve_flash.c::test_arc` 钉死）：
+
+- 记录按最旧优先选取（数组序 = 分配序）。
+- 整条回收保证每个擦除区间 4KB 对齐（`esp_flash_erase_region` 要求）；
+  可能略超 `target`，多回收是安全方向。
+- 先提交更新后的记录、**再**擦字节 —— 断电最坏只残留一段未被引用的空洞，
+  绝不会留下指向已擦字节的记录。提交失败则返回 0 且不擦任何字节。
 
 **调用点**：`meta_install_model_slot_fit` 或
 `meta_install_model_default_slot`——在 no-fit 决策前加一次 ARC 重试。
@@ -308,12 +314,9 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot);
 // M5 — 显式擦除特定数据记录（用户主动选择）。
 esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 
-// M5 — 池压力 ARC；从 ARCHIVED 记录回收至多 target 字节。
-// 足够 → true；耗尽 → false。
-bool meta_carve_flash_arc(uint32_t target);
-
-// 内部：擦除池内范围（ARC 与显式擦除共用）。
-esp_err_t meta_carve_flash_erase_range(uint32_t offset, uint32_t size);
+// M5 — 池压力 ARC；整条回收 ARCHIVED 记录直到释放 ≥ target 字节。
+// 返回实际回收字节数（0 = 无）。
+uint32_t meta_carve_flash_arc(uint32_t target);
 
 // 内部：池内字节拷贝（升级迁移共用）。
 esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
@@ -322,7 +325,8 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
 
 ## 9. 测试计划
 
-新主机测试 `tests/test_meta_carve_lifecycle.c`（RAM NOR 模型）：
+主机测试 `tests/test_meta_carve_flash.c`（RAM NOR 模型）；M5 用例断言状态翻转
+在模拟重启后仍成立：
 
 | 用例 | 覆盖 |
 |---|---|
@@ -332,9 +336,10 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src, uint32_t size,
 | `test_upgrade_copy_same_size` | 原地拷贝，state 保持 PRISTINE |
 | `test_upgrade_copy_grow` | 扩容拷贝，旧偏移下次 ARC 回收 |
 | `test_upgrade_shrink_reject` | 缩小 → `ESP_ERR_NOT_SUPPORTED`，无副作用 |
-| `test_arc_archived_records` | 按序回收，释放足够空间 |
-| `test_arc_exhausted` | 全部 ARCHIVED 耗尽 → false |
+| `test_arc_archived_records` | 最旧优先，整条回收，先提交后擦除 |
+| `test_arc_exhausted` | 全部 ARCHIVED 耗尽 → 返回 0 |
 | `test_arc_preserves_dirty` | DIRTY 记录不受 ARC 影响 |
+| `test_data_copy` | 升级拷贝前先擦除目标区（NOR AND 模型） |
 | `test_v1_orphan_data_ignored` | play_id=0 记录全跳过 |
 
 黄金夹具：复用 `tests/fixtures/carve_migration_table.bin` 加扩展 store

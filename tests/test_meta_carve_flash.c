@@ -85,6 +85,15 @@ static void reset_all(void)
     s_torn_limit = 0;
 }
 
+// 模拟重启:清掉模块内存态后重走 ensure,从 flash 记录重载规范 carve。
+// M5 状态翻转(set_dirty/archive/erase/arc)只有在重启后仍成立才算持久化 ——
+// 只断言内存态会漏掉"commit 别名把改动写回旧值"这类"重启即回滚"缺陷。
+static void restart(void)
+{
+    meta_carve_flash_test_reset();
+    assert(meta_carve_flash_ensure() == ESP_OK);
+}
+
 static void table_is(const char *want_fix)
 {
     uint8_t live[META_PT_SIZE];
@@ -402,16 +411,8 @@ static void test_set_dirty(void)
                        META_DATA_PRISTINE);
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
     
-    fprintf(stderr, "DEBUG after commit: data_count=%u state=%d\n",
-            meta_carve_flash_carve()->data_count,
-            meta_carve_flash_carve()->data[0].state);
-
     // set_dirty 应翻转为 DIRTY
-    esp_err_t r = meta_carve_flash_set_dirty(123);
-    fprintf(stderr, "DEBUG set_dirty returned: %d\n", r);
-    fprintf(stderr, "DEBUG after set_dirty: state=%d\n",
-            meta_carve_flash_carve()->data[0].state);
-    assert(r == ESP_OK);
+    assert(meta_carve_flash_set_dirty(123) == ESP_OK);
     assert(meta_carve_flash_carve()->data[0].state == META_DATA_DIRTY);
 
     // 幂等:再次调用 no-op
@@ -422,7 +423,15 @@ static void test_set_dirty(void)
     assert(meta_carve_flash_set_dirty(999) == ESP_OK);
     assert(meta_carve_flash_carve()->data[0].state == META_DATA_DIRTY);
 
-    printf("PASS set_dirty\n");
+    // 持久化:重启后 flash 记录里的状态必须仍是 DIRTY(不能回滚到 PRISTINE)。
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(after.carve.data_count == 1);
+    assert(after.carve.data[0].play_id == 123);
+    assert(after.carve.data[0].state == META_DATA_DIRTY);
+
+    printf("PASS set_dirty (durable across restart)\n");
 }
 
 static void test_archive_slot_and_data(void)
@@ -441,7 +450,15 @@ static void test_archive_slot_and_data(void)
     assert(meta_carve_flash_archive_slot_and_data(0) == ESP_OK);
     assert(meta_carve_flash_carve()->data[0].state == META_DATA_ARCHIVED);
 
-    printf("PASS archive_slot_and_data\n");
+    // 持久化:重启后记录里的状态必须仍是 ARCHIVED。
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(after.carve.data_count == 1);
+    assert(after.carve.data[0].play_id == 456);
+    assert(after.carve.data[0].state == META_DATA_ARCHIVED);
+
+    printf("PASS archive_slot_and_data (durable across restart)\n");
 }
 
 static void test_erase_data(void)
@@ -462,11 +479,7 @@ static void test_erase_data(void)
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
 
     // erase_data 应擦除池内字节并清除记录
-    fprintf(stderr, "DEBUG erase_data: data_count=%u\n", meta_carve_flash_carve()->data_count);
-    esp_err_t r = meta_carve_flash_erase_data(789, "save");
-    fprintf(stderr, "DEBUG erase_data returned: %d\n", r);
-    fprintf(stderr, "DEBUG erase_data: data_count after=%u\n", meta_carve_flash_carve()->data_count);
-    assert(r == ESP_OK);
+    assert(meta_carve_flash_erase_data(789, "save") == ESP_OK);
     assert(meta_carve_flash_carve()->data_count == 0);
 
     // 池内字节已擦除
@@ -476,7 +489,14 @@ static void test_erase_data(void)
         assert(verify[i] == 0xFF);
     }
 
-    printf("PASS erase_data\n");
+    // 持久化:重启后记录里该数据条目必须消失 —— 否则留下一条指向已擦区域的
+    // 幽灵 carve(分配器仍视其为占用,且内容静默丢失)。
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(meta_carve_find_data(&after.carve, 789, "save") < 0);
+
+    printf("PASS erase_data (durable across restart)\n");
 }
 
 static void test_arc(void)
@@ -501,23 +521,63 @@ static void test_arc(void)
     rec.carve.data[1].subtype = 1;
     strncpy(rec.carve.data[1].label, "b", sizeof(rec.carve.data[1].label) - 1);
 
-    fprintf(stderr, "DEBUG test_arc: before commit, data_count=%u\n", rec.carve.data_count);
-    esp_err_t r = meta_carve_flash_commit(&rec.carve, true);
-    fprintf(stderr, "DEBUG test_arc: commit returned %d\n", r);
-    assert(r == ESP_OK);
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
 
     // ARC 回收 0x1000 字节(应是最旧的)
-    fprintf(stderr, "DEBUG test_arc: before ARC, data_count=%u\n", meta_carve_flash_carve()->data_count);
     const uint32_t reclaimed = meta_carve_flash_arc(0x1000);
-    fprintf(stderr, "DEBUG test_arc: reclaimed=%u\n", reclaimed);
-    if (meta_carve_flash_carve()->data_count > 0) {
-        fprintf(stderr, "DEBUG test_arc: data[0].play_id=%u (want 222)\n", meta_carve_flash_carve()->data[0].play_id);
-    }
     assert(reclaimed == 0x1000);
     assert(meta_carve_flash_carve()->data_count == 1);
     assert(meta_carve_flash_carve()->data[0].play_id == 222);
 
-    printf("PASS arc\n");
+    // 持久化:重启后回收结果必须保留 —— 否则回收在重启后被回滚,
+    // 且被擦的字节与新记录不一致(分配器认为仍被占用)。
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(after.carve.data_count == 1);
+    assert(after.carve.data[0].play_id == 222);
+
+    printf("PASS arc (durable across restart)\n");
+}
+
+// M5 升级数据迁移:目标区必须先擦除(NOR 只能 1→0,向未擦区直接写 = 静默
+// AND 损坏)。用 RAM NOR 模型(AND 写语义)钉死这一行为。
+static void test_data_copy(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/safe_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+
+    const uint32_t src = 0x280000u, dst = 0x2C0000u, sz = 0x8000u;
+    // 源:确定性的填充图案。
+    uint8_t pat[0x1000];
+    for (uint32_t b = 0; b < sz; b += sizeof(pat)) {
+        for (size_t i = 0; i < sizeof(pat); i++) pat[i] = (uint8_t)((b + i) & 0xFF);
+        assert(esp_flash_write(NULL, pat, src + b, sizeof(pat)) == ESP_OK);
+    }
+    // 目标:脏数据(擦除前的遗留),未先擦除直接写会得到 AND 结果。
+    uint8_t dirty[0x1000];
+    memset(dirty, 0x00, sizeof(dirty));
+    for (uint32_t b = 0; b < sz; b += sizeof(dirty)) {
+        assert(esp_flash_write(NULL, dirty, dst + b, sizeof(dirty)) == ESP_OK);
+    }
+
+    assert(meta_carve_flash_data_copy(src, sz, dst) == ESP_OK);
+
+    uint8_t got[0x1000], want[0x1000];
+    for (uint32_t b = 0; b < sz; b += sizeof(got)) {
+        assert(esp_flash_read(NULL, got, dst + b, sizeof(got)) == ESP_OK);
+        assert(esp_flash_read(NULL, want, src + b, sizeof(want)) == ESP_OK);
+        assert(memcmp(got, want, sizeof(got)) == 0);
+    }
+
+    // 参数门禁:颗粒度 / 同址 no-op / 重叠。
+    assert(meta_carve_flash_data_copy(src, 0x800, dst) == ESP_ERR_INVALID_SIZE);
+    assert(meta_carve_flash_data_copy(src, sz, src) == ESP_OK);
+    assert(meta_carve_flash_data_copy(src, sz, src + 0x1000) == ESP_ERR_INVALID_ARG);
+
+    printf("PASS data copy erases destination first\n");
 }
 
 int main(void)
@@ -533,6 +593,7 @@ int main(void)
     test_archive_slot_and_data();
     test_erase_data();
     test_arc();
+    test_data_copy();
     printf("PASS test_meta_carve_flash\n");
     return 0;
 }

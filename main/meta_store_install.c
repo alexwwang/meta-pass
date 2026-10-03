@@ -1360,8 +1360,9 @@ static esp_err_t h_backup_import(httpd_req_t *req)
                 }
             }
         }
-        if (rec.state == META_DATA_ARCHIVED && rec.offset != 0 && rec.size != 0) {
-            import_records[record_count++] = rec;
+        if (rec.state == META_DATA_ARCHIVED && rec.offset != 0 && rec.size != 0 &&
+            rec.label[0] != '\0') {
+            import_records[record_count++] = rec;   // label 空 = 无法建 carve 条目,拒
         }
         char *brace_end = strchr(p, '}');
         if (!brace_end) break;
@@ -1380,8 +1381,10 @@ static esp_err_t h_backup_import(httpd_req_t *req)
     if (free_bytes < (uint32_t)total_needed) {
         ESP_LOGI(TAG, "pool pressure %lu needed, free %lu, attempting ARC",
                  (unsigned long)total_needed, (unsigned long)free_bytes);
-        esp_err_t arc_err = meta_carve_flash_arc(total_needed - free_bytes);
-        if (arc_err != ESP_OK) {
+        // meta_carve_flash_arc 返回实际回收字节数(0 = 无可用归档),不是 esp_err_t ——
+        // 早期代码误当错误码比较,回收成功反而报 507。
+        const uint32_t reclaimed = meta_carve_flash_arc(total_needed - free_bytes);
+        if (reclaimed == 0) {
             char msg[128];
             snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
                      (unsigned long)total_needed, (unsigned long)free_bytes);
@@ -1396,21 +1399,24 @@ static esp_err_t h_backup_import(httpd_req_t *req)
         }
     }
 
-    meta_carve_t *mutable_carve = (meta_carve_t *)carve;
+    // 在副本上追加再提交:失败时 s_carve 不被改动(避免内存态与 flash 分歧)。
+    meta_carve_t next = *carve;
     for (int i = 0; i < record_count; i++) {
-        if (!meta_carve_data_append(mutable_carve, &(meta_carve_data_t){
-            .play_id = play_id,
-            .offset = import_records[i].offset,
-            .size = import_records[i].size,
-            .state = META_DATA_PRISTINE,
-            .type = 1,
-            .subtype = 1,
-        })) {
+        meta_carve_data_t d;
+        memset(&d, 0, sizeof(d));
+        d.play_id = play_id;
+        d.offset = import_records[i].offset;
+        d.size = import_records[i].size;
+        d.state = META_DATA_PRISTINE;
+        d.type = 1;
+        d.subtype = 1;
+        strncpy(d.label, import_records[i].label, sizeof(d.label) - 1);
+        if (!meta_carve_data_append(&next, &d)) {
             return reply(req, "500 Internal Server Error", "failed to update carve table");
         }
     }
 
-    esp_err_t commit_err = meta_carve_flash_commit(mutable_carve, true);
+    esp_err_t commit_err = meta_carve_flash_commit(&next, true);
     if (commit_err != ESP_OK) {
         return reply(req, "500 Internal Server Error", "failed to commit carve table");
     }
