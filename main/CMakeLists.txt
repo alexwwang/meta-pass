@@ -28,7 +28,7 @@ idf_component_register(
     # 引 mbedtls/sha256.h,配网页也用其 RNG);WAN 下载通道已删,不再需要
     # esp_http_client / esp-tls / esp_crt_bundle(证书包随通道一并移除)。
     REQUIRES bsp esp_event esp_hw_support esp_netif esp_timer esp_wifi nvs_flash
-             esp_http_server app_update esp_partition mbedtls
+             esp_http_server app_update esp_partition esp_app_format mbedtls
              lwip      # install httpd 的 socket 层(自 v5.1 起需显式声明)
              spi_flash # 裸 flash 凭证备份(esp_flash_read/write/erase)
 )

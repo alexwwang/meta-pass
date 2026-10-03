@@ -118,6 +118,11 @@ PY
         main/meta_carve_store.c main/meta_carve.c main/meta_md5.c \
         -o "${test_dir}/test_meta_carve_flash"
     "${test_dir}/test_meta_carve_flash"
+    # M5 备份格式单元测试(header 验证 + serialize/deserialize roundtrip)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_backup.c main/meta_backup.c \
+        -o "${test_dir}/test_meta_backup"
+    "${test_dir}/test_meta_backup"
     # hook 接线静态门:carve 裁决必须先于 otadata 单次会话策略(B5),恢复路径
     # 擦写表扇区并清 otadata(host 测不到的 flash 副作用,源码事实门兜底)
     python3 tests/test_dynslot_hook_gate.py

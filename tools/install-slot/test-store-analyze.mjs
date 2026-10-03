@@ -343,7 +343,9 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
 
 // ---- 12. unsupported 玩法的 extracted():拒绝并携带与 analyze 一致的 reason ----
 {
-  const bigLen = SLOT_GEOMETRY[2].partSize - 0x1000 + 1;
+  // 使用超过池上限的尺寸测试 too-large
+  const poolLimit = POOL_TOTAL - 0x1000;
+  const bigLen = poolLimit + 1; // 恰好超池上限
   const app = buildAppImage([bigLen]);
   const { fetchImpl } = makeEnv({ app });
   const a = makeAnalyzer(fetchImpl);
