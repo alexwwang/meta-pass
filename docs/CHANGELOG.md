@@ -4,6 +4,35 @@
 
 # Changelog
 
+## v1.2.0 (unreleased)
+
+- **v3.2-r10.38 (2026-10-02) dynslot — dynamic slot partitioning + slot removal
+  (feat/dynslot)**: the fixed 3-slot table becomes a pool + carve model — two
+  pools (0x180000–0x356000, 0x360000–0x7FE000), up to 8 slots, 128 KB minimum,
+  64 KB offset alignment, 4 KB size granularity (`main/meta_carve*` pure core
+  with host tests, A/B carve record in `store`, materialized 0x8000 table,
+  bootloader-hook authority with safe-table first boot, legacy 3-slot migration
+  that relocates the Wi-Fi credential backup from 0x35A000 to 0x35E000).
+  Install path: the phone's carve proposal (`carveOffset`/`carveSize`) is
+  re-run through the device's first-fit allocator and any divergence is
+  rejected; a new slot materializes before upload (prepare returns 503 → the
+  phone resends with the persisted token → reboot). **Slot removal (new)**:
+  `GET /api/install/slots` lists the live carve (state/name/size/limit/offset/
+  kind + free pool bytes) and `POST /api/install/remove {"slot":N}` erases the
+  deleted slot's own data, commits the record and re-materializes the table,
+  replies 200, reboots after 150 ms — power-loss safe at every step (busy →
+  409, bad shape → 400, not in carve → 404; token + Origin gated). No data
+  moves: the hole is reclaimed by first-fit on the next install. Web side: an
+  "Installed" management panel (list, two-step delete confirm, wait for reboot,
+  refresh) and the shared `install-slot/dynslot-pool.js` module (pool
+  descriptor + allocator with the same constants and first-fit algorithm as
+  `meta_carve.c`, device-derived slot claims with a legacy fallback, 8-slot
+  install bound). Worker and local dev server now route `/dynslot-pool.js`
+  no-store. Host gates `--static` and `--firmware` PASS; device E2E (HTTP
+  removal, power-cut injection) and QEMU hook cases NOT RUN. Worker-side
+  analyze limits still derive from legacy `SLOT_GEOMETRY` — full three-way
+  unification is tracked in `docs/assets/dynslot-data-unification-research.md`.
+
 ## v1.1.0 (2026-10-02)
 
 Store install release: the flagship feature is the market install chain — the phone

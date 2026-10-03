@@ -14,6 +14,8 @@
 #include <stdint.h>
 
 #include "meta_slots.h"        // META_SLOT_COUNT / META_NAME_LEN / META_SHA256_HEX_LEN
+#include "meta_carve.h"        // dynslot carve 提案复核(§4.5 设备权威)
+#include "meta_sign.h"         // meta_sign_app_limit(槽尺寸 → 可装上限)
 #include "meta_store_json.h"
 
 // v1 manifest 协议版本;offer.protocol 必须等于它(boot 页 loader 的兼容性握手
@@ -38,6 +40,12 @@ typedef struct {
                                                 // 都在手机完成,设备跳过物理确认直达上传;
                                                 // 旧固件忽略未知 JSON 字段 → 自动回退设备选槽);
                                                 // -1 = 设备侧物理确认(旧流程)
+    // dynslot carve 提案(design §4.5,可选):手机为"新槽"计算的提案。
+    // carveOffset/carveSize 必须成对出现;缺省 = 无提案(复用现有槽)。
+    // 设备用 meta_install_model_carve_ok 重跑分配器拒绝几何分歧(L4)。
+    bool     has_carve;
+    uint32_t carve_offset;                      // 提案槽偏移(64KB 对齐,由分配器复核)
+    uint32_t carve_size;                        // 提案槽尺寸(必须 = meta_carve_need(image_len))
     uint8_t  slots_count;                       // 下方 slots 长度(1..META_SLOT_COUNT)
     struct {
         int8_t   slot;                          // 槽位编号(0..META_SLOT_COUNT-1,不重复)
@@ -58,9 +66,11 @@ typedef struct {
 bool meta_install_model_parse_session_req(const char *json, size_t len,
                                           meta_install_session_req_t *out);
 
-// 设备本地分区几何(适配层注入;0 = 分区不存在/无可用上限)。
+// 设备本地几何(适配层注入;0 = 分区不存在/无可用上限)。
+// dynslot:上限由规范 carve 派生(见 meta_install_geom_from_carve)—— 新槽在
+// 物化前分区视图看不见,靠在途提案下标预先计入,提案不成立的下标仍是 0。
 typedef struct {
-    uint32_t limit[META_SLOT_COUNT];            // meta_sign_app_limit(part->size)
+    uint32_t limit[META_SLOT_COUNT];            // meta_sign_app_limit(槽尺寸)
 } meta_install_geom_t;
 
 // chunk 偏移判定结果(文档 §6.5)。
@@ -86,6 +96,38 @@ bool meta_install_model_offer_ok(const meta_install_manifest_t *m,
 // 本地几何:槽位存在且 image_len <= 上限。
 bool meta_install_model_slot_fit(const meta_install_geom_t *g, int8_t slot,
                                  uint32_t image_len);
+
+// dynslot carve 提案复核(design §4.5:手机提案,设备重跑分配器拒绝分歧):
+//   - carve_size 必须 = meta_carve_need(m->image_len)(设备侧需求);
+//   - 提案槽已在 cur 中(重启后手机重发的幂等路径)→ 且 phone_slot == 其下标;
+//   - 否则设备跑 first-fit 放置,落点偏移与 phone_slot 必须与提案逐项吻合;
+//   - 任何分歧/无处可放 → -1(适配层拒绝 offer)。
+// 返回 >=0 = 提案成立时的槽位下标。
+// phone_slot == -1(设备物理确认旧流程)时不参与下标比对:落点仍由设备分配器
+// 裁定,最终确认哪个槽由 P3/提交时再约束。
+int meta_install_model_carve_ok(const meta_install_manifest_t *m,
+                                const meta_carve_t *cur);
+
+// dynslot 显式删除(design §4.5 Remove,POST /api/install/remove)请求体解析:
+// {"slot":N},N ∈ [0, META_SLOT_COUNT);缺字段/越界/类型不符(字符串/小数)一律
+// false 且不动 *slot_out。适配层据此映射 400,擦除/提交不得先于它发生。
+bool meta_install_model_parse_remove(const char *json, size_t len, int *slot_out);
+
+// 删除可行性(纯判定,设备权威的一部分):slot 必须在规范 carve 内
+// (0 <= slot < cur->count)。false → 适配层映射 404,不擦不提交、seq 不动。
+// 空 carve(全新设备 count=0)无槽可删;storage 预留槽同样可回收(L2)。
+bool meta_install_model_remove_ok(const meta_carve_t *cur, int slot);
+
+// dynslot 本地上限派生(design §4.5,替代"分区存在与否"的几何注入):
+//   - 既有 APP 槽 → meta_sign_app_limit(slot.size)(storage 预留不计, L2);
+//   - 未分配下标 → 0;若 m 带 carve 提案且 carve_ok 成立 → 该下标按
+//     meta_sign_app_limit(carve_size) 预填(槽尚未物化,提案先行准入);
+//   - carve_idx(可 NULL)回传 carve_ok 结果:-1 = 无提案/提案不成立。
+// 语义与分区视图等价:表 == carve 是不变量(hook 与 ensure 双向对账)。
+bool meta_install_geom_from_carve(const meta_carve_t *c,
+                                  const meta_install_manifest_t *m,  // 可为 NULL
+                                  meta_install_geom_t *g,
+                                  int *carve_idx);
 
 // 默认选中槽位:suggestedSlot 本地 fit 才用,否则首个「手机 fit 且本地 fit」,
 // 再退化到任意本地 fit;-1 = 无(offer_ok 已拒绝这种情况)。

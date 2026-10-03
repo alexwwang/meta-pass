@@ -8,6 +8,7 @@
 #include "meta_store_net.h"
 
 #include "meta_store_prov.h"
+#include "meta_carve_store.h"   // META_CRED_BAK_OFFSET(凭证备份新家,设计 §4.3 L6)
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -116,14 +117,16 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
 
 static const char k_nvs_ns[] = "metapass";
 
-// 裸 flash 凭证备份:cardid(0x356000+0x4000)与 ota_1(0x360000)之间的
-// 未分配空隙 0x35A000..0x360000(24KB,无分区认领,任何子固件都不会初始化
-// 它)。真机 bug:子固件(社区玩法)启动会把共享 nvs 分区格式化,WiFi 凭证
+// 裸 flash 凭证备份:store 分区扇区4(0x35E000,设计 §4.3 L6 新家)。
+// 历史(dynslot):原在 cardid 与 ota_1 之间的裸空隙 0x35A000 —— 那块地
+// 现在是 store 扇区0(carve 记录 A),记录一写就会覆盖。升级时 ensure 的
+// cred_relocate 会先把旧备份整扇区搬到新家,再允许记录写入。
+// 真机 bug 由来:子固件(社区玩法)启动会把共享 nvs 分区格式化,WiFi 凭证
 // 随子固件槽位注册表一起被抹 → 重进商店要求重新配网。对策 = 双写:
 // NVS 主读(快),裸区备份(nvs 读不到时自愈恢复)。单 sector 擦写,
 // magic+len+crc 校验,ssid 空即视为无效。
-#define CRED_BAK_OFFSET   0x35A000u
-#define CRED_BAK_MAGIC    0x4B43504Du   // "MPCK"
+#define CRED_BAK_OFFSET   META_CRED_BAK_OFFSET   // = 0x35E000(store 扇区4)
+#define CRED_BAK_MAGIC    META_CRED_BAK_MAGIC   // "MPCK"(与 ensure 的 relocate 同源)
 #define CRED_BAK_SSID_MAX 33
 #define CRED_BAK_PASS_MAX 65
 

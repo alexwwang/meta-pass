@@ -126,9 +126,9 @@ static void test_parse_rejects(void)
     assert(mutated_offer(&mu, "{ \"slot\": 2, \"limit\": 2740224, \"fit\": true }",
                          "{ \"slot\": 0, \"limit\": 2740224, \"fit\": true }"));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 槽位重复
-    assert(mutated_offer(&mu, "\"suggestedSlot\": 0", "\"suggestedSlot\": 3"));
-    assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 建议槽位越界
-    assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": 3,"));
+    assert(mutated_offer(&mu, "\"suggestedSlot\": 0", "\"suggestedSlot\": 8"));
+    assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 建议槽位越界(META_SLOT_COUNT=8)
+    assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": 8,"));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 手机选定槽位越界
     assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": -2,"));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // slot < -1 非法
@@ -289,13 +289,54 @@ static void test_parse_session_req(void)
     static const char BAD_SLOT[] =
         "{\"imageLen\":1892032,"
         "\"sha256\":\"1828e251042477c152709dab15a83c2dcc28060eae2e3dc57ff19d3431ad24c4\","
-        "\"slot\":3}";
+        "\"slot\":8}";
     assert(!meta_install_model_parse_session_req(BAD_SLOT, sizeof(BAD_SLOT) - 1, &req));
     static const char SHORT_SHA[] =
         "{\"imageLen\":1892032,\"sha256\":\"1828\",\"slot\":0}";
     assert(!meta_install_model_parse_session_req(SHORT_SHA, sizeof(SHORT_SHA) - 1, &req));
     assert(!meta_install_model_parse_session_req(NULL, 10, &req));
     printf("PASS session req parse\n");
+}
+
+// ---- dynslot 显式删除(design §4.5 Remove:HTTP /api/install/remove) ----
+
+static void test_parse_remove(void)
+{
+    int slot = -1;
+    assert(meta_install_model_parse_remove("{\"slot\":3}", 10, &slot));
+    assert(slot == 3);
+    assert(meta_install_model_parse_remove("{ \"slot\" : 0 }", 14, &slot));
+    assert(slot == 0);
+
+    // 缺 slot / 越界 / 负数 / 非整数 / 空输入一律拒绝(拒绝点即 false,slot 不变)。
+    assert(!meta_install_model_parse_remove("{\"x\":1}", 7, &slot));
+    assert(!meta_install_model_parse_remove("{\"slot\":8}", 10, &slot));    // >= META_SLOT_COUNT
+    assert(!meta_install_model_parse_remove("{\"slot\":-1}", 11, &slot));
+    assert(!meta_install_model_parse_remove("{\"slot\":\"3\"}", 12, &slot));
+    assert(!meta_install_model_parse_remove("{\"slot\":3.5}", 12, &slot));
+    assert(!meta_install_model_parse_remove("", 0, &slot));
+    assert(!meta_install_model_parse_remove(NULL, 10, &slot));
+    printf("PASS remove req parse\n");
+}
+
+static void test_remove_ok(void)
+{
+    meta_carve_t c;
+    memset(&c, 0, sizeof(c));
+    c.count = 3;
+
+    // carve 内下标可删(含末位;storage 预留同样可回收)。
+    assert(meta_install_model_remove_ok(&c, 0));
+    assert(meta_install_model_remove_ok(&c, 2));
+    // 越界 / 负数 / 无 carve → 拒(适配层映射 404,不擦不提交)。
+    assert(!meta_install_model_remove_ok(&c, 3));
+    assert(!meta_install_model_remove_ok(&c, -1));
+    assert(!meta_install_model_remove_ok(NULL, 0));
+
+    // 全新设备(count=0)无槽可删。
+    c.count = 0;
+    assert(!meta_install_model_remove_ok(&c, 0));
+    printf("PASS remove verdict\n");
 }
 
 static void test_finalize_ready(void)
@@ -305,6 +346,217 @@ static void test_finalize_ready(void)
     assert(!meta_install_model_finalize_ready(0, 0));
     assert(!meta_install_model_finalize_ready(0, 100));
     printf("PASS finalize precheck\n");
+}
+
+// ---- dynslot carve 提案(design §4.5:手机提案,设备重跑分配器拒绝分歧) ----
+
+// 参数化 offer:构造含可选 carve 提案与选定槽位的最小合法 manifest。
+static bool build_carve_offer(char *buf, size_t cap, uint32_t image_len,
+                              const char *carve_json, int slot)
+{
+    static const char zero_hex[65] =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+    const int n = snprintf(buf, cap,
+        "{\"protocol\":1,\"playId\":1,\"revisionId\":1,\"name\":\"p\","
+        "\"storeSha256\":\"%s\",\"imageLen\":%u,\"sha256\":\"%s\","
+        "\"suggestedSlot\":0,\"slot\":%d,%s"
+        "\"slots\":[{\"slot\":0,\"limit\":1921024,\"fit\":true}],"
+        "\"reason\":\"ok\"}",
+        zero_hex, image_len, zero_hex, slot,
+        (carve_json && carve_json[0]) ? carve_json : "");
+    return n > 0 && (size_t)n < cap;
+}
+
+static void test_parse_carve(void)
+{
+    char js[1024];
+    meta_install_manifest_t m;
+
+    // 缺省:无提案(复用现有槽流程,零额外重启)。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000, "", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(!m.has_carve);
+
+    // 成对出现 → 解析成功。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(m.has_carve);
+    assert(m.carve_offset == 1572864u);   // 0x180000
+    assert(m.carve_size == 131072u);      // 0x20000
+
+    // 半截提案(只有 offset 或只有 size)→ 整体拒绝。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,", 0));
+    assert(!meta_install_model_parse(js, strlen(js), &m));
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveSize\":131072,", 0));
+    assert(!meta_install_model_parse(js, strlen(js), &m));
+    // 负 size → 拒绝。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":-1,", 0));
+    assert(!meta_install_model_parse(js, strlen(js), &m));
+    printf("PASS carve parse\n");
+}
+
+static void test_carve_ok(void)
+{
+    char js[1024];
+    meta_install_manifest_t m;
+    meta_carve_t cur;
+    memset(&cur, 0, sizeof(cur));
+
+    // 全新设备(空 carve):提案必须与设备 first-fit 逐项吻合。
+    // image_len 0x1F000 → need = max(128KB, align4k(+4KB 尾)) = 0x20000。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == 0);
+
+    // 分歧:offset 不是设备 first-fit 落点 → 拒(手机几何与设备不一致)。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1703936,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == -1);
+
+    // size != 设备算出的 need → 拒。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":196608,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == -1);
+
+    // phone_slot != 落点下标 → 拒。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == -1);
+
+    // 已有一个槽(slot0@0x180000/0x20000):
+    //   - 提案与已存在 slot0 同几何 → 幂等复用(重启后重发 prepare 的情形);
+    //   - 新提案必须落在 first-fit 的 0x1A0000。
+    assert(meta_carve_place(&cur, 0x20000, META_CARVE_KIND_APP, &cur) == 0);
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == 0);    // 幂等:同几何 slot0 复用
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1703936,\"carveSize\":131072,", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == 1);
+
+    // 幂等重试:提案槽已在 carve 中(重启后手机重发同一 prepare)→ 同下标放行,
+    // 不得再放一个新槽。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == 0);
+    // 幂等路径也必须核对 phone_slot 下标。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == -1);
+
+    // 8 槽上限:填满后新提案 → 拒(设备重跑分配器无处可放)。
+    meta_carve_t full = cur;   // slot0@0x180000 + slot1@0x1A0000
+    while (full.count < META_CARVE_MAX_SLOTS) {
+        assert(meta_carve_place(&full, 0x20000, META_CARVE_KIND_APP, &full) >= 0);
+    }
+    assert(full.count == META_CARVE_MAX_SLOTS);
+    // 幂等:slot0 提案在满载下仍放行(重试语义不因满载失效)。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &full) == 0);
+    // 新提案(槽不存在且满载无处可放)→ 拒。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":3801088,\"carveSize\":131072,", 7));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &full) == -1);
+
+    // 大镜像(need > pool_0 容量)→ first-fit 跨段落 pool_1 起点 0x360000。
+    // image_len 0x48F000 → need = 0x490000;提案 offset 0x360000 / size 0x490000。
+    meta_carve_t empty;
+    memset(&empty, 0, sizeof(empty));
+    assert(build_carve_offer(js, sizeof(js), 0x48F000,
+                             "\"carveOffset\":3538944,\"carveSize\":4784128,", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &empty) == 0);
+    printf("PASS carve proposal re-check\n");
+}
+
+// 设备确认旧流程:手机给提案但不选槽(phone_slot = -1)→ 落点仍由设备
+// 分配器裁定;只有 >= 0 的 phone_slot 才参与下标比对。
+static void test_carve_ok_device_confirm(void)
+{
+    char js[1024];
+    meta_install_manifest_t m;
+    meta_carve_t cur;
+    memset(&cur, 0, sizeof(cur));
+
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", -1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(m.phone_slot == -1);
+    assert(meta_install_model_carve_ok(&m, &cur) == 0);   // 空 carve:first-fit 落 0
+
+    // 分歧(offset 不是设备 first-fit 落点)仍拒。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1703936,\"carveSize\":131072,", -1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == -1);
+
+    // 幂等复用(提案槽已在 carve 中)也放行。
+    assert(meta_carve_place(&cur, 0x20000, META_CARVE_KIND_APP, &cur) == 0);
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1572864,\"carveSize\":131072,", -1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_carve_ok(&m, &cur) == 0);
+    printf("PASS carve ok (device-confirm flow)\n");
+}
+
+// dynslot 本地上限:由规范 carve(+可选在途提案)派生,替代"分区存在与否"
+// (新槽尚未物化时分区视图看不见它 —— 提案下标按提案尺寸预先计入)。
+static void test_geom_from_carve(void)
+{
+    meta_install_geom_t g;
+    meta_carve_t c;
+    memset(&c, 0, sizeof(c));
+    int idx = 99;
+
+    // 无槽无提案 → 全 0(全新设备:尚无可装槽)。
+    assert(meta_install_geom_from_carve(&c, NULL, &g, &idx));
+    assert(idx == -1);
+    for (int i = 0; i < META_SLOT_COUNT; i++) assert(g.limit[i] == 0);
+
+    // 既有槽 → 上限 = meta_sign_app_limit(槽尺寸)(与分区视图同一约定)。
+    assert(meta_carve_place(&c, 0x20000, META_CARVE_KIND_APP, &c) == 0);
+    assert(meta_install_geom_from_carve(&c, NULL, &g, &idx));
+    assert(g.limit[0] == meta_sign_app_limit(0x20000));
+    assert(g.limit[1] == 0);
+
+    // 在途提案(新槽)成立 → carve_ok 裁定下标,该下标按提案尺寸计入上限。
+    char js[1024];
+    meta_install_manifest_t m;
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1703936,\"carveSize\":131072,", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_geom_from_carve(&c, &m, &g, &idx));
+    assert(idx == 1);
+    assert(g.limit[0] == meta_sign_app_limit(0x20000));
+    assert(g.limit[1] == meta_sign_app_limit(0x20000));
+
+    // 提案分歧 → 下标 -1,未分配下标不给任何上限(offer_ok 会拒 fit 声称)。
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+                             "\"carveOffset\":1835008,\"carveSize\":131072,", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_geom_from_carve(&c, &m, &g, &idx));
+    assert(idx == -1);
+    assert(g.limit[1] == 0);
+
+    // NULL 参数 → false。
+    assert(!meta_install_geom_from_carve(NULL, NULL, &g, NULL));
+    assert(!meta_install_geom_from_carve(&c, NULL, NULL, NULL));
+    printf("PASS geom from carve\n");
 }
 
 int main(void)
@@ -317,6 +569,12 @@ int main(void)
     test_parse_session_req();
     test_chunk();
     test_finalize_ready();
+    test_parse_carve();
+    test_carve_ok();
+    test_carve_ok_device_confirm();
+    test_geom_from_carve();
+    test_parse_remove();
+    test_remove_ok();
     printf("ALL meta_install_model TESTS PASSED\n");
     return 0;
 }

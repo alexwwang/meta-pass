@@ -110,6 +110,20 @@ bool meta_install_model_parse(const char *json, size_t len,
         if (v < -1 || v >= META_SLOT_COUNT) return false;
         out->phone_slot = (int8_t)v;
     }
+
+    // carve 提案(dynslot §4.5,可选):carveOffset/carveSize 必须成对出现,
+    // 半截提案按形状不合法拒绝;几何对错由 carve_ok 重跑分配器裁定。
+    int64_t v_off = 0, v_sz = 0;
+    const bool has_off = meta_store_json_get_int(json, len, "carveOffset", &v_off);
+    const bool has_sz = meta_store_json_get_int(json, len, "carveSize", &v_sz);
+    if (has_off != has_sz) return false;
+    if (has_off) {
+        if (v_off < 0 || v_off > UINT32_MAX) return false;
+        if (v_sz <= 0 || v_sz > UINT32_MAX) return false;
+        out->has_carve = true;
+        out->carve_offset = (uint32_t)v_off;
+        out->carve_size = (uint32_t)v_sz;
+    }
     return true;
 }
 
@@ -135,6 +149,25 @@ bool meta_install_model_parse_session_req(const char *json, size_t len,
     return true;
 }
 
+bool meta_install_model_parse_remove(const char *json, size_t len, int *slot_out)
+{
+    if (!json || len == 0 || !slot_out) return false;
+    int64_t v;
+    // 只认 {"slot":N} 的 N(scan_int 拒绝字符串/小数);缺字段即拒,半截请求
+    // 不得进入擦除路径(适配层映射 400)。
+    if (!meta_store_json_get_int(json, len, "slot", &v)) return false;
+    if (v < 0 || v > META_SLOT_COUNT - 1) return false;
+    *slot_out = (int)v;
+    return true;
+}
+
+bool meta_install_model_remove_ok(const meta_carve_t *cur, int slot)
+{
+    if (!cur) return false;
+    if (slot < 0 || slot >= (int)cur->count) return false;
+    return true;
+}
+
 bool meta_install_model_slot_fit(const meta_install_geom_t *g, int8_t slot,
                                  uint32_t image_len)
 {
@@ -143,6 +176,57 @@ bool meta_install_model_slot_fit(const meta_install_geom_t *g, int8_t slot,
     if (limit == 0) return false;          // 分区不存在/未注入
     if (image_len == 0) return false;
     return image_len <= limit;
+}
+
+int meta_install_model_carve_ok(const meta_install_manifest_t *m,
+                                const meta_carve_t *cur)
+{
+    if (!m || !cur || !m->has_carve) return -1;
+    const uint32_t need = meta_carve_need(m->image_len);
+    if (need == 0 || m->carve_size != need) return -1;   // 尺寸必须 = 设备需求
+
+    // 幂等重试:提案槽已存在于当前 carve(重启后手机重发同一 prepare)。
+    for (uint8_t i = 0; i < cur->count; i++) {
+        const meta_carve_slot_t *s = &cur->slot[i];
+        if (s->kind == META_CARVE_KIND_APP && s->offset == m->carve_offset &&
+            s->size == m->carve_size) {
+            // phone_slot >= 0 必须吻合下标;-1 = 设备物理确认旧流程,下标由设备定。
+            if (m->phone_slot >= 0 && m->phone_slot != (int8_t)i) return -1;
+            return (int)i;
+        }
+    }
+
+    // 全新提案:设备重跑 first-fit,落点与下标必须与手机提案逐项吻合。
+    meta_carve_t next;
+    const int idx = meta_carve_place(cur, need, META_CARVE_KIND_APP, &next);
+    if (idx < 0) return -1;
+    if (next.slot[idx].offset != m->carve_offset) return -1;
+    if (m->phone_slot >= 0 && m->phone_slot != (int8_t)idx) return -1;
+    return idx;
+}
+
+bool meta_install_geom_from_carve(const meta_carve_t *c,
+                                  const meta_install_manifest_t *m,
+                                  meta_install_geom_t *g,
+                                  int *carve_idx)
+{
+    if (carve_idx) *carve_idx = -1;
+    if (!c || !g || c->count > META_CARVE_MAX_SLOTS) return false;
+    memset(g, 0, sizeof(*g));
+    for (uint8_t i = 0; i < c->count; i++) {
+        if (c->slot[i].kind != META_CARVE_KIND_APP) continue;   // storage 预留不可装(L2)
+        g->limit[i] = meta_sign_app_limit(c->slot[i].size);
+    }
+    if (m && m->has_carve) {
+        const int idx = meta_install_model_carve_ok(m, c);
+        // 提案成立 → 尚未物化的下标也按提案尺寸准入(否则 offer_ok 会把
+        // 手机的 fit 声称当错报拒掉,新槽永远装不进去)。
+        if (idx >= 0 && idx < META_SLOT_COUNT) {
+            g->limit[idx] = meta_sign_app_limit(m->carve_size);
+        }
+        if (carve_idx) *carve_idx = idx;
+    }
+    return true;
 }
 
 bool meta_install_model_offer_ok(const meta_install_manifest_t *m,

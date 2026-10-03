@@ -35,14 +35,18 @@
 #include <esp_image_format.h>
 #include <esp_partition.h>
 #include <esp_netif.h>
+#include <esp_system.h>
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <freertos/semphr.h>
 
 #include "meta_store.h"
 #include "meta_store_json.h"
+#include "meta_carve_flash.h"
 #include "meta_name.h"
 #include "meta_sign.h"
+#include "nvs.h"
 
 static const char *TAG = "install_local";
 
@@ -102,6 +106,10 @@ static install_session_t s_session;
 // free 无锁)。凡写 s_session 的执行态(ota/sha/offset/flags)必须持锁;持锁期间
 // 不做网络读。status/poll 只读快照字段(原子字宽/常量字面量),不上锁。
 static SemaphoreHandle_t s_session_mu;
+// 新槽已物化、确认返回后必须重启(设计 §4.4/§4.5 + 用户决策①:提交 store →
+// 物化表 → 持久化 token → 重启,上传写路径重启后不变)。重启是必然后继动作
+// (确认闸门两条出口都复位),不另加锁字段清理。
+static bool s_reboot_pending;
 
 // ---- 小工具 ----
 
@@ -128,15 +136,23 @@ static void status_set(const char *state, const char *msg)
     s_session.message = msg;
 }
 
-// 本地分区几何快照(注入 meta_install_model;分区不存在的槽位上限为 0)。
+// 本地几何快照(注入 meta_install_model)。dynslot:上限由规范 carve 派生
+// (design §4.5,表 == carve 不变量),不再看分区视图 —— 新槽在物化前分区
+// 看不见,靠在途提案下标预填(geom_from_carve),提案不成立的下标仍是 0。
+// carve_idx(可 NULL)回传提案裁定:-1 = 无提案/提案不成立。
+static void geom_refresh_offer(const meta_install_manifest_t *m,
+                               meta_install_geom_t *g, int *carve_idx)
+{
+    if (carve_idx) *carve_idx = -1;
+    if (!meta_install_geom_from_carve(meta_carve_flash_carve(), m, g, carve_idx)) {
+        memset(g, 0, sizeof(*g));   // 防御:几何不可用 → 全 0(一切 fit 判定拒绝)
+        if (carve_idx) *carve_idx = -1;
+    }
+}
+
 static void geom_refresh(meta_install_geom_t *g)
 {
-    memset(g, 0, sizeof(*g));
-    if (!s_slots) return;
-    for (int i = 0; i < META_SLOT_COUNT; i++) {
-        const esp_partition_t *part = meta_store_slot_partition(i);
-        if (part) g->limit[i] = meta_sign_app_limit(part->size);
-    }
+    geom_refresh_offer(NULL, g, NULL);
 }
 
 void meta_install_local_geom(meta_install_geom_t *out)
@@ -196,6 +212,46 @@ bool meta_install_lan_ready(void)
 
 // ---- token / 配对码 / QR 信息 ----
 
+// token 持久化(用户决策①:新槽 carve 重启后手机用旧 token 重发 prepare,
+// 免重扫 QR)。命名空间与 meta_store_net 的配网凭证一致(nvs_flash_init 在
+// net_prepare 已跑;任何 NVS 打开失败只降级为“不持久化”,不拦安装)。
+static const char k_nvs_ns[]        = "metapass";
+static const char k_nvs_inst_token[] = "inst_token";   // 128-bit token 的 hex
+static const char k_nvs_inst_active[] = "inst_active"; // 会话在途(未离店)
+
+static void install_nvs_set(const char *key, const char *val)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_str(h, key, val);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static void install_nvs_erase(const char *key)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, key);   // 不存在不报错(幂等)
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
+static bool install_nvs_get(const char *key, char *out, size_t cap)
+{
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t len = cap;
+    const bool ok = (nvs_get_str(h, key, out, &len) == ESP_OK) && len > 0 && len <= cap;
+    nvs_close(h);
+    if (!ok) out[0] = '\0';
+    return ok;
+}
+
 static void token_to_hex(const uint8_t token[META_INSTALL_TOKEN_BYTES],
                          char out[META_INSTALL_TOKEN_HEX_LEN + 1])
 {
@@ -220,6 +276,33 @@ static void lan_url_into(char *out, size_t out_sz, const char *token_hex)
              b[0], b[1], b[2], b[3], token_hex);
 }
 
+// 配对码按本次开机重发(TTL/次数是 RAM 态,不跨重启;跨重启的续连凭据是 token)。
+static void pair_fresh(void)
+{
+    snprintf(s_token.pair_code, sizeof(s_token.pair_code), "%06u",
+             (unsigned)(esp_random() % 1000000U));
+    s_token.pair_code[META_INSTALL_PAIR_DIGITS] = '\0';
+    s_token.pair_valid = true;
+    s_token.pair_used = false;
+    s_token.pair_tries = 0;
+    s_token.pair_created_ms = esp_timer_get_time() / 1000;
+}
+
+// 重启续连:读回持久化 token(长度/小写 hex 校验与 token_from_hex 同规)。
+static bool token_restore(void)
+{
+    char hex[META_INSTALL_TOKEN_HEX_LEN + 1];
+    if (!install_nvs_get(k_nvs_inst_token, hex, sizeof(hex))) return false;
+    if (strlen(hex) != META_INSTALL_TOKEN_HEX_LEN) return false;
+    for (int i = 0; i < META_INSTALL_TOKEN_HEX_LEN; i++) {
+        const char c = hex[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    memcpy(s_token.token_hex, hex, sizeof(s_token.token_hex));
+    s_token.token_valid = true;
+    return true;
+}
+
 static esp_err_t token_generate(void)
 {
     // 128 bit 随机(esp_random 每次 32 bit,拼 4 次;文档 §8 下限)。
@@ -230,13 +313,8 @@ static esp_err_t token_generate(void)
     }
     token_to_hex(raw, s_token.token_hex);
     s_token.token_valid = true;
-    snprintf(s_token.pair_code, sizeof(s_token.pair_code), "%06u",
-             (unsigned)(esp_random() % 1000000U));
-    s_token.pair_code[META_INSTALL_PAIR_DIGITS] = '\0';
-    s_token.pair_valid = true;
-    s_token.pair_used = false;
-    s_token.pair_tries = 0;
-    s_token.pair_created_ms = esp_timer_get_time() / 1000;
+    pair_fresh();
+    install_nvs_set(k_nvs_inst_token, s_token.token_hex);   // 落盘:重启续连
     return ESP_OK;
 }
 
@@ -259,8 +337,16 @@ esp_err_t meta_install_token_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (!s_token.token_valid) {
-        token_generate();
+        // 用户决策①(重启续连):NVS 里有上次会话的 token 就复用(手机免重扫
+        // QR);没有才新发并落盘。配对码一律重发(pair_fresh,不跨重启)。
+        if (token_restore()) {
+            pair_fresh();
+            ESP_LOGI(TAG, "install token restored from NVS (resume)");
+        } else {
+            token_generate();
+        }
     }
+    install_nvs_set(k_nvs_inst_active, "1");   // 会话在途:carve 重启后自动恢复
     s_session.active = true;
     // 无在途 offer/session 时归位 pairing(首次进店、失败/取消/拒绝回退);
     // 有在途 offer 则保持现状,不覆盖手机侧流程。
@@ -280,6 +366,10 @@ void meta_install_token_stop(void)
     }
     offer_and_upload_clear();
     memset(&s_token, 0, sizeof(s_token));
+    // 离店 = 主动作废:token 与在途标记一并清盘,重启不会复活旧会话(用户决策
+    // ①只服务于 carve 重启的非正常中断 —— 未走到离店的会话才续连)。
+    install_nvs_erase(k_nvs_inst_token);
+    install_nvs_erase(k_nvs_inst_active);
     s_session.active = false;
     status_set("idle", "");
     session_unlock();
@@ -295,6 +385,14 @@ bool meta_install_token_from_hex(const char *hex, size_t hex_len)
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
     return memcmp(hex, s_token.token_hex, META_INSTALL_TOKEN_HEX_LEN) == 0;
+}
+
+bool meta_install_resume_pending(void)
+{
+    // 上次会话未正常离店(token_start 后未 token_stop)→ carve 重启后 app_main
+    // 据此自动恢复 STA + install 服务,手机用持久化 token 重发 prepare 续连。
+    char v[4];
+    return install_nvs_get(k_nvs_inst_active, v, sizeof(v)) && v[0] == '1';
 }
 
 // 配对码兑换(§8:短 TTL + 尝试上限 + 一次性)。
@@ -356,8 +454,53 @@ esp_err_t meta_install_confirm_slot(int8_t slot)
 {
     session_lock();
     const esp_err_t rc = confirm_slot_locked(slot);
+    const bool reboot = s_reboot_pending;   // 新槽已物化:确认后必须重启(决策①)
     session_unlock();
+    if (rc == ESP_OK && reboot) {
+        ESP_LOGW(TAG, "carve committed; rebooting before upload");
+        vTaskDelay(pdMS_TO_TICKS(150));   // 让日志/在途 TCP 尽量冲出再复位
+        esp_restart();
+    }
     return rc;
+}
+
+// 新槽物化(设计 §4.4/§4.5 + 用户决策①):确认新槽时先提交 store → 物化表 →
+// 持久化 token(token_generate/token_restore 已落 NVS)→ 置重启待办;上传写路径
+// (esp_ota_begin/write/end)重启后不变 —— 重启后分区视图即含新槽,手机用持久
+// 化 token 重发 prepare(carve_ok 幂等分支:提案已在 carve)→ session → 上传。
+// 调用方持 session 锁;返回 ESP_OK = 确认可继续(既有槽零副作用),否则拒绝。
+static esp_err_t slot_materialize_locked(int8_t slot)
+{
+    const meta_carve_t *cur = meta_carve_flash_carve();
+    if (!cur || slot < 0 || slot >= META_SLOT_COUNT) return ESP_ERR_INVALID_ARG;
+
+    if (slot < cur->count) {
+        // 既有槽:表 == carve 不变量由 ensure/hook 守护,零副作用。提案分歧
+        // 在 prepare 的 carve_ok 已裁(适配层拒 offer),此处不重复裁定 ——
+        // 手机未选槽旧流程(phone_slot=-1)允许 P3 改选既有槽,不回溯提案。
+        if (cur->slot[slot].kind != META_CARVE_KIND_APP) return ESP_ERR_NOT_SUPPORTED;
+        return ESP_OK;
+    }
+
+    // 新槽:提案必须成立且设备重跑分配器落点吻合(carve_ok 已复核过一轮,
+    // 此处重建 next 是提交物,不是重复裁定)。
+    if (!s_session.manifest_valid || !s_session.manifest.has_carve) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    meta_carve_t next;
+    if (meta_carve_place(cur, s_session.manifest.carve_size,
+                         META_CARVE_KIND_APP, &next) != slot ||
+        !meta_carve_valid(&next)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (meta_carve_flash_commit(&next, true) != ESP_OK) {
+        ESP_LOGE(TAG, "carve commit failed for new slot %d", slot);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_reboot_pending = true;   // 两条确认出口都会在返回后复位(见各自调用点)
+    ESP_LOGI(TAG, "new slot %d materialized (%u B @0x%06" PRIx32 "); reboot before upload",
+             slot, s_session.manifest.carve_size, next.slot[slot].offset);
+    return ESP_OK;
 }
 
 static esp_err_t confirm_slot_locked(int8_t slot)
@@ -367,10 +510,17 @@ static esp_err_t confirm_slot_locked(int8_t slot)
     }
     if (s_session.confirmed) return ESP_ERR_INVALID_STATE;
     meta_install_geom_t g;
-    geom_refresh(&g);
+    geom_refresh_offer(&s_session.manifest, &g, NULL);   // 提案下标预填(新槽准入)
     // 只要求本地几何可装(文档 §6.4:用户可选任意本地 fit 槽位)。
     if (!meta_install_model_slot_fit(&g, slot, s_session.manifest.image_len)) {
         return ESP_ERR_INVALID_ARG;
+    }
+    // 新槽先物化再确认(决策①:上传前重启;既有槽零副作用)。
+    const esp_err_t mc = slot_materialize_locked(slot);
+    if (mc != ESP_OK) {
+        ESP_LOGW(TAG, "confirm slot %d: materialize rejected (%s)", slot,
+                 esp_err_to_name(mc));
+        return mc;
     }
     s_session.confirmed_slot = slot;   // 先写槽位,后置标志(读侧以标志为序)
     s_session.confirmed = true;
@@ -621,7 +771,21 @@ static esp_err_t finalize_locked(void)
         }
     }
 
+    // M5:安装完成 → 数据标记 DIRTY(首次启动前落标,允许失败)。
+    // 若 set_dirty 失败,不阻断 finalize:用户可重灌修复。
+    {
+        const esp_err_t de = meta_carve_flash_set_dirty(s_session.manifest.play_id);
+        if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "set_dirty failed: %s", esp_err_to_name(de));
+        }
+    }
+
+    // 记录状态缓存回填(VALID):P5 提示断电,先落盘再交给用户断电;
+
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
+    // 会话已完结 → 不再需要重启续连(用户决策①只保在途窗口;P5 断电重启
+    // 不应在下次开机拉起后台 install 服务)。
+    install_nvs_erase(k_nvs_inst_active);
     offer_and_upload_clear();
     memcpy(s_session.name, name, sizeof(name));
     s_session.confirmed_slot = slot;
@@ -654,7 +818,7 @@ int8_t meta_install_default_slot_from_manifest(const meta_install_manifest_t *m)
 {
     if (!m) return -1;
     meta_install_geom_t g;
-    geom_refresh(&g);
+    geom_refresh_offer(m, &g, NULL);   // 提案下标预填(与 prepare 同一几何事实源)
     return meta_install_model_default_slot(m, &g);
 }
 
@@ -887,11 +1051,27 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         return reply(req, "400 Bad Request", "manifest rejected");
     }
     meta_install_geom_t g;
-    geom_refresh(&g);
-    if (!meta_install_model_offer_ok(&m, &g)) {
-        ESP_LOGW(TAG, "prepare: local geometry re-check rejected");
+    int carve_idx = -1;
+    geom_refresh_offer(&m, &g, &carve_idx);
+    // 提案分歧即整体拒绝(model 契约:carve_ok -1 → 适配层拒 offer,§4.5);
+    // 无提案时 carve_idx 保持 -1,不参与此判定。
+    if ((m.has_carve && carve_idx < 0) || !meta_install_model_offer_ok(&m, &g)) {
+        ESP_LOGW(TAG, "prepare: carve/geometry re-check rejected");
+        // M5:池压力 → 尝试 ARC 回收归档数据后再试
+        if (!s_session.offer_ready) {
+            const uint32_t reclaimed = meta_carve_flash_arc(META_CARVE_MIN_SLOT);
+            if (reclaimed > 0) {
+                ESP_LOGI(TAG, "ARC reclaimed %lu bytes; retrying", (unsigned long)reclaimed);
+                geom_refresh_offer(&m, &g, &carve_idx);
+                if ((m.has_carve && carve_idx >= 0) && meta_install_model_offer_ok(&m, &g)) {
+                    goto try_confirm;
+                }
+            }
+        }
         return reply(req, "400 Bad Request", "manifest rejected");
     }
+
+try_confirm:
 
     // 复查确认态(审计 M7):入口检查到 body 读完之间用户可能已完成物理确认,
     // 此时绝不可清场 —— 否则确认被抹掉,UI 死等 upload、手机 session 409。
@@ -913,14 +1093,37 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
+    // offer 在途 = 会话未完结(用户决策①):carve 重启后 app_main 据此续连。
+    // finalize 成功/离店时清标 —— 已完结的会话不复活。无锁:NVS 单次写,
+    // 与 token_start/token_stop 同一标志,幂等。
+    install_nvs_set(k_nvs_inst_active, "1");
+    bool reboot = false;
     if (phone_picked) {
-        s_session.confirmed_slot = m.phone_slot;
-        s_session.confirmed = true;   // 先写槽位,后置标志(读侧以标志为序)
-        status_set("confirmed", "slot chosen on phone");
+        // 自动确认走同一确认闸门:新槽在此物化(提交 → 物化表 → 置重启待办)。
+        const esp_err_t cc = confirm_slot_locked(m.phone_slot);
+        if (cc != ESP_OK) {
+            offer_and_upload_clear();
+            session_unlock();
+            ESP_LOGW(TAG, "prepare: confirm slot %d rejected (%s)",
+                     m.phone_slot, esp_err_to_name(cc));
+            return reply(req, "400 Bad Request", "chosen slot cannot be confirmed");
+        }
+        status_set("confirmed", "slot chosen on phone");   // 保持既有文案(手机侧展示)
+        reboot = s_reboot_pending;
     } else {
         status_set("offer", "confirm on device");
     }
     session_unlock();
+    if (reboot) {
+        // 用户决策①(上传前重启):新槽已物化。先给手机明确信号再复位 ——
+        // 手机收到 503 后用持久化 token 重发 prepare(carve_ok 幂等分支),
+        // 重启后状态全新(无 offer/confirm),重复全流程是幂等的。
+        ESP_LOGW(TAG, "carve committed; rebooting before upload");
+        reply(req, "503 Service Unavailable", "slot materialized; retry prepare");
+        vTaskDelay(pdMS_TO_TICKS(150));   // 让响应冲出 TCP 再复位
+        esp_restart();
+        return ESP_OK;                    // 不可达
+    }
     ESP_LOGI(TAG, "offer ready: %s (%u bytes, slot %s)", m.name, m.image_len,
              phone_picked ? "phone-picked" : "device-confirm");
     return reply(req, "200 OK", "ok");
@@ -1042,6 +1245,125 @@ static esp_err_t h_install_cancel(httpd_req_t *req)
     return reply(req, "200 OK", "ok");
 }
 
+// ---- 本地 HTTP:dynslot 槽位管理(design §4.5 Remove) ----
+
+// carve 派生态 → API 词形(与 meta_slot_state_t 同源;未知值按 empty 兜底)。
+static const char *carve_state_word(uint8_t state)
+{
+    switch (state) {
+    case META_SLOT_VALID:   return "valid";
+    case META_SLOT_INVALID: return "invalid";
+    default:                return "empty";
+    }
+}
+
+// GET /api/install/slots —— 网页管理面板与手机侧提案的数据源:规范 carve
+// 槽位清单(slot/state/name/size/len/limit/offset/kind)+ 池剩余字节。直接读
+// 规范 carve,与安装路径同一几何事实源(表 == carve 不变量),不经分区视图;
+// offset 必带 —— 手机侧 dynslot-pool.js 要用它重跑 first-fit 提案(§4.5 L4)。
+static esp_err_t h_install_slots(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    const meta_carve_t *cur = meta_carve_flash_carve();
+    if (!cur) return reply(req, "500 Internal Server Error", "carve unavailable");
+
+    // 最坏 8 槽 × ~205 B(name 40 字符全转义 + 定长字段 + offset)+ 头尾 < 1750 B。
+    static char body[1792];
+    const size_t cap = sizeof(body);
+    int n = snprintf(body, cap, "{\"count\":%u,\"free\":%" PRIu32 ",\"slots\":[",
+                     cur->count, meta_carve_free(cur));
+    if (n < 0 || (size_t)n >= cap) return reply(req, "500 Internal Server Error", "too many slots");
+    size_t off = (size_t)n;
+    for (uint8_t i = 0; i < cur->count; i++) {
+        const meta_carve_slot_t *s = &cur->slot[i];
+        char name_esc[sizeof(s->name) * 2 + 1];
+        json_escape(s->name, name_esc, sizeof(name_esc));
+        // 上限派生与 geom_from_carve 同源:storage 预留槽不可安装 → 0(L2)。
+        const uint32_t limit = (s->kind == META_CARVE_KIND_APP)
+                                   ? meta_sign_app_limit(s->size) : 0u;
+        n = snprintf(body + off, cap - off,
+                     "%s{\"slot\":%u,\"state\":\"%s\",\"name\":\"%s\","
+                     "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ","
+                     "\"limit\":%" PRIu32 ",\"offset\":%" PRIu32 ",\"kind\":\"%s\"}",
+                     i ? "," : "", i, carve_state_word(s->state), name_esc,
+                     s->size, s->image_len, limit, s->offset,
+                     s->kind == META_CARVE_KIND_STORAGE ? "storage" : "app");
+        if (n < 0 || (size_t)n >= cap - off) {
+            return reply(req, "500 Internal Server Error", "listing overflow");
+        }
+        off += (size_t)n;
+    }
+    snprintf(body + off, cap - off, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, body);
+}
+
+// POST /api/install/remove —— dynslot 显式删除(§4.5 Remove,用户决策:擦数据 →
+// 提交记录+物化表 → 应答 → 150ms 后重启)。顺序即断电安全证明:
+//   1) 先擦槽数据(整槽含尾 sector 的 MSIG/MNAM/MAEG):断电时元数据仍指向
+//      该槽,下次开机扫描只会得到 EMPTY/INVALID(可重试),不存在"记录已删
+//      但数据残留"的泄漏态;
+//   2) 再 meta_carve_flash_remove(A/B 记录轮转 + 0x8000 表物化,记录先于表);
+//   3) 应答 200 后 150ms 复位(与 prepare 物化路径同一节奏,让 TCP 冲出)。
+// 不搬数据(v1 决策):删除留下的洞由 first-fit 在下次安装时原位复用。
+// 并发:忙碌裁定在 session 锁内;擦除/提交在锁外 —— 新 offer 只能由本 httpd
+// 任务的 prepare 产生(同任务串行,不可插入),锁内已裁定 offer_ready/
+// confirmed/session_opened 全 false,而 UI 侧 confirm 以 offer_ready 为前提,
+// 窗口不存在;UI cancel 只清标志不碰 carve,无害。
+static esp_err_t h_install_remove(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    static char body[INSTALL_JSON_MAX];
+    size_t len = 0;
+    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
+    if (rd == ESP_ERR_INVALID_SIZE) {
+        return reply(req, "413 Payload Too Large", "body too large");
+    }
+    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
+
+    int slot = -1;
+    if (!meta_install_model_parse_remove(body, len, &slot)) {
+        return reply(req, "400 Bad Request", "bad request");
+    }
+
+    // 忙碌裁定 + 可行性复核(锁内,贴近动作)。409 优先于 404:安装在途时
+    // 不泄露删除裁定。
+    session_lock();
+    const bool busy = s_session.offer_ready || s_session.confirmed ||
+                      s_session.session_opened;
+    const meta_carve_t *cur = meta_carve_flash_carve();
+    const bool ok = !busy && cur && meta_install_model_remove_ok(cur, slot);
+    session_unlock();
+    if (busy) return reply(req, "409 Conflict", "install in progress");
+    if (!ok) return reply(req, "404 Not Found", "no such slot");
+
+    if (meta_store_erase_slot(slot) != ESP_OK) {
+        ESP_LOGE(TAG, "remove slot %d: erase failed", slot);
+        return reply(req, "500 Internal Server Error", "erase failed");
+    }
+    // M5:默认归档数据(不擦池内字节,用户可选择"删除数据"显式回收)
+    {
+        const esp_err_t ae = meta_carve_flash_archive_slot_and_data(slot);
+        if (ae != ESP_OK && ae != ESP_ERR_INVALID_ARG) {
+            // 归档失败不阻断移除:记录仍可提交,只是池内字节保留
+            ESP_LOGW(TAG, "archive before remove failed: %s", esp_err_to_name(ae));
+        }
+    }
+    if (meta_carve_flash_remove(slot) != ESP_OK) {
+        ESP_LOGE(TAG, "remove slot %d: carve commit failed", slot);
+        return reply(req, "500 Internal Server Error", "commit failed");
+    }
+    ESP_LOGW(TAG, "slot %d removed; archive kept in pool (ARC on pressure)", slot);
+    reply(req, "200 OK", "ok");
+    vTaskDelay(pdMS_TO_TICKS(150));   // 让响应冲出 TCP 再复位
+    esp_restart();
+    return ESP_OK;                    // 不可达
+}
+
 // ---- 服务生命周期 ----
 
 esp_err_t meta_install_net_init(meta_slot_info_t slots[META_SLOT_COUNT])
@@ -1064,7 +1386,8 @@ esp_err_t meta_install_net_start(void)
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 8;    // / + pair/status/prepare/session/chunk/finalize/cancel
+    hcfg.max_uri_handlers = 10;   // / + pair/status/prepare/session/chunk/finalize/cancel
+                                  // + slots/remove(dynslot §4.5)
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
@@ -1088,6 +1411,8 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
+        { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
+        { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {

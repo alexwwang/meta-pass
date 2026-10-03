@@ -27,6 +27,7 @@
 import { extractAppImage, isFullImage } from "./extract-app-image.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { sanitizeDisplayName } from "./name-blob.js";
+import { POOL, META_SLOT_COUNT, geomFromListing } from "./dynslot-pool.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -123,9 +124,10 @@ export function detectDeviceOrigin() {
   return looksLikeDeviceOrigin(location.origin) ? location.origin : null;
 }
 
-// bridge 工厂:token + device origin → DeviceBridge 形状(§4.1 同源六个方法)。
-// 设备 API 无 CORS 头(§8),跨源调用仅限同源场景;跨源(手动 IP)时仍尝试,
-// 由浏览器策略决定成败(真机路径永远是同源,这条只服务高级用户)。
+// bridge 工厂:token + device origin → DeviceBridge 形状(§4.1 同源方法 +
+// dynslot §4.5 槽位管理 slots/remove)。设备 API 无 CORS 头(§8),跨源调用
+// 仅限同源场景;跨源(手动 IP)时仍尝试,由浏览器策略决定成败(真机路径
+// 永远是同源,这条只服务高级用户)。
 export function createBridge(deviceOrigin, token) {
   const base = (deviceOrigin || "").replace(/\/$/, "");
   async function call(path, opt = {}) {
@@ -157,7 +159,54 @@ export function createBridge(deviceOrigin, token) {
     }),
     finalize: () => call("/api/install/finalize", { method: "POST" }),
     cancel: () => call("/api/install/cancel", { method: "POST" }),
+    // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
+    // 记录+物化表、200 后 150ms 复位 —— 重启窗口内 status 不可达)。
+    slots: () => call("/api/install/slots"),
+    remove: (slot) => call("/api/install/remove", { method: "POST", json: { slot } }),
   };
+}
+
+// ── 槽位管理(design §4.5 Remove)───────────────────────────────────────
+// GET /api/install/slots 响应形状校验(设备是事实源;任何偏差 → null,
+// UI 走“读取失败”而不是渲染半截坏数据)。count 必须与数组长度一致,
+// 下标/状态/种类/数值字段逐项门禁;返回按 slot 升序的副本。
+export function parseSlots(text) {
+  let d = null;
+  try { d = JSON.parse(text); } catch { return null; }
+  if (!d || !Number.isInteger(d.count) || d.count < 0 || d.count > 8 ||
+      !Number.isFinite(d.free) || !Array.isArray(d.slots) ||
+      d.slots.length !== d.count) return null;
+  const slots = [];
+  for (const s of d.slots) {
+    if (!s || !Number.isInteger(s.slot) || s.slot < 0 || s.slot >= 8 ||
+        typeof s.name !== "string" ||
+        (s.state !== "valid" && s.state !== "invalid" && s.state !== "empty") ||
+        (s.kind !== "app" && s.kind !== "storage") ||
+        !Number.isFinite(s.size) || !Number.isFinite(s.len) || !Number.isFinite(s.limit) ||
+        !Number.isFinite(s.offset) || s.offset < 0 || s.offset % POOL.offsetAlign !== 0) {
+      return null;
+    }
+    slots.push({ slot: s.slot, state: s.state, name: s.name,
+                 size: s.size, len: s.len, limit: s.limit, offset: s.offset,
+                 kind: s.kind });
+  }
+  slots.sort((a, b) => a.slot - b.slot);
+  return { count: d.count, free: d.free, slots };
+}
+
+// 删除提交后设备 150ms 内复位(§4.5):轮询 status 直到安装服务回来。
+// tries/delayMs/sleep 可注入(测试用无延时 sleep);总是先试一次再等待。
+export async function waitDeviceBack(br, opts = {}) {
+  const tries = opts.tries ?? 30;
+  const delayMs = opts.delayMs ?? 1000;
+  const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+  for (let i = 0; i < tries; i++) {
+    let r = null;
+    try { r = await br.status(); } catch { /* 传输错误按未上线处理 */ }
+    if (r && r.ok) return true;
+    if (i + 1 < tries) await sleep(delayMs);
+  }
+  return false;
 }
 
 // ── metapass 客户端(§5 元数据契约) ──────────────────────────────────
@@ -270,10 +319,15 @@ export function displayNameFor(analyzeName, play, userName = "") {
 
 // meta = preflightMeta 结果;slot = 用户选定槽位(>=0;交互 v2 设备直确认,
 // -1 = 旧流程设备物理确认);userName = 用户在安装页改写的显示名(可空,
-// 空则回退 analyze/商店名链)。
-export async function prepareImage(meta, slot, hooks = {}, userName = "") {
+// 空则回退 analyze/商店名链);sel = { geom, slotIsNew }(dynslot §4.5,可选):
+// geom = 设备 carve 派生槽位表(showSlotPicker 取自 GET /api/install/slots),
+// slotIsNew = 选中提案新槽(声称用插入后下标视图并携带 carveOffset/carveSize);
+// 缺省(旧固件回退 / 直调测试)走 SLOT_GEOMETRY legacy 三槽视图。
+export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = {}) {
   const stage = (s) => hooks.stage?.(s);
   const { analyze: a, play } = meta;
+  const geom = sel.geom || null;
+  const slotIsNew = !!geom?.proposal && sel.slotIsNew === true;
   stage("下载固件");
   let merged;
   try {
@@ -308,7 +362,13 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
     // 的默认上限是硬编码 2MB 槽(2093056)——用它解 2.2MB 应用必炸,
     // 而 fit 表按真实槽几何说 slot2 可装:两条判断逻辑不一致(真机 bug:
     // 检查推荐 slot2,安装报"最大 2093056";根因在此,不在任何 fit 判定)。
-    const maxSlotLimit = Math.max(...SLOT_GEOMETRY.map((s) => s.partSize)) - TAIL_SECTOR;
+    // dynslot §4.5:设备 carve 派生上限(含提案槽)与 legacy 三槽上限取大
+    // 者 —— 池几何可能比 legacy 表更大(pool_1 ≈ 4.6MB)。
+    const maxSlotLimit = Math.max(
+      ...SLOT_GEOMETRY.map((s) => s.partSize - TAIL_SECTOR),
+      ...(geom ? [...geom.current.map((s) => s.limit),
+                  geom.proposal ? geom.proposal.limit : 0] : [0]),
+    );
     ext = extractAppImage(merged, maxSlotLimit);
   } catch (e) {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
@@ -323,20 +383,38 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
              analyze: a.extracted };
   }
 
-  // 槽位 fit 表:仓库单一事实源(store-analyze.js SLOT_GEOMETRY)− 4KB 尾 sector。
-  const slots = SLOT_GEOMETRY.map(({ slot: s, partSize }) => {
-    const limit = partSize - TAIL_SECTOR;
-    return { slot: s, limit, fit: ext.length <= limit };
-  });
-  const fitSlots = slots.filter((s) => s.fit);
-  if (fitSlots.length === 0) {
+  // 槽位 fit 表:dynslot 设备 carve 优先(§4.5);不可达回退仓库
+  // SLOT_GEOMETRY(legacy 三槽视图,与旧固件分区表同源)。
+  // slotIsNew:声称用「插入后」下标视图 —— 提案槽 fit=true,被顶移的现有槽
+  // fit=false(设备 geom 只对提案下标预填,错报声称会被 offer_ok 整体拒掉);
+  // 不选新槽时用当前下标视图,不携带提案(设备重跑分配器会拒分歧)。
+  let slots;
+  if (geom) {
+    slots = (slotIsNew ? geom.placed : geom.current).map((s) => ({
+      slot: s.slot,
+      limit: s.limit,
+      fit: slotIsNew ? s.slot === geom.proposal.slot : ext.length <= s.limit,
+    }));
+  } else {
+    slots = SLOT_GEOMETRY.map(({ slot: s, partSize }) => {
+      const limit = partSize - TAIL_SECTOR;
+      return { slot: s, limit, fit: ext.length <= limit };
+    });
+  }
+  if (!slots.some((s) => s.fit)) {
     return { ok: false, stage: "preflight", reason: "image larger than every slot" };
   }
-  if (slot >= 0 && !fitSlots.some((s) => s.slot === slot)) {
+  if (slot >= 0 && !slots.some((s) => s.slot === slot && s.fit)) {
     return { ok: false, stage: "preflight", reason: `chosen slot ${slot} does not fit` };
   }
-  const suggestedSlot = fitSlots.some((s) => s.slot === a.suggestedSlot)
-    ? a.suggestedSlot : fitSlots[0].slot;
+  let suggestedSlot;
+  if (geom) {
+    suggestedSlot = slotIsNew ? geom.proposal.slot : (slots.find((s) => s.fit)?.slot ?? -1);
+  } else {
+    const fitSlots = slots.filter((s) => s.fit);
+    suggestedSlot = fitSlots.some((s) => s.slot === a.suggestedSlot)
+      ? a.suggestedSlot : fitSlots[0].slot;
+  }
 
   const offer = {
     protocol: PROTOCOL_V1,
@@ -351,6 +429,12 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "") {
     slots,
     reason: typeof a.reason === "string" && a.reason ? a.reason : "ok",
   };
+  if (slotIsNew) {
+    // dynslot §4.5 carve 提案:设备用 meta_install_model_carve_ok 重跑同一
+    // 分配器逐位复核(carveSize 必须 = 设备 meta_carve_need,落点/下标吻合)。
+    offer.carveOffset = geom.proposal.carveOffset;
+    offer.carveSize = geom.proposal.carveSize;
+  }
   return { ok: true, offer, merged, ext, analyze: a, play };
 }
 
@@ -438,8 +522,10 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
       : `device state: ${c.state}${c.message ? ` (${c.message})` : ""}`);
   }
   const slot = c.slot;
-  // 槽位只能由设备物理确认产生(§6.4:手机不得改最终 slot)。
-  if (!(slot >= 0 && slot <= 2)) return fail("confirm", `device confirmed bad slot ${slot}`);
+  // 槽位只能由设备物理确认产生(§6.4:手机不得改最终 slot);dynslot 上限 8。
+  if (!(slot >= 0 && slot < META_SLOT_COUNT)) {
+    return fail("confirm", `device confirmed bad slot ${slot}`);
+  }
 
   hooks.stage?.("session");
   const se = await bridge.session({ imageLen: offer.imageLen, sha256: offer.sha256, slot });
@@ -652,7 +738,7 @@ export function boot(opts = {}) {
   const root = document.createElement("div");
   root.id = "mp-install-root";
   root.innerHTML = `
-    <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b></header>
+    <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b><button id=mp-mgmt class="mp-btn ghost" style="margin-left:auto;padding:5px 11px;font-size:12.5px" title="查看/删除设备上的已安装固件">已安装</button></header>
     <div class=mp-hero>
       <p class=steps><b>①</b> 搜索/浏览玩法,点条目查看详情和安装<br><b>②</b> 选槽、可改名,点「确认安装」<br><b>③</b> 安装期间请保持本页与设备商店页(SCAN ME)常驻,勿退出</p>
       <button class=mp-coffee id=mp-coffee aria-label="请作者喝咖啡">
@@ -699,6 +785,9 @@ export function boot(opts = {}) {
     </section>`);
     $("mp-coffee-x").onclick = clearPanel;
   };
+  // 已安装管理(dynslot §4.5 Remove):清单 + 两步确认删除(入口常驻;
+  // 无 token/设备不可达时由面板自身给出引导文案)。
+  $("mp-mgmt").onclick = showMgmt;
   // 回到顶部浮层:滚动超过一屏后现身。
   const topBtn = $("mp-top");
   const onScroll = () => topBtn.classList.toggle("show",
@@ -993,6 +1082,102 @@ export function boot(opts = {}) {
     $("mp-fail-x").onclick = clearPanel;
   }
 
+  // ── 已安装管理(dynslot §4.5 Remove):清单 + 两步确认删除 + 重启回连 ──
+  const MGMT_STATE = { valid: "有固件", invalid: "无固件", empty: "空" };
+
+  function renderMgmt(info, busy) {
+    const rows = info.slots.length
+      ? info.slots.map((s) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
+          <span style="flex:1;min-width:0;overflow-wrap:anywhere">
+            <b>槽位 ${s.slot}</b> ${esc(s.name || "")}<br>
+            <span style="font-size:12.5px;color:var(--ink2)">${MGMT_STATE[s.state] || s.state}${s.kind === "storage" ? " · 存储预留" : ""} · ${fmtMB(s.size)}${s.state !== "empty" ? ` · 已装 ${fmtMB(s.len)}` : ""}</span>
+          </span>
+          <button class="mp-btn ghost" data-rm="${s.slot}" style="padding:6px 12px;font-size:13px">删除</button>
+        </div>`).join("")
+      : `<p class=mp-sub>设备上还没有已分配槽位</p>`;
+    setPanel(`<section class=mp-panel>
+      <h4>已安装固件</h4>
+      <p class=mp-sub>共 ${info.count} 个槽位 · 剩余空间 ${fmtMB(info.free)}</p>
+      ${busy ? `<p class=mp-sub style="color:var(--red)">安装进行中 —— 请先完成或取消安装，再删除槽位</p>` : ""}
+      ${rows}
+      <div class=mp-actions>
+        <button id=mp-mgmt-re class=mp-btn>刷新</button>
+        <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
+      </div>
+    </section>`);
+    $("mp-mgmt-x").onclick = clearPanel;
+    $("mp-mgmt-re").onclick = showMgmt;
+    root.querySelectorAll("[data-rm]").forEach((b) => {
+      if (busy) { b.disabled = true; return; }
+      b.onclick = () => {
+        if (b.dataset.armed) { doRemove(Number(b.dataset.rm)); return; }
+        // 两步确认:第一次点 = 上臂,4s 内再点才执行(删除不可逆)。
+        b.dataset.armed = "1";
+        b.textContent = "再点一次";
+        setTimeout(() => {
+          if (b.dataset.armed && b.isConnected) {
+            delete b.dataset.armed;
+            b.textContent = "删除";
+          }
+        }, 4000);
+      };
+    });
+  }
+
+  async function showMgmt() {
+    setPanel(`<section class=mp-panel><h4>已安装固件</h4><p class=mp-sub>读取中…</p></section>`);
+    const [sr, lr] = await Promise.all([bridge.status(), bridge.slots()]);
+    if (sr.status === 401 || lr.status === 401) {
+      failSheet("需要配对", "会话 token 失效 —— 重新扫码或在设备页配对后再试");
+      return;
+    }
+    if (!lr.ok) {
+      failSheet("读取失败", lr.status ? `设备返回 ${lr.status}`
+        : "设备无响应 —— 确认设备已开机并在商店页(SCAN ME)");
+      return;
+    }
+    const info = parseSlots(lr.text);
+    if (!info) { failSheet("读取失败", "设备响应格式异常,请重试或升级设备固件"); return; }
+    let busy = false;
+    if (sr.ok) {
+      try {
+        const st = JSON.parse(sr.text);
+        busy = !!(st.offer || st.confirmed || st.session);
+      } catch { /* status 解析失败不挡管理:删除有 409 兜底 */ }
+    }
+    renderMgmt(info, busy);
+  }
+
+  async function doRemove(slot) {
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在擦除数据并删除…</p></section>`);
+    const r = await bridge.remove(slot);
+    if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
+    if (r.status === 409) { failSheet("无法删除", "安装进行中 —— 请先完成或取消安装"); return; }
+    if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
+    if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
+    if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
+    // 设备契约(§4.5):200 = 数据已擦 + 记录已提交,150ms 后复位。
+    log(`✓ 槽位 ${slot} 已删除,设备重启中…`, "ok");
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>已提交,等待设备重启恢复…</p></section>`);
+    const back = await waitDeviceBack(bridge, { tries: 25, delayMs: 1200 });
+    if (back) {
+      log(`✓ 槽位 ${slot} 已删除`, "ok");
+      showMgmt();
+      return;
+    }
+    setPanel(`<section class=mp-panel>
+      <h4>删除槽位 ${slot}:已提交</h4>
+      <p class=mp-sub>设备已确认删除并重启,但等待超时。设备回到列表页后,请在设备上进入商店页(SCAN ME)恢复 LAN 服务,再点「刷新」。</p>
+      <div class=mp-actions>
+        <button id=mp-mgmt-re class=mp-btn>刷新</button>
+        <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
+      </div>
+    </section>`);
+    $("mp-mgmt-re").onclick = showMgmt;
+    $("mp-mgmt-x").onclick = clearPanel;
+  }
+
   function showDetail(p) {
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "—";
     setPanel(`<section class=mp-panel>
@@ -1022,28 +1207,51 @@ export function boot(opts = {}) {
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
-    showSlotPicker(meta, p);
+    // dynslot §4.5:设备 carve 是槽位几何事实源(删除/新槽后与 SLOT_GEOMETRY
+    // 不同源)。slots() 不可达(旧固件无此路由 / 无 token)→ 回退 legacy 视图,
+    // 真伪仍由设备 prepare 时 offer_ok/carve_ok 终裁。
+    let geom = null;
+    try {
+      const lr = await bridge.slots();
+      if (lr.ok) {
+        const listing = parseSlots(lr.text);
+        if (listing) geom = geomFromListing(listing, meta.analyze?.extracted?.imageLen);
+      }
+    } catch { /* 回退 legacy 几何 */ }
+    showSlotPicker(meta, p, geom);
   }
 
-  function showSlotPicker(meta, p) {
+  function showSlotPicker(meta, p, geom = null) {
     const a = meta.analyze;
     const imageLen = a?.extracted?.imageLen;
-    const opts = SLOT_GEOMETRY.map(({ slot, partSize }) => {
-      const limit = partSize - TAIL_SECTOR;
-      return { slot, limit, fit: Number.isFinite(imageLen) && imageLen <= limit };
-    });
+    // dynslot(§4.5):设备 carve 派生表(current)+ 可放新槽提案(isNew,
+    // 下标 = 插入位,可能与既有下标同号 —— 洞位插入);不可达回退 legacy 三槽。
+    const opts = geom
+      ? geom.current.map((s) => ({ slot: s.slot, limit: s.limit, fit: s.fit, isNew: false }))
+        .concat(geom.proposal
+          ? [{ slot: geom.proposal.slot, limit: geom.proposal.limit, fit: true, isNew: true }]
+          : [])
+      : SLOT_GEOMETRY.map(({ slot, partSize }) => {
+          const limit = partSize - TAIL_SECTOR;
+          return { slot, limit, fit: Number.isFinite(imageLen) && imageLen <= limit, isNew: false };
+        });
     const fit = opts.filter((o) => o.fit);
     if (fit.length === 0) {
       const msg = Number.isFinite(imageLen)
-        ? `固件 ${fmtMB(imageLen)} 超出所有槽位上限,无法安装`
+        ? `固件 ${fmtMB(imageLen)} 超出所有槽位上限${geom ? ",且池内无处新建槽位" : ""},无法安装`
         : "槽位容量信息缺失,无法安装";
       log(`✗ ${msg}`, "err");
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
-    const suggested = fit.some((o) => o.slot === a?.suggestedSlot)
-      ? a.suggestedSlot : fit[0].slot;
-    let chosen = suggested;
+    const suggestedNum = geom
+      ? geom.suggestedSlot
+      : (fit.some((o) => o.slot === a?.suggestedSlot) ? a.suggestedSlot : fit[0].slot);
+    // 建议项按 (slot, isNew) 定位:洞位提案可与既有下标同号。
+    const suggestedOpt = fit.find((o) => o.slot === suggestedNum && !o.isNew)
+      ?? fit.find((o) => o.slot === suggestedNum && o.isNew) ?? fit[0];
+    let chosen = { slot: suggestedOpt.slot, isNew: suggestedOpt.isNew };
+    const isChosen = (o) => o.slot === chosen.slot && o.isNew === chosen.isNew;
     let nameVal = displayNameFor(a?.name, p);   // 重选槽位重渲染时保留用户已改名
 
     const render = () => {
@@ -1054,12 +1262,12 @@ export function boot(opts = {}) {
         <input id=mp-name maxlength=64 value="${esc(nameVal)}" autocomplete=off style="width:100%;font:inherit;padding:10px 12px;border:2px solid var(--ink);border-radius:var(--r);background:var(--paper);color:var(--ink)">
         <div class=mp-note style="text-align:right;margin-top:2px"><span id=mp-nch>0</span>/32</div>
         <div class=mp-slots role=radiogroup>
-          ${opts.map((o) => `
-          <button class=mp-slot role=radio aria-checked="${o.slot === chosen}"
-            data-slot="${o.slot}" ${o.fit ? "" : "disabled"}>
-            <span class=rd></span><span class=lb>槽位 ${o.slot}</span>
-            ${o.slot === suggested ? '<span class=rec>建议</span>' : ""}
-            <span class=cap>${o.fit ? `上限 ${fmtMB(o.limit)}`
+          ${opts.map((o, oi) => `
+          <button class=mp-slot role=radio aria-checked="${isChosen(o)}"
+            data-oi="${oi}" ${o.fit ? "" : "disabled"}>
+            <span class=rd></span><span class=lb>${o.isNew ? "新槽位" : `槽位 ${o.slot}`}</span>
+            ${o === suggestedOpt ? '<span class=rec>建议</span>' : ""}
+            <span class=cap>${o.fit ? `${o.isNew ? "新建 · " : ""}上限 ${fmtMB(o.limit)}`
               : (Number.isFinite(imageLen) ? `需 ${fmtMB(imageLen)} > 上限 ${fmtMB(o.limit)}` : "空间不足")}</span>
           </button>`).join("")}
         </div>
@@ -1095,14 +1303,15 @@ export function boot(opts = {}) {
       nameEl.oninput = updCount;
       updCount();
       root.querySelectorAll(".mp-slot:not([disabled])").forEach((el) => {
-        el.onclick = () => { chosen = Number(el.dataset.slot); render();
+        el.onclick = () => { const o = opts[Number(el.dataset.oi)];
+          chosen = { slot: o.slot, isNew: o.isNew }; render();
           requestAnimationFrame(() => { const n=$("mp-name"); if(n){n.focus(); n.setSelectionRange(n.value.length,n.value.length);} }); };
       });
       const confirm = $("mp-confirm");
       confirm.disabled = false;
       confirm.onclick = () => {
         nameVal = cleanName(nameEl.value);           // 确认时再滤一次(防漏网)
-        continueInstall(meta, chosen, nameVal.trim());
+        continueInstall(meta, chosen, nameVal.trim(), geom);
       };
       $("mp-cancel").onclick = clearPanel;
     };
@@ -1110,7 +1319,8 @@ export function boot(opts = {}) {
     log("选择槽位与名称后点「确认安装」");
   }
 
-  async function continueInstall(meta, slot, userName) {
+  async function continueInstall(meta, chosen, userName, geom = null) {
+    const slot = chosen.slot;
     const t0 = Date.now();
     const stage = (s) => log(`${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     setPanel(`<section class=mp-panel>
@@ -1121,7 +1331,9 @@ export function boot(opts = {}) {
     </section>`);
     const bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
     stage("下载固件");
-    const pre = await prepareImage(meta, slot, { stage: (s) => { stageEl.textContent = s; } }, userName);
+    const pre = await prepareImage(meta, slot,
+      { stage: (s) => { stageEl.textContent = s; } }, userName,
+      { geom, slotIsNew: chosen.isNew === true });
     if (!pre.ok) {
       log(`✗ 安装失败 [${pre.stage}]: ${pre.reason}`, "err");
       failSheet("安装失败", `${meta.play.name}\n[${pre.stage}] ${pre.reason}`);

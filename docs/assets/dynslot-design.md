@@ -5,7 +5,9 @@
 # Dynamic Slot Partitioning (dynslot) Design
 
 Date: 2026-10-02
-Branch: `feat/dynslot` (design proposal — no implementation yet)
+Branch: `feat/dynslot` (implemented — host gates `tools/validate.sh --static` and
+`--firmware` PASS on 2026-10-02; QEMU hook cases and on-device power-cut injection
+NOT RUN)
 Evidence basis: `docs/assets/play563-appstore-download-reverse.md`, byte-level
 verification of the hosted play 563 binary, ESP-IDF 5.5.3 sources, and the
 current meta-pass tree (`main` @ `9e591a2`).
@@ -188,14 +190,35 @@ existing carve: zero extra reboots (same as today).
   device-authority interlock as today (`meta_install_model_offer_ok` rejects
   any phone-side proposal the device cannot reproduce locally,
   `main/meta_install_model.h:83-84`).
+  Status: landed as `install-slot/dynslot-pool.js` (pool descriptor +
+  `carveNeed`/`carvePlace` mirrors of `meta_carve.c` + proposal calc),
+  consumed by `phone-install.js`. `store-analyze.js`/`install-slot.html`
+  still read legacy `SLOT_GEOMETRY` (worker-side analyze limits + legacy
+  fallback view); full three-way unification follows
+  `dynslot-data-unification-research.md`.
 - **Proposal**: phone computes a proposed carve (first-fit, or reuse an empty
   slot); device re-runs the allocator and rejects divergence.
+  Status: implemented — `geomFromListing` emits the `carveOffset`/`carveSize`
+  manifest pair, `meta_install_model_carve_ok` re-runs `meta_carve_place`,
+  and phone fit claims ride the post-insert index view so `offer_ok` never
+  sees a stale claim when the proposal inserts before an existing slot.
 - **Write path unchanged**: extracted app image, `esp_ota_begin/write/end`,
   streaming SHA-256, tail sector with MSIG/MNAM/MAEG
   (`main/meta_store_install.c:466-621`). The only difference is the partition
   comes from the carve instead of a fixed subtype.
 - **Remove**: mark free in the store; re-materialize the table without the
   entry. No data moves (v1).
+  Status: implemented as `GET /api/install/slots` (live carve listing:
+  slot/state/name/size/len/limit/offset/kind + pool free) +
+  `POST /api/install/remove {"slot":N}`, both token- and origin-gated
+  (busy install → 409, bad shape → 400, not in carve → 404). The order is
+  power-loss safe: erase the deleted slot's own data → commit the carve
+  record and re-materialize the 0x8000 table → reply 200 → reboot after
+  150 ms. User decision: the app slot's data *is* erased at delete time
+  (the erase-on-next-write rule below covers data-carve records, not the
+  deleted slot itself). The web UI drives it from the installed-firmware
+  management panel (header button; two-step confirm → remove → wait for the
+  reboot → refresh).
 - **Free-space reclaim ladder** (what happens to the holes removal leaves):
   1. **Splittable free extents.** Deleting a play frees its app-slot and
      data-carve records; the extents rejoin the pool in the store metadata.
@@ -298,12 +321,23 @@ existing carve: zero extra reboots (same as today).
   phase of the matrix.
 - Gates: `tools/validate.sh --static`; updated `tests/test_verify_firmware.py`;
   artifact contract from §4.6.
+- Status (2026-10-02): host pure tests (allocator/carve↔table/MD5 golden/
+  migration/failure matrix), bootloader-hook host gates, and
+  `--static`/`--firmware` PASS; QEMU hook cases and on-device power-cut
+  injection NOT RUN.
 
-## 9. Open decisions (need approval before implementation)
+## 9. Decisions (resolved before implementation)
 
-1. Max slots = 8, min slot = 128 KB — confirm or adjust.
+1. Max slots = 8, min slot = 128 KB — **confirmed** (implemented as
+   `META_CARVE_MAX_SLOTS = 8`, `META_CARVE_MIN_SLOT = 0x20000`).
 2. `storage` carve type: keep as an option (L2) or drop recording dual-use
-   entirely?
-3. Relocating the Wi-Fi credential backup into `store` (L6) — acceptable?
-4. otadata stays at 0x7FE000 (recommended; moving it has no upside).
-5. Accept one-reboot-per-carve-change (B4)?
+   entirely? — **kept as an option**: `meta_carve_slot_t.kind` exists, the
+   default carve is all-apps, and storage slots are excluded from install
+   geometry (limit 0, L2).
+3. Relocating the Wi-Fi credential backup into `store` (L6) — **accepted**
+   (new home 0x35E000; the legacy 0x35A000 copy is relocated during
+   migration, ahead of the carve record that would overwrite it).
+4. otadata stays at 0x7FE000 — **confirmed** (B1 unchanged).
+5. Accept one-reboot-per-carve-change (B4)? — **accepted** (install:
+   materialize → prepare returns 503 → phone resends with the persisted
+   token → reboot before upload; remove: 200 → 150 ms → reboot).

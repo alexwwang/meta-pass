@@ -455,40 +455,47 @@ DIRTY/ARCHIVED).
    or `meta_carve_flash_arc`. **Recommend yes** — otherwise ARC silently
    corrupts another play's data.
 
-## 12. Import Failure Handling (Format Incompatibility)
+## 12. Import Failure Handling (Strict Firmware Version Matching)
 
-When users attempt to import an old backup to a new play version, failure
-may occur due to data format incompatibility. Must **accurately inform
-the user of the reason**, not silently discard data.
+Meta-pass is a data carrier, not a data interpreter — the metadata layer
+does not understand child firmware data formats. Therefore, **no format
+compatibility checks are provided**; instead, **restored data must match
+the firmware version exactly**.
 
-### 12.1 Format Version Validation
+### 12.1 Backup File Header Structure
 
-Add `format_version` field to each data record (optional, default 1):
+Write `firmware_version` (play's full version string, e.g. "1.2.3") when exporting:
 ```c
 typedef struct {
-    uint32_t play_id;
-    uint32_t offset;
-    uint32_t size;
-    uint8_t  state;
-    uint8_t  subtype;
-    uint8_t  type;
-    uint8_t  format_version;   // NEW: data format version (default 1)
-    char     label[META_DATA_LABEL_MAX + 1];
-} meta_carve_data_t;
+    uint32_t magic;           // "MPTB" (Meta-Pass Tape Backup)
+    uint32_t version;         // Backup format version (currently 1)
+    uint32_t play_id;         // Play ID
+    char     firmware_version[32];  // Firmware version string (key!)
+    uint32_t data_count;
+    // ... data record list
+} meta_backup_header_t;
 ```
 
-Play manifest declares expected `data_format_version`.
+### 12.2 Import Validation Logic
 
-### 12.2 Import Failure Scenarios & User Notifications
+```
+User clicks "Import Backup"
+  → Read backup file header
+  → Get current firmware version on device (from manifest or installed firmware)
+  → Compare firmware_version
+  → If match: normal import
+  → If mismatch: reject, notify specific version difference
+```
+
+### 12.3 Failure Scenarios & User Notifications
 
 | Failure Scenario | Error Code | User Notification (Example) |
 |---|---|---|
-| `format_version` mismatch | `ERR_DATA_FORMAT_MISMATCH` | "Backup data format incompatible. Current play requires format v2, but backup is v1. Please restore this backup on an old-version play device first, then re-export." |
-| `label` missing in new version | `ERR_DATA_LABEL_MISSING` | "Cannot restore data: 'recordings' partition in backup has been removed or renamed in the new version. Please check the play update notes." |
+| Firmware version mismatch | `ERR_FIRMWARE_VERSION_MISMATCH` | "Backup data is from play v1.2.3, but current device runs v1.3.0. Please ensure operations on the same version device, or contact play author for cross-version migration tool." |
 | Checksum failure | `ERR_DATA_CORRUPT` | "Backup data is corrupted and cannot be restored. Please re-export or contact the play author." |
 | **Insufficient space after import** (ARC reclaimed but still not enough) | `ERR_POOL_INSUFFICIENT` | "Device space insufficient. Please **delete some plays** on device to free space, then retry import." |
 
-### 12.3 Space Insufficient Handling Flow
+### 12.4 Space Insufficient Handling Flow
 
 When import requires additional space and ARC reclamation is still insufficient:
 1. Calculate gap = import data size - current free space
@@ -498,39 +505,17 @@ When import requires additional space and ARC reclamation is still insufficient:
 
 **Key principle**: Clearly tell user "how much space needs to be freed" rather than vague "insufficient space" message.
 
-### 12.4 Explanation for Missing Partition Label
+### 12.5 Why No Format Compatibility Checks?
 
-**Scenario**: Old play version declared data partition `recordings`, but new version no longer declares it (removed or renamed).
+1. **Meta-pass doesn't understand data semantics**: recordings, saves, custom binaries — format parsing is the play author's responsibility
+2. **Avoid metadata layer over-design**: format_version, label existence checks all require meta-pass to understand play internals, increasing maintenance cost
+3. **Clear responsibility boundary**: play authors handle data format compatibility; meta-pass only handles secure data transfer
 
-**Reason**: Play author restructured data partitions without providing migration tool.
+### 12.6 Cross-Version Recovery Path
 
-**Handling**:
-- Detect during import that backup's label is not in new version's manifest
-- Reject import, notify: "The 'recordings' partition in backup has been removed or renamed in the new version. Please check play update notes or contact author for migration tool."
-- **No auto-compatibility** — format conversion is the play author's responsibility
-
-### 12.3 Downgrade Recovery Path
-
-When format is incompatible, provide **clear downgrade recovery guidance**:
-1. Prompt user to download old-version play (preserves original data format)
-2. Restore backup on old-version device
-3. Re-export data (new format)
-4. Upgrade to latest version
-
-**Key principle**: Do not auto-attempt format conversion (metadata layer doesn't understand business formats). Clearly inform user "this is a play-level issue, require play author to provide migration tool."
-
-### 12.4 UI Interaction Flow
-
-```
-User clicks "Import Backup"
-  → Parse backup file header (check format_version, play_id, labels)
-  → Compare with target play's manifest declaration
-  → If incompatible:
-      · Display specific error reason (which item mismatched)
-      · Provide "View Details" button (expand technical details)
-      · Provide "Downgrade Recovery Guide" link (jump to help page)
-  → If compatible: normal import flow
-```
+If play authors truly need to support cross-version data recovery:
+- Play authors provide **dedicated migration tools** (e.g., PC-side scripts, in-play buttons)
+- Meta-pass only provides raw data transfer, no format conversion participation
 
 **Prohibited behaviors**:
 - Silently skip incompatible data (user unaware of loss)

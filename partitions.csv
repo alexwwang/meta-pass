@@ -1,16 +1,20 @@
 # Name,   Type, SubType, Offset,   Size,     Flags
-# 3-Slot 架构:factory 缩至 1.44MB,cardid 前空间利用为 ota_0,cardid 后放 ota_1/ota_2。
-# cardid@0x356000 不动(verify_firmware.py 强制保护);otadata 移至 flash 尾部。
-# 布局理由与约束见 docs/assets/meta-pass-design.md §3。
+# dynslot 安全表(safe table):编译进 factory 镜像、嵌入 store、并随发布产物写到 0x8000。
+# 槽位空间(pool_0/pool_1)以 data 占位分区声明 —— 不可引导,最坏情况下设备仍可启动
+# (carve 损坏永远造不出可引导垃圾);运行时启动器按 carve 物化含 ota_* 的 carved 表,
+# bootloader hook(meta_boot_hooks)在 otadata 生效前校验/修复。
+# 设计:docs/assets/dynslot-design.md §4.1/§4.2;决策 §9(8 槽 / 128KB 最小 / otadata 不动)。
+# cardid@0x356000 与 factory@0x10000/0x170000 不可动(verify_firmware.py 强制保护)。
 nvs,      data, nvs,     0x9000,   0x6000,
 phy_init, data, phy,     0xf000,   0x1000,
 factory,  app,  factory, 0x10000,  0x170000,
-# ota_0 占用 factory 尾到 cardid 之间的空间(cardid 前)。
-ota_0,    app,  ota_0,   0x180000, 0x1D6000,
+# pool_0 = [0x180000, 0x356000) cardid 前的池(1,896,448 B),小槽优先分配段。
+pool_0,   data, 0x40,    0x180000, 0x1D6000,
 cardid,   data, nvs,     0x356000, 0x4000,
-# app 分区需 64KB 对齐,故槽位从 0x360000 起(cardid 结束 0x35A000 未对齐)。
-ota_1,    app,  ota_1,   0x360000, 0x200000,
-# ota_2 兼作子固件槽或录音存储(双用):录音固件检查无合法镜像后挂载 littlefs。
-ota_2,    app,  ota_2,   0x560000, 0x29E000,
-# otadata 放 flash 尾部,紧贴 8MB 边界。
+# 原 0x35A000..0x360000 死隙(24KB)成为 store:carve A/B 记录 + 安全表副本 +
+# scratch + Wi-Fi 凭据备份(L6 迁移,见 main/meta_carve_store.h)。
+store,    data, nvs,     0x35A000, 0x6000,
+# pool_1 = [0x360000, 0x7FE000) cardid 后的池(4,841,472 B),大应用优先保连续段。
+pool_1,   data, 0x40,    0x360000, 0x49E000,
+# otadata 留在 flash 尾部(§9.4 决策:不移动)。
 otadata,  data, ota,     0x7FE000, 0x2000,

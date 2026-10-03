@@ -5,7 +5,9 @@
 # 动态分区（dynslot）设计
 
 日期：2026-10-02
-分支：`feat/dynslot`（设计提案 —— 尚无实现）
+分支：`feat/dynslot`（已实现 —— 2026-10-02 主机门禁
+`tools/validate.sh --static` 与 `--firmware` 均 PASS；QEMU hook 用例与真机断电
+注入尚未执行）
 证据基础：`docs/assets/play563-appstore-download-reverse.md`、对线上 play 563
 二进制的字节级验证、ESP-IDF 5.5.3 源码、当前 meta-pass 代码树
 （`main` @ `9e591a2`）。
@@ -177,14 +179,30 @@ otadata 选择（IDF 语义不变）
   消费——几何副本从三处减到一处，并保留与今天相同的设备权威互锁
   （`meta_install_model_offer_ok` 拒绝设备无法在本地复现的手机侧提案，
   `main/meta_install_model.h:83-84`）。
+  状态：已落地为 `install-slot/dynslot-pool.js`（池描述符 +
+  `carveNeed`/`carvePlace` 对 `meta_carve.c` 的镜像 + 提案计算），由
+  `phone-install.js` 消费。`store-analyze.js`/`install-slot.html` 仍读旧版
+  `SLOT_GEOMETRY`（worker 侧 analyze 上限 + 旧固件回退视图）；三方统一
+  跟进 `dynslot-data-unification-research.md`。
 - **提案**：手机端计算建议 carve（first-fit，或复用空槽）；设备端重跑分配
   器，不一致即拒绝。
+  状态：已实现 —— `geomFromListing` 产出 `carveOffset`/`carveSize` manifest
+  字段对，`meta_install_model_carve_ok` 重跑 `meta_carve_place`；手机 fit 声称
+  使用插入后下标视图，提案插在既有槽之前时 `offer_ok` 也不会读到过时声称。
 - **写入路径不变**：提取后的 app 镜像、`esp_ota_begin/write/end`、流式
   SHA-256、带 MSIG/MNAM/MAEG 的尾扇区
   （`main/meta_store_install.c:466-621`）。唯一区别是分区来自 carve 而非
   固定子类型。
 - **移除**：在 store 中标记空闲；重新物化表时不含该条目。数据不移动
   （v1）。
+  状态：已实现为 `GET /api/install/slots`（实时 carve 清单：
+  slot/state/name/size/len/limit/offset/kind + 池剩余）+
+  `POST /api/install/remove {"slot":N}`，均要求 token + Origin 门禁
+  （安装在途 → 409，形状非法 → 400，不在 carve → 404）。顺序断电安全：
+  先擦被删槽位自身的数据 → 提交 carve 记录并重新物化 0x8000 表 → 回 200
+  → 150ms 后重启。用户决策：应用槽数据在删除时就擦除（下方阶梯中
+  "下次写入时才擦除"针对的是数据 carve 记录，不是被删槽位自身）。网页端
+  由“已安装”管理面板驱动（两步确认 → 删除 → 等重启 → 刷新）。
 - **空闲空间回收阶梯**（删除固件留下的空洞如何处理）：
   1. **可切分的空闲区间。** 删除玩法即释放其应用槽与数据 carve 记
      录；区间回到 store 元数据的空闲池。由于 carve 边界按分配重算（不
@@ -276,11 +294,20 @@ otadata 选择（IDF 语义不变）
 - 设备端 E2E：安装 §1 中的激励案例；在矩阵每个阶段注入断电。
 - 门禁：`tools/validate.sh --static`；更新 `tests/test_verify_firmware.py`；
   §4.6 的产物契约。
+- 状态（2026-10-02）：主机纯逻辑测试（分配器/carve↔表/MD5 黄金向量/迁移/
+  故障矩阵）、bootloader hook 主机门禁、`--static`/`--firmware` 均 PASS；
+  QEMU hook 用例与真机断电注入未执行。
 
-## 9. 待决项（实现前需确认）
+## 9. 待决项（已决，实现前确认）
 
-1. 最大槽位 = 8、最小槽位 = 128 KB——确认或调整。
-2. `storage` carve 类型：保留（L2）还是彻底放弃录音双用？
-3. Wi-Fi 凭据备份迁入 `store`（L6）——是否接受？
-4. otadata 保持在 0x7FE000（建议；移动它没有收益）。
-5. 接受"每次影响 carve 的安装/移除多一次重启"（B4）？
+1. 最大槽位 = 8、最小槽位 = 128 KB —— **已确认**（实现为
+   `META_CARVE_MAX_SLOTS = 8`、`META_CARVE_MIN_SLOT = 0x20000`）。
+2. `storage` carve 类型：保留（L2）还是彻底放弃录音双用？——
+   **保留为可选项**：`meta_carve_slot_t.kind` 存在，默认 carve 全为应用，
+   storage 槽不进安装几何（limit 0，L2）。
+3. Wi-Fi 凭据备份迁入 `store`（L6）——**已接受**（新址 0x35E000；迁移时
+   先把旧 0x35A000 备份搬走，再让 carve 记录覆盖原扇区）。
+4. otadata 保持在 0x7FE000 ——**已确认**（B1 不变）。
+5. 接受“每次影响 carve 的安装/移除多一次重启”（B4）？——**已接受**
+   （安装：物化 → prepare 回 503 → 手机持持久化 token 重发 → 上传前重启；
+   移除：回 200 → 150ms → 重启）。

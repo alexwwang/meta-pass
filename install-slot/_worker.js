@@ -507,13 +507,14 @@ export default {
     // 设备 boot 页(meta_store_install.c SHELL_HTML)以
     // <script type=module src=.../phone-install.js> 加载。单文件入口(内含
     // sha256 纯 JS 实现),同源 import extract-app-image/name-blob/
-    // store-analyze(ASSETS 静态服务)。版本策略 = no-store + 设备协议握手
+    // store-analyze/dynslot-pool(ASSETS 静态服务)。版本策略 = no-store + 设备协议握手
     // (status.protocol)双保险;大改版换文件名(boot 页 URL 随固件走)。
     // 入口与其静态 import 必须同走 no-store(审计 M4):入口 no-store 而 import
     // max-age=14400 时,部署后 4h 内手机会拿新入口配旧依赖,设备握手覆盖不到
     // 跨模块错位。
     if (path === "/phone-install.js" || path === "/extract-app-image.js" ||
-        path === "/store-analyze.js" || path === "/name-blob.js") {
+        path === "/store-analyze.js" || path === "/name-blob.js" ||
+        path === "/dynslot-pool.js") {
       const asset = await env.ASSETS.fetch(new Request(new URL(path, req.url), req));
       if (!asset.ok) return err(404, "phone-install module missing from bundle");
       const headers = new Headers(asset.headers);

@@ -13,6 +13,15 @@ idf_component_register(
          "meta_store_net.c"
          "meta_store_install.c"
          "meta_install_model.c"
+         # dynslot 纯逻辑(分配器/表物化/记录/裁决;bootloader hook 与 host
+         # 测试链接同一份源,见 bootloader_components/meta_boot_hooks/CMakeLists.txt)
+         "meta_carve.c"
+         "meta_carve_store.c"
+         "meta_carve_boot.c"
+         # 启动器侧胶水(ensure/提交/物化/凭据搬移;裸 esp_flash_* 不依赖分区
+         # 表缓存,app_main 第一动作就是 ensure,见 meta_carve_flash.h)
+         "meta_carve_flash.c"
+         "meta_md5.c"
     INCLUDE_DIRS "."
     # 相比基线:去掉 bt(启动器不用 BLE),保留 esp_http_server(配网页 +
     # 本地安装服务)、app_update/esp_partition(槽位与回滚)、mbedtls(install.c

@@ -32,11 +32,11 @@ the only layer that actually governs layout — the partition table.
 
 | Play | factory size | declared data partitions | child-installable today? |
 |---|---|---|---|
-| 赛事看板 (829) | **8,128K** | none | no — exceeds every slot |
-| 钓鱼图鉴 (733) | **8,128K** | none | no |
-| 屁屁侦探 (826) | **8,128K** | none | no |
-| RELAY 通话器 (842) | **8,128K** | none (nvs shrunk to 16K) | no |
-| 像素工牌 (523) | 7,936K | `content` data 192K @ 0x7D0000 | no |
+| Event Dashboard (829) | **8,128K** | none | no — exceeds every slot |
+| Fishing Guide (733) | **8,128K** | none | no |
+| Butt Detective (826) | **8,128K** | none | no |
+| RELAY Walkie-Talkie (842) | **8,128K** | none (nvs shrunk to 16K) | no |
+| Pixel Badge (523) | 7,936K | `content` data 192K @ 0x7D0000 | no |
 | AppStore (563) | 3,072K | `store` NVS 16K + `easter` 388K | yes |
 
 Facts this establishes:
@@ -47,7 +47,7 @@ Facts this establishes:
    rebuild. Only template-aware plays built against a slot layout (play 563
    is the reference) are installable children.
 2. **Among installable-style plays, declared data partitions are rare** —
-   play 563's `store`/`easter` is the only sampled case; 像素工牌 carries a
+   play 563's `store`/`easter` is the only sampled case; Pixel Badge carries a
    192K `content` data partition. Data management is a real but
    forward-looking problem.
 3. **Data partition *contents* are silently dropped by meta-pass install
@@ -91,11 +91,11 @@ decoded at byte level:
 
 | Play | App | Declared data partitions | Access pattern (from binary strings) |
 |---|---|---|---|
-| 录音笔 (28) | factory 1,536K | `recordings` **6,592K** (0x81 = FAT, all-0xFF at ship) | FatFS: `esp_vfs_fat_spiflash_mount_rw_wl`, mount error string names `partition_label='%s'` — **mounted by label** (T1). Web UI exports recordings as WAV, supports delete — pure user data, runtime-generated |
-| GameBoy 掌机 (494) | game_app 3,072K | `roms` 4,096K (0x40, magic `FGBR` = bundled ROM pack) + `saves` 960K (0x82 = SPIFFS, mounted at `/saves`) | SPIFFS (`esp_spiffs.c`) + POSIX `/saves` paths + NVS blobs — **label-addressed** (T1). Two data classes: bundled content shipped in-image + runtime save archive |
-| 小小游戏机 (115) | factory 1,536K | `storage` 5,568K (0x82, magic `NESPACK1` = bundled NES ROM pack) | label `storage` present in strings; NVS for BLE — T1 |
-| 口袋游戏厅 (204) | factory 3,072K | none (template-aware: cardid + recovery) | child-compatible as-is |
-| 掌上游戏厅 (793) | factory **8,128K** | none | whole-flash standalone, not a child |
+| Voice Recorder (28) | factory 1,536K | `recordings` **6,592K** (0x81 = FAT, all-0xFF at ship) | FatFS: `esp_vfs_fat_spiflash_mount_rw_wl`, mount error string names `partition_label='%s'` — **mounted by label** (T1). Web UI exports recordings as WAV, supports delete — pure user data, runtime-generated |
+| GameBoy Handheld (494) | game_app 3,072K | `roms` 4,096K (0x40, magic `FGBR` = bundled ROM pack) + `saves` 960K (0x82 = SPIFFS, mounted at `/saves`) | SPIFFS (`esp_spiffs.c`) + POSIX `/saves` paths + NVS blobs — **label-addressed** (T1). Two data classes: bundled content shipped in-image + runtime save archive |
+| Mini Console (115) | factory 1,536K | `storage` 5,568K (0x82, magic `NESPACK1` = bundled NES ROM pack) | label `storage` present in strings; NVS for BLE — T1 |
+| Pocket Arcade (204) | factory 3,072K | none (template-aware: cardid + recovery) | child-compatible as-is |
+| Handheld Arcade (793) | factory **8,128K** | none | whole-flash standalone, not a child |
 
 Facts this establishes:
 
@@ -110,12 +110,12 @@ Facts this establishes:
    of a shrunken FAT/SPIFFS *image* only matters when in-image content ships;
    an empty-at-ship archive formats cleanly at any size.)
 3. **Capacity is the binding constraint** (pool 6,766,592 B):
-   - 录音笔: app + recordings = 1,572,864 + 6,753,280 ≈ 8.1 MB → full-size
+   - Voice Recorder: app + recordings = 1,572,864 + 6,753,280 ≈ 8.1 MB → full-size
      child impossible; **downsized recordings carve works** (pool − app −
      tails ≈ 4.9 MB available). Demonstrable v1 case.
    - GameBoy: 3M + 4M + 960K ≈ 7.9 MB → impossible without the author
      trimming the bundled `roms` pack; `saves` then rides M5 below.
-   - 小小游戏机: 1.5M + 5.5M ≈ 7.1 MB → author trim needed.
+   - Mini Console: 1.5M + 5.5M ≈ 7.1 MB → author trim needed.
 4. **Two archive classes need different lifecycles**: bundled content
    (shipped bytes, disposable — reinstall restores it) vs. runtime archives
    (recordings, saves — must survive play upgrades and ideally uninstall).
@@ -253,7 +253,7 @@ migration (dynslot compaction moves data records with their slots).
   raw offsets; meta-pass itself relocates its only offender (MPCK).
 - D2: Whole-flash standalone plays (~8 MB factory, the majority of the
   catalog) are out of scope for child data management entirely — they are
-  not children. Archive-heavy plays (GameBoy, 小小游戏机) exceed the pool
+  not children. Archive-heavy plays (GameBoy, Mini Console) exceed the pool
   even as children and need author-trimmed builds; M1's size-dynamic carve
   can absorb moderate downsizes without rebuilds, bundled-content shrinks
   cannot.
@@ -281,7 +281,7 @@ migration (dynslot compaction moves data records with their slots).
 1. Fold **data carve records** (M1/M5 schema) into the dynslot store metadata
    now — reserved fields, zero cost.
 2. Ship **M1** with dynslot v1 — same carve mechanism, more entry types;
-   repairs the dropped-data-partition gap; demonstrable with 录音笔
+   repairs the dropped-data-partition gap; demonstrable with Voice Recorder
    (recordings carve downsized to fit the pool).
 3. Ship **M2** (namespace whitelist sweep) with dynslot v1 — cheap, caps the
    known nvs hazard.

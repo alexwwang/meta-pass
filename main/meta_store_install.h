@@ -75,11 +75,15 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
                           char url_buf[256]);
 
 // ---- token 门控 ----
-// token_start:生成(或复用仍有效的)本店 token 与配对码;无 offer 在途时把状态
-// 归位 pairing(从失败/取消回退到配网页的路径)。stop:全部作废。
+// token_start:生成(或从 NVS 复用上次未离店的,重启续连)本店 token,配对码
+// 一律重发;无 offer 在途时把状态归位 pairing。stop:全部作废并清 NVS。
 esp_err_t meta_install_token_start(void);
 void      meta_install_token_stop(void);
 bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
+// 重启续连(用户决策①):token_start 后未正常 token_stop → true。carve 重启后
+// app_main 据此自动恢复 STA + install 服务,手机用持久化 token 重发 prepare
+// 免重扫 QR(设计 §4.4:新槽物化 = 提交 → 物化表 → 重启,上传前)。
+bool      meta_install_resume_pending(void);
 
 // ---- offer 确认状态机(UI 入口,文档 §6.4) ----
 // 拷贝当前待确认 offer(无则 false)。快照复制:UI 渲染期间允许手机重新
@@ -102,3 +106,7 @@ esp_err_t meta_install_cancel(void);
 
 // 默认选中槽位(转发 model;suggestedSlot 本地 fit 才用)。
 int8_t meta_install_default_slot_from_manifest(const meta_install_manifest_t *m);
+
+// 本地上限快照(dynslot:由规范 carve 派生,无提案预填;UI 选槽页用它
+// 判 fit —— 表 == carve 不变量,与 prepare/confirm 同一几何事实源)。
+void meta_install_local_geom(meta_install_geom_t *out);

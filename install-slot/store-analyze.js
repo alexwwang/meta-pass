@@ -17,15 +17,25 @@ import { isFullImage, extractAppImage } from "./extract-app-image.js";
 import { unpackNameBlobTail } from "./name-blob.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
-//   factory 0x170000 | ota_0 0x1D6000 | cardid 0x4000 | ota_1 0x200000 | ota_2 0x29E000(兼 littlefs)
+//   pool_0 0x1D6000 | cardid 0x4000 | pool_1 0x49E000(含 store @0x35A000)
 // 槽位应用上限 = 分区大小 - 单一 4KB 尾 sector(与 meta_sign_app_limit 同一约定)。
-export const SLOT_GEOMETRY = [
-  { slot: 0, partSize: 0x1d6000 },
-  { slot: 1, partSize: 0x200000 },
-  { slot: 2, partSize: 0x29e000 },
-];
+// dynslot §4.1:两池总字节数 = 6,766,592 B。
 
-const TAIL_SECTOR = 0x1000;
+// 保留 SLOT_GEOMETRY 供 phone-install.js 的 legacy 回退视图使用(旧固件
+// / 未建连设备);正式 analyze 走下方 POOL_TOTAL 尺寸检查。
+ export const SLOT_GEOMETRY = [
+   { slot: 0, partSize: 0x1d6000 },
+   { slot: 1, partSize: 0x200000 },
+   { slot: 2, partSize: 0x29e000 },
+ ];
+
+ const TAIL_SECTOR = 0x1000;
+
+// 动态分区(§4.1):解包器上限按两池总量算,避免解包器误杀超大镜像(目前
+// 最大的合法应用 1.84MB < 6.45MiB,足够兜底)。实际装不装得下由
+// /api/install/slots 设备 carve 状态决定,这里只做预检。
+import { POOL_TOTAL } from "./dynslot-pool.js";
+const UNPACK_MAX = POOL_TOTAL - TAIL_SECTOR;
 
 // 合并镜像分区表检查(r9 政策:白名单外数据分区一律警告放行):
 //   白名单(标准存储:nvs/phy_init/otadata/cardid/store/coredump)→ 静默通过。
@@ -53,9 +63,6 @@ const REASON_WRONG_CHIP = "wrong-chip";
 const REASON_CUSTOM_PARTITIONS = "custom-partitions";
 const REASON_TOO_LARGE = "too-large";
 
-// 解包器内部上限按 2MB 槽位算;真正的槽位适配在下面按 SLOT_GEOMETRY 做,
-// 这里传 slot2 上限即可避免解包器在 2MB 上限处误杀大镜像。
-const UNPACK_MAX = SLOT_GEOMETRY[2].partSize - TAIL_SECTOR;
 
 // 从 extractAppImage 抛出的英文错误映射为设备可展示的 reason 码。
 export function mapExtractError(err) {
@@ -210,10 +217,14 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     if (ext.tailSector) name = unpackNameBlobTail(ext.tailSector);
     if (!name) name = play.slug;
 
-    const slots = SLOT_GEOMETRY.map(({ slot, partSize }) => {
-      const limit = partSize - TAIL_SECTOR;
-      return { slot, limit, fit: ext.length <= limit };
-    });
+    // dynslot §4.1:analyze 阶段没有设备 carve 状态,不能提案。只回答
+    // "镜像能不能放进池?"——真正落点由 /api/install/slots 的设备 carve
+    // 状态 + phone-install.js 的 geomFromListing 决定。
+    const poolLimit = POOL_TOTAL - TAIL_SECTOR;
+    const poolFit = ext.length <= poolLimit;
+    const slots = poolFit
+      ? [{ slot: 0, limit: poolLimit, fit: true }]
+      : [];
     const fitSlots = slots.filter((s) => s.fit);
     const supported = fitSlots.length > 0;
 
@@ -225,7 +236,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       revisionId: play.revisionId ?? null,
       name,
       slots,
-      suggestedSlot: supported ? fitSlots[0].slot : -1,
+      suggestedSlot: supported ? 0 : -1,
       supported,
       // 警告可继续:subtype 0x40 自定义数据分区不阻断安装,reason 透传分区名,
       // 设备端详情页显示警告后由用户决定;reason='ok' 表示无任何警告。

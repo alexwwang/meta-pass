@@ -47,11 +47,15 @@ static const esp_partition_t *install_slot(int n)
                                 ESP_PARTITION_SUBTYPE_APP_OTA_0 + n, "ota");
 }
 
-// Install the full 3-slot map so scan sees the device-shaped partition table
-// (and the run stays free of "partition missing" noise).
+// Install the legacy-shaped 3-slot map (the migrated-device shape; 8 slots of
+// 2 MB each would not fit the 8 MB host flash) so scan sees a device-shaped
+// partition table. dynslot leaves the remaining indices unallocated — scan
+// must mark them EMPTY without a "partition missing" error.
+#define SLOTS_PRESENT 3
+
 static void install_all_slots(void)
 {
-    for (int i = 0; i < META_SLOT_COUNT; i++) {
+    for (int i = 0; i < SLOTS_PRESENT; i++) {
         assert(install_slot(i) != NULL);
     }
 }
@@ -113,6 +117,11 @@ int main(void)
     memset(slots, 0xAA, sizeof(slots));
     assert(meta_store_scan(slots) == ESP_OK);
     assert(slots[0].state == META_SLOT_EMPTY);
+    // 未分配下标(dynslot carve 里没有)必须静默 EMPTY,不是错误。
+    for (int i = SLOTS_PRESENT; i < META_SLOT_COUNT; i++) {
+        assert(slots[i].state == META_SLOT_EMPTY);
+        assert(slots[i].size == 0);
+    }
 
     // 2. Half-written slot scans INVALID and stays installable-over (the
     //    BUG-21 rejection must remain; only the error-level log was noise).

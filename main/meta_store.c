@@ -149,6 +149,12 @@ esp_err_t meta_store_scan(meta_slot_info_t out[META_SLOT_COUNT])
 {
     if (!out) return ESP_ERR_INVALID_ARG;
     for (int i = 0; i < META_SLOT_COUNT; i++) {
+        // dynslot:carve 里不存在的下标(未分配槽)静默置 EMPTY —— 不是分区表
+        // 被破坏,打 error 会在每次开机制造噪音(BUG-21 日志纪律)。
+        if (!meta_store_slot_partition(i)) {
+            meta_slot_clear(&out[i]);
+            continue;
+        }
         scan_one(i, &out[i]);
     }
     return ESP_OK;
