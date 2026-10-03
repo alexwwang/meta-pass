@@ -133,3 +133,26 @@ export function extractAppImage(buf, maxSize) {
   }
   return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, tailSector, tailSectorOffset };
 }
+
+// 解析分区表中 subtype=0x81/0x82 的数据分区( fat/spiffs )。
+// 返回 [{offset, size, type, label}] 数组;无则空数组。
+export function parseDataPartitions(buf) {
+  const result = [];
+  for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
+    if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
+    const type = buf[off + 2];
+    const subtype = buf[off + 3];
+    // subtype 0x81 = fat, 0x82 = spiffs — 数据分区
+    if (type === 1 && (subtype === 0x81 || subtype === 0x82)) {
+      const offset = u32le(buf, off + 4);
+      const size = u32le(buf, off + 8);
+      // label 在条目末尾 16 字节
+      let label = '';
+      for (let i = 16; i < 32 && buf[off + i] !== 0; i++) {
+        label += String.fromCharCode(buf[off + i]);
+      }
+      result.push({ offset, size, type: subtype === 0x81 ? 'fat' : 'spiffs', label });
+    }
+  }
+  return result;
+}

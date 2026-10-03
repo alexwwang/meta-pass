@@ -13,7 +13,7 @@
 // 且 analyze/extracted 复用同一份缓存:按 play id 缓存 {merged, ext, storeFw, play},
 // revisionId 变化时缓存失效回源重取(方案 §1.2 缓存策略)。
 
-import { isFullImage, extractAppImage } from "./extract-app-image.js";
+import { isFullImage, extractAppImage, parseDataPartitions } from "./extract-app-image.js";
 import { unpackNameBlobTail } from "./name-blob.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
@@ -208,6 +208,8 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     let ext;
     try {
       ext = extractAppImage(got.buf, UNPACK_MAX);
+      // M5: 解析数据分区(可选,失败不影响主流程)
+      try { entry.dataPartitions = parseDataPartitions(got.buf); } catch (e) { entry.dataPartitions = []; }
     } catch (err) {
       return { error: mapExtractError(err) };
     }
@@ -256,6 +258,8 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       name: entry.name,
       store: { size: entry.storeFw.size, sha256: entry.storeFw.sha256.toLowerCase() },
       extracted: { imageLen: entry.ext.length, sha256: entry.extractedSha256 },
+      // M5: 数据分区声明(升级迁移用)
+      data: entry.dataPartitions?.map(d => ({ size: d.size, label: d.label })) ?? [],
       slots: entry.slots,
       suggestedSlot: entry.suggestedSlot,
       supported: entry.supported,
