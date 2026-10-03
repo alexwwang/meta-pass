@@ -291,7 +291,7 @@ existing carve: zero extra reboots (same as today).
   dynslot.
 - L4: phone-side and USB-side installers must adopt the shared allocator
   before the firmware enables dynslot; the manifest version gates mixed
-  old-analyzer/new-firmware pairs (device rejects stale geometry proposals). **Status**: phone-side done (). USB-side: dual-mode design in  — mode probe via  , partition-table fallback for legacy devices. Not yet implemented.
+  old-analyzer/new-firmware pairs (device rejects stale geometry proposals). **Status**: phone-side done (`geomFromListing`). USB-side: dual-mode design in `docs/assets/dynslot-usb-installer-design.md` — mode probe via `/api/install/slots` `protocol_version`, partition-table fallback for legacy devices. Not yet implemented.
 - L5: per-slot 4 KB tail sector is still consumed per slot (MSIG/MNAM/MAEG
   and the signing story are unchanged).
 - L6: the raw Wi-Fi credential backup moves from 0x35A000–0x360000 into a
