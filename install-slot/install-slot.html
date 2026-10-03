@@ -228,6 +228,7 @@ import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlas
     migrationErasePlan,
     isErasedTable,
     isLegacyFactoryLayout,
+    isDynslotLayout,
     slotHasData,
     parsePartitionTable,
     parseUpgradeArtifact,
@@ -439,6 +440,7 @@ const I18N = {
     msg_upgrade_busy: "Another operation is in progress.",
     msg_upgrade_start: "Upgrading launcher: reading the device partition table for comparison…",
     msg_upgrade_table_ok: "Partition table matches — layout unchanged, safe to upgrade in place.",
+    msg_upgrade_dynslot: "Dynslot layout detected — verifying safe table (pool_0/pool_1 present)...",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
@@ -588,6 +590,7 @@ const I18N = {
     msg_upgrade_busy: "有操作正在进行中。",
     msg_upgrade_start: "升级 launcher:正在读回设备分区表进行比对…",
     msg_upgrade_table_ok: "分区表一致 —— 布局未变,可安全原地升级。",
+    msg_upgrade_dynslot: "检测到动态槽位布局 —— 验证安全表(pool_0/pool_1 存在)...",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
@@ -767,7 +770,7 @@ $("btn-upgrade").addEventListener("click", async () => {
   $("upgrade-status").textContent = "";
   setUpgradeProgress(0);
   try {
-    // 1) 读回设备分区表并分类:meta-pass 布局 / 空白机 / 原厂旧布局 / 未知
+    // 1) 读回设备分区表并分类:meta-pass 布局 / 空白机 / 原厂旧布局 / dynslot
     log(t("msg_upgrade_start"));
     let deviceTable;
     try {
@@ -777,14 +780,17 @@ $("btn-upgrade").addEventListener("click", async () => {
       throw new Error(t("err_upgrade_read_table", { err: err.message }));
     }
     const bundleTable = upgradeBundle.get("partition-table.bin");
-    const cmp = comparePartitionTables(deviceTable, bundleTable);
+    const devicePartitions = parsePartitionTable(deviceTable);
+    const bundlePartitions = parsePartitionTable(bundleTable);
+    const isDynslot = isDynslotLayout(devicePartitions);
+    const cmp = comparePartitionTables(deviceTable, bundleTable, isDynslot);
     let eraseRegions = [];   // 写入前需清残留的区域(原厂机首次迁移)
     if (cmp.ok) {
-      log(t("msg_upgrade_table_ok"), "ok");
+      log(isDynslot ? t("msg_upgrade_dynslot") : t("msg_upgrade_table_ok"), "ok");
     } else if (isErasedTable(deviceTable)) {
       // 空白机:没有旧布局可保护,直接安装
       log(t("msg_upgrade_blank"), "ok");
-    } else if (isLegacyFactoryLayout(parsePartitionTable(deviceTable))) {
+    } else if (isLegacyFactoryLayout(devicePartitions)) {
       // 原厂旧布局机:迁移前必须确认没有任何有效子固件数据
       log(t("msg_upgrade_factory_detected"));
       for (let i = 0; i < SLOTS.length; i++) {
@@ -818,8 +824,8 @@ $("btn-upgrade").addEventListener("click", async () => {
       log(t("msg_upgrade_erased", { addr: hex(r.offset), size: fmtBytes(r.size) }), "ok");
     }
 
-    // 3) 按计划写入四项;NVS/cardid/三个子固件槽位全程不触碰(原厂机残留已单独清理)
-    const steps = upgradeWritePlan();
+    // 3) 按计划写入四项;NVS/cardid/池区域全程不触碰(原厂机残留已单独清理)
+    const steps = upgradeWritePlan(isDynslot);
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const data = upgradeBundle.get(step.name);

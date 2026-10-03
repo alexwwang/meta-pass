@@ -215,3 +215,5 @@ typedef struct {
 //     夹到下一镜像/池尾;输入必须升序且在池内,任何放不下 → false。
 bool meta_carve_seed_images(const meta_pool_image_t *imgs, uint8_t n,
                             meta_carve_t *out);
+
+#define META_PROTOCOL_VERSION 2U   // 递增:carving协议结构变更时更新

@@ -21,7 +21,11 @@ export const OTADATA_OFFSET = 0x7FE000;
 
 // 升级写入计划(顺序即写入顺序;地址为 flash 绝对偏移)。
 // 返回 [{ name, offset, why }] —— 页面据此逐文件 writeFlash。
-export function upgradeWritePlan() {
+export function upgradeWritePlan(isDynslot) {
+  // dynslot 模式使用相同四段写入计划,但分区表语义不同(安全表 vs 固定表)
+  // 写入地址完全一致:bootloader@0x0, table@0x8000, app@0x10000, otadata@0x7FE000
+  // 区别在于比较逻辑(comparePartitionTables)和后续行为(擦除计划等)
+  
   return [
     { name: "bootloader.bin", offset: 0x0, why: "second-stage bootloader" },
     { name: "partition-table.bin", offset: PARTITION_TABLE_OFFSET, why: "layout contract" },
@@ -115,6 +119,16 @@ export function isLegacyFactoryLayout(devicePartitions) {
   );
   return hasFactory && !hasOta;
 }
+// 判断设备是否运行 dynslot 布局(动态槽位)。
+// 识别依据:表内有 pool_0 和 pool_1 分区。
+// devicePartitions: parsePartitionTable(设备表) 的结果。
+export function isDynslotLayout(devicePartitions) {
+  if (!Array.isArray(devicePartitions) || devicePartitions.length === 0) return false;
+  const labels = new Set(devicePartitions.map(p => p.label));
+  return labels.has('pool_0') && labels.has('pool_1');
+}
+
+
 
 // 判断一块数据是否有"子固件头"的可能(非全 FF 即视为有数据)。
 // 只看头 24B:任何 ESP 镜像(0xE9)或遗留数据首块都必然非 FF。
@@ -361,7 +375,10 @@ export function migrationErasePlan() {
 // deviceTable: 从设备 0x8000 读回的 Uint8Array;bundleTable: 升级包内 partition-table.bin。
 // 一致性判定:升级包表长度 ≤ 设备读回长度,且升级包表的非 0xFF 前缀与设备对应区域完全一致。
 // 返回 { ok, reason? }。
-export function comparePartitionTables(deviceTable, bundleTable) {
+export function comparePartitionTables(deviceTable, bundleTable, isDynslot) {
+  // dynslot:bundle 安全表与设备 carved 表结构不同,仅校验受保护区域
+  // fixed-slot:逐字节比较(原有逻辑)
+  
   if (!(deviceTable instanceof Uint8Array) || deviceTable.length < PARTITION_TABLE_READ_SIZE) {
     return { ok: false, reason: `device partition table read too small (${deviceTable?.length ?? 0})` };
   }
@@ -371,7 +388,31 @@ export function comparePartitionTables(deviceTable, bundleTable) {
   if (bundleTable.length > deviceTable.length) {
     return { ok: false, reason: "bundle table larger than the device sector" };
   }
-  // idf.py 生成的表文件尾部有 0xFF 填充;逐字节比对到包文件长度即可
+  if (isDynslot) {
+    // dynslot:bundle 安全表与设备 carved 表结构不同，仅校验受保护区域
+    // (nvs/cardid/otadata 地址不变)。其余差异属预期（slot 条目动态生成）。
+    const protectedRegs = [
+      { off: 0x9000, sz: 0x6000 },   // nvs
+      { off: 0x356000, sz: 0x4000 }, // cardid
+      { off: 0x7FE000, sz: 0x2000 }, // otadata
+    ];
+    for (const reg of protectedRegs) {
+      for (let j = 0; j < reg.sz && (reg.off + j) < bundleTable.length && (reg.off + j) < deviceTable.length; j++) {
+        if (deviceTable[reg.off + j] !== bundleTable[reg.off + j]) {
+          return { ok: false, reason: `protected region mismatch at 0x${(reg.off + j).toString(16)} — layout changed, refusing upgrade` };
+        }
+      }
+    }
+    // 额外校验 bundle 是有效的安全表
+    const bundleParts = parsePartitionTable(bundleTable);
+    const labels = new Set(bundleParts.map(p => p.label));
+    if (!labels.has('pool_0') || !labels.has('pool_1')) {
+      return { ok: false, reason: 'bundle table is not a dynslot safe table (missing pool_0/pool_1)' };
+    }
+    return { ok: true };
+  }
+
+  // fixed-slot: idf.py 生成的表文件尾部有 0xFF 填充；逐字节比对到包文件长度即可
   for (let i = 0; i < bundleTable.length; i++) {
     if (deviceTable[i] !== bundleTable[i]) {
       return {

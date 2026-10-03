@@ -191,7 +191,8 @@ export function parseSlots(text) {
                  kind: s.kind, arc: s.arc || 0 });
   }
   slots.sort((a, b) => a.slot - b.slot);
-  return { count: d.count, free: d.free, slots };
+  const protocolVersion = Number.isInteger(d.protocol_version) ? d.protocol_version : 1;
+  return { count: d.count, free: d.free, slots, protocolVersion };
 }
 
 // 删除提交后设备 150ms 内复位(§4.5):轮询 status 直到安装服务回来。
