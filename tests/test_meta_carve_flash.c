@@ -540,6 +540,46 @@ static void test_arc(void)
     printf("PASS arc (durable across restart)\n");
 }
 
+// M5 升级数据迁移:目标区必须先擦除(NOR 只能 1→0,向未擦区直接写 = 静默
+// AND 损坏)。用 RAM NOR 模型(AND 写语义)钉死这一行为。
+static void test_data_copy(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/safe_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+
+    const uint32_t src = 0x280000u, dst = 0x2C0000u, sz = 0x8000u;
+    // 源:确定性的填充图案。
+    uint8_t pat[0x1000];
+    for (uint32_t b = 0; b < sz; b += sizeof(pat)) {
+        for (size_t i = 0; i < sizeof(pat); i++) pat[i] = (uint8_t)((b + i) & 0xFF);
+        assert(esp_flash_write(NULL, pat, src + b, sizeof(pat)) == ESP_OK);
+    }
+    // 目标:脏数据(擦除前的遗留),未先擦除直接写会得到 AND 结果。
+    uint8_t dirty[0x1000];
+    memset(dirty, 0x00, sizeof(dirty));
+    for (uint32_t b = 0; b < sz; b += sizeof(dirty)) {
+        assert(esp_flash_write(NULL, dirty, dst + b, sizeof(dirty)) == ESP_OK);
+    }
+
+    assert(meta_carve_flash_data_copy(src, sz, dst) == ESP_OK);
+
+    uint8_t got[0x1000], want[0x1000];
+    for (uint32_t b = 0; b < sz; b += sizeof(got)) {
+        assert(esp_flash_read(NULL, got, dst + b, sizeof(got)) == ESP_OK);
+        assert(esp_flash_read(NULL, want, src + b, sizeof(want)) == ESP_OK);
+        assert(memcmp(got, want, sizeof(got)) == 0);
+    }
+
+    // 参数门禁:颗粒度 / 同址 no-op / 重叠。
+    assert(meta_carve_flash_data_copy(src, 0x800, dst) == ESP_ERR_INVALID_SIZE);
+    assert(meta_carve_flash_data_copy(src, sz, src) == ESP_OK);
+    assert(meta_carve_flash_data_copy(src, sz, src + 0x1000) == ESP_ERR_INVALID_ARG);
+
+    printf("PASS data copy erases destination first\n");
+}
+
 int main(void)
 {
     test_fresh();
@@ -553,6 +593,7 @@ int main(void)
     test_archive_slot_and_data();
     test_erase_data();
     test_arc();
+    test_data_copy();
     printf("PASS test_meta_carve_flash\n");
     return 0;
 }

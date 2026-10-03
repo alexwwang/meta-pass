@@ -40,6 +40,7 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
                                      uint32_t dst_offset)
 {
     if (!size || size > 0x100000) return ESP_ERR_INVALID_SIZE;  // 上限 1MB
+    if (size % META_CARVE_SIZE_GRANULE != 0) return ESP_ERR_INVALID_SIZE;  // 擦除粒度
     const meta_pool_desc_t *p = meta_carve_pool();
     // 验证 src/dst 都在池内且对齐
     { const uint32_t check_offs[] = {src_offset, dst_offset};
@@ -57,6 +58,17 @@ esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
         }
     }
     if (src_offset == dst_offset) return ESP_OK;  // 同址无操作
+    // 源/目重叠 → 拒(原地拷贝方向歧义;升级路径落在新分配区,不应重叠)。
+    if (src_offset < dst_offset + size && dst_offset < src_offset + size) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // 目标区先擦除:NOR 只能 1→0,向残留旧数据直接写会得到 AND 结果(静默
+    // 损坏)。size/offset 已按 4KB 粒度/64KB 对齐,可整段擦。
+    if (esp_flash_erase_region(NULL, dst_offset, size) != ESP_OK) {
+        ESP_LOGE(TAG, "data_copy erase failed @0x%08lx", (unsigned long)dst_offset);
+        return ESP_FAIL;
+    }
     // 分段拷贝(源/目可能在同一或不同 sector)
     uint32_t remaining = size;
     uint32_t src = src_offset;
