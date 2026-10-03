@@ -8,9 +8,9 @@
 分支：`feat/dynslot`
 父文档：`dynslot-m5-design.md`（生命周期）、`dynslot-design.md` §4.5（回收阶梯）。
 
-状态：**决策已确认（2026-10-03）**，经审核修订（§1.0/§4/§7，修订记录见
-文首 git log）；按 §1.0/§2/§3/§5 实现；顺序为 **P1-4 → P0-5**（P1-4
-已落地）。
+状态：**定稿（2026-10-04）**——审核修订（§1.0/§4/§7）+ 仲裁裁决：①data_copy
+迁移块退役 ②F4 掩码式 DIRTY ③物化方案B（结束复位 + 伪造句柄）。按
+§1.0/§2/§3/§5 实现；P1-4 已落地，P0-5 设备/手机侧已接线。
 
 ## 1. 问题
 
@@ -30,52 +30,40 @@
 本草案把两层一起接线：新槽位物化（F1）+ 记录创建（F2）在同一事务，
 回收阶梯接入 no-fit 决策。
 
-### 1.0 F1 的物化机制（2026-10-03 审核补入，关键约束）
+### 1.0 F1 的物化机制(2026-10-04 定稿:方案B —— 结束复位)
 
-**为什么不能在上传中途写表：IDF 分区表缓存。**
-`esp_partition_find_first`（`meta_store_slot_partition` 与
-`esp_ota_begin` 都走它）在首次访问时把 0x8000 表加载进 SRAM 缓存，
-运行期物化的新 ota_N 条目对当前启动不可见。因此：
+**硬约束:IDF 分区表缓存。** `esp_partition_find_first`(
+`meta_store_slot_partition` 与 `esp_ota_begin` 都走它)在首次访问时把
+0x8000 表加载进 SRAM 缓存,运行期物化的新 ota_N 条目对当前启动不可见。
+子固件与 bootloader 永远在**下一次启动**读表,天然一致 —— 所以问题只剩
+当前启动的上传/校验怎么走。
 
-- 物化必须发生在 **prepare（确认步）**，随后**复位**，上传在下一启动
-  进行——此时缓存天然新鲜，既有 chunk/OTA 路径零改动。
-- `carve_ok` 里已存在的"幂等重试"分支（提案槽已存在于 carve → 返回
-  下标）就是为此设计的：复位后手机重发同一 prepare，命中幂等分支，
-  流程继续。该分支零生产调用方正是 F1 的另一半证据。
-- 手机侧已有对应机制：`waitDeviceBack`（复位后轮询 status 至服务回来）
-  与 `extracted()` 重试缓存，删除提交后 150ms 内复位同一套节奏。
+**方案B(已裁决 2026-10-04):上传走伪造句柄,复位落在安装成功结束时。**
 
-**prepare 物化序列（phone_picked 与设备确认两路同构）：**
+1. **prepare(确认步)**:`place_offer` 裁决(纯函数副本:形状校验 → 幂等
+   扫描+数据补放 → 槽位先放 → 逐条数据放置);OK 且 changed →
+   `commit(&next, true)` 记录+表一次提交。当前启动缓存过期无妨。
+   - no-fit → tier 3:有 ARCHIVED 可收则 `arc()` 一次重试;仍 no-fit →
+     **409 + JSON**(needed/largestGap/reclaimableArchived/
+     reclaimablePristine[,label],§4)。
+   - 有提案时 `slot_fit` 检查跳过(place_offer 是 fit 权威;新槽不在
+     geom/缓存中);F4 掩码在放置前对"既有记录"快照。
+2. **上传**:chunk/finalize 按 confirmed_slot 查分区,缓存未命中回退
+   **carve 伪造句柄**(address/size/subtype=0x10+idx/label=ota_idx,
+   静态存储防句柄指针逃逸)。OTA 写/擦与 `esp_image_verify` 只消费值
+   字段,不查表。幂等重试(手机重发同一 prepare)命中 `place_offer`
+   幂等分支 → 不重复物化。
+3. **成功结束**:本会话物化过表(`table_changed`)→ 响应冲刷后
+   **300ms 复位**(`esp_timer`,与删除流程同一节奏)。设备列表/启动
+   路径下一启动全一致。
+4. **取消/拒绝/被新 offer 覆盖**:本会话**新建槽** `meta_carve_flash_remove`
+   回收(槽内无用户数据:空或半截垃圾镜像);既有槽保持 INVALID 路径。
+   `manifest_valid` 守卫防 boot 零态下 `carved_new_slot=0`(静态零初始化)
+   误删槽 0。成功路径先把 `carved_new_slot` 置 -1,清场不得回收已装槽。
 
-1. `carve_ok(m, cur)` 校验提案（尺寸 = `meta_carve_need`，落点/下标吻合；
-   已存在 → 幂等返回下标，不重复物化）。
-2. 副本 `next` 上 `meta_carve_place`（槽位先放）。
-3. 逐条 `manifest.data[i]`：保留标签拒绝 → `place_data` + `append`
-   （PRISTINE）；任一条失败 → 整体失败（副本丢弃，无部分 carve）。
-4. `commit(&next, true)` 物化表 → 复位。
-5. 手机重发 prepare → 幂等命中 → session/chunk/finalize 走既有路径。
-
-**取消/烂尾空槽生命周期（F3）**：物化提前到 prepare 引入"carve 已提交
-但从未写入镜像的空槽"。裁决：
-
-- 会话取消（`meta_install_cancel`）：本会话新建的槽位直接
-  `meta_carve_flash_remove`（不是标 INVALID——槽位里什么都没有，
-  INVALID 语义是"有过镜像但坏了"）；已有槽保持现有 INVALID 路径。
-- offer 被新 prepare 覆盖（`offer_and_upload_clear`）：若上一 offer
-  物化过新槽，先 remove 再清场。session 需记 `carved_pending` 标志
-  （新建槽下标）供两条路径消费。
-- 手机断连烂尾：空槽留在 carve 里，出现在 remove 列表可显式删除；
-  不占数据记录（无），仅占池空间——与"装到一半没电"的遗留 INVALID
-  槽同档，可接受，不做自动 GC（诚实边界）。
-
-**set_dirty 语义修正（F4）**：finalize 现对该 play_id 所有 PRISTINE
-记录无差别置 DIRTY——对本会话**新建**的数据记录这是错的（区域刚擦除，
-无任何用户数据；置 DIRTY 使 tier 4 PRISTINE 回收在分钟级窗口后永不可
-达）。裁决：`set_dirty` 跳过本会话创建的记录；只有升级路径保留的既有
-记录（data_copy 来源）才在 finalize 置 DIRTY。实现：finalize 前 diff
-"prepare 时 carve 已有 vs 现有"的 (play_id,label) 集，或更简单——
-prepare 创建时直接置 **DIRTY** 以外的第三选择不可行（枚举只有三态），
-采用 diff 方案。
+**被拒绝的备选**:prepare 后即复位(多一次手机-设备往返重发 prepare,
+且删除流程实证"复位"本身只是节奏约定);全程零复位(伪造句柄 + 设备
+列表 scan 改从 carve 派生——省 ~3s 换两条 IDF 旁路,不划算)。
 
 ### 1.1 寻址模型（为什么 offset 对子固件透明）
 

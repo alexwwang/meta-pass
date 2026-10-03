@@ -425,6 +425,26 @@ esp_err_t meta_carve_flash_set_dirty(uint32_t play_id)
     return meta_carve_flash_commit(&s_work, false);
 }
 
+esp_err_t meta_carve_flash_mark_dirty_selected(const meta_carve_data_key_t *keys,
+                                               uint8_t n_keys)
+{
+    if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
+    if (n_keys > 0 && !keys) return ESP_ERR_INVALID_ARG;
+
+    s_work = s_carve;
+    bool changed = false;
+    for (uint8_t k = 0; k < n_keys; k++) {
+        const int idx = meta_carve_find_data(&s_work, keys[k].play_id, keys[k].label);
+        if (idx < 0) continue;
+        if (s_work.data[idx].state == META_DATA_PRISTINE) {
+            s_work.data[idx].state = META_DATA_DIRTY;
+            changed = true;
+        }
+    }
+    if (!changed) return ESP_OK;   // 幂等
+    return meta_carve_flash_commit(&s_work, false);
+}
+
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
 {
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;

@@ -756,6 +756,45 @@ static void test_place_offer(void)
     printf("PASS place offer\n");
 }
 
+
+static void test_geom_merge_carve(void)
+{
+    meta_install_geom_t g;
+    memset(&g, 0, sizeof(g));
+
+    // 空 carve → 无合并。
+    meta_install_geom_merge_carve(&g, NULL);
+    assert(g.limit[0] == 0);
+
+    meta_carve_t c;
+    memset(&c, 0, sizeof(c));
+    assert(meta_carve_place(&c, 0x20000, META_CARVE_KIND_APP, &c) == 0);
+    assert(meta_carve_place(&c, 0x40000, META_CARVE_KIND_APP, &c) == 1);
+
+    // 全未命中(缓存视角空)→ 两槽都按 carve 几何补;limit = size − 4KB 尾扇区。
+    meta_install_geom_merge_carve(&g, &c);
+    assert(g.limit[0] == meta_sign_app_limit(0x20000));
+    assert(g.limit[1] == meta_sign_app_limit(0x40000));
+    assert(g.limit[2] == 0);
+
+    // 部分命中:缓存已有 slot0 的 limit → 不覆盖;slot1 仍补。
+    memset(&g, 0, sizeof(g));
+    g.limit[0] = 12345;   // 模拟缓存值(异常值也能证"不覆盖")
+    meta_install_geom_merge_carve(&g, &c);
+    assert(g.limit[0] == 12345);
+    assert(g.limit[1] == meta_sign_app_limit(0x40000));
+
+    // storage 预留槽(L2)不可装 → 不补。
+    meta_carve_t s;
+    memset(&s, 0, sizeof(s));
+    assert(meta_carve_place(&s, 0x20000, META_CARVE_KIND_STORAGE, &s) == 0);
+    memset(&g, 0, sizeof(g));
+    meta_install_geom_merge_carve(&g, &s);
+    assert(g.limit[0] == 0);
+
+    printf("PASS geom merge carve\n");
+}
+
 int main(void)
 {
     test_parse_happy();
@@ -773,6 +812,7 @@ int main(void)
     test_parse_remove();
     test_remove_ok();
     test_place_offer();
+    test_geom_merge_carve();
     printf("ALL meta_install_model TESTS PASSED\n");
     return 0;
 }

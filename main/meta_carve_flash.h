@@ -57,6 +57,20 @@ esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE]);
 // 幂等:已是 DIRTY 则空操作。返回 ESP_OK 或 flash 错误。
 esp_err_t meta_carve_flash_set_dirty(uint32_t play_id);
 
+// P0-5 F4:finalize 只把"升级保留"的既有记录标 DIRTY。keys 指定
+// (play_id,label) 集合;集合外该 play 的记录(本会话新建)保持 PRISTINE
+// —— 新建区域刚擦除、无用户数据,标 DIRTY 会让 reclaimablePristine 在
+// 任何 no-fit 决策点恒为 0(状态只在 finalize 翻转 + 单会话 ⇒ PRISTINE
+// 只存在于自己那次安装的窗口内,不可见),tier 4 回收阶梯形同虚设。
+// 一次提交翻转全部命中;无命中幂等 ESP_OK。键集合为空 → 不动。
+typedef struct {
+    uint32_t play_id;
+    char     label[META_DATA_LABEL_MAX + 1];
+} meta_carve_data_key_t;
+
+esp_err_t meta_carve_flash_mark_dirty_selected(const meta_carve_data_key_t *keys,
+                                               uint8_t n_keys);
+
 // 卸载归档:将指定槽位对应的所有数据记录翻为 ARCHIVED(默认策略,不擦字节)。
 // 调用 meta_carve_flash_remove 前使用此函数;后者只删槽位记录。
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot);

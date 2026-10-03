@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <esp_system.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_timer.h>
@@ -91,6 +91,19 @@ typedef struct {
     bool     ota_open;
     bool     flash_touched;      // esp_ota_begin 成功过 = 旧内容已擦,失败必作废
     int64_t  last_activity_ms;   // 上次上传活动(session 打开/末次 chunk;停滞判定基准)
+
+    // ---- P0-5 carve 事务(方案B,§1.0) ----
+    // carved_new_slot:本会话 prepare 新建的槽位下标(取消/覆盖/拒绝时回收;
+    //   -1 = 无)。静态零初始化会是 0 —— 消费处必须同时守卫 manifest_valid
+    //   (两者总在 prepare 同生、clear 同灭,boot 态 manifest_valid=false)。
+    // table_changed:本会话物化过表(新槽或数据 backfill)→ 成功结束时复位。
+    // data_dirty_mask:F4 —— bit i = manifest.data[i] 是 prepare 前已存在的
+    //   记录(finish 时标 DIRTY);本会话新建的记录保持 PRISTINE(tier 4 回收
+    //   的数字来源;状态只在 finish 翻转 + 单会话 ⇒ 全标 DIRTY 会让
+    //   reclaimablePristine 恒 0,tier 4 死代码)。
+    int8_t   carved_new_slot;
+    bool     table_changed;
+    uint32_t data_dirty_mask;
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -139,11 +152,70 @@ static void geom_refresh(meta_install_geom_t *g)
         const esp_partition_t *part = meta_store_slot_partition(i);
         if (part) g->limit[i] = meta_sign_app_limit(part->size);
     }
+    // P0-5:缓存未命中的 carved 槽位从 carve 记录补(本次 prepare 物化、
+    // 尚未复位;设备确认/默认槽/session 校验因此对本会话新槽一致可见)。
+    meta_install_geom_merge_carve(g, meta_carve_flash_carve());
 }
 
 void meta_install_local_geom(meta_install_geom_t *out)
 {
     if (out) geom_refresh(out);
+}
+
+// ---- P0-5 方案B:carved 槽位的分区句柄 -------------------------------
+// 本次 prepare carve 的槽位在当前启动的 esp_partition 表缓存(首访后驻留
+// SRAM)中不可见。OTA 写/擦/校验只消费 address/size/subtype/label,按 carve
+// 记录伪造句柄即可;下一个启动(bootloader 与 esp_partition)从 flash 读表,
+// 天然一致。单会话保证无并发使用;句柄静态存活,防 IDF 内部留存指针
+// (esp_ota_begin 的 handle 语义按值拷贝,静态存放双保险)。
+static esp_partition_t s_fake_part;
+
+static const esp_partition_t *carved_partition(int8_t slot)
+{
+    const meta_carve_t *cv = meta_carve_flash_carve();
+    if (!cv || slot < 0 || slot >= (int8_t)cv->count) return NULL;
+    const meta_carve_slot_t *s = &cv->slot[slot];
+    if (s->kind != META_CARVE_KIND_APP) return NULL;
+    memset(&s_fake_part, 0, sizeof(s_fake_part));
+    s_fake_part.type = ESP_PARTITION_TYPE_APP;
+    s_fake_part.subtype = (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot);
+    s_fake_part.address = s->offset;
+    s_fake_part.size = s->size;
+    snprintf(s_fake_part.label, sizeof(s_fake_part.label), "ota_%d", slot);
+    return &s_fake_part;
+}
+
+// 缓存查找优先(既有槽位走原路径),未命中回退伪造句柄。
+static const esp_partition_t *slot_partition_any(int8_t slot)
+{
+    const esp_partition_t *part = meta_store_slot_partition(slot);
+    return part ? part : carved_partition(slot);
+}
+
+// ---- P0-5:安装完成后的结束复位 --------------------------------------
+// 仅当本会话物化过表(新槽/数据 backflush)才需要:复位让 esp_partition
+// 缓存与 flash 表重新一致、设备列表看见新槽。响应先冲刷(300ms 窗口),
+// 与删除流程的"已提交,等待设备重启"同一节奏。
+static esp_timer_handle_t s_done_reboot_timer;
+static void done_reboot_cb(void *arg)
+{
+    (void)arg;
+    esp_restart();
+}
+static void schedule_done_reboot(void)
+{
+    if (!s_done_reboot_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = done_reboot_cb,
+            .arg = NULL,
+            .name = "install_done_reboot",
+        };
+        if (esp_timer_create(&args, &s_done_reboot_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "done-reboot timer create failed; rebooting now");
+            esp_restart();
+        }
+    }
+    esp_timer_start_once(s_done_reboot_timer, 300 * 1000);
 }
 
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
@@ -165,6 +237,9 @@ static void offer_and_upload_clear(void)
     s_session.session_opened = false;
     s_session.session_offset = 0;
     s_session.flash_touched = false;
+    s_session.carved_new_slot = -1;
+    s_session.table_changed = false;
+    s_session.data_dirty_mask = 0;
 }
 
 // 终态失败(文档 §6.5):中止 OTA;flash 被动过即槽位 INVALID;清 offer 手机侧重来。
@@ -391,7 +466,11 @@ esp_err_t meta_install_offer_reject(void)
     } else if (s_session.confirmed || s_session.session_opened) {
         rc = ESP_ERR_INVALID_STATE;   // 已确认的走 cancel,不走拒绝
     } else {
+        // P0-5:拒绝同取消 —— 新建槽回收(守卫同 cancel)。
+        const int8_t carved = s_session.carved_new_slot;
+        const bool have_carve = s_session.manifest_valid && carved >= 0;
         offer_and_upload_clear();
+        if (have_carve) meta_carve_flash_remove((int)carved);
         s_session.name[0] = '\0';
         status_set("pairing", "offer declined on device");
     }
@@ -466,7 +545,7 @@ esp_err_t meta_install_chunk_write(const void *data, uint32_t length)
     }
 
     if (!s_session.ota_open) {
-        const esp_partition_t *part = meta_store_slot_partition(s_session.confirmed_slot);
+        const esp_partition_t *part = slot_partition_any(s_session.confirmed_slot);
         if (!part) {
             fail_locked("partition missing");
             rc = ESP_ERR_INVALID_STATE;
@@ -553,8 +632,10 @@ static esp_err_t finalize_locked(void)
     }
 
     // esp_image_verify(SILENT):权威复核 + 取 image_len 与 offer 比对(§6.5)。
+    // P0-5:本会话 carve 的新槽在表缓存不可见 → 回退 carve 伪造句柄
+    // (verify 只消费 pos 值结构,不查表)。
     const int8_t slot = s_session.confirmed_slot;
-    const esp_partition_t *part = meta_store_slot_partition(slot);
+    const esp_partition_t *part = slot_partition_any(slot);
     if (!part) {
         fail_locked("partition missing");
         return ESP_ERR_INVALID_STATE;
@@ -625,55 +706,45 @@ static esp_err_t finalize_locked(void)
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
 
-    // M5: 升级数据迁移 —— 在 commit 前拷贝旧数据到新偏移
-    if (s_session.manifest_valid && s_session.manifest.data_count > 0) {
-        const meta_carve_t *cur = meta_carve_flash_carve();
-        if (cur) {
-            for (uint8_t i = 0; i < s_session.manifest.data_count; i++) {
-                const uint32_t pid = s_session.manifest.data[i].play_id;
-                const char *label = s_session.manifest.data[i].label;
-                const uint32_t new_size = s_session.manifest.data[i].size;
-                // 查找现有记录
-                int j = meta_carve_find_data(cur, pid, label);
-                if (j < 0) continue;  // 全新安装,无需迁移
-                const meta_carve_data_t *old = &cur->data[j];
-                if (old->state != META_DATA_PRISTINE && old->state != META_DATA_DIRTY) continue;
-                // 尺寸收缩 → 拒绝升级
-                if (new_size < old->size) {
-                    ESP_LOGW(TAG, "data shrink rejected: play_id=%u label=%s %u->%u",
-                             (unsigned)pid, label, (unsigned)old->size, (unsigned)new_size);
-                    return ESP_ERR_NOT_SUPPORTED;
-                }
-                // 尺寸/偏移未变 → 跳过拷贝
-                if (new_size == old->size && old->offset == s_session.manifest.carve_offset) {
-                    continue;
-                }
-                // 拷贝池内数据
-                esp_err_t cp = meta_carve_flash_data_copy(old->offset, old->size,
-                                                           s_session.manifest.carve_offset);
-                if (cp != ESP_OK) {
-                    ESP_LOGE(TAG, "data copy failed: %s", esp_err_to_name(cp));
-                    return ESP_ERR_NOT_SUPPORTED;
-                }
-                ESP_LOGI(TAG, "data migrated: play_id=%u label=%s %u bytes",
-                         (unsigned)pid, label, (unsigned)old->size);
-            }
+    // P0-5 仲裁①:升级数据迁移块退役。原实现把数据字节拷进
+    // manifest.carve_offset(= 应用槽位起点,finalize 时已写入镜像)——
+    // 几何上必然互相覆盖;且 P0-5 下数据记录由分配器放在独立偏移、与槽位
+    // 永不重叠(place_offer 保留既有 (play_id,label) 记录),升级无需搬家,
+    // 迁移需求是空集。data_copy 工具保留(test_data_copy 钉死 NOR 语义;
+    // v2 压缩若需数据搬迁再启用)。
+
+    // M5 F4(仲裁②):只对"升级保留"的既有记录标 DIRTY;本会话新建记录
+    // 保持 PRISTINE —— 新建区域刚擦除无用户数据,且全标 DIRTY 会让
+    // reclaimablePristine 恒 0(状态只在 finish 翻转 + 单会话 ⇒ PRISTINE
+    // 不可见于任何 no-fit 决策点),tier 4 回收阶梯死代码。
+    if (s_session.manifest_valid && s_session.data_dirty_mask) {
+        meta_carve_data_key_t keys[META_DATA_MAX];
+        uint8_t n_keys = 0;
+        for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+            if (!(s_session.data_dirty_mask & (1u << i))) continue;
+            keys[n_keys].play_id = s_session.manifest.data[i].play_id;
+            strncpy(keys[n_keys].label, s_session.manifest.data[i].label,
+                    META_DATA_LABEL_MAX);
+            keys[n_keys].label[META_DATA_LABEL_MAX] = '\0';
+            n_keys++;
+        }
+        const esp_err_t de = meta_carve_flash_mark_dirty_selected(keys, n_keys);
+        if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "mark_dirty_selected failed: %s", esp_err_to_name(de));
         }
     }
 
-    // M5: install 成功 → 标记数据为 DIRTY
-    if (s_session.manifest_valid) {
-        esp_err_t de = meta_carve_flash_set_dirty(s_session.manifest.play_id);
-        if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "set_dirty failed: %s", esp_err_to_name(de));
-        }
-    }
+    // 成功路径:复位需求在清场前读走;新建槽归属设备,清场不得回收它。
+    const bool needs_done_reboot = s_session.table_changed;
+    s_session.carved_new_slot = -1;   // 防后续任何清理路径误回收
     offer_and_upload_clear();
     memcpy(s_session.name, name, sizeof(name));
     s_session.confirmed_slot = slot;
     status_set("done", "installed");
     ESP_LOGI(TAG, "LAN install slot %d done: %s (%u bytes)", slot, name,
              meta.image_len);
+    // P0-5 方案B:本会话物化过表 → 响应冲刷后 300ms 复位(见 schedule_done_reboot)。
+    if (needs_done_reboot) schedule_done_reboot();
     return ESP_OK;
 }
 
@@ -685,8 +756,16 @@ esp_err_t meta_install_cancel(void)
     session_lock();
     const int8_t slot = s_session.confirmed_slot;
     const bool touched = s_session.flash_touched;
+    // P0-5:本会话新建槽取消即回收(槽内无用户数据 —— 要么空、要么半截
+    // 垃圾镜像);既有槽保持 INVALID 路径。manifest_valid 守卫防 boot 零态
+    // 下 carved_new_slot=0(静态零初始化)误删槽 0。
+    const int8_t carved = s_session.carved_new_slot;
+    const bool have_carve = s_session.manifest_valid && carved >= 0;
     offer_and_upload_clear();
-    if (touched && slot >= 0 && s_slots) {
+    if (have_carve) {
+        meta_carve_flash_remove((int)carved);
+        ESP_LOGW(TAG, "install cancelled; carved slot %d reclaimed", carved);
+    } else if (touched && slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[slot]);
         ESP_LOGW(TAG, "install cancelled; slot %d marked INVALID", slot);
     }
@@ -946,20 +1025,117 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         session_unlock();
         return reply(req, "409 Conflict", "already confirmed");
     }
+    // ── P0-5 carve 提案裁决(方案B,§1.0/§3/§5) ──
+    // 纯函数在副本上重放逐条目放置;OK 且 changed → 记录+表一次提交(当前
+    // 启动缓存过期无妨:chunk/finalize 走伪造句柄,复位在成功结束时)。
+    meta_carve_t placed;
+    int place_idx = -1;
+    bool place_changed = false;
+    char place_label[META_DATA_LABEL_MAX + 1];
+    meta_install_no_fit_t nf;
+    meta_install_place_verdict_t verdict = META_PLACE_OK;
+    if (m.has_carve) {
+        const meta_carve_t *cur0 = meta_carve_flash_carve();
+        verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
+                                                 &place_changed, place_label, &nf);
+        // F4 掩码须在放置前对"既有记录"快照(prepare 重发幂等时 carve 已含
+        // 新建记录,事后 diff 会把它们误判为既有)。
+        s_session.data_dirty_mask = 0;
+        if (cur0) {
+            for (uint8_t i = 0; i < m.data_count && i < META_DATA_MAX; i++) {
+                if (m.data[i].play_id != 0 &&
+                    meta_carve_find_data(cur0, m.data[i].play_id,
+                                         m.data[i].label) >= 0) {
+                    s_session.data_dirty_mask |= (1u << i);
+                }
+            }
+        }
+        // 回收阶梯 tier 3:no-fit 且有 ARCHIVED 可收 → 收一次重试。
+        if ((verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) &&
+            nf.reclaimable_archived > 0) {
+            const uint32_t free_b = cur0 ? meta_carve_free(cur0) : 0;
+            const uint32_t want = nf.needed > free_b ? nf.needed - free_b : nf.needed;
+            ESP_LOGI(TAG, "prepare: ARC reclaim %u bytes before retry", (unsigned)want);
+            (void)meta_carve_flash_arc(want);
+            verdict = meta_install_model_place_offer(&m, meta_carve_flash_carve(),
+                                                     &placed, &place_idx,
+                                                     &place_changed, place_label, &nf);
+        }
+        if (verdict == META_PLACE_REJECTED) {
+            session_unlock();
+            ESP_LOGW(TAG, "prepare: carve proposal rejected (label=%s)", place_label);
+            return reply(req, "400 Bad Request", "carve proposal rejected");
+        }
+        if (verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) {
+            session_unlock();
+            ESP_LOGW(TAG, "prepare: no-fit (%s) needed=%u gap=%u arch=%u pri=%u",
+                     verdict == META_PLACE_NO_FIT_SLOT ? "slot" : "data",
+                     (unsigned)nf.needed, (unsigned)nf.largest_gap,
+                     (unsigned)nf.reclaimable_archived,
+                     (unsigned)nf.reclaimable_pristine);
+            char js[256];
+            const int n = snprintf(js, sizeof(js),
+                "{\"reason\":\"no-fit\",\"for\":\"%s\",\"needed\":%u,"
+                "\"largestGap\":%u,\"reclaimableArchived\":%u,"
+                "\"reclaimablePristine\":%u%s%s%s}",
+                verdict == META_PLACE_NO_FIT_SLOT ? "slot" : "data",
+                (unsigned)nf.needed, (unsigned)nf.largest_gap,
+                (unsigned)nf.reclaimable_archived,
+                (unsigned)nf.reclaimable_pristine,
+                place_label[0] ? ",\"label\":\"" : "",
+                place_label,
+                place_label[0] ? "\"" : "");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req, n > 0 && n < (int)sizeof(js) ? js :
+                                      "{\"reason\":\"no-fit\"}");
+        }
+    }
+
     // 交互 v2:prepare 带手机选定的 slot → 本地几何复核后直接 confirmed,
     // 设备跳过 P2/P3(用户决策:安装交互全部收拢到手机,与 metapass 网页装
     // 的选槽→确认一致);不带 slot 的旧 manifest 走原物理确认流程。
+    // P0-5:carve 提案的 fit 权威是 place_offer(新槽不在 geom/缓存中),
+    // 不再走 slot_fit;无提案路径保持原样。
     const bool phone_picked = (m.phone_slot >= 0);
-    if (phone_picked && !meta_install_model_slot_fit(&g, m.phone_slot, m.image_len)) {
+    if (!m.has_carve && phone_picked &&
+        !meta_install_model_slot_fit(&g, m.phone_slot, m.image_len)) {
         session_unlock();
         return reply(req, "400 Bad Request", "chosen slot does not fit");
+    }
+    // 覆盖旧 offer:上一 offer 若物化过新建槽且从未上传,先回收(幂等:
+    // 槽里无镜像,remove 即回到 prepare 前状态)。
+    if (s_session.manifest_valid && s_session.carved_new_slot >= 0) {
+        meta_carve_flash_remove((int)s_session.carved_new_slot);
     }
     offer_and_upload_clear();          // 覆盖旧 offer 时清残留(未确认路径)
     s_session.manifest = m;
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
+    // P0-5:carve 提交(记录+表一次事务)。失败 → 400(副本未入 carve,
+    // 设备状态未被污染)。
+    if (m.has_carve && place_changed) {
+        const esp_err_t ce = meta_carve_flash_commit(&placed, true);
+        if (ce != ESP_OK) {
+            s_session.manifest_valid = false;
+            s_session.offer_ready = false;
+            s_session.data_dirty_mask = 0;
+            session_unlock();
+            ESP_LOGE(TAG, "prepare: carve commit failed: %s", esp_err_to_name(ce));
+            return reply(req, "500 Internal Server Error", "carve commit failed");
+        }
+    }
+    s_session.table_changed = m.has_carve && place_changed;
+    s_session.carved_new_slot =
+        (m.has_carve && place_changed && place_idx >= 0) ? (int8_t)place_idx : -1;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
-    if (phone_picked) {
+    if (m.has_carve) {
+        // carve 路径:槽位下标以设备分配器为准(phone_slot 已在 place_offer 核对)。
+        s_session.confirmed_slot = (int8_t)place_idx;
+        s_session.confirmed = phone_picked;   // 手机选槽 → 直确认;否则等设备确认
+        status_set(phone_picked ? "confirmed" : "offer",
+                   phone_picked ? "slot carved on phone pick" : "confirm on device");
+    } else if (phone_picked) {
         s_session.confirmed_slot = m.phone_slot;
         s_session.confirmed = true;   // 先写槽位,后置标志(读侧以标志为序)
         status_set("confirmed", "slot chosen on phone");
@@ -968,7 +1144,7 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     }
     session_unlock();
     ESP_LOGI(TAG, "offer ready: %s (%u bytes, slot %s)", m.name, m.image_len,
-             phone_picked ? "phone-picked" : "device-confirm");
+             m.has_carve ? "carved" : (phone_picked ? "phone-picked" : "device-confirm"));
     return reply(req, "200 OK", "ok");
 }
 

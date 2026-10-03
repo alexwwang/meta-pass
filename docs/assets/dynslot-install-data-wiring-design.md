@@ -8,8 +8,10 @@ Date: 2026-10-03
 Branch: `feat/dynslot`
 Parent: `dynslot-m5-design.md` (lifecycle), `dynslot-design.md` §4.5 (reclaim ladder).
 
-Status: **decisions confirmed (2026-10-03)**, revised after review (§1.0/§4/§7);
-implement per §1.0/§2/§3/§5; order **P1-4 then P0-5** (P1-4 landed).
+Status: **final (2026-10-04)** — revised after review (§1.0/§4/§7) and
+arbitrated: (1) data_copy migration block retired, (2) F4 mask-based DIRTY,
+(3) plan B materialization (end-of-install reboot + fabricated handles).
+Implement per §1.0/§2/§3/§5; P1-4 landed, P0-5 device/phone wiring done.
 
 ## 1. Problem
 
@@ -33,63 +35,51 @@ This draft wires both layers: new-slot materialization (F1) + record
 creation (F2) in one transaction, and the reclaim ladder into the no-fit
 decision.
 
-### 1.0 How F1 materializes (review addendum 2026-10-03 — key constraint)
+### 1.0 How F1 materializes (final 2026-10-04: plan B — end-of-install reboot)
 
-**Why the table cannot be rewritten mid-upload: the IDF partition-table
-cache.** `esp_partition_find_first` (used by both
-`meta_store_slot_partition` and `esp_ota_begin`) loads the 0x8000 table into
-an SRAM cache on first access; a slot materialized at run time is invisible
-to the current boot. Therefore:
+**Hard constraint: the IDF partition-table cache.** `esp_partition_find_first`
+(used by both `meta_store_slot_partition` and `esp_ota_begin`) loads the 0x8000
+table into an SRAM cache on first access; a slot materialized at run time is
+invisible to the current boot. Children and the bootloader read the table on
+the NEXT boot and are consistent by construction — so the only open question
+is how THIS boot's upload/verify path addresses the carved slot.
 
-- Materialization happens at **prepare (the confirm step)**, followed by a
-  **reboot**; the upload runs on the next boot, where the cache is fresh and
-  the existing chunk/OTA paths need zero changes.
-- The "idempotent retry" branch already in `carve_ok` (proposal slot already
-  in the carve → return its index) exists precisely for this: after reboot
-  the phone re-sends the same prepare, hits the idempotent branch, and the
-  flow continues. That branch having zero production callers is the other
-  half of the F1 evidence.
-- Phone side already has the matching machinery: `waitDeviceBack` (poll
-  status until the service is back after a reboot) and the extracted()
-  retry cache — the same rhythm as the post-delete 150 ms reset.
+**Plan B (arbitrated 2026-10-04): fabricated handles for the upload; the
+reboot lands after a successful install.**
 
-**Prepare-time materialization sequence (phone-picked and device-confirm
-alike):**
+1. **Prepare (the confirm step):** `place_offer` decides on a copy (shape
+   check → idempotent scan + data backfill → slot first → per-entry data
+   placement); OK with changes → `commit(&next, true)` (record + table in one
+   transaction). The stale in-boot cache is harmless.
+   - No-fit → tier 3: if ARCHIVED bytes exist, one `arc()` reclaim and a
+     single retry; still no-fit → **409 + JSON** (needed / largestGap /
+     reclaimableArchived / reclaimablePristine [ , label ], §4).
+   - With a proposal, the `slot_fit` check is skipped (place_offer is the fit
+     authority; a new slot is in neither geom nor cache). The F4 mask
+     snapshots pre-existing records BEFORE placement.
+2. **Upload:** chunk/finalize resolve the partition by confirmed_slot; on a
+   cache miss they fall back to a **carved handle** (address/size/subtype=
+   0x10+idx/label=ota_idx, stored statically so no pointer escapes). OTA
+   erase/write and `esp_image_verify` consume value fields only and never
+   consult the table. Idempotent retries (phone re-sending the same prepare)
+   hit the place_offer idempotent branch → no duplicate materialization.
+3. **Success:** if this session materialized the table (`table_changed`),
+   reboot ~300 ms after the response flushes (esp_timer, same rhythm as the
+   remove flow). The device list and the boot path are fully consistent on
+   the next boot.
+4. **Cancel / reject / overwritten offer:** a **session-created slot** is
+   reclaimed via `meta_carve_flash_remove` (no user data inside: empty or a
+   half-written garbage image); existing slots keep the INVALID path. A
+   `manifest_valid` guard prevents the static zero-initialized
+   `carved_new_slot == 0` from deleting slot 0 at boot. On success
+   `carved_new_slot` is reset to -1 BEFORE the session clear so the
+   just-installed slot can never be reclaimed.
 
-1. `carve_ok(m, cur)` validates the proposal (size = `meta_carve_need`,
-   offset/index match; already-placed → idempotent return, no duplicate).
-2. `meta_carve_place` on the `next` copy (slot first).
-3. For each `manifest.data[i]`: reserved-label reject → `place_data` +
-   `append` (PRISTINE); any failure → whole thing fails (copy discarded, no
-   partial carve).
-4. `commit(&next, true)` materializes the table → reboot.
-5. Phone re-sends prepare → idempotent hit → session/chunk/finalize on the
-   existing path.
-
-**Empty-slot lifecycle on cancel/stall (F3):** materializing at prepare
-introduces "carved but never written" slots. Rulings:
-
-- Session cancel (`meta_install_cancel`): a slot created by this session is
-  removed via `meta_carve_flash_remove` (not marked INVALID — there is no
-  image to be "broken"; INVALID means "had an image, now bad"). Existing
-  slots keep the current INVALID path.
-- Offer overwritten by a new prepare (`offer_and_upload_clear`): if the
-  previous offer had materialized a slot, remove it before clearing. The
-  session records a `carved_pending` flag (new slot index) for both paths.
-- Phone-disconnect stall: the empty slot stays in the carve, appears in the
-  remove list, and can be deleted explicitly. It holds pool space only —
-  same class as a half-written INVALID slot after a power cut. No automatic
-  GC (honesty boundary).
-
-**set_dirty semantics fix (F4):** finalize currently flips ALL PRISTINE
-records of the play_id to DIRTY — wrong for records created by THIS
-session (the region was just erased, there is no user data; marking it DIRTY
-makes tier-4 PRISTINE reclaim unreachable minutes after creation). Ruling:
-`set_dirty` skips session-created records; only pre-existing records
-preserved by the upgrade path (data_copy sources) are marked DIRTY at
-finalize. Implementation: diff the (play_id,label) set "present at prepare
-time" vs "present now", or simpler — records created at prepare are marked
-directly.
+**Rejected alternatives:** reboot right after prepare (an extra phone-device
+round-trip to re-send prepare; and the remove flow shows "reboot" is only a
+rhythm convention here); zero reboots end-to-end (fabricated handles PLUS
+re-deriving the device list scan from the carve record — saving ~3 s in
+exchange for two permanent IDF bypasses, poor trade).
 
 ### 1.1 Addressing model (why the offset is transparent)
 

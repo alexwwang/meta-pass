@@ -385,11 +385,22 @@ meta_install_place_verdict_t meta_install_model_place_offer(
     return META_PLACE_OK;
 }
 
+void meta_install_geom_merge_carve(meta_install_geom_t *g, const meta_carve_t *c)
+{
+    if (!g || !c || c->count > META_CARVE_MAX_SLOTS) return;
+    for (uint8_t i = 0; i < c->count && i < META_SLOT_COUNT; i++) {
+        if (c->slot[i].kind != META_CARVE_KIND_APP) continue;   // storage 预留不可装
+        if (g->limit[i] != 0) continue;   // 缓存已见,以缓存为准(同表派生,值相同)
+        g->limit[i] = meta_sign_app_limit(c->slot[i].size);
+    }
+}
+
 bool meta_install_geom_from_carve(const meta_carve_t *c,
                                   const meta_install_manifest_t *m,
                                   meta_install_geom_t *g,
                                   int *carve_idx)
 {
+
     if (carve_idx) *carve_idx = -1;
     if (!c || !g || c->count > META_CARVE_MAX_SLOTS) return false;
     memset(g, 0, sizeof(*g));

@@ -522,7 +522,24 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
 
   hooks.stage?.("prepare");
   const pr = await bridge.prepare(offer);
-  if (!pr.ok) return fail("prepare", pr.text || `HTTP ${pr.status}`, { status: pr.status });
+  if (!pr.ok) {
+    // P0-5:409 no-fit 带结构化数字(needed/largestGap/reclaimableArchived/
+    // reclaimablePristine[,label])——拼成用户可行动的腾空间提示。
+    if (pr.status === 409 && pr.text) {
+      let nf = null;
+      try { nf = JSON.parse(pr.text); } catch { /* 非 JSON 走通用错误 */ }
+      if (nf && nf.reason === "no-fit") {
+        const mb = (n) => n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.ceil(n / 1024)} KB`;
+        const parts = [`需要 ${mb(Number(nf.needed) || 0)}`];
+        if (Number.isFinite(nf.largestGap)) parts.push(`最大连续空间 ${mb(nf.largestGap)}`);
+        if (Number(nf.reclaimableArchived) > 0) parts.push(`已归档可自动回收 ${mb(nf.reclaimableArchived)}`);
+        if (Number(nf.reclaimablePristine) > 0) parts.push(`未触碰数据 ${mb(nf.reclaimablePristine)}(需确认)`);
+        if (nf.label) parts.push(`数据分区 ${nf.label}`);
+        return fail("prepare", `空间不足:${parts.join(",")} —— 请删除不用的玩法后重试`, { status: 409, noFit: nf });
+      }
+    }
+    return fail("prepare", pr.text || `HTTP ${pr.status}`, { status: pr.status });
+  }
 
   hooks.stage?.("confirm");
   hooks.status?.(st);

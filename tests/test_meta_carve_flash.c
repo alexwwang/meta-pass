@@ -580,6 +580,71 @@ static void test_data_copy(void)
     printf("PASS data copy erases destination first\n");
 }
 
+
+static void test_mark_dirty_selected(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+
+    // 一槽两数据记录:save = 升级保留(既有);rec = 本会话新建(P0-5 prepare 创建)。
+    meta_carve_rec_t rec;
+    make_rec_with_data(&rec, 123, "save", 0x280000, 0x1000,
+                       META_DATA_PRISTINE);
+    rec.carve.data_count = 2;
+    rec.carve.data[1].play_id = 123;
+    rec.carve.data[1].offset = 0x290000;
+    rec.carve.data[1].size = 0x2000;
+    rec.carve.data[1].state = META_DATA_PRISTINE;
+    rec.carve.data[1].type = 1;
+    rec.carve.data[1].subtype = 1;
+    strncpy(rec.carve.data[1].label, "rec",
+            sizeof(rec.carve.data[1].label) - 1);
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+
+    // F4:keys 只含 save → save 翻 DIRTY,rec 保持 PRISTINE。
+    const meta_carve_data_key_t keys[] = {
+        { .play_id = 123, .label = "save" },
+    };
+    assert(meta_carve_flash_mark_dirty_selected(keys, 1) == ESP_OK);
+    const meta_carve_t *cur = meta_carve_flash_carve();
+    assert(cur->data_count == 2);
+    int i_save = meta_carve_find_data(cur, 123, "save");
+    int i_rec  = meta_carve_find_data(cur, 123, "rec");
+    assert(i_save >= 0 && i_rec >= 0);
+    assert(cur->data[i_save].state == META_DATA_DIRTY);
+    assert(cur->data[i_rec].state == META_DATA_PRISTINE);
+
+    // 持久化:重启后两状态各自保持(F4 的关键验收:PRISTINE 不在重启回滚)。
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(after.carve.data_count == 2);
+    i_save = meta_carve_find_data(&after.carve, 123, "save");
+    i_rec  = meta_carve_find_data(&after.carve, 123, "rec");
+    assert(i_save >= 0 && i_rec >= 0);
+    assert(after.carve.data[i_save].state == META_DATA_DIRTY);
+    assert(after.carve.data[i_rec].state == META_DATA_PRISTINE);
+
+    // 幂等:重复调用(掩码相同)不报错、状态不变。
+    assert(meta_carve_flash_mark_dirty_selected(keys, 1) == ESP_OK);
+    cur = meta_carve_flash_carve();
+    assert(cur->data[meta_carve_find_data(cur, 123, "save")].state == META_DATA_DIRTY);
+    assert(cur->data[meta_carve_find_data(cur, 123, "rec")].state == META_DATA_PRISTINE);
+
+    // 无命中键(play_id 不存在)→ 幂等 ESP_OK,不提交。
+    const meta_carve_data_key_t miss[] = {
+        { .play_id = 999, .label = "nope" },
+    };
+    assert(meta_carve_flash_mark_dirty_selected(miss, 1) == ESP_OK);
+
+    // 空集合 → 幂等 ESP_OK。
+    assert(meta_carve_flash_mark_dirty_selected(NULL, 0) == ESP_OK);
+
+    printf("PASS mark_dirty_selected (F4: upgrade-only DIRTY, durable)\n");
+}
+
 int main(void)
 {
     test_fresh();
@@ -593,6 +658,7 @@ int main(void)
     test_archive_slot_and_data();
     test_erase_data();
     test_arc();
+    test_mark_dirty_selected();
     test_data_copy();
     printf("PASS test_meta_carve_flash\n");
     return 0;

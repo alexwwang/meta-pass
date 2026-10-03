@@ -80,6 +80,13 @@ typedef struct {
     uint32_t limit[META_SLOT_COUNT];            // meta_sign_app_limit(槽尺寸)
 } meta_install_geom_t;
 
+// P0-5 方案B:prepare 物化新槽位后,当前启动的 esp_partition 表缓存看不见
+// 它(首次访问后驻留 SRAM)。本函数把 carve 记录里的 APP 槽位合入 geom:
+// limit[i]==0(缓存未命中)且 carve 第 i 槽是 APP → 用 carve 几何补。
+// 设备确认流(confirm/default_slot/offer_ok/session_ok 全走 geom_refresh)
+// 因此能对"本次 prepare 刚 carve、尚未复位"的槽位完成确认与上传校验。
+void meta_install_geom_merge_carve(meta_install_geom_t *g, const meta_carve_t *c);
+
 // chunk 偏移判定结果(文档 §6.5)。
 typedef enum {
     META_CHUNK_REJECT = 0,  // 未开 session / 跳位 / 回退 / 越过 imageLen / 超长
