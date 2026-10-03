@@ -41,18 +41,27 @@ M5 让玩法的 flash 用户数据（录音、存档、档案）**在升级时�
   `[0, 4032)`——已处理这些字段；解码拒 `type≠1`、`subtype=0`、
   `play_id=0`、`state>ARCHIVED`（`meta_carve_store.h` §25）。
 
-### 1.2 仍缺失
+### 1.2 实现状态（2026-10-03）
 
-Schema 和分配器已接线，但**没有任何生命周期 API 或调用方**：
+Schema、分配器与生命周期 API 均已实现，并由
+`tests/test_meta_carve_flash.c` 的主机测试覆盖。剩余缺口是安装流的接线
+——创建数据记录、驱动回收阶梯。
 
-| 缺口 | 证据 |
-|---|---|
-| 无 `meta_carve_flash_set_dirty(play_id)` | `meta_carve_flash.h` — 未声明 |
-| 无 `meta_carve_flash_archive_data(play_id)` | `meta_carve_flash.h` — 未声明 |
-| 无新槽升级数据拷贝路径 | `meta_store_install.c:472-503` — 仅处理槽位，无数据 |
-| 无启动时 DIRTY 标记钩子 | `main.c:1306-1320` — 只 sync_states，无数据 |
-| 无卸载归档步骤 | `meta_carve_flash_remove(slot)` 第 167 行 — 数据成孤儿 |
-| 无池压力 ARC 步骤 | `meta_install_model_remove_ok` — 只调 `meta_carve_flash_remove` |
+| 设计项 | 状态 | 证据 |
+|---|---|---|
+| `meta_carve_flash_set_dirty(play_id)` | 已完成 | `meta_carve_flash.h`；finalize 处调用 `meta_store_install.c:666` |
+| `meta_carve_flash_archive_slot_and_data(int slot)` | 已完成 | 已声明/实现；`h_install_remove` 调用 `meta_store_install.c:1188` |
+| `meta_carve_flash_erase_data(play_id, label)` | 已完成，**无调用方** | 已实现；尚无 HTTP 路由 |
+| `meta_carve_flash_arc(target)` | 接线部分 | 已实现；仅 `/api/backup/import` 调用 `meta_store_install.c:1386`；安装 no-fit 路径未接线 |
+| `meta_carve_flash_data_copy` | 已完成 | 已实现；finalize 处调用 `meta_store_install.c:652` |
+| manifest `data[]` 解析 | 已完成 | `meta_install_model.c:131`（`play_id`/`size`/`label`；常量是 `META_DATA_MAX`，非 `META_MANIFEST_DATA_MAX`） |
+| 卸载归档 | 已完成 | `h_install_remove` 先归档再删槽位 |
+| DIRTY 标记时机 | 已完成（finalize 路径） | §5 决策；无启动期钩子（按设计） |
+| 安装时创建数据记录 | **缺失** | 生产代码无 `meta_carve_place_data` 调用方 |
+| 安装 no-fit 时 ARC | **缺失** | 安装路径未调 `meta_carve_flash_arc`；`meta_carve_largest_gap`/`meta_carve_reclaimable` 无调用方 |
+
+生命周期状态翻转跳重启持久化（`tests/test_meta_carve_flash.c` 用模拟重启
+断言）。
 
 ### 1.3 本文档范围
 
@@ -82,10 +91,10 @@ PRISTINE ─────────────────► DIRTY ───�
 | 转换 | 守卫 | 动作 | 失败模式 |
 |---|---|---|---|
 | **安装 → PRISTINE** | `meta_carve_place_data` 分配；内容由 app 写入或手机重发还原 | 记录 `state=PRISTINE` | 池满 → `no-fit`，UI 拒绝 |
-| **启动 → DIRTY** | 槽位 VALID，启动器收到 OK | 翻 `state=DIRTY`；不擦除 | —（尽力而为；失败静默） |
+| **finalize 成功 → DIRTY** | 安装 finalize 成功（§5 决策） | 翻 `state=DIRTY`；不擦除 | —（尽力而为；失败静默） |
 | **升级 → 拷贝 PRISTINE 或新鲜 PRISTINE** | 见 §4 | 池内拷贝字节，或降级到 fresh PRISTINE 下次安装 | 缩小（新 < 旧）→ 拒绝；扩容 → 池内拷贝 + 重新物化表 |
 | **卸载 → ARCHIVED** | `meta_carve_flash_archive_slot_and_data` | 翻 `state=ARCHIVED`；字节留在 flash | — |
-| **池压力 → 擦 ARCHIVED** | `meta_carve_flash_unarchive_oldest`（见 §5） | 擦除字节；移除记录 | 无——尽力循环 |
+| **池压力 → 擦 ARCHIVED** | `meta_carve_flash_arc`（见 §7） | 先提交记录再擦字节；移除记录 | 无——尽力循环 |
 | **显式擦除** | UI 选择 | 擦除字节；移除记录 | 无 |
 
 `DIRTY` 不复原——跨重启持久化。只有卸载或 ARC 把它转到 `ARCHIVED`。
@@ -190,7 +199,11 @@ meta_manifest_data_t data[META_MANIFEST_DATA_MAX];
 固件数据分区映射到 `{play_id, size, label}`（用 `play.revisionId` 作
 play_id）。
 
-## 5. 触点 2：启动（DIRTY 标记）
+## 5. 触点 2：DIRTY 标记
+
+**状态**：按下方决策实现为 finalize 路径标记；未加启动期钩子。
+`meta_carve_flash_set_dirty` 由 `finalize_locked` 调用
+（`meta_store_install.c:666`）。见 §1.2。
 
 `main.c:1306-1320` —— `meta_store_mark_factory_valid` 与
 `meta_carve_flash_sync_states` 之后，扫描即将启动的槽位。当
@@ -214,6 +227,10 @@ if (s_session.manifest.play_id != 0) {
 录翻 `PRISTINE→DIRTY`，重算 CRC，重提交（A/B 轮转）。幂等。
 
 ## 6. 触点 3：卸载 / 移除（归档）
+
+**状态**：实现为 `meta_carve_flash_archive_slot_and_data`（翻转并提交），
+由 `h_install_remove` 在 `meta_carve_flash_remove` 之前调用；两者保持为两
+次独立调用，而非合并成一个函数。见 §1.2。
 
 当前 `meta_carve_flash_remove(int slot)`（第 167 行）只删槽位记录——数
 据记录成孤儿（play_id ≠ 0 仍在 store 但不可达）。替换为：

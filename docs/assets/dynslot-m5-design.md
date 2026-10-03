@@ -43,19 +43,27 @@ ARCHIVED until user erases or pool pressure reclaims).
   `type≠1`, `subtype=0`, `play_id=0`, or `state>ARCHIVED` (§25 of
   `meta_carve_store.h`).
 
-### 1.2 Still missing
+### 1.2 Implementation status (2026-10-03)
 
-The schema and the allocator are wired, but **no lifecycle API or caller
-exists**:
+The schema, allocator, and lifecycle API are implemented and covered by host
+tests in `tests/test_meta_carve_flash.c`. The remaining gap is the install-flow
+wiring that would create data records and drive the reclaim ladder.
 
-| Gap | Evidence |
-|---|---|
-| No `meta_carve_flash_set_dirty(play_id)` | `meta_carve_flash.h` — not declared |
-| No `meta_carve_flash_archive_data(play_id)` | `meta_carve_flash.h` — not declared |
-| No new-slot upgrade data-copy path | `meta_store_install.c:472-503` — only slots, no data |
-| No launch-time dirty-marking hook | `main.c:1306-1320` — sync_states only, no data |
-| No uninstall archival step | `meta_carve_flash_remove(slot)` at line 167 — data stays orphaned |
-| No pool-pressure ARC step | `meta_install_model_remove_ok` — only returns `meta_carve_flash_remove` |
+| Designed item | State | Evidence |
+|---|---|---|
+| `meta_carve_flash_set_dirty(play_id)` | Done | `meta_carve_flash.h`; called at finalize `meta_store_install.c:666` |
+| `meta_carve_flash_archive_slot_and_data(int slot)` | Done | declared/implemented; called from `h_install_remove` `meta_store_install.c:1188` |
+| `meta_carve_flash_erase_data(play_id, label)` | Done, **no caller** | implemented; no HTTP route yet |
+| `meta_carve_flash_arc(target)` | Partial wiring | implemented; called only from `/api/backup/import` `meta_store_install.c:1386`; install no-fit path not wired |
+| `meta_carve_flash_data_copy` | Done | implemented; called at finalize `meta_store_install.c:652` |
+| Manifest `data[]` parse | Done | `meta_install_model.c:131` (`play_id`/`size`/`label`; constant is `META_DATA_MAX`, not `META_MANIFEST_DATA_MAX`) |
+| Uninstall archival | Done | `h_install_remove` archives, then removes the slot |
+| DIRTY marking trigger | Done (finalize path) | §5 decision; no launch-time hook, by design |
+| Data-record creation on install | **Missing** | no production caller of `meta_carve_place_data` |
+| ARC on install no-fit | **Missing** | `meta_carve_flash_arc` not called on the install path; `meta_carve_largest_gap`/`meta_carve_reclaimable` have no callers |
+
+Lifecycle state flips persist across reboot (asserted by a simulated restart in
+`tests/test_meta_carve_flash.c`).
 
 ### 1.3 What this document covers
 
@@ -86,10 +94,10 @@ Transitions and their invariants:
 | Transition | Guard | Action | Failure mode |
 |---|---|---|---|
 | **install → PRISTINE** | `meta_carve_place_data` places; content restored by app write or phone re-send | record `state=PRISTINE` | pool full → `no-fit`; rejected by UI |
-| **launch → DIRTY** | slot VALID, launcher received OK | flip `state=DIRTY` in store; no erase | — (best-effort; failure is silent) |
+| **finalize success → DIRTY** | install finalized (§5 decision) | flip `state=DIRTY` in store; no erase | — (best-effort; failure is silent) |
 | **upgrade → copy PRISTINE or fresh PRISTINE** | see §4 | copy bytes in pool, or drop + re-PRISTINE on next install | size shrink (new < old) → reject; size grow → in-pool copy + re-commit table |
-| **uninstall → ARCHIVED** | `meta_carve_flash_archive_data` | flip `state=ARCHIVED`; keep bytes in flash | — |
-| **pool-pressure → erase ARCHIVED** | `meta_carve_flash_unarchive_oldest` (see §5) | erase bytes; remove record | none — best-effort loop |
+| **uninstall → ARCHIVED** | `meta_carve_flash_archive_slot_and_data` | flip `state=ARCHIVED`; keep bytes in flash | — |
+| **pool-pressure → erase ARCHIVED** | `meta_carve_flash_arc` (see §7) | commit record, then erase bytes; remove record | none — best-effort loop |
 | **explicit erase** | UI choice at remove-confirm | erase bytes; remove record | none |
 
 `DIRTY` never transitions back — persistent across reboot. Only uninstall or
@@ -204,7 +212,11 @@ a helper `buildManifestData(play)` that maps each declared child data
 partition to a `{play_id, size, label}` entry (using `play.revisionId` as
 play_id).
 
-## 5. Touch point 2: launch (DIRTY marking)
+## 5. Touch point 2: DIRTY marking
+
+**Status**: implemented as the finalize-path marking decided below; no
+launch-time hook was added. `meta_carve_flash_set_dirty` is called from
+`finalize_locked` (`meta_store_install.c:666`). See §1.2.
 
 `main.c:1306-1320` — after `meta_store_mark_factory_valid` and
 `meta_carve_flash_sync_states`, scan the slot table for the slot that the
@@ -262,6 +274,10 @@ if (s_session.manifest.play_id != 0) {
 rotate). Idempotent.
 
 ## 6. Touch point 3: uninstall / remove (ARCHIVE)
+
+**Status**: implemented as `meta_carve_flash_archive_slot_and_data` (flip and
+commit), called from `h_install_remove` before `meta_carve_flash_remove`; the
+two remain separate calls rather than one merged function. See §1.2.
 
 Current `meta_carve_flash_remove(int slot)` (line 167) just removes the
 slot record — data records become orphaned (play_id ≠ 0 still in store but
