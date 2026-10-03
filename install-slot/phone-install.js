@@ -191,8 +191,24 @@ export function parseSlots(text) {
                  kind: s.kind, arc: s.arc || 0 });
   }
   slots.sort((a, b) => a.slot - b.slot);
+  // protocol_version: 1=fixed-slot(old), 2=dynslot, missing defaults to 1 for backward compat
   const protocolVersion = Number.isInteger(d.protocol_version) ? d.protocol_version : 1;
-  return { count: d.count, free: d.free, slots, protocolVersion };
+
+  // dynslot P1-4:数据 carve 记录占池空间,手机侧分配器必须看见它们,否则
+  // 槽位提案会落进数据区被设备 carve_ok 拒(L4)。旧固件无 data 字段 → []。
+  // 逐条校验(offset/size 有限非负);任一非法即丢弃该条(保守:宁可少算占用,
+  // 也不能让坏数据污染提案几何)。
+  const data = [];
+  if (Array.isArray(d.data)) {
+    for (const x of d.data) {
+      if (x && Number.isFinite(x.offset) && x.offset >= 0 &&
+          Number.isFinite(x.size) && x.size > 0) {
+        data.push({ offset: x.offset, size: x.size,
+                    state: Number.isInteger(x.state) ? x.state : 0 });
+      }
+    }
+  }
+  return { count: d.count, free: d.free, slots, data, protocolVersion };
 }
 
 // 删除提交后设备 150ms 内复位(§4.5):轮询 status 直到安装服务回来。

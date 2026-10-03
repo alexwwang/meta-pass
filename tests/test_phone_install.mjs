@@ -906,6 +906,17 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   assert.equal(phone.parseSlots(
     '{"count":1,"free":10,"slots":[{"slot":0,"state":"bogus","name":"","size":1,"len":0,"limit":0,"kind":"app"}]}'), null);
   assert.equal(phone.parseSlots('{"count":0,"free":10,"slots":[]}').slots.length, 0);
+
+  // P1-4:parseSlots 保留 data 占用记录(旧固件无字段 → [];坏条目丢弃)。
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[]}').data, []);
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":1572864,"size":131072,"state":1}]}').data,
+    [{ offset: 0x180000, size: 0x20000, state: 1 }]);
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":"x","size":1},{"offset":10,"size":0}]}').data,
+    [], "malformed data records dropped");
+
   const dead = { status: async () => ({ ok: false, status: 0, text: "" }) };
   assert.equal(await phone.waitDeviceBack(dead,
     { tries: 3, delayMs: 1, sleep: async () => {} }), false);

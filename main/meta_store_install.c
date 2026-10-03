@@ -1149,6 +1149,18 @@ static esp_err_t h_install_slots(httpd_req_t *req)
             s->offset, kind_str, arc_records);
     }
 
+    // dynslot P1-4:数据 carve 记录也占池空间,必须暴露给手机侧分配器 ——
+    // 否则手机提案会落进数据区、被设备 carve_ok 拒(L4 分歧)。只给
+    // offset/size/state(占用所需);label 不输出,避免分区标签含引号时的
+    // JSON 注入面(手机侧占用计算不需要 label)。
+    off += snprintf(resp + off, sizeof(resp) - off, "],\"data\":[");
+    for (uint8_t j = 0; j < carve->data_count; j++) {
+        const meta_carve_data_t *d = &carve->data[j];
+        if (j) off += snprintf(resp + off, sizeof(resp) - off, ",");
+        off += snprintf(resp + off, sizeof(resp) - off,
+            "{\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"state\":%u}",
+            d->offset, d->size, (unsigned)d->state);
+    }
     off += snprintf(resp + off, sizeof(resp) - off, "]}");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, resp, off);

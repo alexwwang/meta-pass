@@ -106,11 +106,19 @@ export function geomFromListing(listing, imageLen) {
   const current = all.filter((s) => s.kind === "app")
     .map((s) => ({ slot: s.slot, limit: s.limit, fit: s.limit > 0 && imageLen <= s.limit }));
   const need = carveNeed(imageLen);
-  const place = need ? carvePlace(all.map((s) => ({ offset: s.offset, size: s.size })), need)
-                     : null;
+  // 占用域 = 槽位 ∪ 数据 carve(P1-4)。数据记录同样吃池空间,设备分配器会避让
+  // 它们 —— 手机提案必须用同一占用域,否则会落进数据区被 carve_ok 拒(L4)。
+  // 旧固件无 data 字段 → []。
+  const data = Array.isArray(listing?.data) ? listing.data : [];
+  const occupancy = all.map((s) => ({ offset: s.offset, size: s.size }))
+    .concat(data.map((d) => ({ offset: d.offset, size: d.size })));
+  const place = need ? carvePlace(occupancy, need) : null;
+  // proposal.slot 是「槽位数组」的插入下标(设备 carve 序),不是占用数组下标 ——
+  // 占用域现含数据记录,place.index 会把数据记录计进去。按 offset 落在提案
+  // 落点之前的**槽位**数派生(数据记录不计入槽位序)。
   const proposal = place
-    ? { slot: place.index, carveOffset: place.offset, carveSize: need,
-        limit: appLimit(need) }
+    ? { slot: all.filter((s) => s.offset < place.offset).length,
+        carveOffset: place.offset, carveSize: need, limit: appLimit(need) }
     : null;
   let placed = null;
   if (proposal) {

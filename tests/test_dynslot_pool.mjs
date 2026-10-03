@@ -139,4 +139,30 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   console.log("PASS 5: geomFromListing — fresh/storage/invalid/full listing branches");
 }
 
+// ── 6. P1-4:数据 carve 记录计入占用域(槽位∪数据,与设备分配器同域) ─────────
+{
+  // 池首 0x180000 已有一条数据记录占 0x20000 → 新槽提案必须避让,落在其后。
+  const listing = {
+    count: 0, free: 0, slots: [],
+    data: [{ offset: 0x180000, size: 0x20000, state: 1 }],
+  };
+  const g = geomFromListing(listing, 0x20000);
+  assert.ok(g.proposal);
+  assert.equal(g.proposal.carveOffset, 0x1a0000);   // 数据记录之后,非池首
+  assert.equal(g.proposal.slot, 0);                  // 无 APP 槽 → 插入下标 0
+
+  // 数据记录占满 pool_0 前半段 → 提案落 pool_1 首。
+  const g2 = geomFromListing({
+    count: 0, free: 0, slots: [],
+    data: [{ offset: 0x180000, size: 0x1d6000, state: 2 }],
+  }, 0x20000);
+  assert.equal(g2.proposal.carveOffset, 0x360000);
+
+  // 无 data 字段(旧固件)→ 行为与 P1-4 前一致(仅槽位占用)。
+  const g3 = geomFromListing({ count: 0, free: 0, slots: [] }, 0x20000);
+  assert.equal(g3.proposal.carveOffset, 0x180000);
+
+  console.log("PASS 6: geomFromListing counts data-carve occupancy (P1-4)");
+}
+
 console.log("ALL dynslot-pool TESTS PASSED");
