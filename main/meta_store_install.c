@@ -1112,8 +1112,8 @@ static esp_err_t h_install_slots(httpd_req_t *req)
     int off = 0;
     // Use PRId32 for count (int), PRIu32 for uint32_t
     off += snprintf(resp + off, sizeof(resp) - off,
-        "{\"count\":%d,\"free\":%" PRIu32 ",\"archived\":%" PRIu32 ",\"slots\":[",
-        carve->count, free_bytes, archived_count);
+        "{\"protocol_version\":%d,\"count\":%d,\"free\":%" PRIu32 ",\"archived\":%" PRIu32 ",\"slots\":[",
+        (int)META_PROTOCOL_VERSION, carve->count, free_bytes, archived_count);
 
     bool first = true;
     for (uint8_t j = 0; j < carve->count; j++) {
