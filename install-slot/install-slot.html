@@ -179,6 +179,7 @@
     <p><input type="file" id="upgrade-input" accept=".bin,application/octet-stream"> <span data-i18n="upgrade_pick_dir">select the firmware file (meta-pass_v*.bin) — it both installs fresh on the market and upgrades here</span></p>
     <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
     <span id="upgrade-status"></span>
+    <p id="upgrade-mode" class="info" style="display:none"></p>
     <div class="progress"><div id="upgrade-bar"></div></div>
   </section>
 
@@ -445,6 +446,9 @@ const I18N = {
     msg_upgrade_table_ok: "Partition table matches — layout unchanged, safe to upgrade in place.",
     msg_upgrade_dynslot: "Dynslot layout detected — verifying safe table (pool_0/pool_1 present)...",
     msg_upgrade_dynslot_migration: "Fixed-slot device + dynslot bundle — migrating: partition table left intact, installed games preserved (re-carved on first boot).",
+    upgrade_mode_dynslot: "Dynslot mode (dynamic slots)",
+    upgrade_mode_fixed: "Fixed-slot mode (3 slots)",
+    upgrade_mode_migration: "Fixed-slot → dynslot migration",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
@@ -596,6 +600,9 @@ const I18N = {
     msg_upgrade_table_ok: "分区表一致 —— 布局未变,可安全原地升级。",
     msg_upgrade_dynslot: "检测到动态槽位布局 —— 验证安全表(pool_0/pool_1 存在)...",
     msg_upgrade_dynslot_migration: "固定槽位设备 + 动态槽位固件 —— 迁移中:分区表保持不动,已装玩法保留(首次启动重新 carve)。",
+    upgrade_mode_dynslot: "动态槽位模式",
+    upgrade_mode_fixed: "固定槽位模式(3 槽)",
+    upgrade_mode_migration: "固定槽位 → 动态槽位迁移",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
@@ -788,6 +795,10 @@ $("btn-upgrade").addEventListener("click", async () => {
     const devicePartitions = parsePartitionTable(deviceTable);
     const bundlePartitions = parsePartitionTable(bundleTable);
     const isDynslot = isDynslotLayout(devicePartitions);
+    // 模式指示(设计 §5.2):探测后即显示,迁移判定后细化
+    const modeEl = $("upgrade-mode");
+    modeEl.style.display = "block";
+    modeEl.textContent = t(isDynslot ? "upgrade_mode_dynslot" : "upgrade_mode_fixed");
     const cmp = comparePartitionTables(deviceTable, bundleTable, isDynslot);
     let eraseRegions = [];   // 写入前需清残留的区域(原厂机首次迁移)
     let writeSteps = null;   // null = 默认 upgradeWritePlan();迁移时用专用计划
@@ -800,6 +811,7 @@ $("btn-upgrade").addEventListener("click", async () => {
       // fixed→dynslot 迁移:不写分区表、不擦槽位 —— legacy 表留在设备上,
       // 首启 ensure() 走 seed_legacy("plays untouched") 重建 carve。
       writeSteps = migrationWritePlan();
+      modeEl.textContent = t("upgrade_mode_migration");
       log(t("msg_upgrade_dynslot_migration"), "ok");
     } else if (isLegacyFactoryLayout(devicePartitions)) {
       // 原厂旧布局机:迁移前必须确认没有任何有效子固件数据
