@@ -23,6 +23,9 @@ static meta_carve_t s_carve;        // 规范 carve
 static uint32_t     s_seq;          // 最新记录 seq
 static bool         s_have_record;  // 规范 carve 已 committed
 static bool         s_active;       // ensure 已执行
+static meta_carve_t s_in;           // commit 入参快照(防调用方传 &s_best.carve
+                                    // 被 load_best 覆写;见 commit 注释)
+static meta_carve_t s_work;         // M5 状态翻转/回收的副本(单线程,与 s_in 互斥复用)
 
 // 共享缓冲(单线程顺序复用,互不同时存活):
 static uint8_t s_live[META_PT_SIZE];       // live 表视图 / 表写读回
@@ -154,7 +157,13 @@ static bool load_best(meta_carve_rec_t *best, meta_carve_rec_t *tmp, bool *from_
 
 esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
 {
-    if (!carve || !meta_carve_valid(carve)) return ESP_ERR_INVALID_ARG;
+    if (!carve) return ESP_ERR_INVALID_ARG;
+
+    // 入参快照:调用方可能传 &s_best.carve / &s_carve(set_dirty / archive),
+    // 而下方 load_best 会就地覆写 s_best —— 不先拷出来,改动会在写盘前被
+    // 读回的旧值冲掉(表现为"重启即回滚")。快照后一律用 s_in。
+    s_in = *carve;
+    if (!meta_carve_valid(&s_in)) return ESP_ERR_INVALID_ARG;
 
     bool from_a = false;
     const bool have = load_best(&s_best, &s_tmp, &from_a);
@@ -169,8 +178,8 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     // 新记录借道 s_tmp(编码后 s_tmp 仍持有表字节,materialize 要用)。
     meta_carve_rec_t *rec = &s_tmp;
     rec->seq = seq;
-    rec->carve = *carve;
-    if (!meta_pt_from_carve(carve, rec->table)) return ESP_ERR_INVALID_ARG;
+    rec->carve = s_in;
+    if (!meta_pt_from_carve(&s_in, rec->table)) return ESP_ERR_INVALID_ARG;
     if (!meta_carve_rec_encode(rec, s_io)) return ESP_ERR_INVALID_ARG;
 
     const uint32_t addr = META_STORE_OFFSET + target * META_STORE_SECTOR_SIZE;
@@ -195,8 +204,8 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     }
 
     // 记录已落盘:采纳为规范状态。
-    s_carve = *carve;
-    s_best.carve = *carve;  // 同步 s_best
+    s_carve = s_in;
+    s_best.carve = s_in;  // 同步 s_best
     s_seq = seq;
     s_have_record = true;
 
@@ -208,7 +217,7 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     
 
     ESP_LOGI(TAG, "carve committed: seq=%lu slots=%u materialize=%d",
-             (unsigned long)seq, (unsigned)carve->count, (int)materialize);
+             (unsigned long)seq, (unsigned)s_in.count, (int)materialize);
     return ESP_OK;
 }
 
@@ -386,43 +395,22 @@ esp_err_t meta_carve_flash_ensure(void)
 
 esp_err_t meta_carve_flash_set_dirty(uint32_t play_id)
 {
-    if (!s_active || !s_have_record) {
-        fprintf(stderr, "DEBUG set_dirty: early exit active=%d have_record=%d\n", s_active, s_have_record);
-        return ESP_ERR_INVALID_STATE;
-    }
+    if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
+    if (play_id == 0) return ESP_ERR_INVALID_ARG;
 
-    meta_carve_rec_t *rec = &s_best;
+    // 先在副本上翻转再提交:commit 会从 flash 重载 s_best,直接改 s_best 再
+    // 提交会被读回的旧值覆盖(重启即回滚)。
+    s_work = s_carve;
     bool changed = false;
-    fprintf(stderr, "DEBUG set_dirty START: s_carve.data_count=%u s_best.data_count=%u\n", 
-            s_carve.data_count, rec->carve.data_count);
-    for (uint8_t i = 0; i < rec->carve.data_count; i++) {
-        fprintf(stderr, "DEBUG set_dirty: checking data[%d]: play_id=%u (want %u), state=%d (want %d)\n",
-                i, rec->carve.data[i].play_id, play_id, rec->carve.data[i].state, META_DATA_PRISTINE);
-        if (rec->carve.data[i].play_id == play_id &&
-            rec->carve.data[i].state == META_DATA_PRISTINE) {
-            rec->carve.data[i].state = META_DATA_DIRTY;
+    for (uint8_t i = 0; i < s_work.data_count; i++) {
+        if (s_work.data[i].play_id == play_id &&
+            s_work.data[i].state == META_DATA_PRISTINE) {
+            s_work.data[i].state = META_DATA_DIRTY;
             changed = true;
-            fprintf(stderr, "DEBUG set_dirty: CHANGED data[%d] state to %d\n", i, rec->carve.data[i].state);
         }
     }
-    fprintf(stderr, "DEBUG set_dirty: changed=%d\n", changed);
-    if (!changed) {
-        fprintf(stderr, "DEBUG set_dirty: no change needed\n");
-        return ESP_OK;   // 幂等:已 DIRTY 或无数据记录
-    }
-
-    // 提交更新后的记录(保留表不变)
-    esp_err_t ret = meta_carve_flash_commit(&rec->carve, false);
-    if (ret == ESP_OK) {
-        // commit re-decodes from flash into s_best, so apply the change again
-        for (uint8_t i = 0; i < s_best.carve.data_count; i++) {
-            if (s_best.carve.data[i].play_id == play_id) {
-                s_best.carve.data[i].state = META_DATA_DIRTY;
-            }
-        }
-        s_carve = s_best.carve;
-    }
-    return ret;
+    if (!changed) return ESP_OK;   // 幂等:已 DIRTY 或无数据记录
+    return meta_carve_flash_commit(&s_work, false);
 }
 
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
@@ -434,138 +422,90 @@ esp_err_t meta_carve_flash_archive_slot_and_data(int slot)
     const uint32_t play_id = s_carve.slot[slot].play_id;
     if (play_id == 0) return ESP_ERR_INVALID_STATE;   // 旧记录无 play_id
 
-    meta_carve_rec_t *rec = &s_best;
+    s_work = s_carve;
     bool changed = false;
-    for (uint8_t i = 0; i < rec->carve.data_count; i++) {
-        if (rec->carve.data[i].play_id == play_id) {
-            rec->carve.data[i].state = META_DATA_ARCHIVED;
+    for (uint8_t i = 0; i < s_work.data_count; i++) {
+        if (s_work.data[i].play_id == play_id) {
+            s_work.data[i].state = META_DATA_ARCHIVED;
             changed = true;
         }
     }
-    if (changed) {
-        // 提交记录(不物化表,表条目由 caller 在 remove 后提交)
-        const esp_err_t e = meta_carve_flash_commit(&rec->carve, false);
-        if (e != ESP_OK) return e;
-        // commit re-decodes from flash into s_best, so apply the change again
-        for (uint8_t i = 0; i < s_best.carve.data_count; i++) {
-            if (s_best.carve.data[i].play_id == play_id) {
-                s_best.carve.data[i].state = META_DATA_ARCHIVED;
-            }
-        }
-        s_carve = s_best.carve;
-    }
-    return ESP_OK;
+    if (!changed) return ESP_OK;
+    // 记录先行(不物化表:表条目由 caller 的 remove 后续提交)。
+    return meta_carve_flash_commit(&s_work, false);
 }
 
 esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label)
 {
-    fprintf(stderr, "DEBUG erase_data: active=%d have_record=%d play_id=%u label=%s\n",
-            s_active, s_have_record, play_id, label ? label : "NULL");
     if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
+    if (play_id == 0) return ESP_ERR_INVALID_ARG;
 
-    meta_carve_rec_t *rec = &s_best;
-    bool changed = false;
-
-    // 第一遍:收集需擦除的条目
-    for (uint8_t i = 0; i < rec->carve.data_count; i++) {
-        fprintf(stderr, "DEBUG erase_data: checking data[%d]: play_id=%u (want %u) label='%s' (want '%s')\n",
-                i, rec->carve.data[i].play_id, play_id, rec->carve.data[i].label, label ? label : "NULL");
-        if (rec->carve.data[i].play_id != play_id) continue;
-        if (label && rec->carve.data[i].label[0] != '\0' &&
-            strcmp(rec->carve.data[i].label, label) != 0) {
-            fprintf(stderr, "DEBUG erase_data: label mismatch, skipping\n");
-            continue;
-        }
-        const uint32_t off = rec->carve.data[i].offset;
-        const uint32_t sz  = rec->carve.data[i].size;
-        // 在池中定位对应分区并擦除
-        const meta_pool_desc_t *p = meta_carve_pool();
-        bool found = false;
-        fprintf(stderr, "DEBUG erase_data: offset=0x%06X size=0x%06X\n", off, sz);
-        for (int si = 0; si < 2; si++) {
-            const meta_pool_seg_t *seg = &p->seg[si];
-            fprintf(stderr, "DEBUG erase_data: pool[%d] start=0x%06X end=0x%06X check=%u >= %u && %u <= %u\n",
-                    si, seg->start, seg->end, off, seg->start, off + sz, seg->end);
-            if (off >= seg->start && off + sz <= seg->end) {
-                found = true;
-                break;
-            }
-        }
-        fprintf(stderr, "DEBUG erase_data: found=%d\n", found);
-        if (!found) continue;   // 异常:跳过
-
-        // 擦除池内数据
-        fprintf(stderr, "DEBUG erase_data: calling esp_flash_erase_region(0x%08X, 0x%08X)\n", off, sz);
-        const esp_err_t e = esp_flash_erase_region(NULL, off, sz);
-        fprintf(stderr, "DEBUG erase_data: erase result=%d (%s)\n", e, 
-                e == ESP_OK ? "OK" : (e == ESP_ERR_INVALID_ARG ? "INVALID_ARG" : "OTHER"));
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "erase data @0x%08lx failed: %s", (unsigned long)off,
-                     esp_err_to_name(e));
-            return e;
-        }
-        // 完全移除该数据条目
-        if (i + 1 < rec->carve.data_count) {
-            memmove(&rec->carve.data[i], &rec->carve.data[i + 1],
-                    sizeof(rec->carve.data[0]) * (rec->carve.data_count - i - 1));
-        }
-        rec->carve.data_count--;
-        i--;  // adjust index since we removed an element
-        changed = true;
-        break;  // only erase one entry at a time for this call
+    // 定位一条匹配记录(本函数一次只处理一条)。
+    int idx = -1;
+    for (uint8_t i = 0; i < s_carve.data_count; i++) {
+        if (s_carve.data[i].play_id != play_id) continue;
+        if (label && s_carve.data[i].label[0] != '\0' &&
+            strcmp(s_carve.data[i].label, label) != 0) continue;
+        idx = (int)i;
+        break;
     }
+    if (idx < 0) return ESP_OK;   // 无匹配:幂等 no-op
 
-    if (!changed) return ESP_OK;
-    
-    // Update state directly (don't use commit to avoid A/B read-back issues)
-    s_best.carve = rec->carve;
-    s_carve = rec->carve;
-    
+    const uint32_t off = s_carve.data[idx].offset;
+    const uint32_t sz  = s_carve.data[idx].size;
+
+    // 记录先行:先把条目移出记录并持久化,再擦字节 —— 断电最坏只残留一段
+    // 已不被引用的空间(下次分配可复用),不会留下指向已擦区域的幽灵 carve。
+    s_work = s_carve;
+    if (!meta_carve_remove_data(&s_work, (uint8_t)idx)) return ESP_ERR_INVALID_ARG;
+    const esp_err_t ce = meta_carve_flash_commit(&s_work, false);
+    if (ce != ESP_OK) return ce;
+
+    const esp_err_t e = esp_flash_erase_region(NULL, off, sz);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "erase data @0x%08lx failed: %s", (unsigned long)off,
+                 esp_err_to_name(e));
+        return e;
+    }
     return ESP_OK;
 }
 
 uint32_t meta_carve_flash_arc(uint32_t target)
 {
-    if (!s_active || !s_have_record) return 0;
-    if (target == 0) return 0;
+    if (!s_active || !s_have_record || target == 0) return 0;
 
+    // 最旧优先(数组序 = 分配序),整条回收 ARCHIVED 记录。整条回收保证擦除
+    // 区间按 4KB 对齐(esp_flash_erase_region 要求);可能略超 target —— 多
+    // 回收总是安全方向。
+    s_work = s_carve;
+    uint32_t off[META_DATA_MAX], sz[META_DATA_MAX];
+    uint8_t n = 0;
     uint32_t reclaimed = 0;
-
-    // 最旧优先:按写入顺序正序遍历(先写的数据在数组前面)
-    for (uint8_t i = 0; i < s_carve.data_count; i++) {
-        if (s_carve.data[i].state != META_DATA_ARCHIVED) continue;
-        if (s_carve.data[i].size == 0) continue;
-
-        const uint32_t sz = s_carve.data[i].size;
-        const uint32_t take = (sz < target - reclaimed) ? sz : (target - reclaimed);
-        if (take == 0) break;
-
-        // 擦除池内空间
-        const esp_err_t e = esp_flash_erase_region(NULL, s_carve.data[i].offset, take);
-        if (e != ESP_OK) {
-            ESP_LOGW(TAG, "ARC erase failed @0x%08lx: %s",
-                     (unsigned long)s_carve.data[i].offset, esp_err_to_name(e));
+    uint8_t i = 0;
+    while (i < s_work.data_count && reclaimed < target && n < META_DATA_MAX) {
+        if (s_work.data[i].state != META_DATA_ARCHIVED || s_work.data[i].size == 0) {
+            i++;
             continue;
         }
-
-        if ((uint32_t)take >= sz) {
-            // 完全回收:压缩数组移除条目
-            if (i + 1 < s_carve.data_count) {
-                memmove(&s_carve.data[i], &s_carve.data[i + 1],
-                        sizeof(s_carve.data[0]) * (s_carve.data_count - i - 1));
-            }
-            s_carve.data_count--;
-            i--;  // adjust index since we removed an element
-        } else {
-            // 部分回收:缩小条目大小并调整偏移
-            s_carve.data[i].offset += take;
-            s_carve.data[i].size -= take;
-        }
-        reclaimed += take;
-
-        if (reclaimed >= target) break;
+        off[n] = s_work.data[i].offset;
+        sz[n]  = s_work.data[i].size;
+        n++;
+        reclaimed += s_work.data[i].size;
+        if (!meta_carve_remove_data(&s_work, i)) return 0;   // 压缩:下标不前进
     }
+    if (n == 0) return 0;
 
+    // 记录先行:先持久化"不再引用这些区域",再擦字节 —— 断电只会残留未引用空间。
+    const esp_err_t ce = meta_carve_flash_commit(&s_work, false);
+    if (ce != ESP_OK) return 0;
+
+    for (uint8_t k = 0; k < n; k++) {
+        const esp_err_t e = esp_flash_erase_region(NULL, off[k], sz[k]);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "ARC erase failed @0x%08lx: %s",
+                     (unsigned long)off[k], esp_err_to_name(e));
+        }
+    }
     return reclaimed;
 }
 
