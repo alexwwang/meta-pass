@@ -53,7 +53,7 @@ wiring that would create data records and drive the reclaim ladder.
 |---|---|---|
 | `meta_carve_flash_set_dirty(play_id)` | Done | `meta_carve_flash.h`; called at finalize `meta_store_install.c:666` |
 | `meta_carve_flash_archive_slot_and_data(int slot)` | Done | declared/implemented; called from `h_install_remove` `meta_store_install.c:1188` |
-| `meta_carve_flash_erase_data(play_id, label)` | Done, **no caller** | implemented; no HTTP route yet |
+| `meta_carve_flash_erase_data(play_id, label)` | Done (C side) | driven by `eraseData:true` on `POST /api/install/remove` (`h_install_remove`); phone-side UI control is a follow-up |
 | `meta_carve_flash_arc(target)` | Partial wiring | implemented; called only from `/api/backup/import` `meta_store_install.c:1386`; install no-fit path not wired |
 | `meta_carve_flash_data_copy` | Done | implemented; called at finalize `meta_store_install.c:652` |
 | Manifest `data[]` parse | Done | `meta_install_model.c:131` (`play_id`/`size`/`label`; constant is `META_DATA_MAX`, not `META_MANIFEST_DATA_MAX`) |

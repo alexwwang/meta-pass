@@ -174,15 +174,22 @@ bool meta_install_model_parse_session_req(const char *json, size_t len,
     return true;
 }
 
-bool meta_install_model_parse_remove(const char *json, size_t len, int *slot_out)
+bool meta_install_model_parse_remove(const char *json, size_t len,
+                                     meta_install_remove_req_t *out)
 {
-    if (!json || len == 0 || !slot_out) return false;
+    if (!json || len == 0 || !out) return false;
     int64_t v;
     // 只认 {"slot":N} 的 N(scan_int 拒绝字符串/小数);缺字段即拒,半截请求
     // 不得进入擦除路径(适配层映射 400)。
     if (!meta_store_json_get_int(json, len, "slot", &v)) return false;
     if (v < 0 || v > META_SLOT_COUNT - 1) return false;
-    *slot_out = (int)v;
+
+    // eraseData 可选:缺省/非布尔 → false(归档;更安全的一侧,不会误擦)。
+    bool erase = false;
+    (void)meta_store_json_get_bool(json, len, "eraseData", &erase);
+
+    out->slot = (int)v;
+    out->erase_data = erase;
     return true;
 }
 

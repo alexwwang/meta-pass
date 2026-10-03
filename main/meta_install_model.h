@@ -115,10 +115,19 @@ bool meta_install_model_slot_fit(const meta_install_geom_t *g, int8_t slot,
 int meta_install_model_carve_ok(const meta_install_manifest_t *m,
                                 const meta_carve_t *cur);
 
-// dynslot 显式删除(design §4.5 Remove,POST /api/install/remove)请求体解析:
-// {"slot":N},N ∈ [0, META_SLOT_COUNT);缺字段/越界/类型不符(字符串/小数)一律
-// false 且不动 *slot_out。适配层据此映射 400,擦除/提交不得先于它发生。
-bool meta_install_model_parse_remove(const char *json, size_t len, int *slot_out);
+// dynslot 显式删除(design §4.5 Remove / §6,POST /api/install/remove)请求体:
+// {"slot":N[,"eraseData":true]},N ∈ [0, META_SLOT_COUNT)。
+//   - slot:缺字段/越界/类型不符(字符串/小数)一律 false,不动 *out;
+//   - eraseData:可选,缺省 false = 默认归档(design §6 默认保留用户数据)。
+//     JSON true 才置位;非布尔值按缺省 false 处理 —— 落到更安全的归档侧。
+// 返回 false 时适配层映射 400,擦除/提交不得先于它发生。
+typedef struct {
+    int  slot;
+    bool erase_data;   // true = 用户显式"删除数据"(擦字节 + 移除记录)
+} meta_install_remove_req_t;
+
+bool meta_install_model_parse_remove(const char *json, size_t len,
+                                     meta_install_remove_req_t *out);
 
 // 删除可行性(纯判定,设备权威的一部分):slot 必须在规范 carve 内
 // (0 <= slot < cur->count)。false → 适配层映射 404,不擦不提交、seq 不动。

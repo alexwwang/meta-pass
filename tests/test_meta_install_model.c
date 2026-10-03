@@ -302,20 +302,40 @@ static void test_parse_session_req(void)
 
 static void test_parse_remove(void)
 {
-    int slot = -1;
-    assert(meta_install_model_parse_remove("{\"slot\":3}", 10, &slot));
-    assert(slot == 3);
-    assert(meta_install_model_parse_remove("{ \"slot\" : 0 }", 14, &slot));
-    assert(slot == 0);
+    meta_install_remove_req_t r;
 
-    // 缺 slot / 越界 / 负数 / 非整数 / 空输入一律拒绝(拒绝点即 false,slot 不变)。
-    assert(!meta_install_model_parse_remove("{\"x\":1}", 7, &slot));
-    assert(!meta_install_model_parse_remove("{\"slot\":8}", 10, &slot));    // >= META_SLOT_COUNT
-    assert(!meta_install_model_parse_remove("{\"slot\":-1}", 11, &slot));
-    assert(!meta_install_model_parse_remove("{\"slot\":\"3\"}", 12, &slot));
-    assert(!meta_install_model_parse_remove("{\"slot\":3.5}", 12, &slot));
-    assert(!meta_install_model_parse_remove("", 0, &slot));
-    assert(!meta_install_model_parse_remove(NULL, 10, &slot));
+    // slot 必填;eraseData 可选(缺省 = 归档)。
+    const char *j1 = "{\"slot\":3}";
+    assert(meta_install_model_parse_remove(j1, strlen(j1), &r));
+    assert(r.slot == 3);
+    assert(!r.erase_data);   // 缺省 = 归档(design §6)
+
+    const char *j2 = "{ \"slot\" : 0 }";
+    assert(meta_install_model_parse_remove(j2, strlen(j2), &r));
+    assert(r.slot == 0);
+
+    // eraseData:true → 显式擦除;false → 归档。
+    const char *j3 = "{\"slot\":2,\"eraseData\":true}";
+    assert(meta_install_model_parse_remove(j3, strlen(j3), &r));
+    assert(r.slot == 2 && r.erase_data);
+
+    const char *j4 = "{\"slot\":2,\"eraseData\":false}";
+    assert(meta_install_model_parse_remove(j4, strlen(j4), &r));
+    assert(r.slot == 2 && !r.erase_data);
+
+    // 非布尔 eraseData 落到更安全的归档侧(不误擦)。
+    const char *j5 = "{\"slot\":2,\"eraseData\":\"yes\"}";
+    assert(meta_install_model_parse_remove(j5, strlen(j5), &r));
+    assert(r.slot == 2 && !r.erase_data);
+
+    // 缺 slot / 越界 / 负数 / 非整数 / 空输入一律拒绝(不动 *out)。
+    assert(!meta_install_model_parse_remove("{\"x\":1}", 7, &r));
+    assert(!meta_install_model_parse_remove("{\"slot\":8}", 10, &r));    // >= META_SLOT_COUNT
+    assert(!meta_install_model_parse_remove("{\"slot\":-1}", 11, &r));
+    assert(!meta_install_model_parse_remove("{\"slot\":\"3\"}", 12, &r));
+    assert(!meta_install_model_parse_remove("{\"slot\":3.5}", 12, &r));
+    assert(!meta_install_model_parse_remove("", 0, &r));
+    assert(!meta_install_model_parse_remove(NULL, 10, &r));
     printf("PASS remove req parse\n");
 }
 

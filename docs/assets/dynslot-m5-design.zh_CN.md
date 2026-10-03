@@ -51,7 +51,7 @@ Schema、分配器与生命周期 API 均已实现，并由
 |---|---|---|
 | `meta_carve_flash_set_dirty(play_id)` | 已完成 | `meta_carve_flash.h`；finalize 处调用 `meta_store_install.c:666` |
 | `meta_carve_flash_archive_slot_and_data(int slot)` | 已完成 | 已声明/实现；`h_install_remove` 调用 `meta_store_install.c:1188` |
-| `meta_carve_flash_erase_data(play_id, label)` | 已完成，**无调用方** | 已实现；尚无 HTTP 路由 |
+| `meta_carve_flash_erase_data(play_id, label)` | 已完成（C 侧） | 由 `POST /api/install/remove` 的 `eraseData:true` 驱动（`h_install_remove`）；手机端 UI 开关为后续项 |
 | `meta_carve_flash_arc(target)` | 接线部分 | 已实现；仅 `/api/backup/import` 调用 `meta_store_install.c:1386`；安装 no-fit 路径未接线 |
 | `meta_carve_flash_data_copy` | 已完成 | 已实现；finalize 处调用 `meta_store_install.c:652` |
 | manifest `data[]` 解析 | 已完成 | `meta_install_model.c:131`（`play_id`/`size`/`label`；常量是 `META_DATA_MAX`，非 `META_MANIFEST_DATA_MAX`） |

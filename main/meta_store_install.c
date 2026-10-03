@@ -1171,30 +1171,52 @@ static esp_err_t h_install_remove(httpd_req_t *req)
     }
     if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
 
-    int slot = -1;
-    char *p = strstr(body, "\"slot\"");
-    if (!p) return reply(req, "400 Bad Request", "missing slot");
-    p = strchr(p, ':');
-    if (!p) return reply(req, "400 Bad Request", "malformed slot");
-    slot = (int)strtol(p + 1, NULL, 10);
-    if (slot < 0) return reply(req, "400 Bad Request", "invalid slot");
+    // 严格解析(scan_int 拒字符串/小数;旧手写 strstr 会把 "slot":"3" 当 0 删错槽)。
+    meta_install_remove_req_t rm;
+    if (!meta_install_model_parse_remove(body, len, &rm)) {
+        return reply(req, "400 Bad Request", "invalid remove request");
+    }
 
     const meta_carve_t *carve = meta_carve_flash_carve();
-    if (!carve || slot >= (int)carve->count) {
+    if (!meta_install_model_remove_ok(carve, rm.slot)) {
         return reply(req, "404 Not Found", "no such slot");
     }
 
-    // M5: 先归档数据(不擦字节,保留用户数据)
-    esp_err_t arc_err = meta_carve_flash_archive_slot_and_data(slot);
-    if (arc_err != ESP_OK && arc_err != ESP_ERR_INVALID_ARG) {
-        ESP_LOGW(TAG, "archive_slot_and_data failed: %s", esp_err_to_name(arc_err));
+    if (rm.erase_data) {
+        // 显式"删除数据"(design §6):擦该玩法全部数据记录(字节 + 记录)。
+        // erase_data 一次一条且会改动记录 —— 先快照 label 列表再逐条擦。
+        const uint32_t pid = carve->slot[rm.slot].play_id;
+        if (pid != 0) {
+            char labels[META_DATA_MAX][META_DATA_LABEL_MAX + 1];
+            uint8_t n = 0;
+            for (uint8_t i = 0; i < carve->data_count && n < META_DATA_MAX; i++) {
+                if (carve->data[i].play_id != pid) continue;
+                memcpy(labels[n], carve->data[i].label, sizeof(labels[0]));
+                labels[n][META_DATA_LABEL_MAX] = '\0';
+                n++;
+            }
+            for (uint8_t i = 0; i < n; i++) {
+                const esp_err_t e = meta_carve_flash_erase_data(pid, labels[i]);
+                if (e != ESP_OK) {
+                    ESP_LOGW(TAG, "erase_data failed: play_id=%u label=%s",
+                             (unsigned)pid, labels[i]);
+                }
+            }
+        }
+    } else {
+        // 默认归档:不擦字节,保留用户数据,可被回收阶梯回收(design §6)。
+        const esp_err_t arc_err = meta_carve_flash_archive_slot_and_data(rm.slot);
+        if (arc_err != ESP_OK && arc_err != ESP_ERR_INVALID_ARG) {
+            ESP_LOGW(TAG, "archive_slot_and_data failed: %s", esp_err_to_name(arc_err));
+        }
     }
 
-    if (meta_carve_flash_remove(slot) != ESP_OK) {
+    if (meta_carve_flash_remove(rm.slot) != ESP_OK) {
         return reply(req, "500 Internal Server Error", "remove failed");
     }
 
-    ESP_LOGI(TAG, "slot %d removed, data archived", slot);
+    ESP_LOGI(TAG, "slot %d removed (%s)", rm.slot,
+             rm.erase_data ? "data erased" : "data archived");
     return reply(req, "200 OK", "ok");
 }
 
