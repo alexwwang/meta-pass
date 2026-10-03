@@ -8,20 +8,88 @@ Date: 2026-10-03
 Branch: `feat/dynslot`
 Parent: `dynslot-m5-design.md` (lifecycle), `dynslot-design.md` §4.5 (reclaim ladder).
 
-Status: **decisions confirmed (2026-10-03)** — implement per §2/§3/§5; order is
-**P1-4 then P0-5** (see §7).
+Status: **decisions confirmed (2026-10-03)**, revised after review (§1.0/§4/§7);
+implement per §1.0/§2/§3/§5; order **P1-4 then P0-5** (P1-4 landed).
 
 ## 1. Problem
 
-`meta_install_model.c` parses the manifest `data[]` array into the session,
-but nothing creates data-carve records: `meta_carve_place_data`,
-`meta_carve_largest_gap`, and `meta_carve_reclaimable` have no production
-caller. The M5 state machine therefore never starts — the reclaim ladder
-(tiers 3–5) is unreachable from a real install. Evidence: `grep -rn` over
-`main/*.c` shows only definitions and tests.
+Two gaps, the first more fundamental than the second:
 
-This draft fixes that by wiring record creation into the install commit and
-the reclaim ladder into the no-fit decision.
+**F1 (blocking) — the install path never materializes a new slot.**
+`meta_install_model_carve_ok` / `meta_install_geom_from_carve` have zero
+production callers; `geom_refresh()` derives limits from the live partition
+table only and never reads the proposal; the chunk-write path resolves the
+partition by subtype, so a fresh device (safe table, zero ota_N entries)
+fails at partition lookup on the very first install. P0-5 only fixes data
+records, and the transaction would have nothing to attach to.
+
+**F2 — nobody creates data records.** `meta_carve_place_data` and
+`meta_carve_largest_gap` have no production caller (`meta_carve_reclaimable`
+has one, backup-import logging). The M5 state machine never starts — the
+reclaim ladder (tiers 3–5) is unreachable from a real install. Evidence:
+`grep -rn` over `main/*.c` shows only definitions and tests.
+
+This draft wires both layers: new-slot materialization (F1) + record
+creation (F2) in one transaction, and the reclaim ladder into the no-fit
+decision.
+
+### 1.0 How F1 materializes (review addendum 2026-10-03 — key constraint)
+
+**Why the table cannot be rewritten mid-upload: the IDF partition-table
+cache.** `esp_partition_find_first` (used by both
+`meta_store_slot_partition` and `esp_ota_begin`) loads the 0x8000 table into
+an SRAM cache on first access; a slot materialized at run time is invisible
+to the current boot. Therefore:
+
+- Materialization happens at **prepare (the confirm step)**, followed by a
+  **reboot**; the upload runs on the next boot, where the cache is fresh and
+  the existing chunk/OTA paths need zero changes.
+- The "idempotent retry" branch already in `carve_ok` (proposal slot already
+  in the carve → return its index) exists precisely for this: after reboot
+  the phone re-sends the same prepare, hits the idempotent branch, and the
+  flow continues. That branch having zero production callers is the other
+  half of the F1 evidence.
+- Phone side already has the matching machinery: `waitDeviceBack` (poll
+  status until the service is back after a reboot) and the extracted()
+  retry cache — the same rhythm as the post-delete 150 ms reset.
+
+**Prepare-time materialization sequence (phone-picked and device-confirm
+alike):**
+
+1. `carve_ok(m, cur)` validates the proposal (size = `meta_carve_need`,
+   offset/index match; already-placed → idempotent return, no duplicate).
+2. `meta_carve_place` on the `next` copy (slot first).
+3. For each `manifest.data[i]`: reserved-label reject → `place_data` +
+   `append` (PRISTINE); any failure → whole thing fails (copy discarded, no
+   partial carve).
+4. `commit(&next, true)` materializes the table → reboot.
+5. Phone re-sends prepare → idempotent hit → session/chunk/finalize on the
+   existing path.
+
+**Empty-slot lifecycle on cancel/stall (F3):** materializing at prepare
+introduces "carved but never written" slots. Rulings:
+
+- Session cancel (`meta_install_cancel`): a slot created by this session is
+  removed via `meta_carve_flash_remove` (not marked INVALID — there is no
+  image to be "broken"; INVALID means "had an image, now bad"). Existing
+  slots keep the current INVALID path.
+- Offer overwritten by a new prepare (`offer_and_upload_clear`): if the
+  previous offer had materialized a slot, remove it before clearing. The
+  session records a `carved_pending` flag (new slot index) for both paths.
+- Phone-disconnect stall: the empty slot stays in the carve, appears in the
+  remove list, and can be deleted explicitly. It holds pool space only —
+  same class as a half-written INVALID slot after a power cut. No automatic
+  GC (honesty boundary).
+
+**set_dirty semantics fix (F4):** finalize currently flips ALL PRISTINE
+records of the play_id to DIRTY — wrong for records created by THIS
+session (the region was just erased, there is no user data; marking it DIRTY
+makes tier-4 PRISTINE reclaim unreachable minutes after creation). Ruling:
+`set_dirty` skips session-created records; only pre-existing records
+preserved by the upgrade path (data_copy sources) are marked DIRTY at
+finalize. Implementation: diff the (play_id,label) set "present at prepare
+time" vs "present now", or simpler — records created at prepare are marked
+directly.
 
 ### 1.1 Addressing model (why the offset is transparent)
 
@@ -115,7 +183,8 @@ Proposed JSON on the prepare/confirm failure (status code **TBD**, see §7):
   "for": "slot",
   "needed": 1572864,
   "largestGap": 1048576,
-  "reclaimable": 4096
+  "reclaimableArchived": 4096,
+  "reclaimablePristine": 8192
 }
 ```
 
@@ -134,11 +203,12 @@ This satisfies design §4.5 tier 5 ("reject with the numbers") and §12.4
 
 On allocation failure for the slot or a data entry:
 
-1. **Tier 3** — if `reclaimable > 0`, `meta_carve_flash_arc(needed - free)`,
-   then retry the placement once.
+1. **Tier 3** — if `reclaimableArchived > 0`, run
+   `meta_carve_flash_arc(needed - free)` (ARCHIVED only, PRISTINE
+   untouched), then retry the placement once.
 2. **Tier 4** — PRISTINE content is reproducible from the install image but
    may still hold live play data; **do not auto-drop**. Report
-   `reclaimable` and require explicit user consent (a future
+   `reclaimablePristine` and require explicit user consent (a future
    `/api/install/reclaim` with a PRISTINE scope, or the existing
    `eraseData` path).
 3. **Tier 5** — still no fit → reject with the §4 JSON.
@@ -160,15 +230,17 @@ deferred to v2).
   allocator when a data record sits in the pool.
 - **Fixture**: a carve snapshot with one slot + one data record.
 
-## 7. Open questions for the reviewer
+## 7. Resolved (2026-10-03, after review)
 
-1. **Status code** for no-fit: `400 Bad Request`, `409 Conflict`, or
-   `507 Insufficient Storage`? (Backup import already uses `507`.)
-2. **Order**: place the slot before or after data? Slot-first keeps the app
-   offset stable and matches the phone's slot proposal; data-first would
-   keep recordings contiguous. Recommendation: slot-first.
-3. **Per-record breakdown**: is a single failed-entry report enough, or does
-   the UI need the full list of what could not fit?
-4. **P1-4 dependency**: confirm that exposing data occupancy in
-   `/api/install/slots` is in scope before data records are created
-   (otherwise defer data creation until P1-4 lands).
+1. **Status code** for no-fit: `409 Conflict` — the request conflicts with
+   the resource's current state (insufficient space is a state problem, not
+   a syntax problem); backup import's `507` is a different context, no
+   forced consistency. Response body = the §4 JSON.
+2. **Order**: slot first (keeps app offsets stable, matches the phone's
+   slot proposal).
+3. **Per-record breakdown**: report the **first** failed entry only —
+   failure aborts the whole transaction (atomic), a full list has no
+   decision value.
+4. **P1-4 dependency**: landed (58caa0e — `/api/install/slots` exposes data
+   records, `parseSlots` passes them through, `geomFromListing` unions
+   occupancy); record creation unblocked.
