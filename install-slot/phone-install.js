@@ -25,6 +25,7 @@
 // (setSha256,测试用 node:crypto)优先。
 
 import { extractAppImage, isFullImage } from "./extract-app-image.js";
+import { exportBackup, importBackup } from "./backup-data.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing } from "./dynslot-pool.js";
@@ -162,7 +163,8 @@ export function createBridge(deviceOrigin, token) {
     // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
     // 记录+物化表、200 后 150ms 复位 —— 重启窗口内 status 不可达)。
     slots: () => call("/api/install/slots"),
-    remove: (slot) => call("/api/install/remove", { method: "POST", json: { slot } }),
+    remove: (slot, opts) => call("/api/install/remove", { method: "POST",
+      json: opts?.eraseData ? { slot, eraseData: true } : { slot } }),
   };
 }
 
@@ -203,8 +205,11 @@ export function parseSlots(text) {
     for (const x of d.data) {
       if (x && Number.isFinite(x.offset) && x.offset >= 0 &&
           Number.isFinite(x.size) && x.size > 0) {
+        // play_id/label 为导出闭环携带(设备 P1-4 后发出);旧固件无 → 0/""
         data.push({ offset: x.offset, size: x.size,
-                    state: Number.isInteger(x.state) ? x.state : 0 });
+                    state: Number.isInteger(x.state) ? x.state : 0,
+                    play_id: Number.isInteger(x.play_id) ? x.play_id : 0,
+                    label: typeof x.label === "string" ? x.label : "" });
       }
     }
   }
@@ -1120,6 +1125,26 @@ export function boot(opts = {}) {
   const MGMT_STATE = { valid: "有固件", invalid: "无固件", empty: "空" };
 
   function renderMgmt(info, busy) {
+    // M5 备份闭环:按 play_id 分组归档数据(state==2),每组一个导出按钮;
+    // 导入走文件选择器。设备旧固件(data 无 play_id)不显示导出。
+    const archivedByPid = new Map();
+    for (const d of info.data || []) {
+      if (d.state !== 2 || !d.play_id) continue;
+      if (!archivedByPid.has(d.play_id)) archivedByPid.set(d.play_id, []);
+      archivedByPid.get(d.play_id).push(d);
+    }
+    const exportRows = [...archivedByPid.entries()].map(([pid, recs]) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+          <span style="flex:1;font-size:13.5px;color:var(--ink2)">玩法 ${pid} 的归档数据(${recs.length} 条 · ${fmtMB(recs.reduce((a, r) => a + r.size, 0))})</span>
+          <button class="mp-btn ghost" data-export-pid="${pid}" style="padding:6px 12px;font-size:13px">导出</button>
+        </div>`).join("");
+    const backupSection = `
+      <h4 style="margin-top:14px">数据备份</h4>
+      ${exportRows || `<p class=mp-sub>没有归档数据可导出</p>`}
+      <div class=mp-actions style="margin-top:10px">
+        <button id=mp-mgmt-import class="mp-btn ghost">导入备份文件</button>
+        <input type=file id=mp-bk-file accept=".bin,application/octet-stream" style="display:none">
+      </div>`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -1135,6 +1160,7 @@ export function boot(opts = {}) {
       <p class=mp-sub>共 ${info.count} 个槽位 · 剩余空间 ${fmtMB(info.free)}</p>
       ${busy ? `<p class=mp-sub style="color:var(--red)">安装进行中 —— 请先完成或取消安装，再删除槽位</p>` : ""}
       ${rows}
+      ${backupSection}
       <div class=mp-actions>
         <button id=mp-mgmt-re class=mp-btn>刷新</button>
         <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
@@ -1142,6 +1168,31 @@ export function boot(opts = {}) {
     </section>`);
     $("mp-mgmt-x").onclick = clearPanel;
     $("mp-mgmt-re").onclick = showMgmt;
+    root.querySelectorAll("[data-export-pid]").forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        const r = await exportBackup(bridge, Number(b.dataset.exportPid));
+        log(r.ok ? `✓ 已导出玩法 ${b.dataset.exportPid} 的归档数据(${r.count} 条)`
+                 : `导出失败:${r.reason}`, r.ok ? "ok" : "error");
+        b.disabled = false;
+        if (!r.ok) failSheet("导出失败", r.reason);
+      };
+    });
+    if ($("mp-mgmt-import")) {
+      $("mp-mgmt-import").onclick = () => $("mp-bk-file").click();
+      $("mp-bk-file").onchange = async () => {
+        const file = $("mp-bk-file").files[0];
+        $("mp-bk-file").value = "";
+        if (!file) return;
+        const sr = await bridge.status();
+        let fw = "";
+        try { fw = JSON.parse(sr.text)?.firmware_version || ""; } catch { /* 缺字段 → 版本校验由设备兜底 */ }
+        const r = await importBackup(bridge, file, fw);
+        log(r.ok ? "✓ 备份已导入" : `导入失败:${r.reason}`, r.ok ? "ok" : "error");
+        if (r.ok) showMgmt();
+        else failSheet("导入失败", r.reason);
+      };
+    }
     root.querySelectorAll("[data-rm]").forEach((b) => {
       if (busy) { b.disabled = true; return; }
       b.onclick = () => {
@@ -1194,25 +1245,31 @@ export function boot(opts = {}) {
     const arcMsg = arcCount > 0
       ? `<p class="mp-sub">⚠️ ${arcCount} 条归档数据将保留。仅删除槽位记录。</p>`
       : `<p class="mp-sub">确认删除槽位 ${slot}?数据已归档可恢复。</p>`;
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>${arcMsg}<div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>确认删除</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>${arcMsg}
+      ${arcCount ? `<label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px">
+        <input type=checkbox id=mp-rm-erase style="margin-top:3px">
+        <span>同时删除数据(擦除后不可恢复;不勾 = 数据归档保留,可日后导出恢复)</span>
+      </label>` : ""}
+      <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>确认删除</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
       $("mp-mgmt-confirm").textContent = "删除中...";
-      await doRemoveCommit(slot);
+      const erase = !!$("mp-rm-erase")?.checked;
+      await doRemoveCommit(slot, erase);
     };
     $("mp-mgmt-x").onclick = clearPanel;
   }
 
-  async function doRemoveCommit(slot) {
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在归档数据并删除…</p></section>`);
-    const r = await bridge.remove(slot);
+  async function doRemoveCommit(slot, eraseData = false) {
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>${eraseData ? "正在擦除数据并删除…" : "正在归档数据并删除…"}</p></section>`);
+    const r = await bridge.remove(slot, { eraseData });
     if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
     if (r.status === 409) { failSheet("无法删除", "安装进行中 —— 请先完成或取消安装"); return; }
     if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
     if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
     if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
-    // M5: 200 = 数据已归档 + 记录已提交,150ms 后复位。
-    log(`✓ 槽位 ${slot} 已删除(数据已归档),设备重启中…`, "ok");
+    // M5: 200 = 记录已提交,150ms 后复位。
+    log(`✓ 槽位 ${slot} 已删除(${eraseData ? "数据已擦除" : "数据已归档"}),设备重启中…`, "ok");
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>已提交,等待设备重启恢复…</p></section>`);
     const back = await waitDeviceBack(bridge, { tries: 25, delayMs: 1200 });
     if (back) {

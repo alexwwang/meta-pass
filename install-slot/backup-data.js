@@ -22,7 +22,7 @@ export const BACKUP_DATA_MAX = 8;
 export function serializeDataRecord(rec) {
   const { play_id, offset, size, state, type, subtype, label } = rec;
   const labelBytes = new TextEncoder().encode(label.padEnd(16, '\0').slice(0, 16));
-  const buf = new ArrayBuffer(4 + 4 + 4 + 1 + 1 + 1 + 16);
+  const buf = new ArrayBuffer(4 + 4 + 4 + 1 + 1 + 1 + 1 + 16);  // 32B(此前少算 reserved 1B,从未运行故未爆)
   const view = new DataView(buf);
   view.setUint32(0, play_id, true);   // little-endian
   view.setUint32(4, offset, true);
@@ -110,7 +110,7 @@ export function serializeBackup(play_id, firmware_version, records) {
   for (const rec of records) {
     parts.push(serializeDataRecord(rec));
   }
-  return new Uint8Array([...header, ...parts.flatMap(p => Array.from(p))]);
+  return new Uint8Array(parts.flatMap((p) => Array.from(p)));
 }
 
 // 导出：从手机获取设备上的归档数据并生成备份
@@ -136,8 +136,9 @@ export async function exportBackup(bridge, play_id) {
     return { ok: false, reason: 'no archived data for this play' };
   }
   
-  // 4. 序列化备份
-  const backup = serializeBackup(play_id, status.firmware_version, archived);
+  // 4. 序列化备份(type/subtype 设备侧恒为 1/1,清单模型不依赖,补默认值)
+  const backup = serializeBackup(play_id, status.firmware_version,
+    archived.map((d) => ({ type: 1, subtype: 1, ...d })));
   if (!backup) {
     return { ok: false, reason: 'backup serialization failed' };
   }
@@ -154,6 +155,22 @@ export async function exportBackup(bridge, play_id) {
   URL.revokeObjectURL(url);
   
   return { ok: true, count: archived.length };
+}
+
+// 由 parseBackup 结果构造导入载荷。键名与设备 h_backup_import 的解析器
+// 逐字对应("data" 数组,元素 offset/size/state/label)——改任何一侧都必须
+// 同步另一侧;host 测试钉死该契约。
+export function buildImportPayload(parsed) {
+  return JSON.stringify({
+    play_id: parsed.play_id,
+    firmware_version: parsed.firmware_version,
+    data: parsed.records.map((r) => ({
+      offset: r.offset,
+      size: r.size,
+      state: r.state,
+      label: r.label,
+    })),
+  });
 }
 
 // 导入：上传备份文件到设备
@@ -179,20 +196,8 @@ export async function importBackup(bridge, file, firmwareVersion) {
     };
   }
   
-  // 4. 调用设备导入 API
-  const payload = JSON.stringify({
-    play_id: parsed.play_id,
-    firmware_version: parsed.firmware_version,
-    data_count: parsed.records.length,
-    records: parsed.records.map(r => ({
-      offset: r.offset,
-      size: r.size,
-      state: r.state,
-      type: r.type,
-      subtype: r.subtype,
-      label: r.label,
-    })),
-  });
+  // 4. 调用设备导入 API(载荷键名与设备解析器逐字对应)
+  const payload = buildImportPayload(parsed);
   
   const result = await fetch(`${bridge.origin}/api/backup/import`, {
     method: 'POST',

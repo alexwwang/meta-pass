@@ -908,11 +908,15 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   assert.equal(phone.parseSlots('{"count":0,"free":10,"slots":[]}').slots.length, 0);
 
   // P1-4:parseSlots 保留 data 占用记录(旧固件无字段 → [];坏条目丢弃)。
+  // 导出闭环后条目携带 play_id/label(缺省 0/"")。
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[]}').data, []);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":1572864,"size":131072,"state":1}]}').data,
-    [{ offset: 0x180000, size: 0x20000, state: 1 }]);
+    [{ offset: 0x180000, size: 0x20000, state: 1, play_id: 0, label: "" }]);
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"play_id":42,"offset":1572864,"size":131072,"state":2,"label":"rec"}]}').data,
+    [{ offset: 0x180000, size: 0x20000, state: 2, play_id: 42, label: "rec" }]);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":"x","size":1},{"offset":10,"size":0}]}').data,
     [], "malformed data records dropped");

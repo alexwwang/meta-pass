@@ -1004,12 +1004,18 @@ static esp_err_t h_install_status(httpd_req_t *req)
 
     char name_esc[META_NAME_LEN * 2 + 1];
     json_escape(s_session.name, name_esc, sizeof(name_esc));
-    char body[384];
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    const char *fw_ver = (app_desc && app_desc->version[0] != '\0')
+                         ? app_desc->version : "0.0.0-placeholder";
+    char fw_esc[META_BACKUP_VERSION_MAX * 2 + 1];
+    json_escape(fw_ver, fw_esc, sizeof(fw_esc));
+    char body[448];
     const int n = snprintf(
         body, sizeof(body),
         "{\"protocol\":%d,\"state\":\"%s\",\"message\":\"%s\","
         "\"active\":%s,\"offer\":%s,\"confirmed\":%s,\"session\":%s,"
-        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ",\"name\":\"%s\"}",
+        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ",\"name\":\"%s\","
+        "\"firmware_version\":\"%s\"}",
         META_INSTALL_PROTOCOL_V1,
         s_session.state ? s_session.state : "idle",
         s_session.message ? s_session.message : "",
@@ -1020,7 +1026,7 @@ static esp_err_t h_install_status(httpd_req_t *req)
         s_session.confirmed_slot,
         s_session.session_offset,
         s_session.manifest_valid ? s_session.manifest.image_len : 0u,
-        name_esc);
+        name_esc, fw_esc);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, body, (size_t)n);
@@ -1321,7 +1327,7 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         }
     }
 
-    char resp[2048];
+    char resp[3072];   // P1-4 后 data[] 携带 play_id/label(导出闭环),余量上调
     int off = 0;
     // Use PRId32 for count (int), PRIu32 for uint32_t
     off += snprintf(resp + off, sizeof(resp) - off,
@@ -1366,13 +1372,19 @@ static esp_err_t h_install_slots(httpd_req_t *req)
     // 否则手机提案会落进数据区、被设备 carve_ok 拒(L4 分歧)。只给
     // offset/size/state(占用所需);label 不输出,避免分区标签含引号时的
     // JSON 注入面(手机侧占用计算不需要 label)。
+    // data[] 在 P1-4 占用域之外再携带 play_id/label:手机侧"导出归档数据"
+    // 按 play_id 分组生成备份清单(M5 备份闭环);label 走 json_escape,
+    // 与上方 name 同一注入面处理。
     off += snprintf(resp + off, sizeof(resp) - off, "],\"data\":[");
     for (uint8_t j = 0; j < carve->data_count; j++) {
         const meta_carve_data_t *d = &carve->data[j];
+        char label_esc[META_DATA_LABEL_MAX * 2 + 1];
+        json_escape(d->label, label_esc, sizeof(label_esc));
         if (j) off += snprintf(resp + off, sizeof(resp) - off, ",");
         off += snprintf(resp + off, sizeof(resp) - off,
-            "{\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"state\":%u}",
-            d->offset, d->size, (unsigned)d->state);
+            "{\"play_id\":%" PRIu32 ",\"offset\":%" PRIu32
+            ",\"size\":%" PRIu32 ",\"state\":%u,\"label\":\"%s\"}",
+            d->play_id, d->offset, d->size, (unsigned)d->state, label_esc);
     }
     off += snprintf(resp + off, sizeof(resp) - off, "]}");
     httpd_resp_set_type(req, "application/json");

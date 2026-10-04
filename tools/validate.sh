@@ -163,6 +163,7 @@ PY
         # dynslot 池几何/分配器(手机提案 = 设备 meta_carve_place 同算法,§4.5 L4)
         "${node_bin}" tests/test_dynslot_pool.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
+        "${node_bin}" tools/install-slot/test-backup-data.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs
     else
