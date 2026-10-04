@@ -149,6 +149,22 @@ static lv_obj_t *add_row_h(lv_obj_t *parent, int idx, int y, int h, const char *
     return panel;
 }
 
+// 非物品行(FREE/STORE):无阴影面板 + 细边 + 次级墨文字。与槽位卡片形成
+// 明确的视觉分组;位置/高度/导航/环行为不变(选中仍白边黄底)。
+static lv_obj_t *add_row_h_muted(lv_obj_t *parent, int idx, int y, int h, const char *text)
+{
+    lv_obj_t *panel = ui_pixel_panel_create_plain(parent, 12, y, 216, h, UI_PAPER);
+    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK2), 0);
+    lv_obj_t *lbl = lv_label_create(panel);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK2), 0);
+    lv_obj_center(lbl);
+    lv_label_set_text(lbl, text);
+    s_rows[idx] = panel;
+    return panel;
+}
+
 // 标准 40px 行(商店各页沿用原几何)。
 static lv_obj_t *add_row(lv_obj_t *parent, int idx, int y, const char *text)
 {
@@ -314,19 +330,10 @@ static void page_list_build(void)
     for (int r = 0; r < LIST_SLOT_WIN; r++) {
         add_row_h(s_scr, r, LIST_ROW_Y0 + r * LIST_ROW_PITCH, LIST_ROW_H, "");
     }
-    add_row_h(s_scr, LIST_ROW_FREE, LIST_ROW_Y0 + LIST_ROW_FREE * LIST_ROW_PITCH,
-              LIST_ROW_H, "FREE");
-    add_row_h(s_scr, LIST_ROW_STORE, LIST_ROW_Y0 + LIST_ROW_STORE * LIST_ROW_PITCH,
-              LIST_ROW_H, "STORE DOWNLOAD");
-    // 非物品行(FREE/STORE)视觉降级(用户决策:三键无触屏,选中模型必须留在
-    // 环内,故只降视觉权重):细边 + 次级墨色文字。位置/高度/导航/环行为
-    // 全部不变;选中仍走 ui_pixel_set_selected 的黄底,焦点可见性不打折。
-    for (int idx = LIST_ROW_FREE; idx <= LIST_ROW_STORE; idx++) {
-        lv_obj_set_style_border_width(s_rows[idx], 2, 0);
-        lv_obj_set_style_border_color(s_rows[idx], lv_color_hex(UI_INK2), 0);
-        lv_obj_set_style_text_color(lv_obj_get_child(s_rows[idx], 0),
-                                    lv_color_hex(UI_INK2), 0);
-    }
+    add_row_h_muted(s_scr, LIST_ROW_FREE, LIST_ROW_Y0 + LIST_ROW_FREE * LIST_ROW_PITCH,
+                    LIST_ROW_H, "FREE");
+    add_row_h_muted(s_scr, LIST_ROW_STORE, LIST_ROW_Y0 + LIST_ROW_STORE * LIST_ROW_PITCH,
+                    LIST_ROW_H, "STORE DOWNLOAD");
     add_battery(s_scr);
     s_mascot = ui_pixel_mascot_create(s_scr, 101, 242);
     list_refresh();

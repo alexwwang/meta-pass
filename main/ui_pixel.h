@@ -17,6 +17,8 @@
 lv_obj_t *ui_pixel_screen_create(const char *title);
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
                                 uint32_t color);
+lv_obj_t *ui_pixel_panel_create_plain(lv_obj_t *parent, int x, int y, int w, int h,
+                                      uint32_t color);   // 无阴影:非物品行降级
 lv_obj_t *ui_pixel_label(lv_obj_t *parent, const char *text,
                          const lv_font_t *font, uint32_t color);
 lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y);

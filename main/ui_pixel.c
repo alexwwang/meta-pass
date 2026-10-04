@@ -58,6 +58,18 @@ lv_obj_t *ui_pixel_screen_create(const char *title)
     return scr;
 }
 
+// 无阴影面板变体:非物品行(FREE/STORE)用 —— 阴影块是"卡片"观感的主要来源,
+// 去掉后与槽位卡片形成明确的视觉分组(用户决策:选中模型留在环内,只降视觉)。
+lv_obj_t *ui_pixel_panel_create_plain(lv_obj_t *parent, int x, int y, int w, int h,
+                                      uint32_t color)
+{
+    lv_obj_t *panel = block(parent, x, y, w, h, color);
+    lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK), 0);
+    lv_obj_set_style_border_width(panel, 4, 0);
+    lv_obj_set_style_pad_all(panel, 7, 0);
+    return panel;
+}
+
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
                                 uint32_t color)
 {
