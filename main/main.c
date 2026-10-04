@@ -319,7 +319,12 @@ static void list_refresh(void)
         list_free_text(text, sizeof(text));
         lv_label_set_text(s_free_lbl, text);
     }
-    // 行级 enabled:FREE 永不选中;槽行/STORE 可选。
+    // STORE 跟槽位走:钉死在窗口第 3 行会在槽少时与最后一槽之间留死空
+    // (2026-10-04 真机反馈)。槽行隐藏/显示后按可见槽数 k 重定位,
+    // 0 槽时 STORE 顶到窗口首行。STORE 是无影 plain 面板,单对象移动即可。
+    lv_obj_set_pos(s_rows[LIST_ROW_STORE], 12, LIST_ROW_Y0 + k * LIST_ROW_PITCH);
+
+    // 行级 enabled:槽行/STORE 可选。
     const bool fit[LIST_ROWS] = { true, true, true, true };
     const int row_sel = (s_sel < s_list_n) ? (s_sel - s_list_win) : LIST_ROW_STORE;
     rows_refresh_fit(LIST_ROWS, row_sel, fit);
