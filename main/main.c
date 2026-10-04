@@ -61,13 +61,13 @@ typedef enum {
 } page_t;
 
 // ---- 列表页(dynslot,用户决策:只列真实存在的槽 + 剩余可用空间) ----
-// 行布局(34px 紧凑行,5 行在 y=242 的吉祥物前收住):
-//   行0..2 = 槽窗口(≤3 个真实 APP 槽,滑动) / 行3 = FREE(池剩余,不可选)
-//   行4 = STORE(固定入口)
-#define LIST_ROWS       5
+// 行布局(34px 紧凑行,4 行在 y=242 的吉祥物前收住):
+//   行0..2 = 槽窗口(≤3 个真实 APP 槽,滑动) / 行3 = STORE(固定入口)
+// FREE 不是可选项,2026-10-04 真机反馈:独占一行且深色底像"黑框",
+// 挪到草地页脚当状态文字(见 s_free_lbl)。
+#define LIST_ROWS       4
 #define LIST_SLOT_WIN   3
-#define LIST_ROW_FREE   3
-#define LIST_ROW_STORE  4
+#define LIST_ROW_STORE  3
 #define LIST_ROW_H      34
 #define LIST_ROW_Y0     50
 #define LIST_ROW_PITCH  38
@@ -90,6 +90,7 @@ static lv_obj_t *s_info;             // 详情/商店页的多行文本
 static lv_obj_t *s_status_line;      // 商店页状态行
 static lv_obj_t *s_egg_panel;        // 彩蛋页可滚动面板(teardown 时随屏销毁)
 static lv_obj_t *s_mascot;
+static lv_obj_t *s_free_lbl;   // 草地页脚的 FREE 状态文字(非可选项)
 static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(四 CLICK)的匹配状态
 
 // ---- 商店会话状态(UI 上下文;安装会话状态机在 meta_store_install.c) ----
@@ -203,6 +204,7 @@ static void page_teardown(void)
         s_status_line = NULL;
         s_egg_panel = NULL;
         s_mascot = NULL;
+        s_free_lbl = NULL;
         s_timeout_panel = NULL;   // 浮层与影子都是 s_scr 子对象,随屏一起销毁
         s_timeout_lbl = NULL;
         for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
@@ -307,20 +309,19 @@ static void list_refresh(void)
         }
         lv_label_set_text(lbl, text);
     }
-    {
-        lv_obj_t *lbl = lv_obj_get_child(s_rows[LIST_ROW_FREE], 0);
+    if (s_free_lbl) {
         char text[32];
         list_free_text(text, sizeof(text));
-        if (lbl) lv_label_set_text(lbl, text);
+        lv_label_set_text(s_free_lbl, text);
     }
     // 行级 enabled:FREE 永不选中;槽行/STORE 可选。
-    const bool fit[LIST_ROWS] = { true, true, true, false, true };
+    const bool fit[LIST_ROWS] = { true, true, true, true };
     const int row_sel = (s_sel < s_list_n) ? (s_sel - s_list_win) : LIST_ROW_STORE;
     rows_refresh_fit(LIST_ROWS, row_sel, fit);
     // 非物品行降级必须在选中刷新后存活:ui_pixel_set_selected 会把边框重刷
     // 成主墨色(真机反馈:导航后 STORE 与槽位视觉一致)。对未选中的
     // FREE/STORE 重断言次级墨边;选中态(STORE)保持白边黄底不动。
-    for (int idx = LIST_ROW_FREE; idx <= LIST_ROW_STORE; idx++) {
+    for (int idx = LIST_ROW_STORE; idx <= LIST_ROW_STORE; idx++) {
         if (idx == row_sel) continue;
         lv_obj_set_style_border_color(s_rows[idx], lv_color_hex(UI_INK2), 0);
     }
@@ -334,11 +335,16 @@ static void page_list_build(void)
     for (int r = 0; r < LIST_SLOT_WIN; r++) {
         add_row_h(s_scr, r, LIST_ROW_Y0 + r * LIST_ROW_PITCH, LIST_ROW_H, "");
     }
-    add_row_h_muted(s_scr, LIST_ROW_FREE, LIST_ROW_Y0 + LIST_ROW_FREE * LIST_ROW_PITCH,
-                    LIST_ROW_H, "FREE");
     add_row_h_muted(s_scr, LIST_ROW_STORE, LIST_ROW_Y0 + LIST_ROW_STORE * LIST_ROW_PITCH,
                     LIST_ROW_H, "STORE DOWNLOAD");
     add_battery(s_scr);
+    // FREE 放草地页脚(y≈292,UI_GRASS 亮绿底 + 深色小字,见 list_free_text)。
+    {
+        char text[32];
+        list_free_text(text, sizeof(text));
+        s_free_lbl = ui_pixel_label(s_scr, text, &lv_font_montserrat_14, UI_INK);
+        lv_obj_set_pos(s_free_lbl, 148, 292);
+    }
     s_mascot = ui_pixel_mascot_create(s_scr, 101, 242);
     list_refresh();
     lv_screen_load(s_scr);
@@ -1070,6 +1076,7 @@ static void store_goto(page_t page)
         s_info = NULL;
         s_status_line = NULL;
         s_mascot = NULL;
+        s_free_lbl = NULL;
         s_timeout_lbl = NULL;
         for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
     }
