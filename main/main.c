@@ -57,7 +57,6 @@ typedef enum {
     PAGE_STORE_SLOT,   // P3 商店:目标槽位选择(物理确认)
     PAGE_STORE_DL,     // P4 商店:LAN 分块上传进度
     PAGE_STORE_CANCEL, // P4b 商店:取消上传确认(CANCEL/BACK,会话仍在)
-    PAGE_STORE_DONE,   // P5 商店:安装完成提示
 } page_t;
 
 // ---- 列表页(dynslot,用户决策:只列真实存在的槽 + 剩余可用空间) ----
@@ -99,7 +98,6 @@ static meta_install_manifest_t s_offer;          // P2/P3 展示中的 install o
 static bool s_offer_valid;                       // s_offer 是否有效(页面重建复用)
 static bool s_qr_service_failed;                 // P1 起本地 install 服务失败的粘滞提示
 // 跨页键事件吞咽:P5→列表等迁移后,同一次物理按压的尾随 CLICK 不应落在新页。
-static int64_t s_list_arm_at;                    // 列表页 OK 在此时间戳前忽略(ms)
 // QR 直绘静态缓冲(qrcodegen 工作/输出 + RGB565 画布)。bss 共 ~37KB:
 // 不上栈(UI 任务栈吃不下),也不上堆(页面构建期一次性使用)。
 static uint8_t s_qr_tmp[qrcodegen_BUFFER_LEN_MAX];
@@ -119,7 +117,6 @@ static int      s_pick_slots[META_SLOT_COUNT];
 static int      s_pick_n;
 static int      s_pick_win;
 static int      s_pick_rows;                    // P3 创建的行数 = min(3, 候选数)
-static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
@@ -195,7 +192,7 @@ static void page_teardown(void)
         lv_timer_delete(s_store_timer);
         s_store_timer = NULL;
     }
-    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE) {
+    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL) {
         meta_store_net_stop();     // 完整释放 httpd/wifi(资源纪律见 meta_store_net.c)
         meta_install_net_stop();   // 本地 install 服务与 token 一并作废(§8)
     }
@@ -438,6 +435,7 @@ static void store_clear_timeout_prompt(void)
 
 // 定时器回调:商店各页共用。按当前页做对应轮询;会话到期出提示浮层等用户决策。
 static void store_tick(lv_timer_t *t);
+static void goto_page(page_t page);
 
 // 商店页内部迁移:只拆 LVGL 对象,不动网络栈(与 goto_page 的唯一差异)。
 static void store_goto(page_t page);
@@ -446,7 +444,6 @@ static void page_store_info_build(void);
 static void page_store_slot_build(void);
 static void page_store_dl_build(void);
 static void page_store_cancel_build(void);
-static void page_store_done_build(void);
 
 // P0 配网页:AP 态显示热点信息;已存凭证(CONNECTING/ONLINE)态显示当前 SSID
 // 与 RESET WIFI 行 —— 选中并 OK 确认后擦凭证重开配网 AP(改 WiFi 入口)。
@@ -790,35 +787,8 @@ static void page_store_dl_build(void)
     lv_screen_load(s_scr);
 }
 
-// P5 完成提示。
-static void page_store_done_build(void)
-{
-    s_scr = ui_pixel_screen_create("DONE");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 120, UI_PAPER);
-    s_info = lv_label_create(panel);
-    lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    // 完成名/槽位取自 install 会话快照(finalize 成功后保留 name/slot)。
-    // 槽位必须用 st.slot:手机选槽(v2)流程不经过 P3,s_store_installed_slot
-    // 从未赋值 → 恒显示 slot 0(真机 bug:实际装入 slot 2,屏显 slot 0)。
-    meta_install_session_status_t st;
-    meta_install_session_poll(&st);
-    char text[160];
-    snprintf(text, sizeof(text),
-             "%.20s\ninstalled to slot %d.\n\nPower off & on to boot it.",
-             st.name[0] ? st.name : "Firmware",
-             st.slot >= 0 ? st.slot : s_store_installed_slot);
-    lv_label_set_text(s_info, text);
-    add_row(s_scr, 0, 180, "BACK TO LIST");
-    rows_refresh(1, 0);
-    s_sel = 0;
-    ui_pixel_mascot_create(s_scr, 101, 242);
-    store_touch();
-    s_store_timer = lv_timer_create(store_tick, 250, NULL);
-    lv_screen_load(s_scr);
-}
+// (P5 安装完成停留页已移除:安装完成直接 goto_page(PAGE_LIST) —
+//  物化过则受控重启清账,否则直接回列表;token 持久化,手机会话续连。)
 
 // P4b 取消确认页:进入时上传仍在后台进行,二选一决策(取消/继续等)。
 static void page_store_cancel_build(void)
@@ -1011,7 +981,8 @@ static void store_tick(lv_timer_t *t)
         // 终态迁移:done → P5;cancelled(手机侧)→ 回扫码页等新 offer;
         // failed 停留本页,状态行给出原因,OK 短按回扫码页(见 on_key)。
         if (strcmp(ist_state, "done") == 0) {
-            store_goto(PAGE_STORE_DONE);
+            // 完成即离店:物化过则 teardown 后受控重启清账,否则直接回列表。
+            goto_page(PAGE_LIST);
             break;
         }
         if (strcmp(ist_state, "cancelled") == 0) {
@@ -1037,7 +1008,8 @@ static void store_tick(lv_timer_t *t)
     case PAGE_STORE_CANCEL: {
         // 决策期间上传可能已自行终结:完成 → P5;失败/取消 → 回 P4 呈现事实。
         if (strcmp(ist_state, "done") == 0) {
-            store_goto(PAGE_STORE_DONE);
+            // 完成即离店(同上)。
+            goto_page(PAGE_LIST);
         } else if (strcmp(ist_state, "failed") == 0
                    || strcmp(ist_state, "cancelled") == 0) {
             store_goto(PAGE_STORE_DL);
@@ -1061,7 +1033,7 @@ static void goto_page(page_t page)
     // 旧顺序(先重启再拆)把 handler 拦腰打断,留下"字节已擦、记录未改"的
     // 半删除幽灵态(2026-10-04 真机)。
     const bool reboot_after_teardown =
-        (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE
+        (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL
          && meta_carve_flash_reboot_pending());
     page_teardown();
     s_page = page;
@@ -1075,7 +1047,6 @@ static void goto_page(page_t page)
     case PAGE_STORE_SLOT: page_store_slot_build();       break;
     case PAGE_STORE_DL:  page_store_dl_build();          break;
     case PAGE_STORE_CANCEL: page_store_cancel_build();   break;
-    case PAGE_STORE_DONE: page_store_done_build();       break;
     }
     if (reboot_after_teardown) {
         ESP_LOGW(TAG, "carve table materialized; rebooting for clean state");
@@ -1113,7 +1084,6 @@ static void store_goto(page_t page)
     case PAGE_STORE_SLOT: page_store_slot_build();  break;
     case PAGE_STORE_DL:   page_store_dl_build();    break;
     case PAGE_STORE_CANCEL: page_store_cancel_build(); break;
-    case PAGE_STORE_DONE: page_store_done_build();  break;
     default: break;
     }
 }
@@ -1127,7 +1097,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
     // 商店页面按键先处理会话到期决策:到期后冻结其他语义,只认
     // OK(继续当前操作,续期)/ OK LONG(退出回列表,teardown 停网络)。
-    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE) {
+    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL) {
         if (s_store_expired) {
             if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
                 s_store_expired = false;
@@ -1170,7 +1140,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 list_refresh();
                 ui_pixel_mascot_jump(s_mascot);
             } else if (btn == BSP_BTN_OK) {
-                if (esp_timer_get_time() / 1000 < s_list_arm_at) break;   // 吞咽尾随 CLICK
                 if (s_sel < s_list_n) {
                     // 一键启动(签名与否同权,无确认页;上游 48e85590)。完整性仍由
                     // esp_image_verify/meta_slot_bootable 把守;不可启动槽位静默。
@@ -1258,7 +1227,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 const int slot = s_pick_slots[s_sel];
                 if (s_slot_fit[slot] &&
                     meta_install_confirm_slot((int8_t)slot) == ESP_OK) {
-                    s_store_installed_slot = slot;   // P5 展示用(store_goto 会清 s_sel)
                     store_goto(PAGE_STORE_DL);
                 } else if (s_status_line && s_slot_fit[slot]) {
                     lv_label_set_text(s_status_line, "cannot confirm slot");
@@ -1306,17 +1274,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         }
         break;
 
-    case PAGE_STORE_DONE:
-        // 只认 CLICK/LONG —— 原实现不判事件类型,一次物理按压的 PRESS(按下)
-        // 与 CLICK(抬起)各触发一次:PRESS 先进列表页,CLICK 尾随落在列表页
-        // OK 上,选中行 0 = slot0 → 直接弹 slot0 启动确认页(真机:"BACK TO
-        // TO LIST 的 OK 总有双击效果")。400ms 吞咽窗同时兜住 LONG 释放后的
-        // 尾随 CLICK。
-        if ((ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) && btn == BSP_BTN_OK) {
-            s_list_arm_at = esp_timer_get_time() / 1000 + 400;
-            goto_page(PAGE_LIST);
-        }
-        break;
     }
 
     bsp_lvgl_unlock();

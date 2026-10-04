@@ -707,7 +707,7 @@ border:2px solid var(--ink);border-radius:var(--r);background:var(--card);color:
 .mp-status.err{color:var(--red)}
 .mp-status.ok{color:var(--grass-dark)}
 .mp-search{display:flex;gap:8px}
-.mp-search input{flex:1;min-width:0;font:inherit;padding:10px 12px;border:2px solid var(--ink);
+.mp-search input{flex:1;min-width:0;font-family:inherit;font-size:16px;padding:10px 12px;border:2px solid var(--ink);
 border-radius:var(--r);background:var(--card);color:var(--ink);caret-color:var(--sky-dark)}
 .mp-search input::placeholder{color:var(--ink2)}
 .mp-btn{padding:10px 16px;border:2px solid var(--ink);border-radius:var(--r);
@@ -1496,7 +1496,7 @@ export function boot(opts = {}) {
     if (r.ok) {
       bar.value = 1;
       pctEl.textContent = "100%";
-      log(`✓ 已安装到槽位 ${r.slot}。退出商店页后设备重启刷新列表,之后在设备列表中选择启动;手机连接保持,可继续安装。`, "ok");
+      log(`✓ 已安装完成。设备即将自动重启刷新列表,手机会自动重连,可继续安装;在设备列表中选择新玩法启动。`, "ok");
       stageEl.textContent = "完成";
     } else {
       log(`✗ 安装失败 [${r.stage}]: ${r.reason}`, "err");
