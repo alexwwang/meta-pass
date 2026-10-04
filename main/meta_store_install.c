@@ -1336,7 +1336,13 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         }
     }
 
-    char resp[3072];   // P1-4 后 data[] 携带 play_id/label(导出闭环),余量上调
+    // 2026-10-04 真机事故:这份 3072B 响应曾开在 httpd 任务栈上,而安装
+    // httpd 的 stack_size 只有 4096;3 个带名槽 + 归档数据记录时 handler
+    // 溢出 → 栈保护 panic → 设备复位(token 在 RAM → "需要配对")。
+    // 静态化后由 session_lock 串行化填充(当前 httpd 同步 handler 单任务,
+    // 锁是对未来多任务化的保险;尾部 send 后已配对 unlock)。
+    static char resp[3072];
+    session_lock();
     int off = 0;
     // Use PRId32 for count (int), PRIu32 for uint32_t
     off += snprintf(resp + off, sizeof(resp) - off,
