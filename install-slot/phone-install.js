@@ -777,7 +777,7 @@ export function boot(opts = {}) {
   const root = document.createElement("div");
   root.id = "mp-install-root";
   root.innerHTML = `
-    <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b><button id=mp-mgmt class="mp-btn ghost" style="margin-left:auto;padding:5px 11px;font-size:12.5px" title="查看/删除设备上的已安装固件">已安装</button></header>
+    <header class=mp-wordmark><span id=mp-dot class="mp-dot${token ? " on" : ""}"></span><b>meta-pass</b><button id=mp-mgmt class="mp-btn ghost" style="margin-left:auto;padding:5px 11px;font-size:12.5px" title="管理已安装固件、槽位空间与数据备份">空间管理</button></header>
     <div class=mp-hero>
       <p class=steps><b>①</b> 搜索/浏览玩法,点条目查看详情和安装<br><b>②</b> 选槽、可改名,点「确认安装」<br><b>③</b> 安装期间请保持本页与设备商店页(SCAN ME)常驻,勿退出</p>
       <button class=mp-coffee id=mp-coffee aria-label="请作者喝咖啡">
@@ -1156,7 +1156,7 @@ export function boot(opts = {}) {
         </div>`).join("")
       : `<p class=mp-sub>设备上还没有已分配槽位</p>`;
     setPanel(`<section class=mp-panel>
-      <h4>已安装固件</h4>
+      <h4>空间管理</h4>
       <p class=mp-sub>共 ${info.count} 个槽位 · 剩余空间 ${fmtMB(info.free)}</p>
       ${busy ? `<p class=mp-sub style="color:var(--red)">安装进行中 —— 请先完成或取消安装，再删除槽位</p>` : ""}
       ${rows}
@@ -1211,7 +1211,7 @@ export function boot(opts = {}) {
   }
 
   async function showMgmt() {
-    setPanel(`<section class=mp-panel><h4>已安装固件</h4><p class=mp-sub>读取中…</p></section>`);
+    setPanel(`<section class=mp-panel><h4>空间管理</h4><p class=mp-sub>读取中…</p></section>`);
     const [sr, lr] = await Promise.all([bridge.status(), bridge.slots()]);
     if (sr.status === 401 || lr.status === 401) {
       failSheet("需要配对", "会话 token 失效 —— 重新扫码或在设备页配对后再试");

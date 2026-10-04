@@ -1397,7 +1397,9 @@ static esp_err_t h_install_slots(httpd_req_t *req)
     }
     off += snprintf(resp + off, sizeof(resp) - off, "]}");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, resp, off);
+    const esp_err_t send_rc = httpd_resp_send(req, resp, off);
+    session_unlock();
+    return send_rc;
 }
 
 static esp_err_t h_install_remove(httpd_req_t *req);
