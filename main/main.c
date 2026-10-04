@@ -61,12 +61,12 @@ typedef enum {
 
 // ---- 列表页(dynslot,用户决策:只列真实存在的槽 + 剩余可用空间) ----
 // 行布局(34px 紧凑行,4 行在 y=242 的吉祥物前收住):
-//   行0..2 = 槽窗口(≤3 个真实 APP 槽,滑动) / 行3 = STORE(固定入口)
+//   行0..3 = 槽窗口(≤4 个真实 APP 槽,滑动) / 行4 = STORE(固定入口)
 // FREE 不是可选项,2026-10-04 真机反馈:独占一行且深色底像"黑框",
 // 挪到草地页脚当状态文字(见 s_free_lbl)。
-#define LIST_ROWS       4
-#define LIST_SLOT_WIN   3
-#define LIST_ROW_STORE  3
+#define LIST_ROWS       5
+#define LIST_SLOT_WIN   4
+#define LIST_ROW_STORE  4
 #define LIST_ROW_H      34
 #define LIST_ROW_Y0     50
 #define LIST_ROW_PITCH  38
@@ -116,7 +116,7 @@ static int      s_list_win;                     // 窗口起点(行 r ↔ slot[w
 static int      s_pick_slots[META_SLOT_COUNT];
 static int      s_pick_n;
 static int      s_pick_win;
-static int      s_pick_rows;                    // P3 创建的行数 = min(3, 候选数)
+static int      s_pick_rows;                    // P3 创建的行数 = min(窗口, 候选数)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
@@ -225,7 +225,7 @@ static void list_scan_slots(void)
     }
 }
 
-// 窗口内可见槽数。滑动只在还有更多槽时发生 → 恒 = min(3, n)。
+// 窗口内可见槽数。滑动只在还有更多槽时发生 → 恒 = min(窗口, n)。
 static int list_visible(void)
 {
     const int rest = s_list_n - s_list_win;
@@ -322,7 +322,7 @@ static void list_refresh(void)
     lv_obj_set_pos(s_rows[LIST_ROW_STORE], 12, LIST_ROW_Y0 + k * LIST_ROW_PITCH);
 
     // 行级 enabled:槽行/STORE 可选。
-    const bool fit[LIST_ROWS] = { true, true, true, true };
+    const bool fit[LIST_ROWS] = { true, true, true, true, true };
     const int row_sel = (s_sel < s_list_n) ? (s_sel - s_list_win) : LIST_ROW_STORE;
     rows_refresh_fit(LIST_ROWS, row_sel, fit);
     // 非物品行降级必须在选中刷新后存活:ui_pixel_set_selected 会把边框重刷
@@ -668,7 +668,7 @@ static void page_store_info_build(void)
     lv_screen_load(s_scr);
 }
 
-// P3 槽位选择(§6.4 + dynslot):候选 = carve 中真实存在的槽(窗口 ≤3 行),
+// P3 槽位选择(§6.4 + dynslot):候选 = carve 中真实存在的槽(窗口 ≤4 行),
 // carve 几何判 fit;仅 fit 行可确认。新槽只由手机选(v2 交互)——设备确认
 // 只碰已物化槽,新槽物化/重启在适配层 confirm 闸门里(用户决策①)。
 // OK = 物理确认(上传前提,§8);确认后手机才被允许开上传 session。
@@ -695,7 +695,7 @@ static void pick_refresh(void)
         }
         lv_label_set_text(lbl, text);
     }
-    bool fit[LIST_SLOT_WIN] = { false, false, false };
+    bool fit[LIST_SLOT_WIN] = { false };
     for (int r = 0; r < s_pick_rows && r < LIST_SLOT_WIN; r++) {
         fit[r] = s_slot_fit[s_pick_slots[s_pick_win + r]];
     }
