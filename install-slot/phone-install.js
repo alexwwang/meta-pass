@@ -1276,10 +1276,19 @@ export function boot(opts = {}) {
     $("mp-mgmt-x").onclick = clearPanel;
   }
 
+  let s_remove_seq = 0;   // 删除尝试代际:过期请求的失败不得盖掉较新的结果
   async function doRemoveCommit(slot, eraseData = false) {
+    const my = ++s_remove_seq;
     try {
       return await doRemoveCommitInner(slot, eraseData);
     } catch (e) {
+      // 设备重启会使在途请求挂到 AbortSignal 超时(45s)才抛 —— 期间用户
+      // 可能已重试并成功。这种迟到失败只记日志,不盖当前页面(真机 2026-10-04:
+      // 重试成功后的管理页上弹出旧请求的"删除失败"浮层)。
+      if (my !== s_remove_seq) {
+        log(`(已过期的一次删除请求失败:${e && e.message ? e.message : e})`, "err");
+        return;
+      }
       failSheet("删除失败", `设备未正常应答(${e && e.message ? e.message : e})—— 请开串口日志重试`);
     }
   }

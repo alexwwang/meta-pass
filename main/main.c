@@ -1054,13 +1054,15 @@ static void store_tick(lv_timer_t *t)
 
 static void goto_page(page_t page)
 {
-    // 物化过 carved 表(安装/删除/取消回收)且正在离开商店回列表:先复位清账
-    // (esp_partition 外部注册项/legacy 槽扫描过期),再让 bootloader hook
-    // 从记录重建一致世界。手机会话就此结束 —— 但不再发生在"装完那一刻"。
-    if (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE
-        && meta_carve_flash_reboot_pending()) {
-        esp_restart();
-    }
+    // 物化过 carved 表(安装/删除/取消回收)且正在离开商店回列表:复位清账
+    // (esp_partition 外部注册项/legacy 槽扫描过期),bootloader hook 再从
+    // 记录重建一致世界。重启必须挪到 page_teardown 之后:teardown 先停
+    // httpd/token,在途 HTTP handler(如 remove 的擦除+提交)收尾后才复位;
+    // 旧顺序(先重启再拆)把 handler 拦腰打断,留下"字节已擦、记录未改"的
+    // 半删除幽灵态(2026-10-04 真机)。
+    const bool reboot_after_teardown =
+        (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE
+         && meta_carve_flash_reboot_pending());
     page_teardown();
     s_page = page;
     s_sel = 0;
@@ -1074,6 +1076,10 @@ static void goto_page(page_t page)
     case PAGE_STORE_DL:  page_store_dl_build();          break;
     case PAGE_STORE_CANCEL: page_store_cancel_build();   break;
     case PAGE_STORE_DONE: page_store_done_build();       break;
+    }
+    if (reboot_after_teardown) {
+        ESP_LOGW(TAG, "carve table materialized; rebooting for clean state");
+        esp_restart();
     }
 }
 
