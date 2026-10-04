@@ -19,6 +19,7 @@
 
 static const char *TAG = "meta_carve";
 
+static bool s_reboot_pending;       // 运行时装过 carved 表 → 退出商店页时复位清账
 static meta_carve_t s_carve;        // 规范 carve
 static uint32_t     s_seq;          // 最新记录 seq
 static bool         s_have_record;  // 规范 carve 已 committed
@@ -122,6 +123,11 @@ bool meta_carve_flash_table_read(uint8_t out[META_PT_SIZE])
 {
     if (!out) return false;
     return esp_flash_read(NULL, out, META_PT_FLASH_OFFSET, META_PT_SIZE) == ESP_OK;
+}
+
+bool meta_carve_flash_reboot_pending(void)
+{
+    return s_reboot_pending;
 }
 
 esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
@@ -238,9 +244,13 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     s_have_record = true;
 
     // 表后写(记录先行):断电时 hook 下一开机从记录重建表(§4.7)。
+    // 物化成功即挂起"退出商店页复位":运行时装了 carved 表/注册了外部
+    // 分区,当前 boot 的分区缓存与 legacy 槽扫描都已过期,靠退出时重启
+    // 清账;不立刻复位,保住手机侧会话 token(2026-10-04 交互修订)。
     if (materialize) {
         const esp_err_t e = meta_carve_flash_table_write(rec->table);
         if (e != ESP_OK) return e;
+        s_reboot_pending = true;
     }
     
 

@@ -1054,6 +1054,13 @@ static void store_tick(lv_timer_t *t)
 
 static void goto_page(page_t page)
 {
+    // 物化过 carved 表(安装/删除/取消回收)且正在离开商店回列表:先复位清账
+    // (esp_partition 外部注册项/legacy 槽扫描过期),再让 bootloader hook
+    // 从记录重建一致世界。手机会话就此结束 —— 但不再发生在"装完那一刻"。
+    if (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE
+        && meta_carve_flash_reboot_pending()) {
+        esp_restart();
+    }
     page_teardown();
     s_page = page;
     s_sel = 0;

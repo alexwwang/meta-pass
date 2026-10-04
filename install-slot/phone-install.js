@@ -500,7 +500,7 @@ async function pollUntil(bridge, pred, hooks, timeoutMs) {
   }
 }
 
-// 全流程:prepare → 等物理确认 → session(槽位 = 设备确认值)→ 顺序 chunk
+// 全流程:prepare(带手机选定槽位,设备直 confirmed)→ session → 顺序 chunk
 // (失败按设备上报 offset 续传)→ finalize → 等终态。appImage 是解包后的
 // factory 应用镜像(preflight 返回的 ext.data;§9:只有 extracted 镜像过 LAN,
 // 长度必须等于 offer.imageLen)。hooks:
@@ -1278,9 +1278,9 @@ export function boot(opts = {}) {
     if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
     if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
     if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
-    // M5: 200 = 记录已提交,150ms 后复位。
-    log(`✓ 槽位 ${slot} 已删除(${eraseData ? "数据已擦除" : "数据已归档"}),设备重启中…`, "ok");
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>已提交,等待设备重启恢复…</p></section>`);
+    // 200 = 记录已提交。复位推迟到退出商店页:这里设备原地不动,会话保持。
+    log(`✓ 槽位 ${slot} 已删除(${eraseData ? "数据已擦除" : "数据已归档"})`, "ok");
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>删除完成,刷新列表…</p></section>`);
     const back = await waitDeviceBack(bridge, { tries: 25, delayMs: 1200 });
     if (back) {
       log(`✓ 槽位 ${slot} 已删除`, "ok");
@@ -1288,8 +1288,8 @@ export function boot(opts = {}) {
       return;
     }
     setPanel(`<section class=mp-panel>
-      <h4>删除槽位 ${slot}:已提交</h4>
-      <p class=mp-sub>设备已确认删除并重启,但等待超时。设备回到列表页后,请在设备上进入商店页(SCAN ME)恢复 LAN 服务,再点「刷新」。</p>
+      <h4>删除槽位 ${slot}:设备未应答</h4>
+      <p class=mp-sub>删除可能已生效。请在设备上进入商店页(SCAN ME)后点「刷新」核对。</p>
       <div class=mp-actions>
         <button id=mp-mgmt-re class=mp-btn>刷新</button>
         <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
@@ -1473,7 +1473,7 @@ export function boot(opts = {}) {
     if (r.ok) {
       bar.value = 1;
       pctEl.textContent = "100%";
-      log(`✓ 已安装到槽位 ${r.slot}。设备断电重开后在列表中选择启动。`, "ok");
+      log(`✓ 已安装到槽位 ${r.slot}。退出商店页后设备重启刷新列表,之后在设备列表中选择启动;手机连接保持,可继续安装。`, "ok");
       stageEl.textContent = "完成";
     } else {
       log(`✗ 安装失败 [${r.stage}]: ${r.reason}`, "err");

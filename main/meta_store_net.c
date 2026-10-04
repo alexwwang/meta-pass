@@ -40,7 +40,7 @@ static const char *TAG = "store_net";
 // 商店会话超时:构建期默认(Kconfig),运行时可覆盖(见头文件注释);
 // host 桩编译无 sdkconfig,保留同值回退。
 #ifndef CONFIG_META_STORE_SESSION_TIMEOUT_MS
-#define CONFIG_META_STORE_SESSION_TIMEOUT_MS (5 * 60 * 1000)
+#define CONFIG_META_STORE_SESSION_TIMEOUT_MS (30 * 60 * 1000)
 #endif
 #define SESSION_TIMEOUT_MIN_MS   30000u
 #define SESSION_TIMEOUT_MAX_MS   86400000u

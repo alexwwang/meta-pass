@@ -214,31 +214,13 @@ static const esp_partition_t *slot_partition_any(int8_t slot)
     return part ? part : carved_partition(slot);
 }
 
-// ---- P0-5:安装完成后的结束复位 --------------------------------------
-// 仅当本会话物化过表(新槽/数据 backflush)才需要:复位让 esp_partition
-// 缓存与 flash 表重新一致、设备列表看见新槽。响应先冲刷(300ms 窗口),
-// 与删除流程的"已提交,等待设备重启"同一节奏。
-static esp_timer_handle_t s_done_reboot_timer;
-static void done_reboot_cb(void *arg)
-{
-    (void)arg;
-    esp_restart();
-}
-static void schedule_done_reboot(void)
-{
-    if (!s_done_reboot_timer) {
-        const esp_timer_create_args_t args = {
-            .callback = done_reboot_cb,
-            .arg = NULL,
-            .name = "install_done_reboot",
-        };
-        if (esp_timer_create(&args, &s_done_reboot_timer) != ESP_OK) {
-            ESP_LOGE(TAG, "done-reboot timer create failed; rebooting now");
-            esp_restart();
-        }
-    }
-    esp_timer_start_once(s_done_reboot_timer, 300 * 1000);
-}
+// ---- P0-5:物化表后的结束复位(推迟到退出商店页) ----------------------
+// 2026-10-04 交互修订:装完立即复位会把 RAM token 一起清掉,手机连接随
+// 之作废、装第二个玩法必须重新配对(真机反馈)。运行时物化 carved 表 +
+// 注册外部分区后,当前 boot 背着过期状态(esp_partition 外部注册项、
+// legacy 槽扫描),确需一次复位清账 —— 但推迟到 goto_page(STORE→LIST)
+// 统一执行:手机会话从"装完"一直活到用户退出商店页。挂起标志在 carve
+// 层(meta_carve_flash_reboot_pending),物化的唯一漏斗是 commit(materialize)。
 
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
@@ -805,8 +787,9 @@ static esp_err_t finalize_locked(void)
     status_set("done", "installed");
     ESP_LOGI(TAG, "LAN install slot %d done: %s (%u bytes)", slot, name,
              meta.image_len);
-    // P0-5 方案B:本会话物化过表 → 响应冲刷后 300ms 复位(见 schedule_done_reboot)。
-    if (needs_done_reboot) schedule_done_reboot();
+    // 表若在本会话物化过,复位推迟到退出商店页(见 meta_carve_flash_reboot_pending);
+    // 这里只清场,不断手机连接。
+    (void)needs_done_reboot;
     return ESP_OK;
 }
 
