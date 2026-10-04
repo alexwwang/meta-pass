@@ -5,6 +5,7 @@
 #define UI_SKY        0x1689E8
 #define UI_SKY_DARK   0x0872C9
 #define UI_INK        0x17202A
+#define UI_INK2       0x45566B   // 次级墨色(与手机端 --ink2 同值):非物品行/弱信息
 #define UI_PAPER      0xF4F4EA
 #define UI_GRASS      0x82BE2D
 #define UI_GRASS_DARK 0x55951D

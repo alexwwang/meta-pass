@@ -311,6 +311,15 @@ static void page_list_build(void)
               LIST_ROW_H, "FREE");
     add_row_h(s_scr, LIST_ROW_STORE, LIST_ROW_Y0 + LIST_ROW_STORE * LIST_ROW_PITCH,
               LIST_ROW_H, "STORE DOWNLOAD");
+    // 非物品行(FREE/STORE)视觉降级(用户决策:三键无触屏,选中模型必须留在
+    // 环内,故只降视觉权重):细边 + 次级墨色文字。位置/高度/导航/环行为
+    // 全部不变;选中仍走 ui_pixel_set_selected 的黄底,焦点可见性不打折。
+    for (int idx = LIST_ROW_FREE; idx <= LIST_ROW_STORE; idx++) {
+        lv_obj_set_style_border_width(s_rows[idx], 2, 0);
+        lv_obj_set_style_border_color(s_rows[idx], lv_color_hex(UI_INK2), 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(s_rows[idx], 0),
+                                    lv_color_hex(UI_INK2), 0);
+    }
     add_battery(s_scr);
     s_mascot = ui_pixel_mascot_create(s_scr, 101, 242);
     list_refresh();
