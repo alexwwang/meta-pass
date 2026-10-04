@@ -36,6 +36,7 @@
 #include <esp_app_desc.h>
 #include <esp_image_format.h>
 #include <esp_partition.h>
+#include <esp_flash.h>
 #include <esp_netif.h>
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
@@ -178,12 +179,31 @@ static const esp_partition_t *carved_partition(int8_t slot)
     if (!cv || slot < 0 || slot >= (int8_t)cv->count) return NULL;
     const meta_carve_slot_t *s = &cv->slot[slot];
     if (s->kind != META_CARVE_KIND_APP) return NULL;
+    char label[16];
+    snprintf(label, sizeof(label), "ota_%d", slot);
+    // IDF 5.5 的 esp_ota_begin 先 esp_partition_verify(handle):对照首次
+    // flash 访问时建立的 SRAM 分区缓存,伪造句柄不在缓存里 → NOT_FOUND
+    // (2026-10-04 真机:carve 物化成功后 chunk 写 500 的根因)。
+    // 运行时装了 carved 表的新槽必须同时注册进缓存,拿官方规范指针;
+    // 重启后 esp_partition 从表原生加载,find_first 直接命中,不会
+    // 走到注册分支,无重复注册。
+    const esp_partition_subtype_t sub =
+        (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot);
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, sub, NULL);
+    if (part) return part;
+    if (esp_partition_register_external(esp_flash_default_chip,
+            s->offset, s->size, label,
+            ESP_PARTITION_TYPE_APP, sub, &part) == ESP_OK && part) {
+        return part;
+    }
+    // 注册失败(内存/参数):退回伪造句柄,行为同旧实现(ota_begin 会拒)。
     memset(&s_fake_part, 0, sizeof(s_fake_part));
     s_fake_part.type = ESP_PARTITION_TYPE_APP;
-    s_fake_part.subtype = (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot);
+    s_fake_part.subtype = sub;
     s_fake_part.address = s->offset;
     s_fake_part.size = s->size;
-    snprintf(s_fake_part.label, sizeof(s_fake_part.label), "ota_%d", slot);
+    snprintf(s_fake_part.label, sizeof(s_fake_part.label), "%s", label);
     return &s_fake_part;
 }
 
