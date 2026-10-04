@@ -1381,7 +1381,9 @@ export function boot(opts = {}) {
     const fit = opts.filter((o) => o.fit);
     if (fit.length === 0) {
       const msg = Number.isFinite(imageLen)
-        ? `固件 ${fmtMB(imageLen)} 超出所有槽位上限${geom ? ",且池内无处新建槽位" : ""},无法安装`
+        ? (geom
+            ? `固件 ${fmtMB(imageLen)} 装不下:池内没有足够大的连续空间(最大连续 ${fmtMB(geom.maxGap)} · 总剩余 ${fmtMB(geom.totalFree)},空间被已装玩法切断)。删除一个已装玩法腾出连续空间后再试`
+            : `固件 ${fmtMB(imageLen)} 超出所有槽位上限,无法安装`)
         : "槽位容量信息缺失,无法安装";
       log(`✗ ${msg}`, "err");
       failSheet("无法安装", `${p.name}\n${msg}`);

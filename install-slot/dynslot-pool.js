@@ -31,6 +31,37 @@ export const POOL_TOTAL = POOL.seg.reduce((a, s) => a + (s.end - s.start), 0);
 
 const alignUp = (v, a) => Math.ceil(v / a) * a;   // JS 安全整数:v < 2^53
 
+// 碎片诊断(错误提示用;镜像 first-fit 扫描的同一几何):两池空闲区间。
+// 返回 { max, total } —— 最大连续空闲字节、空闲总和。cur = 占用域
+// (槽位 ∪ 数据 carve,与 carvePlace 同形状)。first-fit 装不下时给用户看
+// 「最大连续 X / 总剩余 Y」,解释为什么总和够却装不进(设计 L1 无整理)。
+export function freeSpans(cur) {
+  const slots = [...(Array.isArray(cur) ? cur : [])].sort((a, b) => a.offset - b.offset);
+  let max = 0;
+  let total = 0;
+  for (const seg of POOL.seg) {
+    let cursor = seg.start;
+    let si = 0;
+    while (si < slots.length && slots[si].offset + slots[si].size <= seg.start) si++;
+    for (;;) {
+      let gapEnd = seg.end;
+      if (si < slots.length && slots[si].offset < seg.end) gapEnd = slots[si].offset;
+      if (gapEnd > cursor) {
+        const span = gapEnd - cursor;
+        total += span;
+        if (span > max) max = span;
+      }
+      if (si < slots.length && slots[si].offset < seg.end) {
+        cursor = slots[si].offset + slots[si].size;
+        si++;
+      } else {
+        break;
+      }
+    }
+  }
+  return { max, total };
+}
+
 // meta_carve_need 镜像:安装所需槽位尺寸 = max(minSlot, align4k(imageLen + tail));
 // 非法/溢出(> 0x7FFFF000)→ 0(提案直接判不可用)。
 export function carveNeed(imageLen) {
@@ -101,6 +132,8 @@ export function carvePlace(cur, slotSize) {
 //                 提案下标预填 offer_ok 才不会把手机声称当错报拒掉(design §4.5);
 //                 提案不成立时为 null。
 //   suggestedSlot 建议槽位:现有可装优先(零副作用),否则提案槽;-1 = 都不行。
+//   maxGap/totalFree 碎片诊断:占用域上的最大连续空闲 / 空闲总和
+//                 (设计 L1 无整理:first-fit 拒绝时给用户可行动的提示)。
 export function geomFromListing(listing, imageLen) {
   const all = Array.isArray(listing?.slots) ? listing.slots : [];
   // fit 只对 empty 槽:valid/invalid 槽已被占用,再"装得下"也不能选 ——
@@ -116,6 +149,8 @@ export function geomFromListing(listing, imageLen) {
   const occupancy = all.map((s) => ({ offset: s.offset, size: s.size }))
     .concat(data.map((d) => ({ offset: d.offset, size: d.size })));
   const place = need ? carvePlace(occupancy, need) : null;
+  // 碎片诊断:first-fit 拒绝时错误提示用(设计 L1:不做整理,总和够≠装得下)。
+  const { max: maxGap, total: totalFree } = freeSpans(occupancy);
   // proposal.slot 是「槽位数组」的插入下标(设备 carve 序),不是占用数组下标 ——
   // 占用域现含数据记录,place.index 会把数据记录计进去。按 offset 落在提案
   // 落点之前的**槽位**数派生(数据记录不计入槽位序)。
@@ -134,5 +169,5 @@ export function geomFromListing(listing, imageLen) {
     ];
   }
   const suggestedSlot = current.find((s) => s.fit)?.slot ?? proposal?.slot ?? -1;
-  return { current, proposal, placed, suggestedSlot };
+  return { current, proposal, placed, suggestedSlot, maxGap, totalFree };
 }
