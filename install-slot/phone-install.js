@@ -140,7 +140,10 @@ export function createBridge(deviceOrigin, token) {
     }
     let resp;
     try {
-      resp = await fetch(base + path, { ...opt, headers });
+      const { signal, timeoutMs, ...rest } = opt;
+      const ctl = signal || (timeoutMs ? AbortSignal.timeout(timeoutMs)
+                                       : AbortSignal.timeout(45000));
+      resp = await fetch(base + path, { ...rest, headers, signal: ctl });
     } catch (e) {
       return { ok: false, status: 0, text: `network: ${e && e.message ? e.message : e}` };
     }
@@ -1261,6 +1264,13 @@ export function boot(opts = {}) {
   }
 
   async function doRemoveCommit(slot, eraseData = false) {
+    try {
+      return await doRemoveCommitInner(slot, eraseData);
+    } catch (e) {
+      failSheet("删除失败", `设备未正常应答(${e && e.message ? e.message : e})—— 请开串口日志重试`);
+    }
+  }
+  async function doRemoveCommitInner(slot, eraseData = false) {
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>${eraseData ? "正在擦除数据并删除…" : "正在归档数据并删除…"}</p></section>`);
     const r = await bridge.remove(slot, { eraseData });
     if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
