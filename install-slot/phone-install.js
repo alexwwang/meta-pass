@@ -1402,7 +1402,8 @@ export function boot(opts = {}) {
             <span class=rd></span><span class=lb>${o.isNew ? "新槽位" : `槽位 ${o.slot}`}</span>
             ${o === suggestedOpt ? '<span class=rec>建议</span>' : ""}
             <span class=cap>${o.fit ? `${o.isNew ? "新建 · " : ""}上限 ${fmtMB(o.limit)}`
-              : (Number.isFinite(imageLen) ? `需 ${fmtMB(imageLen)} > 上限 ${fmtMB(o.limit)}` : "空间不足")}</span>
+              : (Number.isFinite(imageLen) && imageLen <= o.limit ? "已占用"
+                 : (Number.isFinite(imageLen) ? `需 ${fmtMB(imageLen)} > 上限 ${fmtMB(o.limit)}` : "空间不足"))}</span>
           </button>`).join("")}
         </div>
         <div class=mp-actions>

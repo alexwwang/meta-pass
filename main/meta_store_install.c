@@ -1519,6 +1519,24 @@ static esp_err_t h_install_remove(httpd_req_t *req)
         }
     }
 
+    // 防"删除复活"(真机 2026-10-04):remove 只清记录、不擦镜像字节,而物化
+    // 表仍保留该分区 → 重启后扫描见有效镜像 → sync_states 把 EMPTY 顶回
+    // VALID,删除形同虚设(记录扇区 A/B _seq 22→23 现场实锤)。先擦镜像首
+    // sector(4KB):扫描首扇区全 0xFF 即判 EMPTY,与记录一致,复活链断。
+    // 擦除失败 → 500 不删(删了必复活,不如不删让用户重试)。
+    {
+        const esp_partition_t *part = slot_partition_any((int8_t)rm.slot);
+        if (part) {
+            const esp_err_t ee = esp_partition_erase_range(part, 0, META_SIG_SECTOR);
+            if (ee != ESP_OK) {
+                ESP_LOGE(TAG, "remove: image header erase failed: %s",
+                         esp_err_to_name(ee));
+                return reply(req, "500 Internal Server Error",
+                             "erase image header failed");
+            }
+        }
+    }
+
     if (meta_carve_flash_remove(rm.slot) != ESP_OK) {
         return reply(req, "500 Internal Server Error", "remove failed");
     }
