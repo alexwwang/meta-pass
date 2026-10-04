@@ -4,7 +4,7 @@
 
 # Changelog
 
-## v1.2.0 (unreleased)
+## v2.0.0 (2026-10-04)
 
 - **v3.2-r10.38 (2026-10-02) dynslot — dynamic slot partitioning + slot removal
   (feat/dynslot)**: the fixed 3-slot table becomes a pool + carve model — two

@@ -162,6 +162,7 @@
     <button id="btn-probe" style="margin-top:6px;" data-i18n="btn_probe">Probe: single 4KB read test</button>
     <div class="progress"><div id="backup-bar"></div></div>
   </section>
+    <p id="dynslot-backup-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_backup_test"></p>
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
@@ -173,6 +174,7 @@
     <span id="restore-status"></span>
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
+    <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -274,6 +276,11 @@ function applyDiscoveredSlots(parts) {
   }
   deviceSlots = found.map((s) => ({ offset: s.offset, size: s.size }));
   rebuildSlotPickers();
+  // dynslot 模式:显示备份/还原的测试标记
+  const bkWarn = document.getElementById("dynslot-backup-warn");
+  const rstWarn = document.getElementById("dynslot-restore-warn");
+  if (bkWarn) bkWarn.style.display = "block";
+  if (rstWarn) rstWarn.style.display = "block";
 }
 
 // 槽位选择 UI 重建:烧录单选(第 2 步)+ 备份勾选(第 5 步)。
@@ -525,6 +532,8 @@ const I18N = {
     msg_slots_discovered: "Discovered {count} slot(s) from the device partition table.",
     slot_geo_dynamic: "Live geometry: {count} slot(s) read from the device partition table.",
     slot_geo_pending: "Not connected yet — radios below show placeholder geometry. Click Connect to read live slots from the device.",
+    dynslot_backup_test: "⚠ Dynamic-slot mode: backup is EXPERIMENTAL — unproven against non-contiguous carved slots. Use only for read-back testing.",
+    dynslot_restore_test: "⚠ Dynamic-slot mode: restore is EXPERIMENTAL — slot offsets are determined at runtime and untested against variable carve layouts.",
     slot_geo_legacy: "No slot entries in the device table — showing legacy fixed geometry (read may have failed; reconnect to re-probe).",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
@@ -684,6 +693,8 @@ const I18N = {
     slot_geo_dynamic: "动态几何:已从设备分区表读到 {count} 个槽位。",
     slot_geo_pending: "尚未连接 —— 下方单选为占位几何。点击「连接」后从设备分区表读取实时槽位。",
     slot_geo_legacy: "设备分区表中没有槽位条目 —— 当前显示 legacy 固定几何(可能读表失败,重新连接可重探)。",
+    dynslot_backup_test: "⚠ 动态存储模式:备份功能处于测试阶段——针对非连续 carve 槽位的验证尚未完成。仅用于读回测试。",
+    dynslot_restore_test: "⚠ 动态存储模式:还原功能处于测试阶段——槽位偏移在运行时确定，尚未验证可变 carve 布局。",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
