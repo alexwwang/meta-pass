@@ -1381,6 +1381,10 @@ void app_main(void)
     if (meta_install_resume_pending()) {
         ESP_LOGW(TAG, "install resume: restoring WiFi + LAN install service");
         (void)meta_install_token_start();
+        // token_start 可能刚从 NVS 恢复 token:闲置期限从此刻起算,
+        // 否则静态零值 deadline 会让 list_session_tick 首拍即收会话。
+        s_store_deadline = esp_timer_get_time() / 1000 +
+                           meta_store_session_timeout_ms();
         (void)meta_store_net_begin();
         if (meta_install_net_start() != ESP_OK) {
             ESP_LOGE(TAG, "install service resume failed");

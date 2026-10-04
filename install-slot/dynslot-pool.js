@@ -103,8 +103,11 @@ export function carvePlace(cur, slotSize) {
 //   suggestedSlot 建议槽位:现有可装优先(零副作用),否则提案槽;-1 = 都不行。
 export function geomFromListing(listing, imageLen) {
   const all = Array.isArray(listing?.slots) ? listing.slots : [];
+  // fit 只对 empty 槽:valid/invalid 槽已被占用,再"装得下"也不能选 ——
+  // 否则装完一个应用后建议槽永远回到 slot0(真机 2026-10-04 双装暴露)。
   const current = all.filter((s) => s.kind === "app")
-    .map((s) => ({ slot: s.slot, limit: s.limit, fit: s.limit > 0 && imageLen <= s.limit }));
+    .map((s) => ({ slot: s.slot, limit: s.limit,
+                  fit: s.state === "empty" && s.limit > 0 && imageLen <= s.limit }));
   const need = carveNeed(imageLen);
   // 占用域 = 槽位 ∪ 数据 carve(P1-4)。数据记录同样吃池空间,设备分配器会避让
   // 它们 —— 手机提案必须用同一占用域,否则会落进数据区被 carve_ok 拒(L4)。

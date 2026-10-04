@@ -138,14 +138,25 @@ export function createBridge(deviceOrigin, token) {
       headers["Content-Type"] = "application/json";
       opt = { ...opt, body: JSON.stringify(opt.json) };
     }
+    const { signal, timeoutMs, ...rest } = opt;
+    const ctl = signal || (timeoutMs ? AbortSignal.timeout(timeoutMs)
+                                     : AbortSignal.timeout(45000));
+    // 设备受控重启(退出商店页清账)后 LAN 服务要数秒才恢复。GET 幂等,
+    // 对纯网络错误做退避重试(~20s 窗口),让手机侧对重启无感;HTTP 状态
+    // 码(401/409/5xx)原样返回,不重试非幂等的 POST。
+    const isGet = !rest.method || rest.method === "GET";
+    const backoff = [800, 1200, 2000, 3500, 6000];
     let resp;
-    try {
-      const { signal, timeoutMs, ...rest } = opt;
-      const ctl = signal || (timeoutMs ? AbortSignal.timeout(timeoutMs)
-                                       : AbortSignal.timeout(45000));
-      resp = await fetch(base + path, { ...rest, headers, signal: ctl });
-    } catch (e) {
-      return { ok: false, status: 0, text: `network: ${e && e.message ? e.message : e}` };
+    for (let attempt = 0; ; attempt++) {
+      try {
+        resp = await fetch(base + path, { ...rest, headers, signal: ctl });
+        break;
+      } catch (e) {
+        if (!isGet || attempt >= backoff.length) {
+          return { ok: false, status: 0, text: `network: ${e && e.message ? e.message : e}` };
+        }
+        await new Promise((r) => setTimeout(r, backoff[attempt]));
+      }
     }
     let text = "";
     try { text = await resp.text(); } catch { /* empty body */ }
@@ -418,7 +429,9 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     slots = (slotIsNew ? geom.placed : geom.current).map((s) => ({
       slot: s.slot,
       limit: s.limit,
-      fit: slotIsNew ? s.slot === geom.proposal.slot : ext.length <= s.limit,
+      // geom.current 的 fit 已含占用态(empty 才可装);§6.3.7 保证此处
+      // ext.length == analyze imageLen,不会用到过期判定。
+      fit: slotIsNew ? s.slot === geom.proposal.slot : s.fit,
     }));
   } else {
     slots = SLOT_GEOMETRY.map(({ slot: s, partSize }) => {

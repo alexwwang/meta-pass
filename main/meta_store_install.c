@@ -276,6 +276,9 @@ bool meta_install_lan_ready(void)
 }
 
 // ---- token / 配对码 / QR 信息 ----
+// NVS 持久化 helpers 定义在 resume 标志段(见下);此处仅前置声明。
+static void token_persist(void);
+static bool token_restore(void);
 
 static void token_to_hex(const uint8_t token[META_INSTALL_TOKEN_BYTES],
                          char out[META_INSTALL_TOKEN_HEX_LEN + 1])
@@ -318,6 +321,7 @@ static esp_err_t token_generate(void)
     s_token.pair_used = false;
     s_token.pair_tries = 0;
     s_token.pair_created_ms = esp_timer_get_time() / 1000;
+    token_persist();   // 受控重启后 token_start 原样恢复,手机连接不断
     // 打 UART:真机自动化冒烟(tools/realdevice/smoke.py)从串口日志取
     // 配对码换 token,免读屏。token 本就印在设备 QR 上给近场任何人看,
     // 串口(持有者物理接触)不扩大暴露面。
@@ -374,11 +378,57 @@ bool meta_install_resume_pending(void)
     return e == ESP_OK && v == 1;
 }
 
+// ---- 会话 token 持久化(2026-10-04 交互修订②) ----
+// 手机连接须活过受控重启("装完/退出商店页重启后手机还能继续操作")。
+// token 签发即落 NVS;token_stop(正常离店/闲置到期)擦除。配对码保持
+// 一次性语义:恢复出来的会话 pair_used=true、pair_valid=false,码不复活。
+static const char k_nvs_key_token[] = "inst_tok";
+
+static void token_persist(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, k_nvs_key_token, s_token.token_hex);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void token_persist_erase(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, k_nvs_key_token);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static bool token_restore(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READONLY, &h) != ESP_OK) return false;
+    char hex[META_INSTALL_TOKEN_HEX_LEN + 1];
+    size_t len = sizeof(hex);
+    const esp_err_t e = nvs_get_str(h, k_nvs_key_token, hex, &len);
+    nvs_close(h);
+    if (e != ESP_OK || len != META_INSTALL_TOKEN_HEX_LEN + 1) return false;
+    for (int i = 0; i < META_INSTALL_TOKEN_HEX_LEN; i++) {
+        const char ch = hex[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
+    }
+    memcpy(s_token.token_hex, hex, sizeof(s_token.token_hex));
+    s_token.token_valid = true;
+    s_token.pair_valid  = false;
+    s_token.pair_used   = true;
+    s_token.pair_tries  = 0;
+    ESP_LOGI(TAG, "session token restored across reboot");
+    return true;
+}
+
 esp_err_t meta_install_token_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (!s_token.token_valid) {
-        token_generate();
+        if (!token_restore()) token_generate();
     }
     resume_flag_set(true);   // 置续连标志;正常离店 token_stop 时清除
     s_session.active = true;
@@ -402,6 +452,7 @@ void meta_install_token_stop(void)
     memset(&s_token, 0, sizeof(s_token));
     s_session.active = false;
     resume_flag_set(false);   // 正常离店:清除续连标志
+    token_persist_erase();    // token 一并作废:之后重启不再恢复
     status_set("idle", "");
     session_unlock();
 }
