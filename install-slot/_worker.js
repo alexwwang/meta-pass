@@ -530,7 +530,19 @@ export default {
       if (resp.status >= 300 && resp.status < 400) {
         resp = await env.ASSETS.fetch(new Request(new URL(resp.headers.get("location"), req.url), req));
       }
-      return resp;
+      // Worker 构造的响应不吃 Pages _headers(_headers 实测未生效):
+      // 安装页必须始终新鲜 —— 浏览器缓存旧页曾把合法迁移拒成
+      // "Layout mismatch"(2026-10-04 真机报告),此处显式钉死。
+      const h = new Headers(resp.headers);
+      h.set("cache-control", "no-store");
+      return new Response(resp.body, { status: resp.status, headers: h });
+    }
+    // 无扩展名路径(install-slot)同样显式 no-store;其余静态资产交还 Pages。
+    if (path === "/install-slot") {
+      const resp = await env.ASSETS.fetch(req);
+      const h = new Headers(resp.headers);
+      h.set("cache-control", "no-store");
+      return new Response(resp.body, { status: resp.status, headers: h });
     }
     return env.ASSETS.fetch(req);
   },

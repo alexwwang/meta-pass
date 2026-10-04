@@ -297,6 +297,13 @@ static void list_refresh(void)
     const bool fit[LIST_ROWS] = { true, true, true, false, true };
     const int row_sel = (s_sel < s_list_n) ? (s_sel - s_list_win) : LIST_ROW_STORE;
     rows_refresh_fit(LIST_ROWS, row_sel, fit);
+    // 非物品行降级必须在选中刷新后存活:ui_pixel_set_selected 会把边框重刷
+    // 成主墨色(真机反馈:导航后 STORE 与槽位视觉一致)。对未选中的
+    // FREE/STORE 重断言次级墨边;选中态(STORE)保持白边黄底不动。
+    for (int idx = LIST_ROW_FREE; idx <= LIST_ROW_STORE; idx++) {
+        if (idx == row_sel) continue;
+        lv_obj_set_style_border_color(s_rows[idx], lv_color_hex(UI_INK2), 0);
+    }
 }
 
 static void page_list_build(void)

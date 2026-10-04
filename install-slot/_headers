@@ -1,0 +1,9 @@
+# Pages 缓存策略:安装页与其模块必须始终新鲜。
+# 教训(2026-10-04):浏览器持有部署前的旧 install-slot 页,旧版升级逻辑
+# 字节比对分区表,把合法的 fixed→dynslot 迁移拒成 "Layout mismatch";
+# 用户硬刷/换页后同操作成功。HTML 此前只有 Pages 默认的
+# max-age=0+must-revalidate,浏览器启发式缓存仍可展示旧副本。
+/install-slot.html
+  Cache-Control: no-store
+/install-slot
+  Cache-Control: no-store
