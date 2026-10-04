@@ -70,15 +70,24 @@ lv_obj_t *ui_pixel_panel_create_plain(lv_obj_t *parent, int x, int y, int w, int
     return panel;
 }
 
-lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
-                                uint32_t color)
+lv_obj_t *ui_pixel_panel_create_shadowed(lv_obj_t *parent, int x, int y, int w, int h,
+                                         uint32_t color, lv_obj_t **shadow_out)
 {
-    block(parent, x + 5, y + 6, w, h, UI_INK);
+    // 影子是独立兄弟块(像素风硬投影,不用 LVGL 软阴影)。需要按行隐藏/
+    // 显示的调用方必须拿走影子句柄,否则藏面板留黑框(2026-10-04 真机)。
+    lv_obj_t *shadow = block(parent, x + 5, y + 6, w, h, UI_INK);
+    if (shadow_out) *shadow_out = shadow;
     lv_obj_t *panel = block(parent, x, y, w, h, color);
     lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK), 0);
     lv_obj_set_style_border_width(panel, 4, 0);
     lv_obj_set_style_pad_all(panel, 7, 0);
     return panel;
+}
+
+lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
+                                uint32_t color)
+{
+    return ui_pixel_panel_create_shadowed(parent, x, y, w, h, color, NULL);
 }
 
 lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y)

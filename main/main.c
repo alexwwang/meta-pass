@@ -91,6 +91,7 @@ static lv_obj_t *s_status_line;      // 商店页状态行
 static lv_obj_t *s_egg_panel;        // 彩蛋页可滚动面板(teardown 时随屏销毁)
 static lv_obj_t *s_mascot;
 static lv_obj_t *s_free_lbl;   // 草地页脚的 FREE 状态文字(非可选项)
+static lv_obj_t *s_row_shadow[LIST_SLOT_WIN];  // 槽行影子块(隐藏行时必须连带)
 static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(四 CLICK)的匹配状态
 
 // ---- 商店会话状态(UI 上下文;安装会话状态机在 meta_store_install.c) ----
@@ -140,7 +141,8 @@ static void add_battery(lv_obj_t *parent)
 // 可选中行(定高版);selected 高亮。行文本随后用 lv_label_set_text 更新。
 static lv_obj_t *add_row_h(lv_obj_t *parent, int idx, int y, int h, const char *text)
 {
-    lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, h, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create_shadowed(parent, 12, y, 216, h, UI_PAPER,
+                                                     idx < LIST_SLOT_WIN ? &s_row_shadow[idx] : NULL);
     lv_obj_t *lbl = lv_label_create(panel);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
@@ -205,6 +207,7 @@ static void page_teardown(void)
         s_egg_panel = NULL;
         s_mascot = NULL;
         s_free_lbl = NULL;
+        for (int r = 0; r < LIST_SLOT_WIN; r++) s_row_shadow[r] = NULL;
         s_timeout_panel = NULL;   // 浮层与影子都是 s_scr 子对象,随屏一起销毁
         s_timeout_lbl = NULL;
         for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
@@ -286,9 +289,11 @@ static void list_refresh(void)
             // 渲染成"空白按钮",像坏掉的槽位)。选中逻辑走 s_list_n,
             // 隐藏行永远不会被选;FREE/STORE 行位置不变。
             lv_obj_add_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+            if (s_row_shadow[r]) lv_obj_add_flag(s_row_shadow[r], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
         lv_obj_clear_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+        if (s_row_shadow[r]) lv_obj_clear_flag(s_row_shadow[r], LV_OBJ_FLAG_HIDDEN);
         char text[48];
         const int i = s_list_slots[s_list_win + r];
         switch (s_slots[i].state) {
@@ -1077,6 +1082,7 @@ static void store_goto(page_t page)
         s_status_line = NULL;
         s_mascot = NULL;
         s_free_lbl = NULL;
+        for (int r = 0; r < LIST_SLOT_WIN; r++) s_row_shadow[r] = NULL;
         s_timeout_lbl = NULL;
         for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
     }
