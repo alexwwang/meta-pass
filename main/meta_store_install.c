@@ -1375,7 +1375,7 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         first = false;
 
         off += snprintf(resp + off, sizeof(resp) - off,
-            "{\"idx\":%d,\"state\":\"%s\",\"name\":\"%s\","
+            "{\"slot\":%d,\"state\":\"%s\",\"name\":\"%s\","
             "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ",\"limit\":%" PRIu32
             ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32 "}",
             j, state_str, s->name,
