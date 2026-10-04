@@ -26,3 +26,8 @@ void nvs_close(nvs_handle_t handle);
 #ifdef __cplusplus
 }
 #endif
+
+// u8/erase(中断续连标志用;签名对齐 IDF 5.x)。
+int nvs_set_u8(nvs_handle_t handle, const char *key, uint8_t value);
+int nvs_get_u8(nvs_handle_t handle, const char *key, uint8_t *out_value);
+int nvs_erase_key(nvs_handle_t handle, const char *key);

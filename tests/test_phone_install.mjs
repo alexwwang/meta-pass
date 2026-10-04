@@ -11,7 +11,10 @@
 //      (slots 表 = 仓库单一事实源 SLOT_GEOMETRY − 4KB);
 //   4. runInstall(§6.4/§6.5):prepare → 物理确认轮询 → session(槽位取设备值)
 //      → 顺序 chunk → finalize → done;chunk 失败按设备上报 offset 续传;
-//   5. 防御面:无 token 拒发、协议不符拒发、busy 拒发、确认超时、finalize 失败。
+//   5. 防御面:无 token 拒发、协议不符拒发、busy 拒发、确认超时、finalize 失败;
+//   6. 槽位管理(dynslot §4.5 Remove):GET /api/install/slots 清单契约、
+//      POST remove 删除(200 → 复位窗口不可达 → waitDeviceBack 回连)、
+//      忙碌 409/坏体 400/不在 carve 404 拒绝面与 parseSlots 形状门禁。
 //
 // 运行:node tests/test_phone_install.mjs(仓库根)。
 import assert from "node:assert/strict";
@@ -23,6 +26,7 @@ import path from "node:path";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
+const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
 // ── 夹具:最小合法 ESP 镜像(同 test-extract.mjs 构造法) ────────────────
 function buildAppImage(seg0len = 100, seg1len = 64) {
@@ -83,6 +87,25 @@ const PLAY = {
 const SLOT_LIMITS = SLOT_GEOMETRY.map(({ slot, partSize }) => ({
   slot, limit: partSize - 0x1000, fit: APP.length <= partSize - 0x1000,
 }));
+
+// dynslot §4.5 槽位管理 mock夹具:两池总字节数(设备端 meta_carve_pool_total
+// 同源)+ 3 槽 carve(valid/invalid/empty 各一,尺寸取仓库池几何)。
+const POOL_TOTAL = 6766592;
+// legacy 表槽位偏移(partitions.csv:ota_0 @pool_0 起,ota_1 @pool_1 起,
+// ota_2 紧随其后)—— 与设备 carve 种子同一布局;解析门禁要求 64KB 对齐。
+const LEGACY_OFFSETS = [0x180000, 0x360000, 0x560000];
+function defaultCarve() {
+  return SLOT_GEOMETRY.map(({ slot, partSize }) => ({
+    slot,
+    state: slot === 0 ? "valid" : slot === 1 ? "invalid" : "empty",
+    name: slot === 0 ? "demo-fw" : "",
+    size: partSize,
+    len: slot === 0 ? 123456 : 0,
+    limit: partSize - 0x1000,   // 设备端 meta_sign_app_limit(part − 4KB)
+    offset: LEGACY_OFFSETS[slot],
+    kind: "app",
+  }));
+}
 
 function analyzeJson() {
   return {
@@ -215,13 +238,16 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
 // 设备 mock:严格复现 meta_store_install.c 的请求→响应契约(§6.5)。
 function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
                       failChunkAt = -1, failTimes = 1, finalOk = true,
-                      autoConfirm = true, resumeOffset = 0, neverDone = false } = {}) {
+                      autoConfirm = true, resumeOffset = 0, neverDone = false,
+                      carve = defaultCarve(), rebootPolls = 2 } = {}) {
   const calls = [];
   const d = {
     protocol: 1, state: "pairing", message: "",
     active: true, offer: false, confirmed: false, session: false,
     slot: -1, offset: 0, expected: 0, name: "",
     failLeft: failTimes,
+    carve: carve.map((s) => ({ ...s })),  // 规范 carve 快照(dynslot §4.5)
+    rebootLeft: 0,                        // 删除提交后复位窗口内剩余不可达轮数
     polls: 0,   // status 轮询计数:模拟"用户在设备上按 OK"的时序
   };
   d.handlers = async (input, init) => {
@@ -230,6 +256,12 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
     const pathn = u.pathname;
     const method = init?.method ?? "GET";
     calls.push(`${method} ${pathn}`);
+    // 删除提交后的复位窗口(§4.5:200 → 150ms → esp_restart):服务短暂不可达,
+    // 所有请求按网络错误失败(call() → status 0),与真机“重启中连不上”同语义。
+    if (d.rebootLeft > 0) {
+      d.rebootLeft--;
+      throw new Error("device rebooting");
+    }
     const tok = init?.headers?.["X-Meta-Session"] ?? null;
     const need = () => {
       if (!tok) return { status: 401, text: "bad session token" };
@@ -298,6 +330,37 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
     }
     if (pathn === "/api/install/cancel" && method === "POST") {
       d.active = false; d.state = "cancelled";
+      return new Response("ok", { status: 200 });
+    }
+    // dynslot §4.5 槽位管理(与 meta_store_install.c 两个新 handler 同契约):
+    // GET slots = token 门禁 + carve 清单;remove = 解析 400 → 忙碌 409 →
+    // 不在 carve 404 → 擦数据/提交 → 200 + 复位窗口(rebootPolls 轮不可达)。
+    if (pathn === "/api/install/slots" && method === "GET") {
+      const r = need(); if (r) return new Response(r.text, { status: r.status });
+      const free = Math.max(0, POOL_TOTAL - d.carve.reduce((a, s) => a + s.size, 0));
+      return new Response(JSON.stringify({ count: d.carve.length, free, slots: d.carve }),
+        { status: 200 });
+    }
+    if (pathn === "/api/install/remove" && method === "POST") {
+      const r = need(); if (r) return new Response(r.text, { status: r.status });
+      // 顺序与设备端一致:parse(400)先于 busy(409)先于可行性(404)。
+      let slot = -1;
+      try {
+        const b = JSON.parse(init.body);
+        if (b && typeof b === "object" && Number.isInteger(b.slot)) slot = b.slot;
+      } catch { /* → 400 */ }
+      if (slot < 0 || slot >= 8) return new Response("bad request", { status: 400 });
+      if (d.offer || d.confirmed || d.session) {
+        return new Response("install in progress", { status: 409 });
+      }
+      const idx = d.carve.findIndex((s) => s.slot === slot);
+      if (idx < 0) return new Response("no such slot", { status: 404 });
+      d.carve.splice(idx, 1);
+      // 设备契约:擦数据 → 提交记录+物化表 → 200 → 150ms → 复位(会话态清零)。
+      d.offer = false; d.confirmed = false; d.session = false;
+      d.state = "idle"; d.message = "";
+      d.slot = -1; d.offset = 0; d.expected = 0;
+      d.rebootLeft = rebootPolls;
       return new Response("ok", { status: 200 });
     }
     return new Response("no such device route", { status: 404 });
@@ -773,6 +836,234 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   assert.equal(pre.offer.imageLen, HUGE_APP.length);
   assert.ok(pre.offer.slots[2].fit && !pre.offer.slots[1].fit);
   console.log(`PASS 8g: 2.2MB app extracts with true slot geometry (len=${HUGE_APP.length})`);
+}
+
+// ── 9. 槽位管理契约(dynslot §4.5 Remove:GET /api/install/slots + remove) ──
+// 9a. 清单:token 必带(无 token → 401)、字段与 mock carve 一致、
+//     limit = size − 4KB(设备 meta_sign_app_limit 同源)、free = 池总 − Σsize。
+{
+  const dev = makeDevice();
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const r = await bridge.slots();
+  assert.equal(r.status, 200);
+  assert.ok(dev.calls.includes("GET /api/install/slots"));
+  const info = phone.parseSlots(r.text);
+  assert.ok(info, r.text);
+  assert.equal(info.count, 3);
+  assert.deepEqual(info.slots.map((s) => [s.slot, s.state]),
+    [[0, "valid"], [1, "invalid"], [2, "empty"]]);
+  assert.equal(info.slots[0].name, "demo-fw");
+  assert.equal(info.slots[0].len, 123456);
+  assert.equal(info.slots[0].limit, info.slots[0].size - 0x1000);
+  assert.equal(info.free, POOL_TOTAL - info.slots.reduce((a, s) => a + s.size, 0));
+  const noTok = phone.createBridge("http://192.168.1.23", "");
+  assert.equal((await noTok.slots()).status, 401);
+  assert.equal((await noTok.remove(0)).status, 401);
+  console.log("PASS 9a: slots listing contract (token gated, carve-derived limit/free, 401 without token)");
+}
+
+// 9b. 删除成功路径:200 → carve 即时收缩 → 复位窗口内 status 不可达 →
+//     waitDeviceBack 等到恢复 → 刷新清单仍无该槽。
+{
+  const dev = makeDevice();
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const rm = await bridge.remove(1);
+  assert.equal(rm.status, 200);
+  assert.deepEqual(dev.carve.map((s) => s.slot), [0, 2]);
+  const during = await bridge.status();
+  assert.equal(during.ok, false);
+  assert.equal(during.status, 0, "device must be unreachable during reboot window");
+  const back = await phone.waitDeviceBack(bridge,
+    { tries: 5, delayMs: 1, sleep: async () => {} });
+  assert.equal(back, true);
+  const info = phone.parseSlots((await bridge.slots()).text);
+  assert.equal(info.count, 2);
+  assert.deepEqual(info.slots.map((s) => s.slot), [0, 2]);
+  console.log("PASS 9b: remove → 200, slot gone, reboot window unreachable, waitDeviceBack recovers");
+}
+
+// 9c. 拒绝面(顺序与设备端一致):坏体 400 → 忙碌 409 → 不在 carve 404;
+//     任何拒绝都不得动 carve。
+{
+  const dev = makeDevice();
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  dev.offer = true;   // 安装在途(prepare 后未完结)
+  assert.equal((await bridge.remove(0)).status, 409);
+  dev.offer = false;
+  assert.equal((await bridge.remove(7)).status, 404);   // 合法下标但不在 carve
+  assert.equal((await bridge.remove(1.5)).status, 400); // 小数 → parse_remove 拒
+  assert.equal((await bridge.remove("1")).status, 400); // 字符串 → parse_remove 拒
+  assert.equal(dev.carve.length, 3, "rejected removes must not touch carve");
+  console.log("PASS 9c: remove rejections — busy 409 / bad shape 400 / not-in-carve 404, carve untouched");
+}
+
+// 9d. parseSlots 形状门禁(纯函数)+ waitDeviceBack 超时/恢复语义。
+{
+  assert.equal(phone.parseSlots("not json"), null);
+  assert.equal(phone.parseSlots('{"count":2,"free":10,"slots":[]}'), null);
+  assert.equal(phone.parseSlots(
+    '{"count":1,"free":10,"slots":[{"slot":9,"state":"valid","name":"","size":1,"len":0,"limit":0,"kind":"app"}]}'), null);
+  assert.equal(phone.parseSlots(
+    '{"count":1,"free":10,"slots":[{"slot":0,"state":"bogus","name":"","size":1,"len":0,"limit":0,"kind":"app"}]}'), null);
+  assert.equal(phone.parseSlots('{"count":0,"free":10,"slots":[]}').slots.length, 0);
+
+  // P1-4:parseSlots 保留 data 占用记录(旧固件无字段 → [];坏条目丢弃)。
+  // 导出闭环后条目携带 play_id/label(缺省 0/"")。
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[]}').data, []);
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":1572864,"size":131072,"state":1}]}').data,
+    [{ offset: 0x180000, size: 0x20000, state: 1, play_id: 0, label: "" }]);
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"play_id":42,"offset":1572864,"size":131072,"state":2,"label":"rec"}]}').data,
+    [{ offset: 0x180000, size: 0x20000, state: 2, play_id: 42, label: "rec" }]);
+  assert.deepEqual(
+    phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":"x","size":1},{"offset":10,"size":0}]}').data,
+    [], "malformed data records dropped");
+
+  const dead = { status: async () => ({ ok: false, status: 0, text: "" }) };
+  assert.equal(await phone.waitDeviceBack(dead,
+    { tries: 3, delayMs: 1, sleep: async () => {} }), false);
+  const up = { status: async () => ({ ok: true, status: 200, text: "{}" }) };
+  assert.equal(await phone.waitDeviceBack(up,
+    { tries: 3, delayMs: 1, sleep: async () => {} }), true);
+  console.log("PASS 9d: parseSlots shape gate (malformed → null) + waitDeviceBack timeout/recover");
+}
+
+// ── 10. dynslot 提案:设备 carve 几何 → prepare offer(§4.5 L4 手机侧) ─────
+// 10a. 现有槽视图:声称 = 清单派生(fit 现算),不携带提案字段;建议 = 首个可装。
+{
+  globalThis.fetch = installMockFetch();
+  const meta = await phone.preflightMeta(563);
+  assert.equal(meta.ok, true, JSON.stringify(meta));
+  const info = phone.parseSlots(JSON.stringify({ count: 3, free: 1000000, slots: [
+    { slot: 0, state: "valid", name: "a", size: 0x1d6000, len: 100,
+      limit: 0x1d5000, offset: 0x180000, kind: "app" },
+    { slot: 1, state: "empty", name: "", size: 0x200000, len: 0,
+      limit: 0x1ff000, offset: 0x360000, kind: "app" },
+    { slot: 2, state: "empty", name: "", size: 0x29e000, len: 0,
+      limit: 0x29d000, offset: 0x560000, kind: "app" },
+  ] }));
+  assert.ok(info);
+  const geom = dyn.geomFromListing(info, APP.length);
+  assert.equal(geom.proposal, null);            // legacy 全占,无处新建
+  const pre = await phone.prepareImage(meta, 0, {}, "", { geom, slotIsNew: false });
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  assert.equal(pre.offer.carveOffset, undefined);
+  assert.equal(pre.offer.carveSize, undefined);
+  assert.deepEqual(pre.offer.slots, [
+    { slot: 0, limit: 0x1d5000, fit: true },
+    { slot: 1, limit: 0x1ff000, fit: true },
+    { slot: 2, limit: 0x29d000, fit: true },
+  ]);
+  assert.equal(pre.offer.suggestedSlot, 0);
+  // 选中不在声称表里的下标 → chosen-slot 门拒(无提案路径的下标门禁)。
+  const bad = await phone.prepareImage(meta, 5, {}, "", { geom, slotIsNew: false });
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /chosen slot 5 does not fit/);
+  console.log("PASS 10a: existing-slot view — claims from device listing, no proposal fields");
+}
+
+// 10b. 洞位提案:中间槽删除后留洞(插入下标与既有下标同号的棘手分支):
+//      夹具 = legacy 三槽删掉中槽 —— pool_0 被 slot0 铺满,洞在 pool_1
+//      (0x360000..0x560000);镜像 ≈2MB 装不下任何现有槽但能进洞 →
+//      提案下标 1 与既有 slot1 同号,placed 视图把既有 slot1 顶移到 2。
+//      MED_APP ≈ 2000160B:> slot0 上限 0x1D5000,< 洞 0x200000;need = 0x1EA000。
+const MED_APP = buildAppImage(2000000, 64);
+const MED_MERGED = buildMerged(MED_APP);
+const MED_APP_SHA = createHash("sha256").update(MED_APP).digest("hex");
+const MED_MERGED_SHA = createHash("sha256").update(MED_MERGED).digest("hex");
+const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
+  { slot: 0, state: "valid", name: "a", size: 0x1d6000, len: 100,
+    limit: 0x1d5000, offset: 0x180000, kind: "app" },   // 铺满 pool_0
+  { slot: 1, state: "valid", name: "b", size: 0x40000, len: 100,
+    limit: 0x3f000, offset: 0x560000, kind: "app" },     // 洞:0x360000..0x560000
+] };
+{
+  const info = phone.parseSlots(JSON.stringify(SMALL_HOLE_LISTING));
+  assert.ok(info);
+  const geom = dyn.geomFromListing(info, MED_APP.length);
+  assert.deepEqual(geom.current.map((s) => s.fit), [false, false]);  // 现有槽都装不下
+  assert.ok(geom.proposal, "hole must be placeable");
+  assert.equal(geom.proposal.slot, 1);              // 插入位 = 既有下标 1(同号分支)
+  assert.equal(geom.proposal.carveOffset, 0x360000);
+  assert.equal(geom.proposal.carveSize, dyn.carveNeed(MED_APP.length));
+  assert.equal(geom.proposal.limit, dyn.carveNeed(MED_APP.length) - 0x1000);
+  assert.equal(geom.suggestedSlot, geom.proposal.slot);
+  assert.deepEqual(geom.placed, [
+    { slot: 0, limit: 0x1d5000, fit: false },
+    { slot: 1, limit: geom.proposal.limit, fit: true },
+    { slot: 2, limit: 0x3f000, fit: false },         // 既有 slot1 顶移到 2
+  ]);
+  console.log("PASS 10b: hole proposal — insert-index collision, placed view re-indexes");
+}
+
+// 10c. prepare 的提案分支(真实下载/解包链,镜像 = MED_APP ≈2MB 装不下任何现有槽):
+//      slotIsNew → 提案字段 + 插入后声称;选现有槽 → 不带提案且 fit 门拒;
+//      e2e runInstall 带着 carveOffset/carveSize 与插入后下标一路到底。
+{
+  const medPlay = JSON.parse(JSON.stringify(PLAY));
+  medPlay.firmware.size = MED_MERGED.length;
+  medPlay.firmware.sha256 = MED_MERGED_SHA;
+  const medAnalyze = {
+    ...analyzeJson(),
+    store: { size: MED_MERGED.length, sha256: MED_MERGED_SHA },
+    extracted: { imageLen: MED_APP.length, sha256: MED_APP_SHA },
+  };
+  globalThis.fetch = installMockFetch({ plays: [medPlay], analyze: medAnalyze, firmware: MED_MERGED });
+  const meta = await phone.preflightMeta(563);
+  assert.equal(meta.ok, true, JSON.stringify(meta));
+  const geom = dyn.geomFromListing(phone.parseSlots(JSON.stringify(SMALL_HOLE_LISTING)),
+                                   MED_APP.length);
+  assert.ok(geom.proposal);
+  const pre = await phone.prepareImage(meta, geom.proposal.slot, {}, "",
+    { geom, slotIsNew: true });
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  assert.equal(pre.offer.carveOffset, 0x360000);
+  assert.equal(pre.offer.carveSize, dyn.carveNeed(MED_APP.length));
+  assert.deepEqual(pre.offer.slots, [
+    { slot: 0, limit: 0x1d5000, fit: false },
+    { slot: 1, limit: geom.proposal.limit, fit: true },
+    { slot: 2, limit: 0x3f000, fit: false },
+  ]);
+  assert.equal(pre.offer.suggestedSlot, geom.proposal.slot);
+  // 选装不下的现有槽(且无提案路径下全装不下)→ fit 门拒,不携带提案。
+  const pre2 = await phone.prepareImage(meta, 0, {}, "", { geom, slotIsNew: false });
+  assert.equal(pre2.ok, false);
+  assert.match(pre2.reason, /image larger than every slot|chosen slot 0 does not fit/);
+  // e2e:提案 offer 走完整 runInstall(mock 设备不校验提案,确认 slot = 插入后
+  // 下标 1,session/chunk/finalize 沿用该下标)。
+  const dev = makeDevice({ imageLen: MED_APP.length, sha256: MED_APP_SHA });
+  globalThis.fetch = dispatchFetch(installMockFetch(
+    { plays: [medPlay], analyze: medAnalyze, firmware: MED_MERGED }), dev);
+  const r = await phone.runInstall(bridge, pre.offer, pre.ext.data, {});
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.slot, 1);
+  console.log("PASS 10c: prepare proposal branch + e2e runInstall with carveOffset/carveSize");
+}
+
+// 10d. dynslot 8 槽上界:设备确认 slot 7(旧 `slot <= 2` 硬上限会误拒)。
+{
+  const eight = Array.from({ length: 8 }, (_, i) => ({
+    slot: i, state: "empty", name: "", size: 0x40000, len: 0, limit: 0x3f000,
+    offset: (i < 4 ? 0x180000 + i * 0x10000 : 0x360000 + (i - 4) * 0x10000),
+    kind: "app",
+  }));
+  const info = phone.parseSlots(JSON.stringify({ count: 8, free: 0, slots: eight }));
+  assert.ok(info, "8-slot listing must parse");
+  const geom = dyn.geomFromListing(info, APP.length);
+  assert.equal(geom.proposal, null);              // 8 槽满,无处新建
+  globalThis.fetch = installMockFetch();
+  const meta = await phone.preflightMeta(563);
+  const pre = await phone.prepareImage(meta, 7, {}, "", { geom, slotIsNew: false });
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  assert.equal(pre.offer.slot, 7);
+  const dev = makeDevice();
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const r = await phone.runInstall(bridge, pre.offer, pre.ext.data, {});
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.slot, 7);
+  console.log("PASS 10d: 8-slot bound — device-confirmed slot 7 accepted end-to-end");
 }
 
 console.log("ALL phone-install TESTS PASSED");

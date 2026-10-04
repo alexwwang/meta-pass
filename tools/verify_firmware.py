@@ -26,17 +26,20 @@ ENTRY = struct.Struct("<HBBII16sI")
 
 # 升级安全契约:发布镜像只携带 factory/bootloader/分区表,以下区域必须保持擦除态
 # (全 0xFF),这样"仅刷这些区域"的升级路径才不会覆盖设备上的用户数据:
-#   nvs      0x9000  0x6000  NVS 存储数据:Wi-Fi 配置、应用内部状态(升级必须保留)
-#   ota_0    0x180000 0x1D6000  子固件槽位(升级必须保留)
-#   ota_1    0x360000 0x200000  子固件槽位(升级必须保留)
-#   ota_2    0x560000 0x29E000  子固件槽位 / littlefs 录音(升级必须保留)
-#   otadata  0x7FE000 0x2000  OTA 启动选择(升级时重置为擦除态,回到 factory)
+#   nvs      0x9000   0x6000    NVS 存储数据:Wi-Fi 配置、应用内部状态(升级必须保留)
+#   store    0x35A000 0x6000    dynslot carve 记录 A/B + 安全表副本 + Wi-Fi 凭据备份
+#                               (设备侧数据,产物绝不能携带 —— 否则升级会抹掉槽位图)
+#   otadata  0x7FE000 0x2000    OTA 启动选择(升级时重置为擦除态,回到 factory)
+#   pool_0   0x180000 0x1D6000  dynslot 槽位池(子固件镜像,升级必须保留)
+#   pool_1   0x360000 0x49E000  dynslot 槽位池(同上)
+# 设计:docs/assets/dynslot-design.md §4.6(原 nvs/ota_0/ota_1/ota_2/otadata 清单
+# 随固定槽位退役;cardid 仍由 verify_protected_layout 单独把守 0xFF)。
 UPGRADE_PRESERVED_REGIONS = (
     ("nvs", 0x9000, 0x6000),
-    ("ota_0", 0x180000, 0x1D6000),
-    ("ota_1", 0x360000, 0x200000),
-    ("ota_2", 0x560000, 0x29E000),
+    ("store", 0x35A000, 0x6000),
     ("otadata", 0x7FE000, 0x2000),
+    ("pool_0", 0x180000, 0x1D6000),
+    ("pool_1", 0x360000, 0x49E000),
 )
 
 
@@ -95,9 +98,24 @@ def verify_protected_layout(merged: bytes, build_dir: Path) -> None:
         raise ValueError("partition table has no MD5 marker")
 
     by_label = {item.label: item for item in partitions}
+
+    # 产物只能携带安全表:除 factory 外不得有任何 app 条目 —— carved 表(ota_*)
+    # 是设备运行时的 carve 决策,混进产物会让槽位布局被发布流程冻结(§4.2)。
+    app_labels = [item.label for item in partitions if item.kind == 0]
+    if app_labels != ["factory"]:
+        raise ValueError(
+            f"artifact table must declare only 'factory' as an app partition, "
+            f"got {app_labels} (carved table must never ship in the release)"
+        )
+
     expected = {
         "factory": Partition(0, 0, 0x10000, APP_MAX_SIZE, "factory"),
         "cardid": Partition(1, 2, CARDID_OFFSET, CARDID_SIZE, "cardid"),
+        # dynslot 安全表的其余固定/占位条目(partitions.csv 同源)。
+        "store": Partition(1, 2, 0x35A000, 0x6000, "store"),
+        "otadata": Partition(1, 0, 0x7FE000, 0x2000, "otadata"),
+        "pool_0": Partition(1, 0x40, 0x180000, 0x1D6000, "pool_0"),
+        "pool_1": Partition(1, 0x40, 0x360000, 0x49E000, "pool_1"),
     }
     for label, wanted in expected.items():
         if by_label.get(label) != wanted:
@@ -134,7 +152,7 @@ def verify_upgrade_safety(merged: bytes) -> None:
     """发布镜像不得携带任何会覆盖用户数据的内容。
 
     升级策略:launcher 升级只写 bootloader / 分区表 / factory app / otadata,
-    其余分区(NVS、cardid、三个 OTA 槽位)在设备上原样保留。为此,发布镜像
+    其余分区(NVS、store、两段槽位池)在设备上原样保留。为此,发布镜像
     里这些区域必须全 0xFF——若未来构建流程把数据烧进了这些区域,说明布局
     契约被破坏,必须立即失败而不是静默抹掉用户数据。
     """
@@ -149,7 +167,7 @@ def verify_upgrade_safety(merged: bytes) -> None:
                 f"is 0x{region[dirty]:02x}) — upgrades rely on never touching {label}"
             )
     print(
-        "Upgrade safety: PASS (nvs/ota_0/ota_1/ota_2/otadata erased "
+        "Upgrade safety: PASS (nvs/store/otadata/pool_0/pool_1 erased "
         "— launcher upgrade preserves them)"
     )
 

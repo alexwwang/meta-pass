@@ -8,6 +8,11 @@ import {
   checkUpgradeBundle,
   isErasedTable,
   isLegacyFactoryLayout,
+  isDynslotLayout,
+  isFixedSlotLayout,
+  isDynslotSafeTable,
+  migrationWritePlan,
+  discoverSlots,
   migrationErasePlan,
   slotHasData,
   PARTITION_TABLE_READ_SIZE,
@@ -36,19 +41,9 @@ const HAVE_ARTIFACTS =
 
 // 合成分区表(0xC00 布局,带 MD5 marker —— 与 idf.py 生成物同结构):真实产物缺失时
 // 替代 PASS 2/3/8 的表依赖。条目与 partitions.csv 契约一致,marker digest 覆盖其前数据。
-function syntheticPartitionTable() {
-  const raw = new Uint8Array(0xc00).fill(0xff);
+function syntheticTable(entries, total = 0xc00) {
+  const raw = new Uint8Array(total).fill(0xff);
   const dv = new DataView(raw.buffer);
-  const entries = [
-    ["nvs", 1, 2, 0x9000, 0x6000],
-    ["phy_init", 1, 2, 0xf000, 0x1000],
-    ["factory", 0, 0, 0x10000, 0x170000],
-    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
-    ["cardid", 1, 2, 0x356000, 0x4000],
-    ["ota_1", 0, 0x11, 0x360000, 0x200000],
-    ["ota_2", 0, 0x12, 0x560000, 0x29e000],
-    ["otadata", 1, 0, 0x7fe000, 0x2000],
-  ];
   let cursor = 0;
   for (const [label, type, subtype, offset, size] of entries) {
     dv.setUint16(cursor, 0x50aa, true);
@@ -68,6 +63,20 @@ function syntheticPartitionTable() {
   const digest = _cryptoCreateHash("md5").update(raw.subarray(0, cursor)).digest();
   raw.set(digest, cursor + 16);
   return raw;
+}
+
+// 固定 3 槽表(partitions.csv 契约,PASS 2/3/8 用)
+function syntheticPartitionTable() {
+  return syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["ota_1", 0, 0x11, 0x360000, 0x200000],
+    ["ota_2", 0, 0x12, 0x560000, 0x29e000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ]);
 }
 
 // 合成 ESP32-C3 app 镜像(无扩展头布局):0xE9 魔数 + chip_id=C3 + 单段 + 校验和对齐。
@@ -117,9 +126,13 @@ const bundleTable = new Uint8Array(
 );
 const table = parsePartitionTable(bundleTable);
 const labels = table.map((p) => p.label);
-assert.deepEqual(
-  labels,
-  ["nvs", "phy_init", "factory", "ota_0", "cardid", "ota_1", "ota_2", "otadata"],
+// 布局随构建产物而定:dynslot 前 partitions.csv = 固定 3 槽表;dynslot 后 =
+// 安全表(pool_0/pool_1 占位 + store)。真产物存在时以实际布局为准,
+// 契约锚点是 FIXED 条目的偏移(下述),槽条目本身在两种布局下都合法。
+assert.ok(
+  JSON.stringify(labels) === JSON.stringify(["nvs", "phy_init", "factory", "ota_0", "cardid", "ota_1", "ota_2", "otadata"]) ||
+  JSON.stringify(labels) === JSON.stringify(["nvs", "phy_init", "factory", "pool_0", "cardid", "store", "pool_1", "otadata"]),
+  `unexpected partition layout: ${labels.join(",")}`,
 );
 const byLabel = Object.fromEntries(table.map((p) => [p.label, p]));
 assert.equal(byLabel.factory.offset, 0x10000);
@@ -345,6 +358,154 @@ let packedFromPass7;   // PASS 8 兼容分发用例复用
   assert.equal(mpupParsed.kind, "mpup");
 
   console.log(`PASS 8: hybrid single-file (44B MPUPV2 footer) — slices match body, otadata erased, tamper rejected, legacy MPUP compat [${HAVE_ARTIFACTS ? "real-artifact parity" : "synthetic parity"}]`);
+}
+
+// ---- PASS 9: dynslot 双模式 —— isDynslotLayout 识别 + 条目级表比较 ----
+{
+  // 安全表(bundle 侧):FIXED + pool 占位(与 tests/fixtures/safe_table.bin 同构)
+  const safeBundle = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["pool_0", 1, 0x40, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["store", 1, 2, 0x35a000, 0x6000],
+    ["pool_1", 1, 0x40, 0x360000, 0x49e000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ]);
+  // carved 表(设备侧,0x1000 = 整扇区读回):池占位被 ota_N 槽位替换,保留 store
+  const carvedDevice = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["store", 1, 2, 0x35a000, 0x6000],
+    ["ota_1", 0, 0x11, 0x200000, 0x80000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ], 0x1000);
+
+  // isDynslotLayout 以 store@0x35A000 判定(carved 表无 pool_*;固定 3 槽/原厂表无 store)
+  assert.equal(isDynslotLayout(parsePartitionTable(carvedDevice)), true, "carved table (store present) = dynslot");
+  assert.equal(isDynslotLayout(parsePartitionTable(safeBundle)), true, "safe table also carries store");
+  assert.equal(isDynslotLayout(parsePartitionTable(syntheticPartitionTable())), false, "legacy fixed 3-slot: no store");
+  assert.equal(isDynslotLayout([]), false, "empty table");
+  assert.equal(isDynslotLayout(null), false, "null table");
+
+  // 写入计划:常规升级四段(含分区表);fixed→dynslot 迁移三段(不含分区表 ——
+  // legacy 表必须留在设备上供 ensure() seed_legacy 检测,写了安全表已装玩法即孤儿)
+  assert.deepEqual(
+    upgradeWritePlan().map((s) => s.name),
+    ["bootloader.bin", "partition-table.bin", "FoloToy-AI-Passport.bin", "ota_data_initial.bin"],
+  );
+  assert.deepEqual(
+    migrationWritePlan().map((s) => s.name),
+    ["bootloader.bin", "FoloToy-AI-Passport.bin", "ota_data_initial.bin"],
+    "migration plan must NOT write partition-table.bin",
+  );
+  assert.ok(!migrationWritePlan().some((s) => s.name === "partition-table.bin"));
+
+  // 布局/包分类:fixed vs safe vs carved 互不混淆
+  assert.equal(isFixedSlotLayout(parsePartitionTable(syntheticPartitionTable())), true, "legacy fixed 3-slot");
+  assert.equal(isFixedSlotLayout(parsePartitionTable(carvedDevice)), false, "carved is not fixed");
+  assert.equal(isFixedSlotLayout(parsePartitionTable(safeBundle)), false, "safe table is not fixed");
+  assert.equal(isDynslotSafeTable(parsePartitionTable(safeBundle)), true, "safe bundle qualifies");
+  assert.equal(isDynslotSafeTable(parsePartitionTable(carvedDevice)), false, "carved lacks pool placeholders");
+  assert.equal(isDynslotSafeTable(parsePartitionTable(syntheticPartitionTable())), false, "fixed bundle lacks pool+store");
+
+  // dynslot 比较:carved 设备 vs 安全 bundle → OK(槽位/池条目差异属预期)
+  const ok = comparePartitionTables(carvedDevice, safeBundle, true);
+  assert.equal(ok.ok, true, `carved vs safe bundle: ${ok.reason ?? "ok"}`);
+
+  // 负例 1:bundle 是固定槽位表(无 pool 占位)→ 拒,防刷错包
+  const badBundle = comparePartitionTables(carvedDevice, syntheticPartitionTable(), true);
+  assert.equal(badBundle.ok, false, "legacy fixed bundle rejected on dynslot device");
+  assert.match(badBundle.reason, /safe table/);
+
+  // 负例 2:FIXED 条目被挪动(cardid 偏移 +0x1000)→ 拒
+  const tamperedSafe = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["pool_0", 1, 0x40, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x357000, 0x4000],
+    ["store", 1, 2, 0x35a000, 0x6000],
+    ["pool_1", 1, 0x40, 0x360000, 0x49e000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ]);
+  const badFixed = comparePartitionTables(carvedDevice, tamperedSafe, true);
+  assert.equal(badFixed.ok, false, "moved FIXED entry rejected");
+  assert.match(badFixed.reason, /cardid/);
+
+  // fixed-slot 路径不受影响:同表逐字节比较仍通过(设备侧补足整扇区)
+  const fixedDevice = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["ota_1", 0, 0x11, 0x360000, 0x200000],
+    ["ota_2", 0, 0x12, 0x560000, 0x29e000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ], 0x1000);
+  const fixedOk = comparePartitionTables(fixedDevice, syntheticPartitionTable(), false);
+  assert.equal(fixedOk.ok, true, "fixed-slot byte-compare unchanged");
+  // fixed-slot 模式 + dynslot 表 → 走逐字节,必拒(模式不可混用)
+  const mixed = comparePartitionTables(carvedDevice, safeBundle, false);
+  assert.equal(mixed.ok, false, "dynslot tables under fixed byte-compare must differ");
+  console.log("PASS 9: dynslot dual-mode — store-based detection, entry-level compare, safe-table gate, fixed path untouched");
+}
+
+// ---- PASS 10: discoverSlots —— 从分区表发现槽位几何(USB 页动态槽位 UI 数据源) ----
+{
+  // 固定 3 槽表 → 3 槽,几何与 legacy 常量一致
+  const fixed = discoverSlots(parsePartitionTable(syntheticPartitionTable()));
+  assert.deepEqual(fixed, [
+    { slot: 0, offset: 0x180000, size: 0x1d6000 },
+    { slot: 1, offset: 0x360000, size: 0x200000 },
+    { slot: 2, offset: 0x560000, size: 0x29e000 },
+  ], "fixed 3-slot discovery matches legacy geometry");
+
+  // carved 表 → 按实际槽位条目(偏移任意、数量可变)
+  const carvedDevice = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["phy_init", 1, 2, 0xf000, 0x1000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["cardid", 1, 2, 0x356000, 0x4000],
+    ["store", 1, 2, 0x35a000, 0x6000],
+    ["ota_1", 0, 0x11, 0x200000, 0x80000],
+    ["otadata", 1, 0, 0x7fe000, 0x2000],
+  ], 0x1000);
+  const carved = discoverSlots(parsePartitionTable(carvedDevice));
+  assert.deepEqual(carved, [
+    { slot: 0, offset: 0x180000, size: 0x1d6000 },
+    { slot: 1, offset: 0x200000, size: 0x80000 },
+  ], "carved discovery reflects actual slot entries");
+
+  // 乱序条目按 slot 升序;非 ota 条目(nvs/factory/pool/data)被跳过
+  const shuffled = syntheticTable([
+    ["ota_3", 0, 0x13, 0x400000, 0x20000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["ota_0", 0, 0x10, 0x180000, 0x1d6000],
+    ["data_x", 1, 0x40, 0x360000, 0x1000],
+    ["ota_1", 0, 0x11, 0x200000, 0x80000],
+  ]);
+  const ds = discoverSlots(parsePartitionTable(shuffled));
+  assert.deepEqual(ds.map((s) => s.slot), [0, 1, 3], "sorted by slot index, non-ota skipped");
+
+  // 原厂 factory-only 表(无 ota)→ 空数组,调用方保留 legacy 几何
+  const folotoy = syntheticTable([
+    ["nvs", 1, 2, 0x9000, 0x6000],
+    ["factory", 0, 0, 0x10000, 0x170000],
+    ["recovery", 1, 0x82, 0x700000, 0x100000],
+  ]);
+  assert.deepEqual(discoverSlots(parsePartitionTable(folotoy)), [], "factory-only → empty (caller keeps legacy)");
+
+  // 健壮性
+  assert.deepEqual(discoverSlots(null), []);
+  assert.deepEqual(discoverSlots([]), []);
+  console.log("PASS 10: discoverSlots — fixed/carved/factory-only/robustness");
 }
 
 console.log("All launcher-upgrade tests passed.");

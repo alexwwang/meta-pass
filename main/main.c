@@ -35,6 +35,8 @@
 #include "src/libs/qrcode/qrcodegen.h"   // lv_qrcode 的编码器直用(RGB565 画布手绘)
 #include "meta_seq.h"
 #include "meta_slots.h"
+#include "meta_carve.h"          // 真实槽位清单 / 池剩余空间(列表页)
+#include "meta_carve_flash.h"    // 规范 carve(app_main ensure 后只读)
 #include "meta_store.h"
 #include "meta_store_net.h"
 #include "meta_store_install.h"
@@ -55,10 +57,20 @@ typedef enum {
     PAGE_STORE_SLOT,   // P3 商店:目标槽位选择(物理确认)
     PAGE_STORE_DL,     // P4 商店:LAN 分块上传进度
     PAGE_STORE_CANCEL, // P4b 商店:取消上传确认(CANCEL/BACK,会话仍在)
-    PAGE_STORE_DONE,   // P5 商店:安装完成提示
 } page_t;
 
-#define LIST_ITEMS   4                   // Slot 0 / Slot 1 / Slot 2 / Store
+// ---- 列表页(dynslot,用户决策:只列真实存在的槽 + 剩余可用空间) ----
+// 行布局(34px 紧凑行,4 行在 y=242 的吉祥物前收住):
+//   行0..3 = 槽窗口(≤4 个真实 APP 槽,滑动) / 行4 = STORE(固定入口)
+// FREE 不是可选项,2026-10-04 真机反馈:独占一行且深色底像"黑框",
+// 挪到草地页脚当状态文字(见 s_free_lbl)。
+#define LIST_ROWS       5
+#define LIST_SLOT_WIN   4
+#define LIST_ROW_STORE  4
+#define LIST_ROW_H      34
+#define LIST_ROW_Y0     50
+#define LIST_ROW_PITCH  38
+#define UI_ROWS_MAX     5                   // s_rows 容量 = 各页行数上限(列表页最大)
 // 商店会话超时不再"到点即关":到期提示用户决策(OK=保留 / LONG=退出),见 store_tick。
 // 超时时长默认 CONFIG_META_STORE_SESSION_TIMEOUT_MS,运行时可用
 // meta_store_session_set_timeout_ms 覆盖(见 meta_store_net.h)。
@@ -72,11 +84,13 @@ static int64_t   s_store_deadline;   // 商店会话自动关闭时刻(ms,esp_ti
 static lv_timer_t *s_store_timer;    // 商店页轮询定时器(离开页面前必须删)
 
 static lv_obj_t *s_scr;              // 当前页 screen;同一时间只有一个
-static lv_obj_t *s_rows[LIST_ITEMS]; // 可选中行面板(数量按页面上限分配)
+static lv_obj_t *s_rows[UI_ROWS_MAX]; // 可选中行面板(数量按页面上限分配)
 static lv_obj_t *s_info;             // 详情/商店页的多行文本
 static lv_obj_t *s_status_line;      // 商店页状态行
 static lv_obj_t *s_egg_panel;        // 彩蛋页可滚动面板(teardown 时随屏销毁)
 static lv_obj_t *s_mascot;
+static lv_obj_t *s_free_lbl;   // 草地页脚的 FREE 状态文字(非可选项)
+static lv_obj_t *s_row_shadow[LIST_SLOT_WIN];  // 槽行影子块(隐藏行时必须连带)
 static meta_seq_state_t s_egg_seq;   // 详情页隐藏序列 UP UP DOWN DOWN(四 CLICK)的匹配状态
 
 // ---- 商店会话状态(UI 上下文;安装会话状态机在 meta_store_install.c) ----
@@ -84,7 +98,6 @@ static meta_install_manifest_t s_offer;          // P2/P3 展示中的 install o
 static bool s_offer_valid;                       // s_offer 是否有效(页面重建复用)
 static bool s_qr_service_failed;                 // P1 起本地 install 服务失败的粘滞提示
 // 跨页键事件吞咽:P5→列表等迁移后,同一次物理按压的尾随 CLICK 不应落在新页。
-static int64_t s_list_arm_at;                    // 列表页 OK 在此时间戳前忽略(ms)
 // QR 直绘静态缓冲(qrcodegen 工作/输出 + RGB565 画布)。bss 共 ~37KB:
 // 不上栈(UI 任务栈吃不下),也不上堆(页面构建期一次性使用)。
 static uint8_t s_qr_tmp[qrcodegen_BUFFER_LEN_MAX];
@@ -93,7 +106,17 @@ static uint8_t s_qr_canvas_buf[120 * 120 * 2];
 // 生命周期纪律:凡"页面重建后仍需有效"的状态由 store_goto/各 build 显式维护,
 // 不能依赖 LVGL 对象存活;offer 快照在 P1→P2 迁移时填充,回 P1 即丢弃。
 static bool     s_slot_fit[META_SLOT_COUNT];     // P3 各槽位 fit 标记(本地分区上限)
-static int      s_store_installed_slot;          // P3 确认的目标槽位(P5 展示用;store_goto 会清 s_sel)
+// 列表页窗口状态(dynslot):真实 APP 槽清单 + 滑窗起点。选中 = 物品下标
+// (0..s_list_n-1 = 槽,s_list_n = STORE);FREE 行不是物品,永不选中。
+static int      s_list_slots[META_SLOT_COUNT];
+static int      s_list_n;
+static int      s_list_win;                     // 窗口起点(行 r ↔ slot[win+r])
+// P3 选槽窗口:候选 = carve 中真实存在的槽(新槽只由手机选,v2 交互);
+// 同物品下标模型(s_sel = 候选下标,行 = s_sel - s_pick_win)。
+static int      s_pick_slots[META_SLOT_COUNT];
+static int      s_pick_n;
+static int      s_pick_win;
+static int      s_pick_rows;                    // P3 创建的行数 = min(窗口, 候选数)
 static bool     s_store_expired;                 // 会话已到期,等待用户决策(冻结自动迁移)
 static lv_obj_t *s_timeout_panel;                // 到期提示浮层本体(ui_pixel_panel 立体框)
 static lv_obj_t *s_timeout_lbl;                  // 浮层标签(s_timeout_panel 子对象)
@@ -112,10 +135,11 @@ static void add_battery(lv_obj_t *parent)
     lv_obj_set_pos(lbl, 204, 30);
 }
 
-// 可选中行;selected 高亮。行文本随后用 lv_label_set_text 更新。
-static lv_obj_t *add_row(lv_obj_t *parent, int idx, int y, const char *text)
+// 可选中行(定高版);selected 高亮。行文本随后用 lv_label_set_text 更新。
+static lv_obj_t *add_row_h(lv_obj_t *parent, int idx, int y, int h, const char *text)
 {
-    lv_obj_t *panel = ui_pixel_panel_create(parent, 12, y, 216, 40, UI_PAPER);
+    lv_obj_t *panel = ui_pixel_panel_create_shadowed(parent, 12, y, 216, h, UI_PAPER,
+                                                     idx < LIST_SLOT_WIN ? &s_row_shadow[idx] : NULL);
     lv_obj_t *lbl = lv_label_create(panel);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK), 0);
@@ -125,14 +149,40 @@ static lv_obj_t *add_row(lv_obj_t *parent, int idx, int y, const char *text)
     return panel;
 }
 
-static void rows_refresh(int count, int sel)
+// 非物品行(FREE/STORE):无阴影面板 + 细边 + 次级墨文字。与槽位卡片形成
+// 明确的视觉分组;位置/高度/导航/环行为不变(选中仍白边黄底)。
+static lv_obj_t *add_row_h_muted(lv_obj_t *parent, int idx, int y, int h, const char *text)
+{
+    lv_obj_t *panel = ui_pixel_panel_create_plain(parent, 12, y, 216, h, UI_PAPER);
+    lv_obj_set_style_border_width(panel, 2, 0);
+    lv_obj_set_style_border_color(panel, lv_color_hex(UI_INK2), 0);
+    lv_obj_t *lbl = lv_label_create(panel);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(UI_INK2), 0);
+    lv_obj_center(lbl);
+    lv_label_set_text(lbl, text);
+    s_rows[idx] = panel;
+    return panel;
+}
+
+// 标准 40px 行(商店各页沿用原几何)。
+static lv_obj_t *add_row(lv_obj_t *parent, int idx, int y, const char *text)
+{
+    return add_row_h(parent, idx, y, 40, text);
+}
+
+static void rows_refresh_fit(int count, int sel, const bool *row_fit)
 {
     for (int i = 0; i < count; i++) {
-        // r10.10:P3 不适配槽位行置灰(ui_pixel_set_selected enabled=false);
-        // 其他页全部可用(enabled=true)。fit 表只在 P3 有效,页值缺省 true。
-        const bool enabled = (s_page != PAGE_STORE_SLOT) || s_slot_fit[i];
+        // r10.10:灰显禁选由调用方按行给出(P3 窗口内 fit 表);缺省全部可用。
+        const bool enabled = !row_fit || row_fit[i];
         ui_pixel_set_selected(s_rows[i], i == sel, enabled);
     }
+}
+
+static void rows_refresh(int count, int sel)
+{
+    rows_refresh_fit(count, sel, NULL);
 }
 
 // 关闭当前页:先停定时器(防悬挂回调访问已删对象),再删屏、清空指针。
@@ -142,7 +192,7 @@ static void page_teardown(void)
         lv_timer_delete(s_store_timer);
         s_store_timer = NULL;
     }
-    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE) {
+    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL) {
         meta_store_net_stop();     // 完整释放 httpd/wifi(资源纪律见 meta_store_net.c)
         meta_install_net_stop();   // 本地 install 服务与 token 一并作废(§8)
     }
@@ -153,22 +203,100 @@ static void page_teardown(void)
         s_status_line = NULL;
         s_egg_panel = NULL;
         s_mascot = NULL;
+        s_free_lbl = NULL;
+        for (int r = 0; r < LIST_SLOT_WIN; r++) s_row_shadow[r] = NULL;
         s_timeout_panel = NULL;   // 浮层与影子都是 s_scr 子对象,随屏一起销毁
         s_timeout_lbl = NULL;
-        for (int i = 0; i < LIST_ITEMS; i++) s_rows[i] = NULL;
+        for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
     }
 }
 
-// ---------- 页面:槽位列表 ----------
+// ---------- 页面:槽位列表(dynslot:只列真实存在的槽 + 剩余空间 + STORE) ----------
+
+// carve → 真实存在的 APP 槽清单(storage 预留不是可启动项,不上列表)。
+// 必须在 meta_carve_flash_ensure 之后调用(app_main 先 ensure 再建页)。
+static void list_scan_slots(void)
+{
+    s_list_n = 0;
+    s_list_win = 0;
+    const meta_carve_t *c = meta_carve_flash_carve();
+    for (uint8_t i = 0; i < c->count && i < META_SLOT_COUNT; i++) {
+        if (c->slot[i].kind == META_CARVE_KIND_APP) s_list_slots[s_list_n++] = i;
+    }
+}
+
+// 窗口内可见槽数。滑动只在还有更多槽时发生 → 恒 = min(窗口, n)。
+static int list_visible(void)
+{
+    const int rest = s_list_n - s_list_win;
+    if (rest <= 0) return 0;
+    return rest > LIST_SLOT_WIN ? LIST_SLOT_WIN : rest;
+}
+
+// 物品下标(0..n-1 槽,n=STORE)→ 窗口对齐。
+static void list_win_fit(void)
+{
+    if (s_sel >= s_list_n) return;   // STORE 行不吃窗口
+    if (s_sel < s_list_win) s_list_win = s_sel;
+    else if (s_sel >= s_list_win + LIST_SLOT_WIN) s_list_win = s_sel - LIST_SLOT_WIN + 1;
+}
+
+// 行导航:物品空间(FREE 不是物品,自然跳过);窗口边缘滑动,端点 wrap。
+static void list_cursor_move(int dir)
+{
+    if (dir < 0) {
+        if (s_sel > 0) {
+            s_sel--;
+        } else if (s_list_win > 0) {
+            s_list_win--;              // 顶边还有更多槽:滑窗,选中停在行0
+        } else if (s_list_n > 0) {
+            s_sel = s_list_n;          // 到顶 wrap → STORE
+        }
+    } else {
+        if (s_sel < s_list_n) s_sel++;  // 槽间移动(含最后一槽 → STORE)
+        else if (s_list_n > 0) {        // STORE wrap → 首槽
+            s_sel = 0;
+            s_list_win = 0;
+        }
+    }
+    list_win_fit();
+}
+
+// 剩余空间行:meta_carve_free = 池总量 - 已占(容量语义);整数防浮点截断。
+static void list_free_text(char *out, size_t cap)
+{
+    const uint32_t b = meta_carve_free(meta_carve_flash_carve());
+    const uint32_t mb = 1024u * 1024u;
+    if (b >= mb) {
+        snprintf(out, cap, "FREE %u.%u MB",
+                 (unsigned)(b / mb), (unsigned)(((b % mb) * 10u) / mb));
+    } else {
+        snprintf(out, cap, "FREE %u KB", (unsigned)(b / 1024u));
+    }
+}
 
 static void list_refresh(void)
 {
-    for (int i = 0; i < META_SLOT_COUNT; i++) {
-        lv_obj_t *lbl = lv_obj_get_child(s_rows[i], 0);
+    const int k = list_visible();
+    for (int r = 0; r < LIST_SLOT_WIN; r++) {
+        lv_obj_t *lbl = lv_obj_get_child(s_rows[r], 0);
+        if (!lbl) continue;
+        if (r >= k) {
+            // 槽位数 < 窗口行数:整行隐藏(2026-10-04 真机反馈:空标签行
+            // 渲染成"空白按钮",像坏掉的槽位)。选中逻辑走 s_list_n,
+            // 隐藏行永远不会被选;FREE/STORE 行位置不变。
+            lv_obj_add_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+            if (s_row_shadow[r]) lv_obj_add_flag(s_row_shadow[r], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_clear_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+        if (s_row_shadow[r]) lv_obj_clear_flag(s_row_shadow[r], LV_OBJ_FLAG_HIDDEN);
         char text[48];
+        const int i = s_list_slots[s_list_win + r];
         switch (s_slots[i].state) {
         case META_SLOT_VALID:
-            snprintf(text, sizeof(text), "SLOT %d: %.20s", i, meta_slot_core_name(&s_slots[i]));
+            snprintf(text, sizeof(text), "SLOT %d: %.20s", i,
+                     meta_slot_core_name(&s_slots[i]));
             break;
         case META_SLOT_INVALID:
             // r10 措辞:有数据但非可引导固件 —— 单一事实源 meta_slots.c
@@ -183,17 +311,47 @@ static void list_refresh(void)
         }
         lv_label_set_text(lbl, text);
     }
-    rows_refresh(LIST_ITEMS, s_sel);
+    if (s_free_lbl) {
+        char text[32];
+        list_free_text(text, sizeof(text));
+        lv_label_set_text(s_free_lbl, text);
+    }
+    // STORE 跟槽位走:钉死在窗口第 3 行会在槽少时与最后一槽之间留死空
+    // (2026-10-04 真机反馈)。槽行隐藏/显示后按可见槽数 k 重定位,
+    // 0 槽时 STORE 顶到窗口首行。STORE 是无影 plain 面板,单对象移动即可。
+    lv_obj_set_pos(s_rows[LIST_ROW_STORE], 12, LIST_ROW_Y0 + k * LIST_ROW_PITCH);
+
+    // 行级 enabled:槽行/STORE 可选。
+    const bool fit[LIST_ROWS] = { true, true, true, true, true };
+    const int row_sel = (s_sel < s_list_n) ? (s_sel - s_list_win) : LIST_ROW_STORE;
+    rows_refresh_fit(LIST_ROWS, row_sel, fit);
+    // 非物品行降级必须在选中刷新后存活:ui_pixel_set_selected 会把边框重刷
+    // 成主墨色(真机反馈:导航后 STORE 与槽位视觉一致)。对未选中的
+    // FREE/STORE 重断言次级墨边;选中态(STORE)保持白边黄底不动。
+    for (int idx = LIST_ROW_STORE; idx <= LIST_ROW_STORE; idx++) {
+        if (idx == row_sel) continue;
+        lv_obj_set_style_border_color(s_rows[idx], lv_color_hex(UI_INK2), 0);
+    }
 }
 
 static void page_list_build(void)
 {
     s_scr = ui_pixel_screen_create("meta-pass");
-    add_row(s_scr, 0, 52, "");
-    add_row(s_scr, 1, 96, "");
-    add_row(s_scr, 2, 140, "");
-    add_row(s_scr, 3, 184, "STORE DOWNLOAD");
+    list_scan_slots();
+    s_sel = 0;                       // 物品下标;无槽时 0 = STORE(n=0)
+    for (int r = 0; r < LIST_SLOT_WIN; r++) {
+        add_row_h(s_scr, r, LIST_ROW_Y0 + r * LIST_ROW_PITCH, LIST_ROW_H, "");
+    }
+    add_row_h_muted(s_scr, LIST_ROW_STORE, LIST_ROW_Y0 + LIST_ROW_STORE * LIST_ROW_PITCH,
+                    LIST_ROW_H, "STORE DOWNLOAD");
     add_battery(s_scr);
+    // FREE 放草地页脚(y≈292,UI_GRASS 亮绿底 + 深色小字,见 list_free_text)。
+    {
+        char text[32];
+        list_free_text(text, sizeof(text));
+        s_free_lbl = ui_pixel_label(s_scr, text, &lv_font_montserrat_14, UI_INK);
+        lv_obj_set_pos(s_free_lbl, 148, 292);
+    }
     s_mascot = ui_pixel_mascot_create(s_scr, 101, 242);
     list_refresh();
     lv_screen_load(s_scr);
@@ -277,6 +435,7 @@ static void store_clear_timeout_prompt(void)
 
 // 定时器回调:商店各页共用。按当前页做对应轮询;会话到期出提示浮层等用户决策。
 static void store_tick(lv_timer_t *t);
+static void goto_page(page_t page);
 
 // 商店页内部迁移:只拆 LVGL 对象,不动网络栈(与 goto_page 的唯一差异)。
 static void store_goto(page_t page);
@@ -285,7 +444,6 @@ static void page_store_info_build(void);
 static void page_store_slot_build(void);
 static void page_store_dl_build(void);
 static void page_store_cancel_build(void);
-static void page_store_done_build(void);
 
 // P0 配网页:AP 态显示热点信息;已存凭证(CONNECTING/ONLINE)态显示当前 SSID
 // 与 RESET WIFI 行 —— 选中并 OK 确认后擦凭证重开配网 AP(改 WiFi 入口)。
@@ -510,8 +668,40 @@ static void page_store_info_build(void)
     lv_screen_load(s_scr);
 }
 
-// P3 槽位选择(§6.4):行 = 3 槽,本地分区上限判 fit;仅 fit 行可确认。
+// P3 槽位选择(§6.4 + dynslot):候选 = carve 中真实存在的槽(窗口 ≤4 行),
+// carve 几何判 fit;仅 fit 行可确认。新槽只由手机选(v2 交互)——设备确认
+// 只碰已物化槽,新槽物化/重启在适配层 confirm 闸门里(用户决策①)。
 // OK = 物理确认(上传前提,§8);确认后手机才被允许开上传 session。
+static void pick_win_fit(void)
+{
+    if (s_sel < s_pick_win) s_pick_win = s_sel;
+    else if (s_sel >= s_pick_win + LIST_SLOT_WIN) s_pick_win = s_sel - LIST_SLOT_WIN + 1;
+}
+
+static void pick_refresh(void)
+{
+    for (int r = 0; r < s_pick_rows; r++) {
+        lv_obj_t *lbl = lv_obj_get_child(s_rows[r], 0);
+        if (!lbl) continue;
+        const int i = s_pick_slots[s_pick_win + r];
+        const bool occupied = s_slots[i].state == META_SLOT_VALID;
+        // 占用槽位标 "erase"(esp_ota_begin 先擦除,可覆盖);不适配槽位
+        // 短写 "too small" 防超宽截断(同 r10.10)。
+        char text[24];
+        if (s_slot_fit[i]) {
+            snprintf(text, sizeof(text), "SLOT %d%s", i, occupied ? " erase" : "");
+        } else {
+            snprintf(text, sizeof(text), "SLOT %d too small", i);
+        }
+        lv_label_set_text(lbl, text);
+    }
+    bool fit[LIST_SLOT_WIN] = { false };
+    for (int r = 0; r < s_pick_rows && r < LIST_SLOT_WIN; r++) {
+        fit[r] = s_slot_fit[s_pick_slots[s_pick_win + r]];
+    }
+    rows_refresh_fit(s_pick_rows, s_sel - s_pick_win, fit);
+}
+
 static void page_store_slot_build(void)
 {
     s_scr = ui_pixel_screen_create("SLOT?");
@@ -528,30 +718,42 @@ static void page_store_slot_build(void)
              s_offer_valid ? (unsigned long)(s_offer.image_len / 1024) : 0);
     lv_label_set_text(s_info, text);
 
-    for (int i = 0; i < META_SLOT_COUNT; i++) {
-        const esp_partition_t *part = meta_store_slot_partition(i);
-        const uint32_t limit = part ? meta_sign_app_limit(part->size) : 0;
-        s_slot_fit[i] = s_offer_valid && part && s_offer.image_len <= limit;
-        const bool occupied = s_slots[i].state == META_SLOT_VALID;
-        // 占用槽位标 "erase"(esp_ota_begin 先擦除,可覆盖);不适配槽位
-        // 短写 "too small" 防超宽截断(同 r10.10)。
-        char row[24];
-        if (s_slot_fit[i]) {
-            snprintf(row, sizeof(row), "SLOT %d%s", i, occupied ? " erase" : "");
-        } else {
-            snprintf(row, sizeof(row), "SLOT %d too small", i);
-        }
-        add_row(s_scr, i, 100 + i * 44, row);
+    // 候选与 fit 全部来自规范 carve(表 == carve 不变量;与 prepare/confirm
+    // 同一几何事实源)。storage 预留不是可安装项,不进候选。
+    meta_install_geom_t g;
+    meta_install_local_geom(&g);
+    const meta_carve_t *c = meta_carve_flash_carve();
+    s_pick_n = 0;
+    s_pick_win = 0;
+    memset(s_slot_fit, 0, sizeof(s_slot_fit));
+    for (uint8_t i = 0; i < c->count && i < META_SLOT_COUNT; i++) {
+        if (c->slot[i].kind != META_CARVE_KIND_APP) continue;
+        s_pick_slots[s_pick_n++] = i;
+        s_slot_fit[i] = s_offer_valid && s_offer.image_len <= g.limit[i];
     }
+    s_pick_rows = s_pick_n > LIST_SLOT_WIN ? LIST_SLOT_WIN : s_pick_n;
+    for (int r = 0; r < s_pick_rows; r++) {
+        add_row(s_scr, r, 100 + r * 44, "");
+    }
+
     // 默认选中建议槽位(模型层:suggestedSlot 本地 fit 才用,否则首个可用)。
-    const int8_t dflt = meta_install_default_slot_from_manifest(&s_offer);
-    s_sel = (dflt >= 0) ? dflt : 0;
-    if (!s_slot_fit[s_sel]) {
-        for (int i = 0; i < META_SLOT_COUNT; i++) {
-            if (s_slot_fit[i]) { s_sel = i; break; }
+    // dflt 可能指向尚未物化的提案下标(geom 预填)→ 候选里没有就回落首个 fit。
+    s_sel = 0;
+    if (s_pick_n > 0) {
+        if (s_offer_valid) {
+            const int8_t dflt = meta_install_default_slot_from_manifest(&s_offer);
+            for (int r = 0; r < s_pick_n; r++) {
+                if (s_pick_slots[r] == dflt) { s_sel = r; break; }
+            }
         }
+        if (!s_slot_fit[s_pick_slots[s_sel]]) {
+            for (int r = 0; r < s_pick_n; r++) {
+                if (s_slot_fit[s_pick_slots[r]]) { s_sel = r; break; }
+            }
+        }
+        pick_win_fit();
     }
-    rows_refresh(META_SLOT_COUNT, s_sel);
+    pick_refresh();
     add_battery(s_scr);
     store_touch();
     s_store_timer = lv_timer_create(store_tick, 250, NULL);
@@ -585,35 +787,8 @@ static void page_store_dl_build(void)
     lv_screen_load(s_scr);
 }
 
-// P5 完成提示。
-static void page_store_done_build(void)
-{
-    s_scr = ui_pixel_screen_create("DONE");
-    lv_obj_t *panel = ui_pixel_panel_create(s_scr, 12, 52, 216, 120, UI_PAPER);
-    s_info = lv_label_create(panel);
-    lv_obj_set_width(s_info, 196);
-    lv_obj_set_style_text_font(s_info, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_info, lv_color_hex(UI_INK), 0);
-    lv_obj_align(s_info, LV_ALIGN_TOP_LEFT, 2, 2);
-    // 完成名/槽位取自 install 会话快照(finalize 成功后保留 name/slot)。
-    // 槽位必须用 st.slot:手机选槽(v2)流程不经过 P3,s_store_installed_slot
-    // 从未赋值 → 恒显示 slot 0(真机 bug:实际装入 slot 2,屏显 slot 0)。
-    meta_install_session_status_t st;
-    meta_install_session_poll(&st);
-    char text[160];
-    snprintf(text, sizeof(text),
-             "%.20s\ninstalled to slot %d.\n\nPower off & on to boot it.",
-             st.name[0] ? st.name : "Firmware",
-             st.slot >= 0 ? st.slot : s_store_installed_slot);
-    lv_label_set_text(s_info, text);
-    add_row(s_scr, 0, 180, "BACK TO LIST");
-    rows_refresh(1, 0);
-    s_sel = 0;
-    ui_pixel_mascot_create(s_scr, 101, 242);
-    store_touch();
-    s_store_timer = lv_timer_create(store_tick, 250, NULL);
-    lv_screen_load(s_scr);
-}
+// (P5 安装完成停留页已移除:安装完成直接 goto_page(PAGE_LIST) —
+//  物化过则受控重启清账,否则直接回列表;token 持久化,手机会话续连。)
 
 // P4b 取消确认页:进入时上传仍在后台进行,二选一决策(取消/继续等)。
 static void page_store_cancel_build(void)
@@ -806,7 +981,8 @@ static void store_tick(lv_timer_t *t)
         // 终态迁移:done → P5;cancelled(手机侧)→ 回扫码页等新 offer;
         // failed 停留本页,状态行给出原因,OK 短按回扫码页(见 on_key)。
         if (strcmp(ist_state, "done") == 0) {
-            store_goto(PAGE_STORE_DONE);
+            // 完成即离店:物化过则 teardown 后受控重启清账,否则直接回列表。
+            goto_page(PAGE_LIST);
             break;
         }
         if (strcmp(ist_state, "cancelled") == 0) {
@@ -832,7 +1008,8 @@ static void store_tick(lv_timer_t *t)
     case PAGE_STORE_CANCEL: {
         // 决策期间上传可能已自行终结:完成 → P5;失败/取消 → 回 P4 呈现事实。
         if (strcmp(ist_state, "done") == 0) {
-            store_goto(PAGE_STORE_DONE);
+            // 完成即离店(同上)。
+            goto_page(PAGE_LIST);
         } else if (strcmp(ist_state, "failed") == 0
                    || strcmp(ist_state, "cancelled") == 0) {
             store_goto(PAGE_STORE_DL);
@@ -849,6 +1026,15 @@ static void store_tick(lv_timer_t *t)
 
 static void goto_page(page_t page)
 {
+    // 物化过 carved 表(安装/删除/取消回收)且正在离开商店回列表:复位清账
+    // (esp_partition 外部注册项/legacy 槽扫描过期),bootloader hook 再从
+    // 记录重建一致世界。重启必须挪到 page_teardown 之后:teardown 先停
+    // httpd/token,在途 HTTP handler(如 remove 的擦除+提交)收尾后才复位;
+    // 旧顺序(先重启再拆)把 handler 拦腰打断,留下"字节已擦、记录未改"的
+    // 半删除幽灵态(2026-10-04 真机)。
+    const bool reboot_after_teardown =
+        (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL
+         && meta_carve_flash_reboot_pending());
     page_teardown();
     s_page = page;
     s_sel = 0;
@@ -861,7 +1047,10 @@ static void goto_page(page_t page)
     case PAGE_STORE_SLOT: page_store_slot_build();       break;
     case PAGE_STORE_DL:  page_store_dl_build();          break;
     case PAGE_STORE_CANCEL: page_store_cancel_build();   break;
-    case PAGE_STORE_DONE: page_store_done_build();       break;
+    }
+    if (reboot_after_teardown) {
+        ESP_LOGW(TAG, "carve table materialized; rebooting for clean state");
+        esp_restart();
     }
 }
 
@@ -881,8 +1070,10 @@ static void store_goto(page_t page)
         s_info = NULL;
         s_status_line = NULL;
         s_mascot = NULL;
+        s_free_lbl = NULL;
+        for (int r = 0; r < LIST_SLOT_WIN; r++) s_row_shadow[r] = NULL;
         s_timeout_lbl = NULL;
-        for (int i = 0; i < LIST_ITEMS; i++) s_rows[i] = NULL;
+        for (int i = 0; i < UI_ROWS_MAX; i++) s_rows[i] = NULL;
     }
     s_page = page;
     s_sel = 0;
@@ -893,7 +1084,6 @@ static void store_goto(page_t page)
     case PAGE_STORE_SLOT: page_store_slot_build();  break;
     case PAGE_STORE_DL:   page_store_dl_build();    break;
     case PAGE_STORE_CANCEL: page_store_cancel_build(); break;
-    case PAGE_STORE_DONE: page_store_done_build();  break;
     default: break;
     }
 }
@@ -907,7 +1097,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
     // 商店页面按键先处理会话到期决策:到期后冻结其他语义,只认
     // OK(继续当前操作,续期)/ OK LONG(退出回列表,teardown 停网络)。
-    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_DONE) {
+    if (s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL) {
         if (s_store_expired) {
             if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
                 s_store_expired = false;
@@ -934,7 +1124,7 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                                                          : META_SEQ_KEY_DOWN;
             if (meta_seq_feed(&s_egg_seq, k,
                               (uint32_t)(esp_timer_get_time() / 1000))) {
-                s_detail_slot = s_sel < META_SLOT_COUNT ? s_sel : 0;
+                s_detail_slot = s_sel < s_list_n ? s_list_slots[s_sel] : s_detail_slot;
                 goto_page(PAGE_EGG);
                 break;
             }
@@ -943,19 +1133,19 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         }
 
         if (ev == BSP_BTN_CLICK) {
-            if (btn == BSP_BTN_UP)   s_sel = (s_sel + LIST_ITEMS - 1) % LIST_ITEMS;
-            if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % LIST_ITEMS;
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                s_detail_slot = s_sel < META_SLOT_COUNT ? s_sel : s_detail_slot;
+                // 物品空间导航:FREE 行不是物品(自然跳过),窗口边缘滑动。
+                list_cursor_move(btn == BSP_BTN_UP ? -1 : +1);
+                if (s_sel < s_list_n) s_detail_slot = s_list_slots[s_sel];
                 list_refresh();
                 ui_pixel_mascot_jump(s_mascot);
             } else if (btn == BSP_BTN_OK) {
-                if (esp_timer_get_time() / 1000 < s_list_arm_at) break;   // 吞咽尾随 CLICK
-                if (s_sel < META_SLOT_COUNT) {
+                if (s_sel < s_list_n) {
                     // 一键启动(签名与否同权,无确认页;上游 48e85590)。完整性仍由
                     // esp_image_verify/meta_slot_bootable 把守;不可启动槽位静默。
-                    if (meta_slot_bootable(&s_slots[s_sel])
-                        && meta_store_boot_slot(s_sel) == ESP_OK) {
+                    const int slot = s_list_slots[s_sel];
+                    if (meta_slot_bootable(&s_slots[slot])
+                        && meta_store_boot_slot(slot) == ESP_OK) {
                         esp_restart();
                     }
                 } else {
@@ -1027,17 +1217,18 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         break;
 
     case PAGE_STORE_SLOT:
-        if (ev == BSP_BTN_CLICK) {
-            if (btn == BSP_BTN_UP)   s_sel = (s_sel + META_SLOT_COUNT - 1) % META_SLOT_COUNT;
-            if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % META_SLOT_COUNT;
+        if (ev == BSP_BTN_CLICK && s_pick_n > 0) {
+            if (btn == BSP_BTN_UP)   s_sel = (s_sel + s_pick_n - 1) % s_pick_n;
+            if (btn == BSP_BTN_DOWN) s_sel = (s_sel + 1) % s_pick_n;
             if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-                rows_refresh(META_SLOT_COUNT, s_sel);
-            } else if (btn == BSP_BTN_OK && s_slot_fit[s_sel]) {
-                // 物理确认(§6.4/§8):只有这一步能解锁手机侧上传 session。
-                if (meta_install_confirm_slot((int8_t)s_sel) == ESP_OK) {
-                    s_store_installed_slot = s_sel;   // P5 展示用(store_goto 会清 s_sel)
+                pick_win_fit();
+                pick_refresh();
+            } else if (btn == BSP_BTN_OK) {
+                const int slot = s_pick_slots[s_sel];
+                if (s_slot_fit[slot] &&
+                    meta_install_confirm_slot((int8_t)slot) == ESP_OK) {
                     store_goto(PAGE_STORE_DL);
-                } else if (s_status_line) {
+                } else if (s_status_line && s_slot_fit[slot]) {
                     lv_label_set_text(s_status_line, "cannot confirm slot");
                 }
             }
@@ -1083,17 +1274,6 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         }
         break;
 
-    case PAGE_STORE_DONE:
-        // 只认 CLICK/LONG —— 原实现不判事件类型,一次物理按压的 PRESS(按下)
-        // 与 CLICK(抬起)各触发一次:PRESS 先进列表页,CLICK 尾随落在列表页
-        // OK 上,选中行 0 = slot0 → 直接弹 slot0 启动确认页(真机:"BACK TO
-        // TO LIST 的 OK 总有双击效果")。400ms 吞咽窗同时兜住 LONG 释放后的
-        // 尾随 CLICK。
-        if ((ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG) && btn == BSP_BTN_OK) {
-            s_list_arm_at = esp_timer_get_time() / 1000 + 400;
-            goto_page(PAGE_LIST);
-        }
-        break;
     }
 
     bsp_lvgl_unlock();
@@ -1104,6 +1284,15 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 void app_main(void)
 {
     ESP_LOGI(TAG, "meta-pass launcher 启动");
+
+    // dynslot 第一动作(design §4.4):ensure 只用 esp_flash_* 裸 API,必须先于
+    // 任何分区 API —— IDF 把分区表一次性缓存进 RAM(5.5.3 无反向失效接口),
+    // 先跑别的再 ensure 会拿旧视图。内容:采纳/迁移/防御性回写 + 重写 live 表。
+    const esp_err_t ce = meta_carve_flash_ensure();
+    if (ce != ESP_OK) {
+        ESP_LOGE(TAG, "carve ensure 失败(%s);沿用 hook 已校验的 live 表",
+                 esp_err_to_name(ce));
+    }
 
     bsp_i2c_init();
     bsp_i2c_scan();
@@ -1135,14 +1324,41 @@ void app_main(void)
     }
 
     meta_store_scan(s_slots);
+    // 派生态回填进 carve 记录(无变化不写;全新设备无记录 → no-op)。scan 是
+    // 记录状态缓存的事实源:迁移种子 EMPTY、安装后 VALID 都在此落盘(§4.3)。
+    {
+        const esp_err_t se = meta_carve_flash_sync_states(
+            s_slots, (int)meta_carve_flash_carve()->count);
+        if (se != ESP_OK) {
+            ESP_LOGW(TAG, "carve state sync failed: %s", esp_err_to_name(se));
+        }
+    }
     // feat/mota 净切:net_init 只备好配网/上线(无 WAN 作业链);LAN install
     // 通道在此登记槽位注册表(安装成功回写),生命周期覆盖整个启动器。
     meta_store_net_init();
     meta_install_net_init(s_slots);
 
+    // 用户决策①(中断续连):上次安装会话未正常离店(上传中途断电/崩溃)→
+    // 自动恢复 STA + install 服务与持久化 token,手机重发 prepare 免重扫 QR
+    // (进度由手机呈现,设备留在列表页;carve 状态由 ensure 权威恢复)。
+    if (meta_install_resume_pending()) {
+        ESP_LOGW(TAG, "install resume: restoring WiFi + LAN install service");
+        (void)meta_install_token_start();
+        // token_start 可能刚从 NVS 恢复 token:闲置期限从此刻起算,
+        // 否则静态零值 deadline 会让 list_session_tick 首拍即收会话。
+        s_store_deadline = esp_timer_get_time() / 1000 +
+                           meta_store_session_timeout_ms();
+        (void)meta_store_net_begin();
+        if (meta_install_net_start() != ESP_OK) {
+            ESP_LOGE(TAG, "install service resume failed");
+        }
+    }
+
     if (bsp_lvgl_lock(1000)) {
         page_list_build();
         bsp_lvgl_unlock();
     }
-    ESP_LOGI(TAG, "就绪:slot0=%d slot1=%d slot2=%d", s_slots[0].state, s_slots[1].state, s_slots[2].state);
+    ESP_LOGI(TAG, "就绪:APP 槽=%d free=%uB s0=%d s1=%d s2=%d",
+             s_list_n, (unsigned)meta_carve_free(meta_carve_flash_carve()),
+             s_slots[0].state, s_slots[1].state, s_slots[2].state);
 }

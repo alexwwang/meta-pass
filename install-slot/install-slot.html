@@ -116,6 +116,7 @@
     <label><input type="radio" name="slot" value="0" checked> <span data-i18n="slot_0">Slot 0</span> <code>0x180000</code></label>
     <label><input type="radio" name="slot" value="1"> <span data-i18n="slot_1">Slot 1</span> <code>0x360000</code></label>
     <label><input type="radio" name="slot" value="2"> <span data-i18n="slot_2">Slot 2</span> <code>0x560000</code></label>
+    <p id="slot-geo-info" class="info" style="margin-top:6px"></p>
   </section>
   <section>
     <h2 data-i18n="step_firmware">3. Firmware source</h2>
@@ -179,6 +180,7 @@
     <p><input type="file" id="upgrade-input" accept=".bin,application/octet-stream"> <span data-i18n="upgrade_pick_dir">select the firmware file (meta-pass_v*.bin) — it both installs fresh on the market and upgrades here</span></p>
     <button id="btn-upgrade" class="primary" disabled data-i18n="btn_upgrade">Upgrade launcher</button>
     <span id="upgrade-status"></span>
+    <p id="upgrade-mode" class="info" style="display:none"></p>
     <div class="progress"><div id="upgrade-bar"></div></div>
   </section>
 
@@ -228,6 +230,11 @@ import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlas
     migrationErasePlan,
     isErasedTable,
     isLegacyFactoryLayout,
+    isDynslotLayout,
+    isFixedSlotLayout,
+    isDynslotSafeTable,
+    migrationWritePlan,
+    discoverSlots,
     slotHasData,
     parsePartitionTable,
     parseUpgradeArtifact,
@@ -235,12 +242,83 @@ import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlas
     PARTITION_TABLE_READ_SIZE,
   } from "./launcher-upgrade.js";
 
-// 3-Slot 分区表(与 partitions.csv 一致):[offset, size]
-const SLOTS = [
+// 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
+// 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
+// 流程依赖这组常量。设备分区表可解析且含 ota_N 条目时一律用 discoverSlots
+// 的动态结果(dynslot carved 槽位偏移任意,设计 L4 共享分配器)。
+const LEGACY_SLOTS = [
   { offset: 0x180000, size: 0x1D6000 },  // ota_0 (cardid-before)
   { offset: 0x360000, size: 0x200000 },  // ota_1
   { offset: 0x560000, size: 0x29E000 },  // ota_2 (dual-use)
 ];
+// 当前设备槽位几何:连接探测后由 applyDiscoveredSlots() 重建;初始 = legacy。
+let deviceSlots = LEGACY_SLOTS.map((s) => ({ ...s }));
+
+// 依据设备分区表重建槽位几何与相关 UI。factory 布局(无 ota_N)保留 legacy
+// 几何与原有 3 槽 UI;读表失败静默保留 legacy(旧行为,绝不更差)。
+function applyDiscoveredSlots(parts) {
+  const found = discoverSlots(parts);
+  const info = $("slot-geo-info");
+  if (found.length === 0) {
+    // factory 布局(分区表无 ota_N)或读表异常:明示当前是 legacy 兜底,
+    // 与"动态探测成功"在视觉上有别(用户反馈:探测无可见证据)。
+    if (info) {
+      info.style.display = "block";
+      info.textContent = t("slot_geo_legacy");
+    }
+    return;
+  }
+  if (info) {
+    info.style.display = "block";
+    info.textContent = t("slot_geo_dynamic", { count: found.length });
+  }
+  deviceSlots = found.map((s) => ({ offset: s.offset, size: s.size }));
+  rebuildSlotPickers();
+}
+
+// 槽位选择 UI 重建:烧录单选(第 2 步)+ 备份勾选(第 5 步)。
+// 恢复目标下拉在 zip 加载时按当前 deviceSlots 长度生成,无需重建。
+function rebuildSlotPickers() {
+  const n = deviceSlots.length;
+  // 第 2 步 section:static HTML 中它是 step_slot 标题所在 section
+  const sections = document.querySelectorAll("section");
+  let slotSec = null;
+  for (const sec of sections) {
+    const h2 = sec.querySelector("h2");
+    if (h2 && (h2.dataset.i18n === "step_slot")) { slotSec = sec; break; }
+  }
+  if (slotSec) {
+    // 清掉除标题外的旧 radio
+    for (const el of [...slotSec.querySelectorAll("label")]) el.remove();
+    for (let s = 0; s < n; s++) {
+      const lab = document.createElement("label");
+      const inp = document.createElement("input");
+      inp.type = "radio"; inp.name = "slot"; inp.value = String(s);
+      if (s === 0) inp.checked = true;
+      const span = document.createElement("span");
+      span.textContent = `Slot ${s}`;
+      const code = document.createElement("code");
+      code.textContent = `0x${deviceSlots[s].offset.toString(16)} \u00b7 ${fmtBytes(deviceSlots[s].size)}`;
+      lab.append(inp, " ", span, " ", code);
+      slotSec.appendChild(lab);
+    }
+  }
+  // 备份勾选组
+  const bkWrap = $("bk-slot0")?.closest("p");
+  if (bkWrap) {
+    bkWrap.textContent = "";
+    for (let s = 0; s < n; s++) {
+      const lab = document.createElement("label");
+      lab.style.marginRight = "10px";
+      const inp = document.createElement("input");
+      inp.type = "checkbox"; inp.id = `bk-slot${s}`; inp.checked = true;
+      const span = document.createElement("span");
+      span.textContent = `Slot ${s}`;
+      lab.append(inp, " ", span);
+      bkWrap.appendChild(lab);
+    }
+  }
+}
 
 // ===== 串口/读取协议配置(单一事实源:波特率与协议参数只允许在这里改) =====
 const ROM_BAUD = 115200;        // ROM bootloader 固定 115200(esptool 规范,不可调)
@@ -439,6 +517,15 @@ const I18N = {
     msg_upgrade_busy: "Another operation is in progress.",
     msg_upgrade_start: "Upgrading launcher: reading the device partition table for comparison…",
     msg_upgrade_table_ok: "Partition table matches — layout unchanged, safe to upgrade in place.",
+    msg_upgrade_dynslot: "Dynslot layout detected — verifying safe table (pool_0/pool_1 present)...",
+    msg_upgrade_dynslot_migration: "Fixed-slot device + dynslot bundle — migrating: partition table left intact, installed games preserved (re-carved on first boot).",
+    upgrade_mode_dynslot: "Dynslot mode (dynamic slots)",
+    upgrade_mode_fixed: "Fixed-slot mode (3 slots)",
+    upgrade_mode_migration: "Fixed-slot → dynslot migration",
+    msg_slots_discovered: "Discovered {count} slot(s) from the device partition table.",
+    slot_geo_dynamic: "Live geometry: {count} slot(s) read from the device partition table.",
+    slot_geo_pending: "Not connected yet — radios below show placeholder geometry. Click Connect to read live slots from the device.",
+    slot_geo_legacy: "No slot entries in the device table — showing legacy fixed geometry (read may have failed; reconnect to re-probe).",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
@@ -588,6 +675,15 @@ const I18N = {
     msg_upgrade_busy: "有操作正在进行中。",
     msg_upgrade_start: "升级 launcher:正在读回设备分区表进行比对…",
     msg_upgrade_table_ok: "分区表一致 —— 布局未变,可安全原地升级。",
+    msg_upgrade_dynslot: "检测到动态槽位布局 —— 验证安全表(pool_0/pool_1 存在)...",
+    msg_upgrade_dynslot_migration: "固定槽位设备 + 动态槽位固件 —— 迁移中:分区表保持不动,已装玩法保留(首次启动重新 carve)。",
+    upgrade_mode_dynslot: "动态槽位模式",
+    upgrade_mode_fixed: "固定槽位模式(3 槽)",
+    upgrade_mode_migration: "固定槽位 → 动态槽位迁移",
+    msg_slots_discovered: "已从设备分区表发现 {count} 个槽位。",
+    slot_geo_dynamic: "动态几何:已从设备分区表读到 {count} 个槽位。",
+    slot_geo_pending: "尚未连接 —— 下方单选为占位几何。点击「连接」后从设备分区表读取实时槽位。",
+    slot_geo_legacy: "设备分区表中没有槽位条目 —— 当前显示 legacy 固定几何(可能读表失败,重新连接可重探)。",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
@@ -642,6 +738,7 @@ function applyLang(lang) {
 $("lang-en").addEventListener("click", () => applyLang("en"));
 $("lang-zh").addEventListener("click", () => applyLang("zh"));
 applyLang(currentLang);
+$("slot-geo-info").textContent = t("slot_geo_pending");
 
 // 状态日志:每步追加一行(时间戳 + 消息)
 function log(msg, cls = "") {
@@ -767,7 +864,7 @@ $("btn-upgrade").addEventListener("click", async () => {
   $("upgrade-status").textContent = "";
   setUpgradeProgress(0);
   try {
-    // 1) 读回设备分区表并分类:meta-pass 布局 / 空白机 / 原厂旧布局 / 未知
+    // 1) 读回设备分区表并分类:meta-pass 布局 / 空白机 / 原厂旧布局 / dynslot
     log(t("msg_upgrade_start"));
     let deviceTable;
     try {
@@ -777,18 +874,32 @@ $("btn-upgrade").addEventListener("click", async () => {
       throw new Error(t("err_upgrade_read_table", { err: err.message }));
     }
     const bundleTable = upgradeBundle.get("partition-table.bin");
-    const cmp = comparePartitionTables(deviceTable, bundleTable);
+    const devicePartitions = parsePartitionTable(deviceTable);
+    const bundlePartitions = parsePartitionTable(bundleTable);
+    const isDynslot = isDynslotLayout(devicePartitions);
+    // 模式指示(设计 §5.2):探测后即显示,迁移判定后细化
+    const modeEl = $("upgrade-mode");
+    modeEl.style.display = "block";
+    modeEl.textContent = t(isDynslot ? "upgrade_mode_dynslot" : "upgrade_mode_fixed");
+    const cmp = comparePartitionTables(deviceTable, bundleTable, isDynslot);
     let eraseRegions = [];   // 写入前需清残留的区域(原厂机首次迁移)
+    let writeSteps = null;   // null = 默认 upgradeWritePlan();迁移时用专用计划
     if (cmp.ok) {
-      log(t("msg_upgrade_table_ok"), "ok");
+      log(isDynslot ? t("msg_upgrade_dynslot") : t("msg_upgrade_table_ok"), "ok");
     } else if (isErasedTable(deviceTable)) {
       // 空白机:没有旧布局可保护,直接安装
       log(t("msg_upgrade_blank"), "ok");
-    } else if (isLegacyFactoryLayout(parsePartitionTable(deviceTable))) {
+    } else if (isFixedSlotLayout(devicePartitions) && isDynslotSafeTable(bundlePartitions)) {
+      // fixed→dynslot 迁移:不写分区表、不擦槽位 —— legacy 表留在设备上,
+      // 首启 ensure() 走 seed_legacy("plays untouched") 重建 carve。
+      writeSteps = migrationWritePlan();
+      modeEl.textContent = t("upgrade_mode_migration");
+      log(t("msg_upgrade_dynslot_migration"), "ok");
+    } else if (isLegacyFactoryLayout(devicePartitions)) {
       // 原厂旧布局机:迁移前必须确认没有任何有效子固件数据
       log(t("msg_upgrade_factory_detected"));
-      for (let i = 0; i < SLOTS.length; i++) {
-        const head = await loader.readFlash(SLOTS[i].offset, 24);
+      for (let i = 0; i < deviceSlots.length; i++) {
+        const head = await loader.readFlash(deviceSlots[i].offset, 24);
         if (slotHasData(head)) {
           throw new Error(t("err_upgrade_slot_has_data", { slot: i }));
         }
@@ -818,8 +929,8 @@ $("btn-upgrade").addEventListener("click", async () => {
       log(t("msg_upgrade_erased", { addr: hex(r.offset), size: fmtBytes(r.size) }), "ok");
     }
 
-    // 3) 按计划写入四项;NVS/cardid/三个子固件槽位全程不触碰(原厂机残留已单独清理)
-    const steps = upgradeWritePlan();
+    // 3) 按计划写入四项;NVS/cardid/池区域全程不触碰(原厂机残留已单独清理)
+    const steps = writeSteps ?? upgradeWritePlan();
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
       const data = upgradeBundle.get(step.name);
@@ -923,6 +1034,22 @@ $("btn-connect").addEventListener("click", async () => {
     log(t("msg_connected", { chip }), "ok");
     if (!String(chip).includes("ESP32-C3")) {
       log(t("msg_warn_chip", { chip }), "error");
+    }
+    // 槽位几何发现(dynslot carved 槽位偏移任意):读设备分区表重建槽位 UI。
+    // 失败静默保留 legacy 3 槽 —— 旧行为,绝不更差。
+    try {
+      const devTable = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
+      applyDiscoveredSlots(parsePartitionTable(devTable));
+      log(t("msg_slots_discovered", { count: deviceSlots.length }), "ok");
+    } catch {
+      // 读表失败不再静默:legacy 兜底与"页面是旧版"在视觉上无法区分,
+      // 必须把状态写出来(真机反馈两次踩这个歧义)。
+      const info = $("slot-geo-info");
+      if (info) {
+        info.style.display = "block";
+        info.textContent = t("slot_geo_legacy");
+      }
+      log(t("slot_geo_legacy"), "warn");
     }
   } catch (err) {
     // 失败必须释放本轮已打开的串口:否则下次 open 同一端口会抛
@@ -1187,7 +1314,7 @@ $("btn-probe").addEventListener("click", async () => {
     const vendorNew = vf.includes("digest");
     log(`[probe] vendor build: ${vendorNew ? "NEW (per-frame ACK + MD5 digest)" : "OLD — 请强制刷新(Cmd+Shift+R)后再试"}`, vendorNew ? "warn" : "error");
     const t0 = Date.now();
-    const probeAddr = SLOTS[0].offset;
+    const probeAddr = deviceSlots[0].offset;
     const data = await loader.readFlash(probeAddr, PROBE_READ_SIZE);
     const hexAddr = "0x" + probeAddr.toString(16);
     log(`[probe] ${PROBE_READ_SIZE}B @${hexAddr} OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
@@ -1348,7 +1475,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
 
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
-  const slots = [0, 1, 2].filter((i) => $(`bk-slot${i}`).checked);
+  const slots = deviceSlots.map((_, i) => i).filter((i) => $(`bk-slot${i}`)?.checked);
   if (slots.length === 0) {
     $("backup-status").textContent = t("msg_backup_pick_slot");
     return;
@@ -1364,7 +1491,7 @@ $("btn-backup").addEventListener("click", async () => {
     let backedUp = [];
     for (let i = 0; i < slots.length; i++) {
       const slot = slots[i];
-      const s = SLOTS[slot];
+      const s = deviceSlots[slot];
       log(t("msg_backup_reading", { slot, size: fmtBytes(s.size), addr: hex(s.offset) }));
       // 整槽读取:切片需要 tail 之后的全部字节以捕获额外存储数据。
       // 分块读 + 重试:单槽失败只跳过该槽,其余槽位继续(部分成功也产出 zip)。
@@ -1575,7 +1702,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       label.htmlFor = `restore-target-${from}`;
       const sel = document.createElement("select");
       sel.id = `restore-target-${from}`;
-      for (let s = 0; s < SLOTS.length; s++) {
+      for (let s = 0; s < deviceSlots.length; s++) {
         const opt = document.createElement("option");
         opt.value = String(s);
         opt.textContent = s === from ? t("msg_restore_same_slot", { slot: s }) : t(`slot_${s}`);
@@ -1608,7 +1735,7 @@ $("btn-restore").addEventListener("click", async () => {
     let done = 0;
     const restoredSlots = [];
     for (const job of jobs) {
-      const s = SLOTS[job.to];
+      const s = deviceSlots[job.to];
       const files = manifestFilesForSlot(restoreZip.manifest, job.from);
       const dataMap = restoreZip.filesBySlot.get(job.from);
       log(t("msg_restore_checking", { slot: job.to }));
@@ -1741,7 +1868,7 @@ $("btn-install").addEventListener("click", async () => {
   setProgress(0);
   try {
     const slot = Number(document.querySelector('input[name="slot"]:checked').value);
-    const s = SLOTS[slot];
+    const s = deviceSlots[slot];
     const address = s.offset;
     const slotLimit = maxAppImageSize(s.size);
     let image;

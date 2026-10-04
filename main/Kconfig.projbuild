@@ -6,7 +6,7 @@ menu "meta-pass launcher"
 
     config META_STORE_SESSION_TIMEOUT_MS
         int "Store session timeout (ms)"
-        default 300000
+        default 1800000
         range 30000 86400000
         help
             商店流程无操作超时时间。到期不会直接关闭:先提示用户选择

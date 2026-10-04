@@ -234,7 +234,7 @@ console.log("PASS 14: rate limit wired via RATE_KV binding; Range resume uses th
   assert.ok(proxyBlock.includes("new Response(upstream.body"),
             "proxy returns the upstream stream (audit M3)");
   for (const m of ["/phone-install.js", "/extract-app-image.js",
-                   "/store-analyze.js", "/name-blob.js"]) {
+                   "/store-analyze.js", "/name-blob.js", "/dynslot-pool.js"]) {
     assert.ok(workerSrc.includes(`path === "${m}"`),
               `module ${m} must be routed explicitly (audit M4)`);
   }

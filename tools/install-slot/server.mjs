@@ -64,6 +64,7 @@ const STATIC_FILES = new Map([
   ["/extract-app-image.js", { file: "extract-app-image.js", type: "text/javascript; charset=utf-8" }],
   ["/name-blob.js", { file: "name-blob.js", type: "text/javascript; charset=utf-8" }],
   ["/store-analyze.js", { file: "store-analyze.js", type: "text/javascript; charset=utf-8" }],
+  ["/dynslot-pool.js", { file: "dynslot-pool.js", type: "text/javascript; charset=utf-8" }],
   ["/phone-install.js", { file: "phone-install.js", type: "text/javascript; charset=utf-8" }],
   ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   ["/launcher-upgrade.js", { file: "launcher-upgrade.js", type: "text/javascript; charset=utf-8" }],

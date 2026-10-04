@@ -73,7 +73,16 @@ before(async () => {
   emulator = new WasmEmulator("esp32c3");
   emulator.load_default_rom();
   emulator.set_boot_from_rom(true);
-  emulator.load_firmware(new Uint8Array(await readFile(firmwarePath)));
+  // 用 8MB 完整镜像 + 预置已提交的 3 槽 carve 记录(store @0x35A000):
+  // 首启走 bootloader hook §4.4 修复路径(记录权威:重写表 + 清 otadata),
+  // 列表页 = 3 槽 + STORE 行,按键测试的"环形列表"假设成立。
+  // 单文件发布件只有 1.1MB,app 尾之外(含 store 区)不在其中,无法预置;
+  // fresh 出厂(0 槽)下 DOWN 是设计内 no-op(dynslot 语义,见 git log)。
+  const mergedPath = firmwarePath.replace(/meta-pass_v[^/]*\.bin$/, "FoloToy-AI-Passport-full.bin");
+  const image = new Uint8Array(await readFile(mergedPath));
+  const store = await readFile(new URL("../../tests/fixtures/carve_store_3slots.bin", import.meta.url));
+  image.set(store, 0x35A000);
+  emulator.load_firmware(image);
   frames = [];
   board = new AiPassportBoard(wasm, {
     emulator,

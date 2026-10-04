@@ -4,6 +4,29 @@
 
 # Changelog
 
+## v1.2.0 (未发布)
+
+- **v3.2-r10.38 (2026-10-02) dynslot —— 动态分区 + 槽位删除（feat/dynslot）**：
+  固定三槽表改为池 + carve 模型 —— 两段池（0x180000–0x356000、
+  0x360000–0x7FE000）、最多 8 槽、最小 128KB、偏移 64KB 对齐、大小 4KB 粒度
+  （`main/meta_carve*` 纯逻辑核心带主机测试、`store` 内 A/B carve 记录、物化
+  0x8000 表、bootloader hook 权威 + 安全表首启、旧三槽迁移并把 Wi-Fi 凭据备份
+  从 0x35A000 迁至 0x35E000）。安装路径：手机 carve 提案
+  （`carveOffset`/`carveSize`）由设备重跑 first-fit 分配器复核，分歧即拒；新槽
+  先物化再上传（prepare 回 503 → 手机持持久化 token 重发 → 重启）。**槽位删除
+  （新）**：`GET /api/install/slots` 列出实时 carve（state/name/size/limit/
+  offset/kind + 池剩余字节），`POST /api/install/remove {"slot":N}` 先擦被删槽位
+  自身数据 → 提交记录并重新物化表 → 回 200 → 150ms 后重启 —— 每一步断电安全
+  （安装在途 → 409，形状非法 → 400，不在 carve → 404；token + Origin 门禁）。
+  数据不搬移：空洞由 first-fit 在下次安装时原位复用。网页侧：「已安装」管理面板
+  （清单、两步确认删除、等重启回连、刷新）与共享模块
+  `install-slot/dynslot-pool.js`（池描述符 + 与 `meta_carve.c` 同值同算法的分配
+  器、按设备清单派生槽位声称并保留旧固件回退、安装槽位上界 8）。Worker 与本地
+  dev server 新增 `/dynslot-pool.js` no-store 路由。主机门禁 `--static` 与
+  `--firmware` PASS；真机 E2E（HTTP 删除、断电注入）与 QEMU hook 用例未执行。
+  worker 侧 analyze 上限仍派生自旧版 `SLOT_GEOMETRY` —— 三方统一跟进
+  `docs/assets/dynslot-data-unification-research.md`。
+
 ## v1.1.0 (2026-10-02)
 
 商店安装版本：旗舰功能是应用商店安装链 —— 手机网页模块（搜索 → 分析 → 下载 →

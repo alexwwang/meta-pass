@@ -5,6 +5,7 @@
 #define UI_SKY        0x1689E8
 #define UI_SKY_DARK   0x0872C9
 #define UI_INK        0x17202A
+#define UI_INK2       0x45566B   // 次级墨色(与手机端 --ink2 同值):非物品行/弱信息
 #define UI_PAPER      0xF4F4EA
 #define UI_GRASS      0x82BE2D
 #define UI_GRASS_DARK 0x55951D
@@ -16,6 +17,10 @@
 lv_obj_t *ui_pixel_screen_create(const char *title);
 lv_obj_t *ui_pixel_panel_create(lv_obj_t *parent, int x, int y, int w, int h,
                                 uint32_t color);
+lv_obj_t *ui_pixel_panel_create_shadowed(lv_obj_t *parent, int x, int y, int w, int h,
+                                         uint32_t color, lv_obj_t **shadow_out);
+lv_obj_t *ui_pixel_panel_create_plain(lv_obj_t *parent, int x, int y, int w, int h,
+                                      uint32_t color);   // 无阴影:非物品行降级
 lv_obj_t *ui_pixel_label(lv_obj_t *parent, const char *text,
                          const lv_font_t *font, uint32_t color);
 lv_obj_t *ui_pixel_mascot_create(lv_obj_t *parent, int x, int y);

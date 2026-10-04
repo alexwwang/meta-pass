@@ -30,6 +30,8 @@ bool meta_store_json_get_array_int(const char *json, size_t len, const char *key
                                    size_t idx, const char *field, int64_t *out);
 bool meta_store_json_get_array_bool(const char *json, size_t len, const char *key,
                                     size_t idx, const char *field, bool *out);
+bool meta_store_json_get_array_string(const char *json, size_t len, const char *key,
+                                      size_t idx, const char *field, char *out, size_t out_sz);
 
 // SHA-256 的 64 字符小写 hex 串解析为 32 字节(契约中 extracted.sha256 字段)。
 // 任何非 [0-9a-f] 字符或长度不足 64 都返回 false。

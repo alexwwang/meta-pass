@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createStoreAnalyzer, SLOT_GEOMETRY, listPartitions, mapExtractError } from "../../install-slot/store-analyze.js";
+import { POOL_TOTAL } from "../../install-slot/dynslot-pool.js";
 import { packNameBlobTail } from "../../install-slot/name-blob.js";
 
 const sha256 = async (buf) => createHash("sha256").update(buf).digest("hex");
@@ -131,8 +132,8 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   assert.equal(out.id, 563);
   assert.equal(out.revisionId, 1279);
   assert.equal(out.suggestedSlot, 0, "最小可装槽位");
-  assert.deepEqual(out.slots.map((s) => s.limit), [0x1d5000, 0x1ff000, 0x29d000], "槽位上限");
-  assert.deepEqual(out.slots.map((s) => s.fit), [true, true, true]);
+  assert.deepEqual(out.slots.map((s) => s.limit), [0x673000], "槽位上限=dynslot 共享池");
+  assert.deepEqual(out.slots.map((s) => s.fit), [true], "fit 标志");
   assert.equal(out.extracted.imageLen, app.length);
   assert.equal(out.extracted.sha256, sha256Sync(app), "extracted sha256 对解包后镜像计算");
   console.log("PASS 1: golden analyze (MNAM name, suggestedSlot=0, slot limits)");
@@ -154,15 +155,16 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 2: name fallback to slug; extracted bytes identical");
 }
 
-// ---- 3. too-large:镜像超 slot2 上限 → supported=false, reason=too-large ----
+// ---- 3. too-large:镜像超池上限 → supported=false, reason=too-large ----
 {
-  const bigLen = SLOT_GEOMETRY[2].partSize - 0x1000 + 1; // 恰好超上限
+  const poolLimit = POOL_TOTAL - 0x1000; // 池上限 = POOL_TOTAL - tail sector
+  const bigLen = poolLimit + 1; // 恰好超上限
   const app = buildAppImage([bigLen]);
   const { fetchImpl } = makeEnv({ app });
   const out = await makeAnalyzer(fetchImpl).analyze(563);
   assert.equal(out.supported, false);
   assert.equal(out.reason, "too-large");
-  console.log("PASS 3: oversized app -> reason=too-large, all slots unfit");
+  console.log("PASS 3: oversized app -> reason=too-large, pool unfit");
 }
 
 // ---- 4. wrong-chip:chip_id 非 C3 → reason=wrong-chip ----
@@ -341,7 +343,9 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
 
 // ---- 12. unsupported 玩法的 extracted():拒绝并携带与 analyze 一致的 reason ----
 {
-  const bigLen = SLOT_GEOMETRY[2].partSize - 0x1000 + 1;
+  // 使用超过池上限的尺寸测试 too-large
+  const poolLimit = POOL_TOTAL - 0x1000;
+  const bigLen = poolLimit + 1; // 恰好超池上限
   const app = buildAppImage([bigLen]);
   const { fetchImpl } = makeEnv({ app });
   const a = makeAnalyzer(fetchImpl);

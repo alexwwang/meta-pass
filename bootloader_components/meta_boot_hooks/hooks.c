@@ -49,6 +49,7 @@
 #include "bootloader_common.h"   /* bootloader_common_ota_select_crc */
 
 #include "meta_boot_policy.h"
+#include "meta_carve_boot.h"   // dynslot 表裁决纯逻辑(§4.4,B5 权威)
 
 /* 策略判定函数接收 meta_otadata_entry_t(与宿主测试共享的镜像结构),而 flash
  * 读写用 IDF 的 esp_ota_select_entry_t;两者必须逐字段同布局,故在此钉死
@@ -97,6 +98,135 @@ static bool scan_partition_table(uint32_t *out_ota_offset, uint32_t *out_ota_cou
 
     *out_ota_count = ota_count;
     return found_ota_data;
+}
+
+/* ── dynslot carve 表强制(设计 §4.4,边界 B5) ─────────────────────────
+ *
+ * 读 store 固定地址上的 A/B carve 记录(不依赖表 —— 表正是被校验对象),
+ * 与 0x8000 live 表逐字节比对:
+ *   合法记录 + 表一致        → 放行(冷启动单次会话策略照旧);
+ *   合法记录 + 表不一致      → 用记录内嵌表重写 0x8000,清 otadata → factory;
+ *   无合法记录               → live ∈ {内置安全表, legacy v1.x 表} 放行,
+ *                               否则写回内置安全表并清 otadata(§4.7 store 死 /
+ *                               子固件乱写)。
+ * 修复先于任何 otadata 决策 —— 静态门 tests/test_dynslot_hook_gate.py 钉死顺序。
+ *
+ * 表写:单 4KB 扇区,擦 → 写 → 读回复核;中断残留由下一次开机的本函数再修复
+ * (记录仍在 store → 幂等重写)。otadata 偏移从“新写入的表”扫描得出 —— 绝不
+ * 用旧表(子固件表的 otadata 可能在别处,如 play 563 的 0x310000)。
+ * 缓冲全部 static:bootloader 栈小。BSS 预算(dram_seg 实测溢出 8184B 的修复):
+ * 旧版同时持有两条完整记录(s_best+s_tmp)+ 记录扇区 + live 表 + 读回复核
+ * ≈ 17.9KB;现改为单一 4KB 工作缓冲(两扇区轮流读 → 胜者物化 → live 表 →
+ * 读回复核,顺序阶段互不重叠)+ 单条记录 ≈ 7.9KB,并用 raw_info 先比 seq、
+ * 只对胜者跑完整 decode(格式层零栈开销,decode 也不再上 3.9KB 栈)。
+ */
+
+/* 单一工作缓冲(4KB 记录扇区 ≥ 3KB 表视图,顺序复用)+ 仅持有胜者记录。 */
+static uint8_t s_scratch[META_CARVE_REC_SIZE];
+static meta_carve_rec_t s_best;
+
+static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
+{
+    if (table == NULL) {
+        return false;
+    }
+    const uint32_t sector = ESP_PARTITION_TABLE_OFFSET / 4096u;
+    if (bootloader_flash_erase_sector(sector) != ESP_OK) {
+        ESP_LOGE(TAG, "carve: erase table sector failed");
+        return false;
+    }
+    if (bootloader_flash_write(ESP_PARTITION_TABLE_OFFSET, table, META_PT_SIZE,
+                               false) != ESP_OK) {
+        ESP_LOGE(TAG, "carve: write table failed");
+        return false;
+    }
+    /* 读回复核走共享缓冲:此刻 live 视图已消费完(decide 不会把 v.table 指回
+     * 输入缓冲 —— 指向 s_best.table 或 meta_carve_boot 的 s_ref)。 */
+    if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET, s_scratch, META_PT_SIZE,
+                              false) != ESP_OK ||
+        memcmp(s_scratch, table, META_PT_SIZE) != 0) {
+        ESP_LOGE(TAG, "carve: table read-back mismatch");
+        return false;
+    }
+    /* 新表(安全/记录/legacy 三种来源都必然声明 otadata)扫描取偏移后清两扇区
+     * → 本次引导无候选 → factory。扫描失败按 B1 不可动契约回退 0x7FE000。 */
+    uint32_t ota_offset = 0;
+    uint32_t ota_count = 0;
+    if (!scan_partition_table(&ota_offset, &ota_count) || ota_offset == 0) {
+        ESP_LOGE(TAG, "carve: no otadata entry after restore; using fixed 0x7FE000");
+        ota_offset = 0x7FE000u;
+    }
+    for (uint32_t copy = 0; copy < 2u; ++copy) {
+        if (bootloader_flash_erase_sector(ota_offset / 4096u + copy) != ESP_OK) {
+            ESP_LOGE(TAG, "carve: erase otadata copy %u failed", (unsigned)copy);
+            return false;
+        }
+    }
+    ESP_LOGW(TAG, "carve: table restored; otadata wiped -> factory boot");
+    return true;
+}
+
+/* 读一个扇区进共享缓冲;失败 false。 */
+static bool load_sector(uint32_t addr)
+{
+    return bootloader_flash_read(addr, s_scratch, META_CARVE_REC_SIZE, false)
+           == ESP_OK;
+}
+
+/* 解码+结构校验一个扇区到 s_best(胜者物化;失败 s_best 内容未定义)。 */
+static bool load_record(uint32_t addr)
+{
+    return load_sector(addr) &&
+           meta_carve_rec_decode(s_scratch, &s_best) &&
+           meta_carve_rec_validate(&s_best);
+}
+
+static void enforce_carve_table(void)
+{
+    bool have = false;
+
+    /* A/B 记录按固定裸地址读(store 分区尚可能不在表里,如 legacy 首启)。
+     * 轻校验(raw_info:magic/version/seq/CRC,零物化)先比 seq,只对胜者
+     * 跑完整 decode —— 两条记录不再同时驻留 BSS。胜者结构校验不过(损坏
+     * 窗口)时退回另一扇区全量校验一次,与旧版“逐条验、新者胜”语义一致。 */
+    int win = -1;
+    uint32_t win_seq = 0;
+    for (uint32_t i = 0; i < 2u; ++i) {
+        const uint32_t addr =
+            META_STORE_OFFSET + i * META_STORE_SECTOR_SIZE;
+        if (!load_sector(addr)) {
+            continue;
+        }
+        uint32_t seq = 0;
+        if (!meta_carve_rec_raw_info(s_scratch, &seq)) {
+            continue;   /* 损坏/撕裂/擦除态 → 当作无记录(§4.7) */
+        }
+        if (win < 0 || (int32_t)(seq - win_seq) > 0) {
+            win = (int)i;   /* 新者胜(回绕比较) */
+            win_seq = seq;
+        }
+    }
+    if (win >= 0) {
+        const uint32_t base = META_STORE_OFFSET;
+        have = load_record(base + (uint32_t)win * META_STORE_SECTOR_SIZE);
+        if (!have) {
+            have = load_record(base + (1u - (uint32_t)win) * META_STORE_SECTOR_SIZE);
+        }
+    }
+
+    if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET, s_scratch,
+                              META_PT_SIZE, false) != ESP_OK) {
+        ESP_LOGE(TAG, "carve: cannot read live table; skipping enforcement");
+        return;
+    }
+    const meta_boot_table_verdict_t v =
+        meta_carve_boot_decide(s_scratch, have ? &s_best : NULL);
+    if (v.action == META_BOOT_TABLE_PROCEED) {
+        ESP_LOGI(TAG, "carve: %s", v.reason);
+        return;
+    }
+    ESP_LOGW(TAG, "carve repair: %s", v.reason);
+    meta_carve_boot_restore(v.table);
 }
 
 /* 读取并判定一个副本;需要擦除时执行"擦除 → 读回 → 复核"。
@@ -190,6 +320,10 @@ void bootloader_after_init(void)
      * 不干预(本设备未启用加密;启用时策略退化为不生效,而非误写)。 */
     return;
 #endif
+
+    /* 第一优先级:dynslot carve 表校验/修复(§4.4)——必须先于 otadata 决策,
+     * 否则被篡改的表可能在修复前就左右本次引导(B5)。 */
+    enforce_carve_table();
 
     uint32_t ota_offset = 0;
     uint32_t ota_count = 0;

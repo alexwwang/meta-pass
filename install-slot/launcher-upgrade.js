@@ -30,6 +30,35 @@ export function upgradeWritePlan() {
   ];
 }
 
+// fixed→dynslot 迁移写入计划:不写 partition-table.bin。
+// legacy 表必须留在设备上 —— ensure() 的迁移分支靠 meta_pt_equal(live, legacy)
+// 触发 seed_legacy("plays untouched");表被安全表覆盖则走 fresh 分支,已装
+// 玩法成为孤儿数据(池显示全空,下次安装覆盖)。也不擦除槽位区:槽位内容
+// 正是要保留的玩法。仅写 bootloader + factory + otadata(复位 OTA 选 factory)。
+export function migrationWritePlan() {
+  return [
+    { name: "bootloader.bin", offset: 0x0, why: "second-stage bootloader" },
+    { name: "FoloToy-AI-Passport.bin", offset: 0x10000, why: "factory app (dynslot launcher)" },
+    { name: "ota_data_initial.bin", offset: OTADATA_OFFSET, why: "reset OTA selection (boot factory)" },
+  ];
+}
+
+// 设备是否为 legacy 固定 3 槽布局(meta-pass v1.x:有 ota_*,无 store)。
+// 与 isLegacyFactoryLayout(FoloToy 单固件:有 factory 无 ota_*)互补。
+export function isFixedSlotLayout(devicePartitions) {
+  if (!Array.isArray(devicePartitions) || devicePartitions.length === 0) return false;
+  const labels = new Set(devicePartitions.map(p => p.label));
+  return labels.has('ota_0') && !labels.has('store');
+}
+
+// bundle 是否为 dynslot 安全表(pool_0/pool_1 占位 + store 条目)。
+// carved 表无池占位,固定槽位表无 store —— 三个条件 jointly 锁定安全表。
+export function isDynslotSafeTable(parts) {
+  if (!Array.isArray(parts) || parts.length === 0) return false;
+  const labels = new Set(parts.map(p => p.label));
+  return labels.has('pool_0') && labels.has('pool_1') && labels.has('store');
+}
+
 // 升级包完整性:四个文件必须齐全且非空;分区表必须可解析。
 // files: Map<name, Uint8Array>。返回 { ok, reason? }。
 export function checkUpgradeBundle(files) {
@@ -115,6 +144,33 @@ export function isLegacyFactoryLayout(devicePartitions) {
   );
   return hasFactory && !hasOta;
 }
+// 判断设备是否运行 dynslot 布局(动态槽位)。
+// 识别依据:表内有 store 条目(0x35A000,carve 记录 A/B 区)。
+// 不能用 pool_0/pool_1 判定:运行中的设备 live 表是 carved 表,池占位已被
+// ota_N 槽位 + 数据条目替换,pool_* 只存在于安全表(出厂/未 carve 态)。
+// 遗留固定 3 槽表(partitions.csv)与原厂 FoloToy 表均无 store 分区。
+// devicePartitions: parsePartitionTable(设备表) 的结果。
+export function isDynslotLayout(devicePartitions) {
+  if (!Array.isArray(devicePartitions) || devicePartitions.length === 0) return false;
+  return devicePartitions.some(p => p.label === 'store' && p.offset === 0x35A000);
+}
+
+// 从设备分区表发现可烧录槽位(ota_N 条目,subtype 0x10+N)。
+// 固定 3 槽布局与 carved 表都通过 ota_N 声明槽位,统一入口:
+// 返回 [{ slot, offset, size }] 按 slot 升序;无 ota 条目返回 []。
+// USB 页连接后用它重建槽位选择 UI,替代写死的 SLOTS 常量(设计 L4)。
+export function discoverSlots(devicePartitions) {
+  if (!Array.isArray(devicePartitions)) return [];
+  const out = [];
+  for (const p of devicePartitions) {
+    if (p.type !== 0 || p.subtype < 0x10 || p.subtype > 0x1f) continue;
+    out.push({ slot: p.subtype - 0x10, offset: p.offset, size: p.size });
+  }
+  out.sort((a, b) => a.slot - b.slot);
+  return out;
+}
+
+
 
 // 判断一块数据是否有"子固件头"的可能(非全 FF 即视为有数据)。
 // 只看头 24B:任何 ESP 镜像(0xE9)或遗留数据首块都必然非 FF。
@@ -361,7 +417,10 @@ export function migrationErasePlan() {
 // deviceTable: 从设备 0x8000 读回的 Uint8Array;bundleTable: 升级包内 partition-table.bin。
 // 一致性判定:升级包表长度 ≤ 设备读回长度,且升级包表的非 0xFF 前缀与设备对应区域完全一致。
 // 返回 { ok, reason? }。
-export function comparePartitionTables(deviceTable, bundleTable) {
+export function comparePartitionTables(deviceTable, bundleTable, isDynslot) {
+  // dynslot:bundle 安全表与设备 carved 表结构不同,仅校验受保护区域
+  // fixed-slot:逐字节比较(原有逻辑)
+  
   if (!(deviceTable instanceof Uint8Array) || deviceTable.length < PARTITION_TABLE_READ_SIZE) {
     return { ok: false, reason: `device partition table read too small (${deviceTable?.length ?? 0})` };
   }
@@ -371,7 +430,41 @@ export function comparePartitionTables(deviceTable, bundleTable) {
   if (bundleTable.length > deviceTable.length) {
     return { ok: false, reason: "bundle table larger than the device sector" };
   }
-  // idf.py 生成的表文件尾部有 0xFF 填充;逐字节比对到包文件长度即可
+  if (isDynslot) {
+    // dynslot:bundle 是安全表(pool_0/pool_1 占位),设备是 carved 表(ota_N 槽位
+    // + 数据条目)。逐字节必然不等,改做条目级校验:FIXED 条目(nvs/phy_init/
+    // factory/cardid/store/otadata)在两侧必须完全一致(type/subtype/offset/
+    // size),其余条目(槽位/数据/池占位)属动态内容,不比较。另要求 bundle
+    // 含 pool_0+pool_1 占位 —— 防止把固定槽位表刷进 dynslot 设备。
+    let devParts, bundleParts;
+    try {
+      devParts = parsePartitionTable(deviceTable);
+      bundleParts = parsePartitionTable(bundleTable);
+    } catch (e) {
+      return { ok: false, reason: `partition table parse failed: ${e.message}` };
+    }
+    // 安全表校验:bundle 必须有池占位(carved 表不带 pool_*)
+    const bundleLabels = new Set(bundleParts.map(p => p.label));
+    if (!bundleLabels.has('pool_0') || !bundleLabels.has('pool_1')) {
+      return { ok: false, reason: 'bundle table is not a dynslot safe table (missing pool_0/pool_1)' };
+    }
+    // FIXED 条目必须与设备一致(与 main/meta_carve.c FIXED[] 同集)
+    const FIXED_LABELS = ['nvs', 'phy_init', 'factory', 'cardid', 'store', 'otadata'];
+    for (const label of FIXED_LABELS) {
+      const d = devParts.find(p => p.label === label);
+      const b = bundleParts.find(p => p.label === label);
+      if (!d || !b) {
+        return { ok: false, reason: `fixed entry "${label}" missing on ${!d ? 'device' : 'bundle'} — layout changed` };
+      }
+      if (d.type !== b.type || d.subtype !== b.subtype ||
+          d.offset !== b.offset || d.size !== b.size) {
+        return { ok: false, reason: `fixed entry "${label}" differs (device off=0x${d.offset.toString(16)} size=0x${d.size.toString(16)}, bundle off=0x${b.offset.toString(16)} size=0x${b.size.toString(16)}) — refusing upgrade` };
+      }
+    }
+    return { ok: true };
+  }
+
+  // fixed-slot: idf.py 生成的表文件尾部有 0xFF 填充；逐字节比对到包文件长度即可
   for (let i = 0; i < bundleTable.length; i++) {
     if (deviceTable[i] !== bundleTable[i]) {
       return {

@@ -5,6 +5,7 @@
 #include "meta_store_json.h"
 
 #include <string.h>
+#include <stdio.h>
 
 // ---- 游标 ----
 
@@ -411,6 +412,18 @@ bool meta_store_json_get_array_bool(const char *json, size_t len, const char *ke
     cur_t c;
     if (!array_field(json, len, key, idx, field, &c)) return false;
     return scan_bool(&c, out);
+}
+
+bool meta_store_json_get_array_string(const char *json, size_t len, const char *key,
+                                      size_t idx, const char *field, char *out, size_t out_sz)
+{
+    if (!json || len == 0 || !out || out_sz == 0) return false;
+    // 与 get_array_int 同路径:key 顶层数组 → idx 元素对象 → field 字符串。
+    // 旧实现拼 "key[idx].field" 走 locate(),而 locate 只按 '/' 分段、不识别
+    // 方括号语法 → 永远找不到键(潜伏 bug:data[] manifest 的 label 解析从未成功)。
+    cur_t c;
+    if (!array_field(json, len, key, idx, field, &c)) return false;
+    return scan_string(&c, out, out_sz, NULL);
 }
 
 bool meta_store_json_parse_sha256(const char *hex, size_t len, uint8_t out[32])

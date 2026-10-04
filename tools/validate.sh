@@ -66,10 +66,11 @@ PY
         -o "${test_dir}/test_meta_store_json"
     "${test_dir}/test_meta_store_json"
     # LAN 安装通道纯逻辑(install offer 解析/本地几何复核/session/chunk/finalize
-    # 判定;真机 meta_store_install.c 与本测试链接同一份 meta_install_model.c)
+    # 判定 + dynslot carve 提案复核;真机 meta_store_install.c 与本测试链接同一份
+    # meta_install_model.c,carve 复核链同一份 meta_carve.c 分配器)
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_meta_install_model.c main/meta_install_model.c \
-        main/meta_store_json.c \
+        main/meta_store_json.c main/meta_carve.c main/meta_md5.c \
         -o "${test_dir}/test_meta_install_model"
     "${test_dir}/test_meta_install_model"
     # 配网纯逻辑(WiFi 表单解析/断连原因文案/SSID 转义/DNS 门户报文;
@@ -88,6 +89,43 @@ PY
         tests/test_meta_boot_policy.c \
         -o "${test_dir}/test_meta_boot_policy"
     "${test_dir}/test_meta_boot_policy"
+    # dynslot 纯逻辑(dynslot-design §8:分配器/表物化黄金对拍(gen_esp32part.py
+    # 产物 tests/fixtures)/迁移种子/store A-B 记录/hook 表裁决+失败矩阵;
+    # bootloader hook 链接同一份源)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_md5.c main/meta_md5.c \
+        -o "${test_dir}/test_meta_md5"
+    "${test_dir}/test_meta_md5"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_carve.c main/meta_carve.c main/meta_md5.c \
+        -o "${test_dir}/test_meta_carve"
+    "${test_dir}/test_meta_carve"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_carve_store.c main/meta_carve_store.c main/meta_carve.c \
+        main/meta_md5.c \
+        -o "${test_dir}/test_meta_carve_store"
+    "${test_dir}/test_meta_carve_store"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_carve_boot.c main/meta_carve_boot.c \
+        main/meta_carve_store.c main/meta_carve.c main/meta_md5.c \
+        -o "${test_dir}/test_meta_carve_boot"
+    "${test_dir}/test_meta_carve_boot"
+    # dynslot 设备侧胶水(meta_carve_flash.c 的 host 行为测试:RAM NOR 模型
+    # AND 写语义 + 撕裂写注入,覆盖 §4.7 失败矩阵:全新/legacy 迁移黄金对拍
+    # + L6 凭据搬移/记录重建表/store 死回安全表/提交轮转/扫描回填)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
+        tests/test_meta_carve_flash.c main/meta_carve_flash.c \
+        main/meta_carve_store.c main/meta_carve.c main/meta_md5.c \
+        -o "${test_dir}/test_meta_carve_flash"
+    "${test_dir}/test_meta_carve_flash"
+    # M5 备份格式单元测试(header 验证 + serialize/deserialize roundtrip)
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_meta_backup.c main/meta_backup.c \
+        -o "${test_dir}/test_meta_backup"
+    "${test_dir}/test_meta_backup"
+    # hook 接线静态门:carve 裁决必须先于 otadata 单次会话策略(B5),恢复路径
+    # 擦写表扇区并清 otadata(host 测不到的 flash 副作用,源码事实门兜底)
+    python3 tests/test_dynslot_hook_gate.py
     # 深睡唤醒契约(面板唤醒恢复顺序 + bootloader hook 的 otadata 续期路径;
     # 上游 jiandanc/meta-pass be9ec2e0 的修复,设备实测:休眠唤醒回子固件亮屏)
     PYTHONDONTWRITEBYTECODE=1 python3 tests/test_display_wake_contract.py
@@ -122,7 +160,10 @@ PY
         # 手机安装模块(设计文档 §4.2/§6):SHA-256 对拍、preflight 三道门、
         # 设备会话全流程与续传语义(mock 设备契约 = meta_store_install.c)。
         "${node_bin}" tests/test_phone_install.mjs
+        # dynslot 池几何/分配器(手机提案 = 设备 meta_carve_place 同算法,§4.5 L4)
+        "${node_bin}" tests/test_dynslot_pool.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
+        "${node_bin}" tools/install-slot/test-backup-data.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs
     else

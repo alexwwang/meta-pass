@@ -25,7 +25,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <esp_system.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_timer.h>
@@ -34,6 +36,7 @@
 #include <esp_app_desc.h>
 #include <esp_image_format.h>
 #include <esp_partition.h>
+#include <esp_flash.h>
 #include <esp_netif.h>
 #include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
@@ -43,6 +46,8 @@
 #include "meta_store_json.h"
 #include "meta_name.h"
 #include "meta_sign.h"
+#include "meta_backup.h"
+#include "meta_carve_flash.h"
 
 static const char *TAG = "install_local";
 
@@ -89,6 +94,19 @@ typedef struct {
     bool     ota_open;
     bool     flash_touched;      // esp_ota_begin 成功过 = 旧内容已擦,失败必作废
     int64_t  last_activity_ms;   // 上次上传活动(session 打开/末次 chunk;停滞判定基准)
+
+    // ---- P0-5 carve 事务(方案B,§1.0) ----
+    // carved_new_slot:本会话 prepare 新建的槽位下标(取消/覆盖/拒绝时回收;
+    //   -1 = 无)。静态零初始化会是 0 —— 消费处必须同时守卫 manifest_valid
+    //   (两者总在 prepare 同生、clear 同灭,boot 态 manifest_valid=false)。
+    // table_changed:本会话物化过表(新槽或数据 backfill)→ 成功结束时复位。
+    // data_dirty_mask:F4 —— bit i = manifest.data[i] 是 prepare 前已存在的
+    //   记录(finish 时标 DIRTY);本会话新建的记录保持 PRISTINE(tier 4 回收
+    //   的数字来源;状态只在 finish 翻转 + 单会话 ⇒ 全标 DIRTY 会让
+    //   reclaimablePristine 恒 0,tier 4 死代码)。
+    int8_t   carved_new_slot;
+    bool     table_changed;
+    uint32_t data_dirty_mask;
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -137,12 +155,72 @@ static void geom_refresh(meta_install_geom_t *g)
         const esp_partition_t *part = meta_store_slot_partition(i);
         if (part) g->limit[i] = meta_sign_app_limit(part->size);
     }
+    // P0-5:缓存未命中的 carved 槽位从 carve 记录补(本次 prepare 物化、
+    // 尚未复位;设备确认/默认槽/session 校验因此对本会话新槽一致可见)。
+    meta_install_geom_merge_carve(g, meta_carve_flash_carve());
 }
 
 void meta_install_local_geom(meta_install_geom_t *out)
 {
     if (out) geom_refresh(out);
 }
+
+// ---- P0-5 方案B:carved 槽位的分区句柄 -------------------------------
+// 本次 prepare carve 的槽位在当前启动的 esp_partition 表缓存(首访后驻留
+// SRAM)中不可见。OTA 写/擦/校验只消费 address/size/subtype/label,按 carve
+// 记录伪造句柄即可;下一个启动(bootloader 与 esp_partition)从 flash 读表,
+// 天然一致。单会话保证无并发使用;句柄静态存活,防 IDF 内部留存指针
+// (esp_ota_begin 的 handle 语义按值拷贝,静态存放双保险)。
+static esp_partition_t s_fake_part;
+
+static const esp_partition_t *carved_partition(int8_t slot)
+{
+    const meta_carve_t *cv = meta_carve_flash_carve();
+    if (!cv || slot < 0 || slot >= (int8_t)cv->count) return NULL;
+    const meta_carve_slot_t *s = &cv->slot[slot];
+    if (s->kind != META_CARVE_KIND_APP) return NULL;
+    char label[16];
+    snprintf(label, sizeof(label), "ota_%d", slot);
+    // IDF 5.5 的 esp_ota_begin 先 esp_partition_verify(handle):对照首次
+    // flash 访问时建立的 SRAM 分区缓存,伪造句柄不在缓存里 → NOT_FOUND
+    // (2026-10-04 真机:carve 物化成功后 chunk 写 500 的根因)。
+    // 运行时装了 carved 表的新槽必须同时注册进缓存,拿官方规范指针;
+    // 重启后 esp_partition 从表原生加载,find_first 直接命中,不会
+    // 走到注册分支,无重复注册。
+    const esp_partition_subtype_t sub =
+        (esp_partition_subtype_t)(ESP_PARTITION_SUBTYPE_APP_OTA_MIN + slot);
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP, sub, NULL);
+    if (part) return part;
+    if (esp_partition_register_external(esp_flash_default_chip,
+            s->offset, s->size, label,
+            ESP_PARTITION_TYPE_APP, sub, &part) == ESP_OK && part) {
+        return part;
+    }
+    // 注册失败(内存/参数):退回伪造句柄,行为同旧实现(ota_begin 会拒)。
+    memset(&s_fake_part, 0, sizeof(s_fake_part));
+    s_fake_part.type = ESP_PARTITION_TYPE_APP;
+    s_fake_part.subtype = sub;
+    s_fake_part.address = s->offset;
+    s_fake_part.size = s->size;
+    snprintf(s_fake_part.label, sizeof(s_fake_part.label), "%s", label);
+    return &s_fake_part;
+}
+
+// 缓存查找优先(既有槽位走原路径),未命中回退伪造句柄。
+static const esp_partition_t *slot_partition_any(int8_t slot)
+{
+    const esp_partition_t *part = meta_store_slot_partition(slot);
+    return part ? part : carved_partition(slot);
+}
+
+// ---- P0-5:物化表后的结束复位(推迟到退出商店页) ----------------------
+// 2026-10-04 交互修订:装完立即复位会把 RAM token 一起清掉,手机连接随
+// 之作废、装第二个玩法必须重新配对(真机反馈)。运行时物化 carved 表 +
+// 注册外部分区后,当前 boot 背着过期状态(esp_partition 外部注册项、
+// legacy 槽扫描),确需一次复位清账 —— 但推迟到 goto_page(STORE→LIST)
+// 统一执行:手机会话从"装完"一直活到用户退出商店页。挂起标志在 carve
+// 层(meta_carve_flash_reboot_pending),物化的唯一漏斗是 commit(materialize)。
 
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
@@ -163,6 +241,9 @@ static void offer_and_upload_clear(void)
     s_session.session_opened = false;
     s_session.session_offset = 0;
     s_session.flash_touched = false;
+    s_session.carved_new_slot = -1;
+    s_session.table_changed = false;
+    s_session.data_dirty_mask = 0;
 }
 
 // 终态失败(文档 §6.5):中止 OTA;flash 被动过即槽位 INVALID;清 offer 手机侧重来。
@@ -195,6 +276,9 @@ bool meta_install_lan_ready(void)
 }
 
 // ---- token / 配对码 / QR 信息 ----
+// NVS 持久化 helpers 定义在 resume 标志段(见下);此处仅前置声明。
+static void token_persist(void);
+static bool token_restore(void);
 
 static void token_to_hex(const uint8_t token[META_INSTALL_TOKEN_BYTES],
                          char out[META_INSTALL_TOKEN_HEX_LEN + 1])
@@ -237,6 +321,12 @@ static esp_err_t token_generate(void)
     s_token.pair_used = false;
     s_token.pair_tries = 0;
     s_token.pair_created_ms = esp_timer_get_time() / 1000;
+    token_persist();   // 受控重启后 token_start 原样恢复,手机连接不断
+    // 打 UART:真机自动化冒烟(tools/realdevice/smoke.py)从串口日志取
+    // 配对码换 token,免读屏。token 本就印在设备 QR 上给近场任何人看,
+    // 串口(持有者物理接触)不扩大暴露面。
+    ESP_LOGI(TAG, "pair ready: code=%s token=%s",
+             s_token.pair_code, s_token.token_hex);
     return ESP_OK;
 }
 
@@ -255,12 +345,92 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
     }
 }
 
+// ---- 中断续连持久标志(用户决策①,NVS "metapass"/"inst_active") ----
+// token_start 置位、token_stop 清除;复位后 app_main 读它决定是否自动恢复
+// STA + install 服务,手机凭持久化 token 重发 prepare 免重扫 QR。
+// 方案B 下 prepare 不再中途复位,本标志服务的是"上传中途断电/崩溃"的
+// 非受控复位 —— 无它,用户必须重扫 QR 且上传从头再来(chunk 进度在 RAM)。
+// 一切写入 best-effort:标志丢失的最坏结果只是退化为重新配对,不丢正确性。
+static const char k_nvs_ns_install[] = "metapass";
+static const char k_nvs_key_active[] = "inst_active";
+
+static void resume_flag_set(bool active)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    if (active) {
+        nvs_set_u8(h, k_nvs_key_active, 1);
+        nvs_commit(h);
+    } else {
+        nvs_erase_key(h, k_nvs_key_active);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+bool meta_install_resume_pending(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(k_nvs_ns_install, NVS_READONLY, &h) != ESP_OK) return false;
+    const esp_err_t e = nvs_get_u8(h, k_nvs_key_active, &v);
+    nvs_close(h);
+    return e == ESP_OK && v == 1;
+}
+
+// ---- 会话 token 持久化(2026-10-04 交互修订②) ----
+// 手机连接须活过受控重启("装完/退出商店页重启后手机还能继续操作")。
+// token 签发即落 NVS;token_stop(正常离店/闲置到期)擦除。配对码保持
+// 一次性语义:恢复出来的会话 pair_used=true、pair_valid=false,码不复活。
+static const char k_nvs_key_token[] = "inst_tok";
+
+static void token_persist(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, k_nvs_key_token, s_token.token_hex);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void token_persist_erase(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, k_nvs_key_token);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static bool token_restore(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READONLY, &h) != ESP_OK) return false;
+    char hex[META_INSTALL_TOKEN_HEX_LEN + 1];
+    size_t len = sizeof(hex);
+    const esp_err_t e = nvs_get_str(h, k_nvs_key_token, hex, &len);
+    nvs_close(h);
+    if (e != ESP_OK || len != META_INSTALL_TOKEN_HEX_LEN + 1) return false;
+    for (int i = 0; i < META_INSTALL_TOKEN_HEX_LEN; i++) {
+        const char ch = hex[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) return false;
+    }
+    memcpy(s_token.token_hex, hex, sizeof(s_token.token_hex));
+    s_token.token_valid = true;
+    s_token.pair_valid  = false;
+    s_token.pair_used   = true;
+    s_token.pair_tries  = 0;
+    ESP_LOGI(TAG, "session token restored across reboot");
+    return true;
+}
+
 esp_err_t meta_install_token_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (!s_token.token_valid) {
-        token_generate();
+        if (!token_restore()) token_generate();
     }
+    resume_flag_set(true);   // 置续连标志;正常离店 token_stop 时清除
     s_session.active = true;
     // 无在途 offer/session 时归位 pairing(首次进店、失败/取消/拒绝回退);
     // 有在途 offer 则保持现状,不覆盖手机侧流程。
@@ -281,6 +451,8 @@ void meta_install_token_stop(void)
     offer_and_upload_clear();
     memset(&s_token, 0, sizeof(s_token));
     s_session.active = false;
+    resume_flag_set(false);   // 正常离店:清除续连标志
+    token_persist_erase();    // token 一并作废:之后重启不再恢复
     status_set("idle", "");
     session_unlock();
 }
@@ -389,7 +561,11 @@ esp_err_t meta_install_offer_reject(void)
     } else if (s_session.confirmed || s_session.session_opened) {
         rc = ESP_ERR_INVALID_STATE;   // 已确认的走 cancel,不走拒绝
     } else {
+        // P0-5:拒绝同取消 —— 新建槽回收(守卫同 cancel)。
+        const int8_t carved = s_session.carved_new_slot;
+        const bool have_carve = s_session.manifest_valid && carved >= 0;
         offer_and_upload_clear();
+        if (have_carve) meta_carve_flash_remove((int)carved);
         s_session.name[0] = '\0';
         status_set("pairing", "offer declined on device");
     }
@@ -416,6 +592,13 @@ esp_err_t meta_install_session_open(const meta_install_session_req_t *req)
         geom_refresh(&g);
         if (!meta_install_model_session_ok(&s_session.manifest, s_session.confirmed_slot,
                                            req, &g)) {
+            // 分字段日志:session rejected 曾无处归因(真机 2026-10-04)。
+            ESP_LOGW(TAG, "session rejected: req(slot=%d,len=%u) vs offer(slot=%d,"
+                     "len=%u) sha_eq=%d fit=%d", (int)req->slot,
+                     (unsigned)req->image_len, (int)s_session.confirmed_slot,
+                     (unsigned)s_session.manifest.image_len,
+                     (int)(memcmp(req->sha256, s_session.manifest.sha256, 32) == 0),
+                     (int)meta_install_model_slot_fit(&g, req->slot, req->image_len));
             rc = ESP_ERR_INVALID_ARG;
         } else {
             s_session.session_opened = true;
@@ -464,7 +647,7 @@ esp_err_t meta_install_chunk_write(const void *data, uint32_t length)
     }
 
     if (!s_session.ota_open) {
-        const esp_partition_t *part = meta_store_slot_partition(s_session.confirmed_slot);
+        const esp_partition_t *part = slot_partition_any(s_session.confirmed_slot);
         if (!part) {
             fail_locked("partition missing");
             rc = ESP_ERR_INVALID_STATE;
@@ -551,8 +734,10 @@ static esp_err_t finalize_locked(void)
     }
 
     // esp_image_verify(SILENT):权威复核 + 取 image_len 与 offer 比对(§6.5)。
+    // P0-5:本会话 carve 的新槽在表缓存不可见 → 回退 carve 伪造句柄
+    // (verify 只消费 pos 值结构,不查表)。
     const int8_t slot = s_session.confirmed_slot;
-    const esp_partition_t *part = meta_store_slot_partition(slot);
+    const esp_partition_t *part = slot_partition_any(slot);
     if (!part) {
         fail_locked("partition missing");
         return ESP_ERR_INVALID_STATE;
@@ -595,6 +780,20 @@ static esp_err_t finalize_locked(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    // carve 记录同步晋升 VALID(见 meta_carve_flash_set_valid):清单以记录
+    // 为事实源,占位 EMPTY 会让同会话的第二次安装把第一个应用当空槽覆盖。
+    // 失败按安装失败处理(镜像已写,重装备份覆盖同几何,安全)。
+    {
+        const esp_err_t cv = meta_carve_flash_set_valid(slot, name,
+                                                        meta.image_len, digest);
+        if (cv != ESP_OK) {
+            ESP_LOGE(TAG, "finalize: carve set_valid failed: %s",
+                     esp_err_to_name(cv));
+            fail_locked("carve state update failed");
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
     // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让
     // finalize 失败(审计 M5):注册表已标 VALID 而显示名缺失的槽位会通过
     // 校验却没有名字 —— 设计要求 blob 写入成功才算安装完成。
@@ -622,12 +821,47 @@ static esp_err_t finalize_locked(void)
     }
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
+
+    // P0-5 仲裁①:升级数据迁移块退役。原实现把数据字节拷进
+    // manifest.carve_offset(= 应用槽位起点,finalize 时已写入镜像)——
+    // 几何上必然互相覆盖;且 P0-5 下数据记录由分配器放在独立偏移、与槽位
+    // 永不重叠(place_offer 保留既有 (play_id,label) 记录),升级无需搬家,
+    // 迁移需求是空集。data_copy 工具保留(test_data_copy 钉死 NOR 语义;
+    // v2 压缩若需数据搬迁再启用)。
+
+    // M5 F4(仲裁②):只对"升级保留"的既有记录标 DIRTY;本会话新建记录
+    // 保持 PRISTINE —— 新建区域刚擦除无用户数据,且全标 DIRTY 会让
+    // reclaimablePristine 恒 0(状态只在 finish 翻转 + 单会话 ⇒ PRISTINE
+    // 不可见于任何 no-fit 决策点),tier 4 回收阶梯死代码。
+    if (s_session.manifest_valid && s_session.data_dirty_mask) {
+        meta_carve_data_key_t keys[META_DATA_MAX];
+        uint8_t n_keys = 0;
+        for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+            if (!(s_session.data_dirty_mask & (1u << i))) continue;
+            keys[n_keys].play_id = s_session.manifest.data[i].play_id;
+            strncpy(keys[n_keys].label, s_session.manifest.data[i].label,
+                    META_DATA_LABEL_MAX);
+            keys[n_keys].label[META_DATA_LABEL_MAX] = '\0';
+            n_keys++;
+        }
+        const esp_err_t de = meta_carve_flash_mark_dirty_selected(keys, n_keys);
+        if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "mark_dirty_selected failed: %s", esp_err_to_name(de));
+        }
+    }
+
+    // 成功路径:复位需求在清场前读走;新建槽归属设备,清场不得回收它。
+    const bool needs_done_reboot = s_session.table_changed;
+    s_session.carved_new_slot = -1;   // 防后续任何清理路径误回收
     offer_and_upload_clear();
     memcpy(s_session.name, name, sizeof(name));
     s_session.confirmed_slot = slot;
     status_set("done", "installed");
     ESP_LOGI(TAG, "LAN install slot %d done: %s (%u bytes)", slot, name,
              meta.image_len);
+    // 表若在本会话物化过,复位推迟到退出商店页(见 meta_carve_flash_reboot_pending);
+    // 这里只清场,不断手机连接。
+    (void)needs_done_reboot;
     return ESP_OK;
 }
 
@@ -639,8 +873,16 @@ esp_err_t meta_install_cancel(void)
     session_lock();
     const int8_t slot = s_session.confirmed_slot;
     const bool touched = s_session.flash_touched;
+    // P0-5:本会话新建槽取消即回收(槽内无用户数据 —— 要么空、要么半截
+    // 垃圾镜像);既有槽保持 INVALID 路径。manifest_valid 守卫防 boot 零态
+    // 下 carved_new_slot=0(静态零初始化)误删槽 0。
+    const int8_t carved = s_session.carved_new_slot;
+    const bool have_carve = s_session.manifest_valid && carved >= 0;
     offer_and_upload_clear();
-    if (touched && slot >= 0 && s_slots) {
+    if (have_carve) {
+        meta_carve_flash_remove((int)carved);
+        ESP_LOGW(TAG, "install cancelled; carved slot %d reclaimed", carved);
+    } else if (touched && slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[slot]);
         ESP_LOGW(TAG, "install cancelled; slot %d marked INVALID", slot);
     }
@@ -842,12 +1084,18 @@ static esp_err_t h_install_status(httpd_req_t *req)
 
     char name_esc[META_NAME_LEN * 2 + 1];
     json_escape(s_session.name, name_esc, sizeof(name_esc));
-    char body[384];
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    const char *fw_ver = (app_desc && app_desc->version[0] != '\0')
+                         ? app_desc->version : "0.0.0-placeholder";
+    char fw_esc[META_BACKUP_VERSION_MAX * 2 + 1];
+    json_escape(fw_ver, fw_esc, sizeof(fw_esc));
+    char body[448];
     const int n = snprintf(
         body, sizeof(body),
         "{\"protocol\":%d,\"state\":\"%s\",\"message\":\"%s\","
         "\"active\":%s,\"offer\":%s,\"confirmed\":%s,\"session\":%s,"
-        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ",\"name\":\"%s\"}",
+        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ",\"name\":\"%s\","
+        "\"firmware_version\":\"%s\"}",
         META_INSTALL_PROTOCOL_V1,
         s_session.state ? s_session.state : "idle",
         s_session.message ? s_session.message : "",
@@ -858,7 +1106,7 @@ static esp_err_t h_install_status(httpd_req_t *req)
         s_session.confirmed_slot,
         s_session.session_offset,
         s_session.manifest_valid ? s_session.manifest.image_len : 0u,
-        name_esc);
+        name_esc, fw_esc);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, body, (size_t)n);
@@ -888,7 +1136,11 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     }
     meta_install_geom_t g;
     geom_refresh(&g);
-    if (!meta_install_model_offer_ok(&m, &g)) {
+    // P0-5 修正:carve 提案的 fit 权威是下方 place_offer —— 新槽尚未物化,
+    // 不在 geom/分区缓存中,offer_ok 的"手机 fit 声称必须本地也 fit"会把
+    // 真提案当错报拒掉(fresh 设备首装 400,真机冒烟 S2 暴露)。无提案路径
+    // 保持 offer_ok 裁决。offer_ok 的其余形状校验 parse 已做,无损失。
+    if (!m.has_carve && !meta_install_model_offer_ok(&m, &g)) {
         ESP_LOGW(TAG, "prepare: local geometry re-check rejected");
         return reply(req, "400 Bad Request", "manifest rejected");
     }
@@ -900,20 +1152,117 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         session_unlock();
         return reply(req, "409 Conflict", "already confirmed");
     }
+    // ── P0-5 carve 提案裁决(方案B,§1.0/§3/§5) ──
+    // 纯函数在副本上重放逐条目放置;OK 且 changed → 记录+表一次提交(当前
+    // 启动缓存过期无妨:chunk/finalize 走伪造句柄,复位在成功结束时)。
+    meta_carve_t placed;
+    int place_idx = -1;
+    bool place_changed = false;
+    char place_label[META_DATA_LABEL_MAX + 1];
+    meta_install_no_fit_t nf;
+    meta_install_place_verdict_t verdict = META_PLACE_OK;
+    if (m.has_carve) {
+        const meta_carve_t *cur0 = meta_carve_flash_carve();
+        verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
+                                                 &place_changed, place_label, &nf);
+        // F4 掩码须在放置前对"既有记录"快照(prepare 重发幂等时 carve 已含
+        // 新建记录,事后 diff 会把它们误判为既有)。
+        s_session.data_dirty_mask = 0;
+        if (cur0) {
+            for (uint8_t i = 0; i < m.data_count && i < META_DATA_MAX; i++) {
+                if (m.data[i].play_id != 0 &&
+                    meta_carve_find_data(cur0, m.data[i].play_id,
+                                         m.data[i].label) >= 0) {
+                    s_session.data_dirty_mask |= (1u << i);
+                }
+            }
+        }
+        // 回收阶梯 tier 3:no-fit 且有 ARCHIVED 可收 → 收一次重试。
+        if ((verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) &&
+            nf.reclaimable_archived > 0) {
+            const uint32_t free_b = cur0 ? meta_carve_free(cur0) : 0;
+            const uint32_t want = nf.needed > free_b ? nf.needed - free_b : nf.needed;
+            ESP_LOGI(TAG, "prepare: ARC reclaim %u bytes before retry", (unsigned)want);
+            (void)meta_carve_flash_arc(want);
+            verdict = meta_install_model_place_offer(&m, meta_carve_flash_carve(),
+                                                     &placed, &place_idx,
+                                                     &place_changed, place_label, &nf);
+        }
+        if (verdict == META_PLACE_REJECTED) {
+            session_unlock();
+            ESP_LOGW(TAG, "prepare: carve proposal rejected (label=%s)", place_label);
+            return reply(req, "400 Bad Request", "carve proposal rejected");
+        }
+        if (verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) {
+            session_unlock();
+            ESP_LOGW(TAG, "prepare: no-fit (%s) needed=%u gap=%u arch=%u pri=%u",
+                     verdict == META_PLACE_NO_FIT_SLOT ? "slot" : "data",
+                     (unsigned)nf.needed, (unsigned)nf.largest_gap,
+                     (unsigned)nf.reclaimable_archived,
+                     (unsigned)nf.reclaimable_pristine);
+            char js[256];
+            const int n = snprintf(js, sizeof(js),
+                "{\"reason\":\"no-fit\",\"for\":\"%s\",\"needed\":%u,"
+                "\"largestGap\":%u,\"reclaimableArchived\":%u,"
+                "\"reclaimablePristine\":%u%s%s%s}",
+                verdict == META_PLACE_NO_FIT_SLOT ? "slot" : "data",
+                (unsigned)nf.needed, (unsigned)nf.largest_gap,
+                (unsigned)nf.reclaimable_archived,
+                (unsigned)nf.reclaimable_pristine,
+                place_label[0] ? ",\"label\":\"" : "",
+                place_label,
+                place_label[0] ? "\"" : "");
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_status(req, "409 Conflict");
+            return httpd_resp_sendstr(req, n > 0 && n < (int)sizeof(js) ? js :
+                                      "{\"reason\":\"no-fit\"}");
+        }
+    }
+
     // 交互 v2:prepare 带手机选定的 slot → 本地几何复核后直接 confirmed,
     // 设备跳过 P2/P3(用户决策:安装交互全部收拢到手机,与 metapass 网页装
     // 的选槽→确认一致);不带 slot 的旧 manifest 走原物理确认流程。
+    // P0-5:carve 提案的 fit 权威是 place_offer(新槽不在 geom/缓存中),
+    // 不再走 slot_fit;无提案路径保持原样。
     const bool phone_picked = (m.phone_slot >= 0);
-    if (phone_picked && !meta_install_model_slot_fit(&g, m.phone_slot, m.image_len)) {
+    if (!m.has_carve && phone_picked &&
+        !meta_install_model_slot_fit(&g, m.phone_slot, m.image_len)) {
         session_unlock();
         return reply(req, "400 Bad Request", "chosen slot does not fit");
+    }
+    // 覆盖旧 offer:上一 offer 若物化过新建槽且从未上传,先回收(幂等:
+    // 槽里无镜像,remove 即回到 prepare 前状态)。
+    if (s_session.manifest_valid && s_session.carved_new_slot >= 0) {
+        meta_carve_flash_remove((int)s_session.carved_new_slot);
     }
     offer_and_upload_clear();          // 覆盖旧 offer 时清残留(未确认路径)
     s_session.manifest = m;
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
+    // P0-5:carve 提交(记录+表一次事务)。失败 → 400(副本未入 carve,
+    // 设备状态未被污染)。
+    if (m.has_carve && place_changed) {
+        const esp_err_t ce = meta_carve_flash_commit(&placed, true);
+        if (ce != ESP_OK) {
+            s_session.manifest_valid = false;
+            s_session.offer_ready = false;
+            s_session.data_dirty_mask = 0;
+            session_unlock();
+            ESP_LOGE(TAG, "prepare: carve commit failed: %s", esp_err_to_name(ce));
+            return reply(req, "500 Internal Server Error", "carve commit failed");
+        }
+    }
+    s_session.table_changed = m.has_carve && place_changed;
+    s_session.carved_new_slot =
+        (m.has_carve && place_changed && place_idx >= 0) ? (int8_t)place_idx : -1;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
-    if (phone_picked) {
+    if (m.has_carve) {
+        // carve 路径:槽位下标以设备分配器为准(phone_slot 已在 place_offer 核对)。
+        s_session.confirmed_slot = (int8_t)place_idx;
+        s_session.confirmed = phone_picked;   // 手机选槽 → 直确认;否则等设备确认
+        status_set(phone_picked ? "confirmed" : "offer",
+                   phone_picked ? "slot carved on phone pick" : "confirm on device");
+    } else if (phone_picked) {
         s_session.confirmed_slot = m.phone_slot;
         s_session.confirmed = true;   // 先写槽位,后置标志(读侧以标志为序)
         status_set("confirmed", "slot chosen on phone");
@@ -922,7 +1271,7 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     }
     session_unlock();
     ESP_LOGI(TAG, "offer ready: %s (%u bytes, slot %s)", m.name, m.image_len,
-             phone_picked ? "phone-picked" : "device-confirm");
+             m.has_carve ? "carved" : (phone_picked ? "phone-picked" : "device-confirm"));
     return reply(req, "200 OK", "ok");
 }
 
@@ -1042,6 +1391,182 @@ static esp_err_t h_install_cancel(httpd_req_t *req)
     return reply(req, "200 OK", "ok");
 }
 
+
+// Forward declaration for handlers defined after meta_install_net_start
+
+// GET /api/install/slots —— dynslot 槽位列表(含归档数据数)
+static esp_err_t h_install_slots(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+
+    uint32_t free_bytes = meta_carve_free(carve);
+    uint32_t archived_count = 0;
+    for (uint8_t j = 0; j < carve->data_count; j++) {
+        if (carve->data[j].state == META_DATA_ARCHIVED) {
+            archived_count++;
+        }
+    }
+
+    // 2026-10-04 真机事故:这份 3072B 响应曾开在 httpd 任务栈上,而安装
+    // httpd 的 stack_size 只有 4096;3 个带名槽 + 归档数据记录时 handler
+    // 溢出 → 栈保护 panic → 设备复位(token 在 RAM → "需要配对")。
+    // 静态化后由 session_lock 串行化填充(当前 httpd 同步 handler 单任务,
+    // 锁是对未来多任务化的保险;尾部 send 后已配对 unlock)。
+    static char resp[3072];
+    session_lock();
+    int off = 0;
+    // Use PRId32 for count (int), PRIu32 for uint32_t
+    off += snprintf(resp + off, sizeof(resp) - off,
+        "{\"protocol_version\":%d,\"count\":%d,\"free\":%" PRIu32 ",\"archived\":%" PRIu32 ",\"slots\":[",
+        (int)META_PROTOCOL_VERSION, carve->count, free_bytes, archived_count);
+
+    bool first = true;
+    for (uint8_t j = 0; j < carve->count; j++) {
+        const meta_carve_slot_t *s = &carve->slot[j];
+        const char *state_str = "empty";
+        if (s->state == META_SLOT_VALID) state_str = "valid";
+        else if (s->state == META_SLOT_INVALID) state_str = "invalid";
+
+        const char *kind_str = "app";
+        if (s->kind == META_CARVE_KIND_STORAGE) kind_str = "storage";
+
+        // Count archived data records for this play
+        uint32_t arc_records = 0;
+        // Note: slots don't have ARCHIVED state, only data does
+        if (s->state == META_SLOT_VALID || s->state == META_SLOT_INVALID) {
+            for (uint8_t k = 0; k < carve->data_count; k++) {
+                if (carve->data[k].play_id == s->play_id &&
+                    carve->data[k].state == META_DATA_ARCHIVED) {
+                    arc_records++;
+                }
+            }
+        }
+
+        if (!first) off += snprintf(resp + off, sizeof(resp) - off, ",");
+        first = false;
+
+        off += snprintf(resp + off, sizeof(resp) - off,
+            "{\"slot\":%d,\"state\":\"%s\",\"name\":\"%s\","
+            "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ",\"limit\":%" PRIu32
+            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32 "}",
+            j, state_str, s->name,
+            s->size, s->image_len, s->size - 0x1000,
+            s->offset, kind_str, arc_records);
+    }
+
+    // dynslot P1-4:数据 carve 记录也占池空间,必须暴露给手机侧分配器 ——
+    // 否则手机提案会落进数据区、被设备 carve_ok 拒(L4 分歧)。只给
+    // offset/size/state(占用所需);label 不输出,避免分区标签含引号时的
+    // JSON 注入面(手机侧占用计算不需要 label)。
+    // data[] 在 P1-4 占用域之外再携带 play_id/label:手机侧"导出归档数据"
+    // 按 play_id 分组生成备份清单(M5 备份闭环);label 走 json_escape,
+    // 与上方 name 同一注入面处理。
+    off += snprintf(resp + off, sizeof(resp) - off, "],\"data\":[");
+    for (uint8_t j = 0; j < carve->data_count; j++) {
+        const meta_carve_data_t *d = &carve->data[j];
+        char label_esc[META_DATA_LABEL_MAX * 2 + 1];
+        json_escape(d->label, label_esc, sizeof(label_esc));
+        if (j) off += snprintf(resp + off, sizeof(resp) - off, ",");
+        off += snprintf(resp + off, sizeof(resp) - off,
+            "{\"play_id\":%" PRIu32 ",\"offset\":%" PRIu32
+            ",\"size\":%" PRIu32 ",\"state\":%u,\"label\":\"%s\"}",
+            d->play_id, d->offset, d->size, (unsigned)d->state, label_esc);
+    }
+    off += snprintf(resp + off, sizeof(resp) - off, "]}");
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t send_rc = httpd_resp_send(req, resp, off);
+    session_unlock();
+    return send_rc;
+}
+
+static esp_err_t h_install_remove(httpd_req_t *req);
+static esp_err_t h_backup_import(httpd_req_t *req);
+
+// POST /api/install/remove —— dynslot 显式删除(§M5: 先归档数据,再删槽位)
+static esp_err_t h_install_remove(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    static char body[512];
+    size_t len = 0;
+    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
+    if (rd == ESP_ERR_INVALID_SIZE) {
+        return reply(req, "413 Payload Too Large", "body too large");
+    }
+    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
+
+    // 严格解析(scan_int 拒字符串/小数;旧手写 strstr 会把 "slot":"3" 当 0 删错槽)。
+    meta_install_remove_req_t rm;
+    if (!meta_install_model_parse_remove(body, len, &rm)) {
+        return reply(req, "400 Bad Request", "invalid remove request");
+    }
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!meta_install_model_remove_ok(carve, rm.slot)) {
+        return reply(req, "404 Not Found", "no such slot");
+    }
+
+    if (rm.erase_data) {
+        // 显式"删除数据"(design §6):擦该玩法全部数据记录(字节 + 记录)。
+        // erase_data 一次一条且会改动记录 —— 先快照 label 列表再逐条擦。
+        const uint32_t pid = carve->slot[rm.slot].play_id;
+        if (pid != 0) {
+            char labels[META_DATA_MAX][META_DATA_LABEL_MAX + 1];
+            uint8_t n = 0;
+            for (uint8_t i = 0; i < carve->data_count && n < META_DATA_MAX; i++) {
+                if (carve->data[i].play_id != pid) continue;
+                memcpy(labels[n], carve->data[i].label, sizeof(labels[0]));
+                labels[n][META_DATA_LABEL_MAX] = '\0';
+                n++;
+            }
+            for (uint8_t i = 0; i < n; i++) {
+                const esp_err_t e = meta_carve_flash_erase_data(pid, labels[i]);
+                if (e != ESP_OK) {
+                    ESP_LOGW(TAG, "erase_data failed: play_id=%u label=%s",
+                             (unsigned)pid, labels[i]);
+                }
+            }
+        }
+    } else {
+        // 默认归档:不擦字节,保留用户数据,可被回收阶梯回收(design §6)。
+        const esp_err_t arc_err = meta_carve_flash_archive_slot_and_data(rm.slot);
+        if (arc_err != ESP_OK && arc_err != ESP_ERR_INVALID_ARG) {
+            ESP_LOGW(TAG, "archive_slot_and_data failed: %s", esp_err_to_name(arc_err));
+        }
+    }
+
+    // 防"删除复活"(真机 2026-10-04):remove 只清记录、不擦镜像字节,而物化
+    // 表仍保留该分区 → 重启后扫描见有效镜像 → sync_states 把 EMPTY 顶回
+    // VALID,删除形同虚设(记录扇区 A/B _seq 22→23 现场实锤)。先擦镜像首
+    // sector(4KB):扫描首扇区全 0xFF 即判 EMPTY,与记录一致,复活链断。
+    // 擦除失败 → 500 不删(删了必复活,不如不删让用户重试)。
+    {
+        const esp_partition_t *part = slot_partition_any((int8_t)rm.slot);
+        if (part) {
+            const esp_err_t ee = esp_partition_erase_range(part, 0, META_SIG_SECTOR);
+            if (ee != ESP_OK) {
+                ESP_LOGE(TAG, "remove: image header erase failed: %s",
+                         esp_err_to_name(ee));
+                return reply(req, "500 Internal Server Error",
+                             "erase image header failed");
+            }
+        }
+    }
+
+    if (meta_carve_flash_remove(rm.slot) != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "remove failed");
+    }
+
+    ESP_LOGI(TAG, "slot %d removed (%s)", rm.slot,
+             rm.erase_data ? "data erased" : "data archived");
+    return reply(req, "200 OK", "ok");
+}
+
 // ---- 服务生命周期 ----
 
 esp_err_t meta_install_net_init(meta_slot_info_t slots[META_SLOT_COUNT])
@@ -1064,11 +1589,14 @@ esp_err_t meta_install_net_start(void)
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 8;    // / + pair/status/prepare/session/chunk/finalize/cancel
+    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/finalize/cancel
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
-    hcfg.stack_size = 4096;
+    // 2026-10-04 真机栈溢出:handler 帧 + newlib _svfprintf_r(snprintf
+    // 内部,含 FP 格式化路径)在 4096B 上无安全余量(SP 越界 ~1KB 实测)。
+    // 3072B 响应虽已静态化,仍上调到 8192 留一倍余量。
+    hcfg.stack_size = 8192;
     hcfg.recv_wait_timeout = 10;
     hcfg.send_wait_timeout = 10;
 
@@ -1088,6 +1616,9 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
+        { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
+        { "/api/backup/import",   HTTP_POST, h_backup_import,   NULL },
+        { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {
@@ -1108,4 +1639,158 @@ void meta_install_net_stop(void)
         s_httpd = NULL;
     }
     meta_install_token_stop();   // 幂等:未开 token 时也只是清空状态
+}
+
+// POST /api/backup/import —— 导入归档数据(§M5.12)
+static esp_err_t h_backup_import(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+
+    static char body[4096];
+    size_t len = 0;
+    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
+    if (rd == ESP_ERR_INVALID_SIZE) {
+        return reply(req, "413 Payload Too Large", "body too large");
+    }
+    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
+
+    uint32_t play_id = 0;
+    char *endptr;
+    char *p = strstr(body, "\"play_id\"");
+    if (!p) return reply(req, "400 Bad Request", "missing play_id");
+    p = strchr(p, ':');
+    if (!p) return reply(req, "400 Bad Request", "malformed play_id");
+    play_id = (uint32_t)strtoul(p + 1, &endptr, 10);
+    if (play_id == 0 || *endptr != ',') return reply(req, "400 Bad Request", "invalid play_id");
+
+    char import_version[33] = {0};
+    p = strstr(body, "\"firmware_version\"");
+    if (!p) return reply(req, "400 Bad Request", "missing firmware_version");
+    p = strchr(p, '"');
+    if (!p) return reply(req, "400 Bad Request", "malformed firmware_version");
+    p++;
+    const char *end = strchr(p, '"');
+    if (!end) return reply(req, "400 Bad Request", "unterminated firmware_version");
+    int ver_len = (int)(end - p);
+    if (ver_len <= 0 || ver_len >= (int)sizeof(import_version)) {
+        return reply(req, "400 Bad Request", "firmware_version too long");
+    }
+    strncpy(import_version, p, ver_len);
+
+    // IDF 5.5.3 签名:const esp_app_desc_t *esp_app_get_description(void)
+    // (host 桩原先虚构了 out 参数版,真编译才暴露分歧)。
+    const esp_app_desc_t *desc = esp_app_get_description();
+    const char *current_version = (desc && desc->version[0] != '\0')
+                                   ? desc->version : "0.0.0-placeholder";
+
+    if (strcmp(import_version, current_version) != 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "version mismatch: backup=%s, device=%s",
+                 import_version, current_version);
+        return reply(req, "400 Bad Request", msg);
+    }
+
+    const char *data_marker = strstr(body, "\"data\"");
+    if (!data_marker) return reply(req, "400 Bad Request", "missing data array");
+    char *array_start = strchr(data_marker, '[');
+    if (!array_start) return reply(req, "400 Bad Request", "malformed data array");
+    array_start++;
+
+    meta_backup_data_t raw[META_BACKUP_DATA_MAX];
+    int raw_count = 0;
+    p = array_start;
+    while (*p && raw_count < META_BACKUP_DATA_MAX) {
+        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
+        if (*p != '{') break;
+        meta_backup_data_t rec = {0};
+        char *off_p = strstr(p, "\"offset\"");
+        if (!off_p) break;
+        off_p = strchr(off_p, ':');
+        if (!off_p) break;
+        rec.offset = (uint32_t)strtoul(off_p + 1, &endptr, 10);
+        char *size_p = strstr(p, "\"size\"");
+        if (!size_p) break;
+        size_p = strchr(size_p, ':');
+        if (!size_p) break;
+        rec.size = (uint32_t)strtoul(size_p + 1, &endptr, 10);
+        char *state_p = strstr(p, "\"state\"");
+        if (!state_p) break;
+        state_p = strchr(state_p, ':');
+        if (!state_p) break;
+        rec.state = (uint8_t)strtoul(state_p + 1, &endptr, 10);
+        char *label_p = strstr(p, "\"label\"");
+        if (label_p) {
+            label_p = strchr(label_p, '"');
+            if (label_p) {
+                label_p++;
+                const char *label_end = strchr(label_p, '"');
+                if (label_end) {
+                    int label_len = (int)(label_end - label_p);
+                    if (label_len > 0 && label_len < (int)sizeof(rec.label)) {
+                        strncpy(rec.label, label_p, label_len);
+                        rec.label[label_len] = '\0';
+                    }
+                }
+            }
+        }
+        if (raw_count < META_BACKUP_DATA_MAX) raw[raw_count++] = rec;
+        char *brace_end = strchr(p, '}');
+        if (!brace_end) break;
+        p = brace_end + 1;
+    }
+
+    // 筛选与空间判定走纯逻辑(meta_backup.c,host 可测)。
+    meta_backup_data_t import_records[META_BACKUP_DATA_MAX];
+    const int record_count = meta_backup_filter_import(raw, raw_count, import_records);
+    if (record_count == 0) return reply(req, "400 Bad Request", "no valid archived records");
+
+    uint32_t total_needed = 0;
+    for (int i = 0; i < record_count; i++) total_needed += import_records[i].size;
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve not available");
+
+    uint32_t free_bytes = meta_carve_free(carve);
+    meta_import_verdict_t verdict = meta_backup_import_verdict(
+        free_bytes, total_needed, meta_carve_reclaimable(carve));
+    if (verdict == META_IMPORT_ERR_NEED_ARC) {
+        // meta_carve_flash_arc 返回实际回收字节数(0 = 无可用归档)。回收后重新判定。
+        ESP_LOGI(TAG, "pool pressure %lu needed, free %lu, attempting ARC",
+                 (unsigned long)total_needed, (unsigned long)free_bytes);
+        (void)meta_carve_flash_arc(total_needed - free_bytes);
+        free_bytes = meta_carve_free(meta_carve_flash_carve());
+        verdict = meta_backup_import_verdict(free_bytes, total_needed, 0);
+    }
+    if (verdict != META_IMPORT_OK) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
+                 (unsigned long)total_needed, (unsigned long)free_bytes);
+        return reply(req, "507 Insufficient Storage", msg);
+    }
+
+    // 在副本上追加再提交:失败时 s_carve 不被改动(避免内存态与 flash 分歧)。
+    meta_carve_t next = *carve;
+    for (int i = 0; i < record_count; i++) {
+        meta_carve_data_t d;
+        memset(&d, 0, sizeof(d));
+        d.play_id = play_id;
+        d.offset = import_records[i].offset;
+        d.size = import_records[i].size;
+        d.state = META_DATA_PRISTINE;
+        d.type = 1;
+        d.subtype = 1;
+        strncpy(d.label, import_records[i].label, sizeof(d.label) - 1);
+        if (!meta_carve_data_append(&next, &d)) {
+            return reply(req, "500 Internal Server Error", "failed to update carve table");
+        }
+    }
+
+    esp_err_t commit_err = meta_carve_flash_commit(&next, true);
+    if (commit_err != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "failed to commit carve table");
+    }
+
+    char resp[128];
+    snprintf(resp, sizeof(resp), "{\"records\":%d,\"ok\":true}", record_count);
+    return reply(req, "200 OK", resp);
 }
