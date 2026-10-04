@@ -26,6 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <esp_system.h>
+#include <nvs_flash.h>
+#include <nvs.h>
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_timer.h>
@@ -332,12 +334,46 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
     }
 }
 
+// ---- 中断续连持久标志(用户决策①,NVS "metapass"/"inst_active") ----
+// token_start 置位、token_stop 清除;复位后 app_main 读它决定是否自动恢复
+// STA + install 服务,手机凭持久化 token 重发 prepare 免重扫 QR。
+// 方案B 下 prepare 不再中途复位,本标志服务的是"上传中途断电/崩溃"的
+// 非受控复位 —— 无它,用户必须重扫 QR 且上传从头再来(chunk 进度在 RAM)。
+// 一切写入 best-effort:标志丢失的最坏结果只是退化为重新配对,不丢正确性。
+static const char k_nvs_ns_install[] = "metapass";
+static const char k_nvs_key_active[] = "inst_active";
+
+static void resume_flag_set(bool active)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    if (active) {
+        nvs_set_u8(h, k_nvs_key_active, 1);
+        nvs_commit(h);
+    } else {
+        nvs_erase_key(h, k_nvs_key_active);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+bool meta_install_resume_pending(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open(k_nvs_ns_install, NVS_READONLY, &h) != ESP_OK) return false;
+    const esp_err_t e = nvs_get_u8(h, k_nvs_key_active, &v);
+    nvs_close(h);
+    return e == ESP_OK && v == 1;
+}
+
 esp_err_t meta_install_token_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (!s_token.token_valid) {
         token_generate();
     }
+    resume_flag_set(true);   // 置续连标志;正常离店 token_stop 时清除
     s_session.active = true;
     // 无在途 offer/session 时归位 pairing(首次进店、失败/取消/拒绝回退);
     // 有在途 offer 则保持现状,不覆盖手机侧流程。
@@ -358,6 +394,7 @@ void meta_install_token_stop(void)
     offer_and_upload_clear();
     memset(&s_token, 0, sizeof(s_token));
     s_session.active = false;
+    resume_flag_set(false);   // 正常离店:清除续连标志
     status_set("idle", "");
     session_unlock();
 }

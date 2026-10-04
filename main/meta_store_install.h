@@ -80,6 +80,11 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
 esp_err_t meta_install_token_start(void);
 void      meta_install_token_stop(void);
 bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
+// 中断续连(用户决策①):上次 install 会话未正常离店(token_start 后未
+// token_stop,如上传中途断电)→ true。复位后 app_main 据此自动恢复 STA +
+// install 服务,手机用持久化 token 重发 prepare 免重扫 QR。NVS 标志,
+// 读取须在 meta_store_net_init()(内部 nvs_flash_init)之后。
+bool      meta_install_resume_pending(void);
 
 // ---- offer 确认状态机(UI 入口,文档 §6.4) ----
 // 拷贝当前待确认 offer(无则 false)。快照复制:UI 渲染期间允许手机重新
