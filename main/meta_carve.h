@@ -42,6 +42,12 @@ typedef struct {
 // 解析 0xC00 表字节:条目链 + MD5 marker 逐字节校验;格式异常返回 false。
 bool meta_pt_decode(const uint8_t raw[META_PT_SIZE], meta_pt_t *out);
 
+// 仅校验、不物化:与 decode 相同的条目链 + MD5 校验,但栈帧为 O(1)
+// (decode 内部持 ~640B 的 meta_pt_t + 调用方缓冲,bootloader hook 与
+// app_main(3584B 主栈)路径必须走这里 —— 2026-10-04 QEMU 定案:记录态
+// 启动在 ensure 的 decode 链上二次溢出,首个 DOWN 测试夹具暴露)。
+bool meta_pt_check(const uint8_t raw[META_PT_SIZE]);
+
 // 物化:条目 + 0xEBEB marker(md5 over entries)+ 余量 0xFF。
 // 条目 > MAX 时写全 0xFF(无效表),不越界。
 void meta_pt_encode(const meta_pt_t *t, uint8_t out[META_PT_SIZE]);

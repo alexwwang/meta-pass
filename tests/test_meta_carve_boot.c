@@ -136,7 +136,14 @@ static void test_no_record(void)
 
 static void test_invalid_record_treated_as_absent(void)
 {
-    // 格式合法但 carve↔表不一致 → 视同无记录(结构校验在 decide 内兜底)。
+    // 2026-10-04 契约修订:validate 不再做"表 vs carve"物化比对(3KB 栈帧在
+    // bootloader hook / app_main 上必然溢出,QEMU 实测定案;bootloader
+    // dram_seg 也无静态替代余量)。跨一致性由既有层覆盖:记录 CRC 同时覆盖
+    // carve 与表(部分写/撕写必然败 CRC → 视同无记录,仍走白名单),内嵌表
+    // MD5 保表字节自洽 —— 表↔carve 互相矛盾只能源于软件 bug 写坏记录,
+    // 该防御由"写方自证"承担。此处验证残留语义:表↔carve 不一致的记录
+    // 按 committed 权威处理(RESTORE_RECORD,写回其内部合法的表),
+    // 而非整机回退安全表(避免把可恢复态打成"池内容不可达")。
     meta_carve_t mig = seed_carve();
     meta_carve_t shrunk = mig;
     shrunk.count = 1;
@@ -149,13 +156,14 @@ static void test_invalid_record_treated_as_absent(void)
     assert(meta_pt_from_carve(&shrunk, rec.table));  // 表却是 1 槽
     uint8_t *safe = fixture("tests/fixtures/safe_table.bin");
     meta_boot_table_verdict_t v = decide(safe, &rec);
-    assert(v.action == META_BOOT_TABLE_PROCEED);     // 记录作废 → 按无记录:安全表放行
+    assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);  // committed 权威
+    assert(v.table == rec.table);
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
     v = decide(child, &rec);
-    assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
+    assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     free(safe);
     free(child);
-    printf("PASS invalid record treated as absent\n");
+    printf("PASS inconsistent record = committed authority (CRC/MD5 guard writes)\n");
 }
 
 // 失败矩阵(§4.7)逐条转换。

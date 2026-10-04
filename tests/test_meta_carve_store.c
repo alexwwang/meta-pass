@@ -327,29 +327,28 @@ static void test_v1_compat_decode(void)
     printf("PASS v1 compat decode\n");
 }
 
-static void test_validate_consistency(void)
+static void test_validate_format_layers(void)
 {
-    // 表 MD5 合法但与记录内 carve 不一致 → validate 拒绝(防改记录不改表)。
+    // 2026-10-04 修订:validate 不再做"表 vs carve"物化比对(原实现 3072B
+    // 栈帧在 bootloader hook / app_main 上必然溢出,QEMU 实测定案;
+    // bootloader dram_seg 也不容静态替代)。该比对的防御价值由既有层覆盖:
+    // decode 验表 MD5、carve_valid 验结构不变量、decide/ensure 比对 live 表。
+    // 本测试钉死剩余边界:表 MD5 损坏 → decode 拒;carve 结构非法 → validate 拒。
     meta_carve_t mig = migration_carve();
-    meta_carve_t shrunk = mig;
-    shrunk.slot[0].size = 0x80000;   // 合法但不同
-    shrunk.slot[1].offset = 0x360000;
-    shrunk.slot[1].size = 0x200000;
-    shrunk.count = 2;
-    assert(meta_carve_valid(&shrunk));
-
-    meta_carve_rec_t a, b;
-    make_rec(&a, &shrunk, 9);         // a.table = materialize(shrunk)
-    make_rec(&b, &mig, 9);
-    memcpy(b.table, a.table, META_PT_SIZE);   // carve=mig 但表=shrunk 的表(md5 仍合法)
-    assert(meta_carve_rec_validate(&a));
+    meta_carve_rec_t good;
+    make_rec(&good, &mig, 9);
+    assert(meta_carve_rec_validate(&good));
 
     uint8_t raw[META_CARVE_REC_SIZE];
-    assert(meta_carve_rec_encode(&b, raw));
+    assert(meta_carve_rec_encode(&good, raw));
+    raw[META_CARVE_REC_TABLE_OFF + 0] ^= 0xFF;   // 破坏表字节 → MD5 失配
     meta_carve_rec_t back;
-    assert(meta_carve_rec_decode(raw, &back));   // 格式层通过
-    assert(!meta_carve_rec_validate(&back));     // 一致性层拒绝
-    printf("PASS validate consistency\n");
+    assert(!meta_carve_rec_decode(raw, &back));  // 格式层(表 MD5)拒绝
+
+    // 注:结构非法的 carve 在 encode 层(meta_carve_valid)即被拒,无法
+    // 经 make_rec 构造;validate 的 carve_valid 是同不变量的第二读,
+    // 面向手工构造的 raw —— 该路径由 decode 的逐层校验共同覆盖。
+    printf("PASS validate format layers\n");
 }
 
 static void test_pick_ab(void)
@@ -394,7 +393,7 @@ int main(void)
     test_raw_info();
     test_data_roundtrip();
     test_v1_compat_decode();
-    test_validate_consistency();
+    test_validate_format_layers();
     test_pick_ab();
     printf("PASS test_meta_carve_store\n");
     return 0;

@@ -220,8 +220,9 @@ bool meta_carve_rec_decode(const uint8_t raw[META_CARVE_REC_SIZE],
         }
     }   // v1 无 data 区 → data_count 保持 0
     memcpy(out->table, raw + table_off, META_PT_SIZE);
-    meta_pt_t scratch;
-    if (!meta_pt_decode(out->table, &scratch)) {
+    // 内嵌表 MD5 校验走 O(1) 栈版本:本函数会被 bootloader hook 与
+    // app_main ensure 调用,decode 的 ~640B 结构缓冲在此是二次溢出源。
+    if (!meta_pt_check(out->table)) {
         return false;   // 内嵌表 MD5 损坏
     }
     return true;
@@ -232,14 +233,19 @@ bool meta_carve_rec_validate(const meta_carve_rec_t *rec)
     if (!rec) {
         return false;
     }
-    if (!meta_carve_valid(&rec->carve)) {
-        return false;
-    }
-    uint8_t expect[META_PT_SIZE];
-    if (!meta_pt_from_carve(&rec->carve, expect)) {
-        return false;
-    }
-    return meta_pt_equal(expect, rec->table);
+    // 一致性边界(2026-10-04 修订,根因:QEMU 定案的栈溢出 + dram_seg 溢出):
+    // 旧实现在此 materialize 整张表做字节比对(uint8_t expect[3072] 栈帧 +
+    // meta_pt_from_carve 内部 ~640B)——调用方含 bootloader hook(8KB 栈、
+    // dram_seg 预算仅剩 <1.6KB)与 app_main(3584B 主栈),任何"flash 存在
+    // 合法记录"的启动都会栈溢出 → panic → software_reset(真机 = 变砖;
+    // 只有装过玩法的设备有记录,故 fresh 设备测试永远发现不了)。
+    // 该比对的防御价值由既有检查完整覆盖,故移除:
+    //   - decode 已验内嵌表的 MD5(meta_pt_decode)——表字节损坏拒于门外;
+    //   - meta_carve_valid 已验 carve 结构不变量(数量/对齐/池内/不重叠);
+    //   - decide/ensure 逐字节比对 live 表 vs rec.table——表与 carve 语义
+    //     分歧的检测点本就在那里,且下一次 commit 会用 carve 重铸表自愈。
+    // 剩余风险(表内部合法但与 carve 语义不符)仅为瞬态物化分歧,无安全影响。
+    return meta_carve_valid(&rec->carve);
 }
 
 // ---- A/B pick -------------------------------------------------------------

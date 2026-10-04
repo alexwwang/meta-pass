@@ -126,9 +126,13 @@ const bundleTable = new Uint8Array(
 );
 const table = parsePartitionTable(bundleTable);
 const labels = table.map((p) => p.label);
-assert.deepEqual(
-  labels,
-  ["nvs", "phy_init", "factory", "ota_0", "cardid", "ota_1", "ota_2", "otadata"],
+// 布局随构建产物而定:dynslot 前 partitions.csv = 固定 3 槽表;dynslot 后 =
+// 安全表(pool_0/pool_1 占位 + store)。真产物存在时以实际布局为准,
+// 契约锚点是 FIXED 条目的偏移(下述),槽条目本身在两种布局下都合法。
+assert.ok(
+  JSON.stringify(labels) === JSON.stringify(["nvs", "phy_init", "factory", "ota_0", "cardid", "ota_1", "ota_2", "otadata"]) ||
+  JSON.stringify(labels) === JSON.stringify(["nvs", "phy_init", "factory", "pool_0", "cardid", "store", "pool_1", "otadata"]),
+  `unexpected partition layout: ${labels.join(",")}`,
 );
 const byLabel = Object.fromEntries(table.map((p) => [p.label, p]));
 assert.equal(byLabel.factory.offset, 0x10000);

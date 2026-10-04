@@ -615,6 +615,43 @@ void meta_pt_safe(uint8_t out[META_PT_SIZE])
     build_fixed_only(out, true);
 }
 
+// 仅校验、不物化:与 meta_pt_decode 相同的条目链 + MD5 校验,但栈帧 O(1)
+// (decode 内部自持 ~640B meta_pt_t,叠加调用方缓冲后在 app_main(3584B
+// 主栈)与 bootloader hook 的记录路径上会二次溢出 —— 2026-10-04 QEMU 实测定案)。
+bool meta_pt_check(const uint8_t raw[META_PT_SIZE])
+{
+    if (!raw) {
+        return false;
+    }
+    size_t count = 0;
+    for (size_t off = 0; off + META_PT_ENTRY_SIZE <= META_PT_SIZE;
+         off += META_PT_ENTRY_SIZE) {
+        const uint8_t *p = raw + off;
+        const uint16_t magic = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+        if (magic == 0xFFFFu) {
+            break;
+        }
+        if (magic == META_PT_MAGIC_MD5) {
+            for (int k = 2; k < 16; k++) {
+                if (p[k] != 0xFF) {
+                    return false;
+                }
+            }
+            if (count == 0) {
+                return false;
+            }
+            uint8_t digest[16];
+            meta_md5(raw, off, digest);
+            return memcmp(digest, p + 16, 16) == 0;
+        }
+        if (magic != META_PT_MAGIC || count >= META_PT_MAX_ENTRIES) {
+            return false;
+        }
+        count++;
+    }
+    return false;   // 无 MD5 marker
+}
+
 void meta_pt_legacy(uint8_t out[META_PT_SIZE])
 {
     meta_pt_t t;
