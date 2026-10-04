@@ -116,6 +116,7 @@
     <label><input type="radio" name="slot" value="0" checked> <span data-i18n="slot_0">Slot 0</span> <code>0x180000</code></label>
     <label><input type="radio" name="slot" value="1"> <span data-i18n="slot_1">Slot 1</span> <code>0x360000</code></label>
     <label><input type="radio" name="slot" value="2"> <span data-i18n="slot_2">Slot 2</span> <code>0x560000</code></label>
+    <p id="slot-geo-info" class="info" style="display:none;margin-top:6px"></p>
   </section>
   <section>
     <h2 data-i18n="step_firmware">3. Firmware source</h2>
@@ -257,7 +258,20 @@ let deviceSlots = LEGACY_SLOTS.map((s) => ({ ...s }));
 // 几何与原有 3 槽 UI;读表失败静默保留 legacy(旧行为,绝不更差)。
 function applyDiscoveredSlots(parts) {
   const found = discoverSlots(parts);
-  if (found.length === 0) return;   // factory 布局或异常:保持 legacy
+  const info = $("slot-geo-info");
+  if (found.length === 0) {
+    // factory 布局(分区表无 ota_N)或读表异常:明示当前是 legacy 兜底,
+    // 与"动态探测成功"在视觉上有别(用户反馈:探测无可见证据)。
+    if (info) {
+      info.style.display = "block";
+      info.textContent = t("slot_geo_legacy");
+    }
+    return;
+  }
+  if (info) {
+    info.style.display = "block";
+    info.textContent = t("slot_geo_dynamic", { count: found.length });
+  }
   deviceSlots = found.map((s) => ({ offset: s.offset, size: s.size }));
   rebuildSlotPickers();
 }
@@ -284,7 +298,7 @@ function rebuildSlotPickers() {
       const span = document.createElement("span");
       span.textContent = `Slot ${s}`;
       const code = document.createElement("code");
-      code.textContent = `0x${deviceSlots[s].offset.toString(16)}`;
+      code.textContent = `0x${deviceSlots[s].offset.toString(16)} \u00b7 ${fmtBytes(deviceSlots[s].size)}`;
       lab.append(inp, " ", span, " ", code);
       slotSec.appendChild(lab);
     }
@@ -509,6 +523,8 @@ const I18N = {
     upgrade_mode_fixed: "Fixed-slot mode (3 slots)",
     upgrade_mode_migration: "Fixed-slot → dynslot migration",
     msg_slots_discovered: "Discovered {count} slot(s) from the device partition table.",
+    slot_geo_dynamic: "Live geometry: {count} slot(s) read from the device partition table.",
+    slot_geo_legacy: "No slot entries in the device table — showing legacy fixed geometry (read may have failed; reconnect to re-probe).",
     err_upgrade_table: "Layout mismatch — upgrade refused: {reason}",
     err_upgrade_read_table: "Failed to read the device partition table: {err}",
     msg_upgrade_writing: "Writing {name} ({size}) to {addr}…",
@@ -664,6 +680,8 @@ const I18N = {
     upgrade_mode_fixed: "固定槽位模式(3 槽)",
     upgrade_mode_migration: "固定槽位 → 动态槽位迁移",
     msg_slots_discovered: "已从设备分区表发现 {count} 个槽位。",
+    slot_geo_dynamic: "动态几何:已从设备分区表读到 {count} 个槽位。",
+    slot_geo_legacy: "设备分区表中没有槽位条目 —— 当前显示 legacy 固定几何(可能读表失败,重新连接可重探)。",
     err_upgrade_table: "布局不一致 —— 已拒绝升级:{reason}",
     err_upgrade_read_table: "读取设备分区表失败:{err}",
     msg_upgrade_writing: "写入 {name}({size})到 {addr}…",
