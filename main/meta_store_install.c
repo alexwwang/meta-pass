@@ -592,6 +592,13 @@ esp_err_t meta_install_session_open(const meta_install_session_req_t *req)
         geom_refresh(&g);
         if (!meta_install_model_session_ok(&s_session.manifest, s_session.confirmed_slot,
                                            req, &g)) {
+            // 分字段日志:session rejected 曾无处归因(真机 2026-10-04)。
+            ESP_LOGW(TAG, "session rejected: req(slot=%d,len=%u) vs offer(slot=%d,"
+                     "len=%u) sha_eq=%d fit=%d", (int)req->slot,
+                     (unsigned)req->image_len, (int)s_session.confirmed_slot,
+                     (unsigned)s_session.manifest.image_len,
+                     (int)(memcmp(req->sha256, s_session.manifest.sha256, 32) == 0),
+                     (int)meta_install_model_slot_fit(&g, req->slot, req->image_len));
             rc = ESP_ERR_INVALID_ARG;
         } else {
             s_session.session_opened = true;
@@ -771,6 +778,20 @@ static esp_err_t finalize_locked(void)
     if (!meta_slot_set_valid(&s_slots[slot], name, ver, meta.image_len, sha_hex)) {
         fail_locked("registry write failed");
         return ESP_ERR_INVALID_STATE;
+    }
+
+    // carve 记录同步晋升 VALID(见 meta_carve_flash_set_valid):清单以记录
+    // 为事实源,占位 EMPTY 会让同会话的第二次安装把第一个应用当空槽覆盖。
+    // 失败按安装失败处理(镜像已写,重装备份覆盖同几何,安全)。
+    {
+        const esp_err_t cv = meta_carve_flash_set_valid(slot, name,
+                                                        meta.image_len, digest);
+        if (cv != ESP_OK) {
+            ESP_LOGE(TAG, "finalize: carve set_valid failed: %s",
+                     esp_err_to_name(cv));
+            fail_locked("carve state update failed");
+            return ESP_ERR_INVALID_STATE;
+        }
     }
 
     // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让

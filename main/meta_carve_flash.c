@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "esp_flash.h"
+#include "esp_partition.h"
 #include "esp_log.h"
 
 static const char *TAG = "meta_carve";
@@ -164,6 +165,14 @@ esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
         ESP_LOGE(TAG, "table read-back mismatch");
         return ESP_FAIL;
     }
+    // 分区缓存失效:esp_partition 的 SRAM 缓存只在"首次访问"从 flash 表
+    // 加载一次 —— 本 boot 若已加载(geom_refresh/槽扫描都触发),它持有的
+    // ota_N→offset 映射是物化前的旧表;此时 chunk 写按 subtype 查缓存会
+    // 拿到旧分区,镜像写进别人的槽(2026-10-04 真机:节拍器/混沌摆先后
+    // 写进 leo-radio 的 0x360000,原应用被静默摧毁,记录与字节两处铁证)。
+    // 物化是分区表变化的唯一漏斗,且全部调用方与在途 OTA 串行(单 httpd
+    // 任务 + prepare 拒并发),此处 unload 后下次访问即从刚写好的表重建。
+    esp_partition_unload_all();
     return ESP_OK;
 }
 
@@ -257,6 +266,30 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     ESP_LOGI(TAG, "carve committed: seq=%lu slots=%u materialize=%d",
              (unsigned long)seq, (unsigned)s_in.count, (int)materialize);
     return ESP_OK;
+}
+
+// finalize 成功路径:把槽位在 carve 记录里就地晋升 VALID(镜像元数据
+// 一并落记录)。新槽在 prepare 时以 EMPTY 占位,原靠"下次开机的
+// sync_states 扫描晋升" —— 推迟复位修订后同一会话可能继续装第二个应用,
+// 占位 EMPTY 会被手机清单当成空槽建议复用,第二个安装覆盖第一个(真机
+// 2026-10-04)。几何未动:commit(materialize=false),不挂起复位。
+esp_err_t meta_carve_flash_set_valid(int slot, const char *name,
+                                     uint32_t image_len,
+                                     const uint8_t sha256[32])
+{
+    if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
+    if (slot < 0 || slot >= (int)s_carve.count) return ESP_ERR_INVALID_ARG;
+    s_work = s_carve;
+    meta_carve_slot_t *s = &s_work.slot[slot];
+    if (s->kind != META_CARVE_KIND_APP) return ESP_ERR_INVALID_ARG;
+    s->state = (uint8_t)META_SLOT_VALID;
+    s->image_len = image_len;
+    memcpy(s->image_sha256, sha256, 32);
+    if (name) {
+        strncpy(s->name, name, sizeof(s->name) - 1);
+        s->name[sizeof(s->name) - 1] = '\0';
+    }
+    return meta_carve_flash_commit(&s_work, false);
 }
 
 esp_err_t meta_carve_flash_remove(int slot)
