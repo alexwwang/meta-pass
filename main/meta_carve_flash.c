@@ -16,6 +16,7 @@
 
 #include "esp_flash.h"
 #include "esp_partition.h"
+#include "esp_flash_partitions.h"   // ESP_PARTITION_TABLE_* / esp_partition_is_flash_region_writable
 #include "esp_log.h"
 
 static const char *TAG = "meta_carve";
@@ -109,6 +110,53 @@ const meta_carve_t *meta_carve_flash_carve(void)
 bool meta_carve_flash_has_record(void)
 {
     return s_have_record;
+}
+
+// ---- flash 写保护钩子(悬空缓存规避) --------------------------------------
+//
+// IDF 默认 main_flash_region_protected 经 esp_partition_main_flash_region_safe
+// 调 esp_ota_get_running_partition(),而后者把"指向 esp_partition SRAM 缓存
+// 项"的指针做了进程级静态缓存(esp_ota_ops.c curr_partition)。物化路径的
+// esp_partition_unload_all() 会 free 整个缓存链表 —— 该静态指针悬空。堆块
+// 被复用/填毒(0xa5a5a5a5)后,任何一次 flash 写保护检查都会从悬空指针读出
+// 垃圾 address/size,把合法地址误判为"运行中 app 内"→ ESP_ERR_NOT_SUPPORTED
+// → CONFIG_SPI_FLASH_DANGEROUS_WRITE_ABORTS 默认 abort()。
+// 2026-10-04 真机:prepare 的记录扇区擦除 0x35A000 即因此 abort(栈上可见
+// 0xa5a5a5a5 堆毒,decode:meta_carve_flash_commit ← h_install_prepare)。
+// IDF 没有失效该缓存的 API;本固件运行中 app 恒为 factory(单机单会话,
+// otadata 每次由 launcher 擦除),故用布局常量替代缓存查找。语义与 IDF
+// 默认一致:护分区表扇区(≤0x9000 顺带盖住 bootloader)、factory、
+// readonly 分区,其余放行。factory 范围与 meta_carve.c FIXED[0] 同步改。
+
+#define CARVE_FACTORY_OFFSET 0x10000u
+#define CARVE_FACTORY_END    (CARVE_FACTORY_OFFSET + 0x170000u)   // 0x180000
+
+static esp_err_t carve_region_protected(void *arg, size_t start_addr, size_t size)
+{
+    if (!esp_partition_is_flash_region_writable(start_addr, size)) {
+        return ESP_ERR_NOT_ALLOWED;   // 与 IDF 一致:readonly 分区 → 调用方返回错误
+    }
+    if (start_addr <= ESP_PARTITION_TABLE_OFFSET + ESP_PARTITION_TABLE_MAX_LEN) {
+        return ESP_ERR_NOT_SUPPORTED; // 分区表(及 bootloader) → abort 语义同 IDF
+    }
+    if (start_addr < CARVE_FACTORY_END && start_addr + size > CARVE_FACTORY_OFFSET) {
+        return ESP_ERR_NOT_SUPPORTED; // 运行中 app(factory)
+    }
+    return ESP_OK;
+}
+
+// 一次性安装:默认主 flash chip 的 os_func 在 init 后不再更换
+// (spi_flash_os_func_app.c 仅 init/deinit 路径赋值),拷贝一份静态表替换
+// region_protected,其余钩子(start/end/缓存管理)原样保留。
+static void carve_flash_wrap_region_protected(void)
+{
+    esp_flash_t *const chip = esp_flash_default_chip;
+    if (!chip || !chip->os_func) return;
+    static esp_flash_os_functions_t s_wrapped_os_func;
+    s_wrapped_os_func = *chip->os_func;
+    s_wrapped_os_func.region_protected = carve_region_protected;
+    chip->os_func = &s_wrapped_os_func;
+    ESP_LOGI(TAG, "flash region_protected wrapped (dangling ota cache bypassed)");
 }
 
 // ---- 裸 flash 原语 --------------------------------------------------------
@@ -390,6 +438,10 @@ static void cred_relocate(void)
 esp_err_t meta_carve_flash_ensure(void)
 {
     if (s_active) return ESP_OK;
+
+    // 首步:换掉 region_protected(见上方注释)。之后任何 flash 写检查都不再
+    // 碰 esp_ota_get_running_partition() 的悬空缓存。
+    carve_flash_wrap_region_protected();
 
     // 所有路径的第一步:扇区0 可能还站着旧凭据(有记录时也是 —— 旧 net.c
     // 曾把凭据写到那里)。MPCK 魔数守卫 + 新家幂等标记,非凭据内容不碰。
