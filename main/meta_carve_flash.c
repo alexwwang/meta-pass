@@ -127,13 +127,29 @@ bool meta_carve_flash_table_read(uint8_t out[META_PT_SIZE])
 esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
 {
     if (!table) return ESP_ERR_INVALID_ARG;
-    if (esp_flash_erase_region(NULL, META_PT_FLASH_OFFSET,
-                               META_CARVE_SIZE_GRANULE) != ESP_OK) {
-        ESP_LOGE(TAG, "table sector erase failed");
-        return ESP_FAIL;
+    // 分区表扇区(0x8000)在 IDF 危险写保护清单内(bootloader / 分区表 /
+    // 运行中 app 镜像区):esp_flash_* 顶层的 CHECK_WRITE_ADDRESS 命中即
+    // abort()(CONFIG_SPI_FLASH_DANGEROUS_WRITE 默认 ABORTS)。
+    // 2026-10-04 真机根因:prepare/删除路径的 commit(materialize) 在此
+    // abort → 软件复位 → 手机请求悬挂、token 丢失、被迫重新配对。
+    // 运行时物化 carved 表是本设计的合法操作(记录先行 + hook 下一开机
+    // 校验修复,§4.7),这里只对这两次调用临时摘掉 region_protected 钩子,
+    // start/end/缓存管理全部原样复用 IDF flash_ops。commit 的调用方都在
+    // 同一 httpd 任务串行执行,无并发窗口。
+    static esp_flash_os_functions_t s_pt_os_func;
+    esp_flash_t *const chip = esp_flash_default_chip;
+    s_pt_os_func = *chip->os_func;
+    s_pt_os_func.region_protected = NULL;
+    const esp_flash_os_functions_t *const saved_os = chip->os_func;
+    chip->os_func = &s_pt_os_func;
+    esp_err_t e = esp_flash_erase_region(chip, META_PT_FLASH_OFFSET,
+                                         META_CARVE_SIZE_GRANULE);
+    if (e == ESP_OK) {
+        e = esp_flash_write(chip, table, META_PT_FLASH_OFFSET, META_PT_SIZE);
     }
-    if (esp_flash_write(NULL, table, META_PT_FLASH_OFFSET, META_PT_SIZE) != ESP_OK) {
-        ESP_LOGE(TAG, "table write failed");
+    chip->os_func = saved_os;
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "table sector erase/write failed: %s", esp_err_to_name(e));
         return ESP_FAIL;
     }
     // 读回进 s_live:调用方传入的 table 不与 s_live 重叠(记录表在 s_best/s_tmp)。

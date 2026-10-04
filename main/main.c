@@ -279,27 +279,31 @@ static void list_refresh(void)
     for (int r = 0; r < LIST_SLOT_WIN; r++) {
         lv_obj_t *lbl = lv_obj_get_child(s_rows[r], 0);
         if (!lbl) continue;
-        char text[48];
         if (r >= k) {
-            text[0] = '\0';
-        } else {
-            const int i = s_list_slots[s_list_win + r];
-            switch (s_slots[i].state) {
-            case META_SLOT_VALID:
-                snprintf(text, sizeof(text), "SLOT %d: %.20s", i,
-                         meta_slot_core_name(&s_slots[i]));
-                break;
-            case META_SLOT_INVALID:
-                // r10 措辞:有数据但非可引导固件 —— 单一事实源 meta_slots.c
-                // (host 测试钉死;安装 esp_ota_begin 先擦除,槽位完全可复用)。
-                snprintf(text, sizeof(text), "SLOT %d: %s", i,
-                         meta_slot_list_word(s_slots[i].state));
-                break;
-            default:
-                snprintf(text, sizeof(text), "SLOT %d: %s", i,
-                         meta_slot_list_word(s_slots[i].state));
-                break;
-            }
+            // 槽位数 < 窗口行数:整行隐藏(2026-10-04 真机反馈:空标签行
+            // 渲染成"空白按钮",像坏掉的槽位)。选中逻辑走 s_list_n,
+            // 隐藏行永远不会被选;FREE/STORE 行位置不变。
+            lv_obj_add_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_clear_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN);
+        char text[48];
+        const int i = s_list_slots[s_list_win + r];
+        switch (s_slots[i].state) {
+        case META_SLOT_VALID:
+            snprintf(text, sizeof(text), "SLOT %d: %.20s", i,
+                     meta_slot_core_name(&s_slots[i]));
+            break;
+        case META_SLOT_INVALID:
+            // r10 措辞:有数据但非可引导固件 —— 单一事实源 meta_slots.c
+            // (host 测试钉死;安装 esp_ota_begin 先擦除,槽位完全可复用)。
+            snprintf(text, sizeof(text), "SLOT %d: %s", i,
+                     meta_slot_list_word(s_slots[i].state));
+            break;
+        default:
+            snprintf(text, sizeof(text), "SLOT %d: %s", i,
+                     meta_slot_list_word(s_slots[i].state));
+            break;
         }
         lv_label_set_text(lbl, text);
     }
