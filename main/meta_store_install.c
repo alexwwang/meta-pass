@@ -1500,7 +1500,10 @@ esp_err_t meta_install_net_start(void)
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
-    hcfg.stack_size = 4096;
+    // 2026-10-04 真机栈溢出:handler 帧 + newlib _svfprintf_r(snprintf
+    // 内部,含 FP 格式化路径)在 4096B 上无安全余量(SP 越界 ~1KB 实测)。
+    // 3072B 响应虽已静态化,仍上调到 8192 留一倍余量。
+    hcfg.stack_size = 8192;
     hcfg.recv_wait_timeout = 10;
     hcfg.send_wait_timeout = 10;
 
