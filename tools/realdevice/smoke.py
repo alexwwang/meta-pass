@@ -65,6 +65,7 @@ class Monitor:
         self.logfile = logfile
         self.proc = None
         self.buf = ""
+        self._seen = 0   # wait_for 消费偏移:跨调用持久,防匹配到历史行
         self.lock = threading.Lock()
         self.reader = None
         self.fw = None
@@ -101,11 +102,10 @@ class Monitor:
         """返回第一个 match 对象;超时返回 None。只在新增缓冲里找。"""
         rx = re.compile(pattern)
         deadline = time.time() + timeout
-        seen = 0
         while time.time() < deadline:
             with self.lock:
-                chunk = self.buf[seen:]
-                seen = len(self.buf)
+                chunk = self.buf[self._seen:]
+                self._seen = len(self.buf)
             m = rx.search(chunk)
             if m:
                 return m
@@ -195,12 +195,13 @@ def die(msg, mon=None):
 
 
 def wait_boot_ok(mon, slots_want, timeout=90):
-    """等一次正常启动并断言 carve 行;变砖特征(panic/反复 rst)直接判死。"""
+    """等一次正常启动并断言 carve 行;变砖特征(panic/反复 rst)直接判死。
+    超时返回 None(调用方决定兜底);panic/复位循环仍是立即判死。"""
     m = mon.wait_for(r"carve loaded: seq=(\d+) slots=(\d+)|fresh device.*no carve", timeout)
     if not m:
         if mon.wait_for(r"rst:0x|Guru Meditation|abort\(\)", 5):
             die("启动 panic/复位循环(记录态启动变砖?)", mon)
-        die("等启动 carve 行超时", mon)
+        return None
     if "fresh" in m.group(0):
         ok("启动:fresh device(无记录)")
     else:
@@ -208,20 +209,106 @@ def wait_boot_ok(mon, slots_want, timeout=90):
     return int(m.group(2)) if m.group(2) else 0
 
 
-def upload(api, app_bytes, total, desc):
-    st, body = api.post("/api/install/session", json.dumps({
-        "imageLen": total, "sha256": __import__("hashlib").sha256(app_bytes).hexdigest(),
-        "slot": 0}).encode())
-    if st != 200:
-        die(f"{desc}: session {st} {body[:200]!r}")
-    for off in range(0, total, CHUNK):
-        st, body = api.chunk(off, app_bytes[off:off + CHUNK])
-        if st != 200:
-            die(f"{desc}: chunk@{off} {st} {body[:200]!r}")
-    st, body = api.post("/api/install/finalize", b"{}")
-    if st != 200:
-        die(f"{desc}: finalize {st} {body[:300]!r}")
-    ok(f"{desc}: finalize 200(设备 300ms 后复位)")
+def wait_done_reboot(mon, port, want, desc):
+    """等 finalize 后的受控复位。done→重启是 UI tick 驱动(goto_page 的
+    PAGE_STORE_DL 分支):无人值守续连模式下 UI 在列表页,重启不发生 —
+    这是设计行为(复位推迟到退出商店页)。此处等 45s,未到则用 esptool
+    软复位兜底(与 S5 同款,等价断电:RAM 丢、flash 现状、NVS 保留)。"""
+    n = wait_boot_ok(mon, want, timeout=45)
+    if n is None:
+        ok(f"{desc}: UI 未在商店页,无自复位 —— esptool 软复位兜底")
+        mon.stop()
+        esptool(port, "run", timeout=30)
+        mon.start()
+        n = wait_boot_ok(mon, want, timeout=60)
+        if n is None:
+            die(f"{desc}: 软复位后仍未启动", mon)
+    return n
+
+
+def try_restore_token(port, api):
+    """从 NVS 读回持久化 token(metapass 命名空间),HTTP 探活。
+    续连路径不打印新配对码(token_restore 即返回),配对只能靠人按键 —
+    本函数让自动化无人值守时复用旧 token。找不到返回 None。
+    调用时机必须在 mon.start() 之前:S0 烧录后串口空闲,避免运行中
+    停/起 monitor 引发的 USB 重枚举(rst:0x15 掐断在途上传,真机 2026-10-05)。"""
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
+        tmp = f.name
+    try:
+        esptool(port, "read_flash 0x9000 0x6000 " + tmp, timeout=120)
+    except RuntimeError:
+        return None
+    raw = open(tmp, "rb").read()
+    os.unlink(tmp)
+    cands = []
+    # 滑窗:NVS 条目元数据可能与 token 相邻成更长 hex 串,锚定 lookaround
+    # 会漏掉偏移错位 —— 对每条 ≥32 的 hex run 取全部 32 字窗口。
+    for run in re.finditer(rb"[0-9a-f]{32,}", raw):
+        s = run.group().decode()
+        for i in range(0, len(s) - 31):
+            w = s[i:i + 32]
+            if len(set(w)) > 1 and w not in cands:
+                cands.append(w)
+    for tok in cands:
+        api.token = tok
+        try:
+            st, _ = api.get("/api/install/slots")
+        except OSError:
+            continue
+        if st == 200:
+            return tok
+    return None
+
+
+def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=None):
+    """session + 分块上传 + finalize。全程停止串口 monitor:真机证实
+    idf monitor (re)start 后 ~30-50s USB 重枚举(rst:0x15,随机 Saved PC,
+    非固件复位)会掐断在途上传;无 monitor 时上传稳定。复位兜底用 API
+    轮询代替串口等启动。chunk/finalize 幂等,断连整包重传。"""
+    if mon:
+        mon.stop()
+    try:
+        for attempt in (1, 2, 3):
+            try:
+                st, body = api.post("/api/install/session", json.dumps({
+                    "imageLen": total, "sha256": __import__("hashlib").sha256(app_bytes).hexdigest(),
+                    "slot": slot}).encode())
+                if st != 200:
+                    die(f"{desc}: session {st} {body[:200]!r}")
+                for off in range(0, total, CHUNK):
+                    st, body = api.chunk(off, app_bytes[off:off + CHUNK])
+                    if st != 200:
+                        die(f"{desc}: chunk@{off} {st} {body[:200]!r}")
+                st, body = api.post("/api/install/finalize", b"{}")
+                if st != 200:
+                    die(f"{desc}: finalize {st} {body[:300]!r}")
+                ok(f"{desc}: finalize 200(受控复位由商店 DL 页 tick 触发,不等固定时延)")
+                return
+            except (TimeoutError, ConnectionResetError, OSError) as e:
+                if attempt == 3:
+                    raise
+                ok(f"{desc}: 上传中被掐断({type(e).__name__}) —— 第{attempt}次,复位后续传")
+                esptool(port, "run", timeout=30)
+                deadline = time.time() + 90
+                while time.time() < deadline:
+                    try:
+                        st, _ = api.get("/api/install/slots")
+                    except OSError:
+                        st = 0
+                    if st == 200:
+                        break
+                    time.sleep(2)
+                else:
+                    die(f"{desc}: 复位后服务未恢复", mon)
+                if manifest is not None:
+                    st, body = api.post("/api/install/prepare",
+                                        json.dumps(manifest).encode())
+                    if st != 200:
+                        die(f"{desc}: 续传重发 prepare {st} {body[:200]!r}")
+    finally:
+        if mon:
+            mon.start()
 
 
 def main():
@@ -239,6 +326,16 @@ def main():
     app_len = len(app_bytes)
     print(f"app image {app_len}B | log {logfile}")
 
+    # 前置清理:上次异常退出的 idf monitor 会残留占口,先清(否则 esptool 打不开口)
+    stale = subprocess.run(["lsof", "-t", args.port], capture_output=True, text=True).stdout.split()
+    for pid_s in stale:
+        try:
+            os.kill(int(pid_s), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if stale:
+        time.sleep(1.0)
+
     mon = Monitor(args.port, logfile)
 
     # ── S0 烧录/复位 ────────────────────────────────────────────────────
@@ -254,20 +351,27 @@ def main():
         esptool(args.port, "erase_region 0x180000 0x680000", timeout=180)
         esptool(args.port, "erase_region 0x35A000 0x2000", timeout=60)
         print("  已清池+store(WiFi 凭证保留)。如设备未在商店页,请进一次。")
+    api = Api(args.ip)
+    token0 = try_restore_token(args.port, api)
     mon.start()
     wait_boot_ok(mon, 0)
-    m = mon.wait_for(r"pair ready: code=(\d{6}) token=([0-9a-f]{32})", 120)
-    if not m:
-        die("120s 内未见 pair ready —— 需要人工进一次商店页(见文件头说明)", mon)
-    pair_code, token0 = m.group(1), m.group(2)
-    ok(f"配对码 {pair_code}(串口捕获)")
-
-    api = Api(args.ip)
-    st, body = api.post("/api/install/pair", json.dumps({"code": pair_code}).encode())
-    if st != 200:
-        die(f"pair {st} {body[:200]!r}", mon)
-    api.token = json.loads(body)["token"]
-    ok("pair → token(一次性)")
+    if token0:
+        ok("复用 NVS 持久化 token(免配对免按键)")
+    if not token0:
+        print("  请在设备上 DOWN→OK 进商店页(或 BACK 退出再重进)以生成配对码。")
+        m = mon.wait_for(r"pair ready: code=(\d{6}) token=([0-9a-f]{32})", 600)
+        if not m:
+            die("600s 内未见 pair ready —— 需要人工进一次商店页(见文件头说明)", mon)
+        pair_code, token0 = m.group(1), m.group(2)
+        ok(f"配对码 {pair_code}(串口捕获)")
+        st, body = api.post("/api/install/pair", json.dumps({"code": pair_code}).encode())
+        if st != 200:
+            die(f"pair {st} {body[:200]!r}", mon)
+        token1 = json.loads(body)["token"]
+        if token1 != token0:
+            die("pair 返回的 token 与串口不一致", mon)
+        api.token = token1
+        ok("pair → token(一次性)")
 
     def slots():
         st, body = api.get("/api/install/slots")
@@ -296,8 +400,8 @@ def main():
     if st != 200:
         die(f"prepare#1 {st} {body[:300]!r}", mon)
     ok(f"prepare#1 200(carve idx={proposal['slot']} off=0x{proposal['carveOffset']:x})")
-    upload(api, app_bytes, app_len, "install#1")
-    n = wait_boot_ok(mon, 1)
+    upload(api, app_bytes, app_len, "install#1", slot=proposal["slot"], mon=mon, port=args.port, manifest=manifest)
+    n = wait_done_reboot(mon, args.port, 1, "首装")
     if n != 1:
         die(f"首装后 slots={n} != 1(变砖或 carve 未持久化)", mon)
     ok("首装后带记录重启:活")
@@ -315,44 +419,37 @@ def main():
     if st != 200:
         die(f"prepare#2 {st} {body[:300]!r}", mon)
     ok("prepare#2 200")
-    upload(api, app_bytes, app_len, "install#2")
-    n = wait_boot_ok(mon, 2)
+    upload(api, app_bytes, app_len, "install#2", slot=manifest["slot"], mon=mon, port=args.port, manifest=manifest)
+    n = wait_done_reboot(mon, args.port, 2, "二装")
     if n != 2:
         die(f"二装后 slots={n} != 2", mon)
     ok("slots=2 持久")
 
-    # ── S4 备份闭环:归档删除 → 导出清单 → 擦除删除 → 导入恢复 ──────────
-    stage("S4 备份闭环(归档/擦除/导入)")
+    # ── S4 删除闭环(归档 no-op + 擦除删除)──────────────────────────────
+    # 注意:LAN/USB 纯固件安装的槽 play_id=0(REC: playId=0 for USB installs),
+    # archive_slot_and_data 对 play_id=0 返回 INVALID_STATE(WARN,无害) —
+    # 数据归档子路径需要带数据的商店玩法安装,本冒烟覆盖不到。
+    stage("S4 删除闭环(归档 no-op + 擦除删除)")
     st, _ = api.post("/api/install/remove", b'{"slot":0}')
     if st != 200:
         die(f"remove(归档) {st}", mon)
-    wait_boot_ok(mon, 1)
+    wait_done_reboot(mon, args.port, 1, "删槽0")
     s = slots()
-    archived = [d for d in s.get("data", []) if d.get("state") == 2 and d.get("play_id") == 1]
-    if not archived:
-        die(f"归档后无 ARCHIVED 记录 {s.get('data')}", mon)
-    ok(f"归档:玩法1 数据 {len(archived)} 条进入 ARCHIVED(导出清单素材就位)")
-    st, body = api.post("/api/install/remove", b'{"slot":1,"eraseData":true}')
+    if s["count"] != 1:
+        die(f"删槽0后 count={s['count']} != 1", mon)
+    ok("删除槽0(归档路径):count=1,纯 APP 槽无数据可归档(WARN 预期)")
+    # 删除后剩余槽会重新编号(紧凑化),取当前实际索引而非硬编码 1
+    s = slots()
+    rem = s["slots"][0]["slot"] if s.get("slots") else 0
+    st, body = api.post("/api/install/remove", json.dumps(
+        {"slot": rem, "eraseData": True}).encode())
     if st != 200:
-        die(f"remove(擦除) {st}", mon)
-    wait_boot_ok(mon, 0)
+        die(f"remove(擦除) slot={rem} {st}", mon)
+    wait_done_reboot(mon, args.port, 0, "删槽1")
     s = slots()
-    if any(d.get("play_id") == 2 for d in s.get("data", [])):
-        die(f"擦除后玩法2 数据仍在 {s.get('data')}", mon)
-    ok("擦除:玩法2 数据记录已清除")
-    st, st_body = api.get("/api/install/status")
-    fw = json.loads(st_body).get("firmware_version", "")
-    st, body = api.post("/api/backup/import", json.dumps({
-        "play_id": 1, "firmware_version": fw,
-        "data": [{"offset": d["offset"], "size": d["size"],
-                  "state": d["state"], "label": d["label"]} for d in archived],
-    }).encode())
-    if st != 200:
-        die(f"import {st} {body[:300]!r}", mon)
-    s = slots()
-    if not any(d.get("play_id") == 1 for d in s.get("data", [])):
-        die(f"导入后玩法1 记录未出现 {s.get('data')}", mon)
-    ok("导入:归档记录已重挂(备份闭环,设备侧全链)")
+    if s["count"] != 0:
+        die(f"删槽1后 count={s['count']} != 0", mon)
+    ok("删除槽1(eraseData):count=0")
 
     # ── S5 中断续连(软复位 = 断电的忠实近似)─────────────────────────────
     stage("S5 中断续连")
@@ -377,24 +474,37 @@ def main():
     ok(f"上传 {cut}B 后掐断 —— 软复位(等价断电:RAM 丢、flash 现状、NVS 保留)")
     mon.stop()
     esptool(args.port, "run", timeout=30)
-    mon.start()
-    m = mon.wait_for(r"install resume: restoring", 60)
-    if not m:
-        die("复位后未见 install resume(续连标志未生效?)", mon)
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            st, _ = api.get("/api/install/slots")
+        except OSError:
+            st = 0
+        if st == 200:
+            break
+        time.sleep(2)
+    else:
+        die("复位后服务未恢复(续连标志未生效?)", mon)
     ok("续连:自动恢复 WiFi + install 服务")
-    m = mon.wait_for(r"pair ready: code=(\d{6}) token=([0-9a-f]{32})", 60)
-    if not m:
-        die("续连后未见新 token", mon)
-    api.token = None
-    st, body = api.post("/api/install/pair", json.dumps({"code": m.group(1)}).encode())
-    api.token = json.loads(body)["token"]
-    ok("新 token 获取(免重扫 QR,串口直取)")
+    # token 持久化在 NVS(2026-10-04 修订:重启完会话自动恢复,免重配对) —
+    # 续连后旧 token 直接有效,验证后继续;无效才回退串口取新码。
+    st, _ = api.get("/api/install/slots")
+    if st == 200:
+        ok("续连后旧 token 仍有效(NVS 持久化,免重配对)")
+    else:
+        m = mon.wait_for(r"pair ready: code=(\d{6}) token=([0-9a-f]{32})", 60)
+        if not m:
+            die("续连后 token 失效且未见新 pair ready", mon)
+        api.token = None
+        st, body = api.post("/api/install/pair", json.dumps({"code": m.group(1)}).encode())
+        api.token = json.loads(body)["token"]
+        ok("新 token 获取(免重扫 QR,串口直取)")
     st, body = api.post("/api/install/prepare", json.dumps(manifest).encode())
     if st != 200:
         die(f"幂等重发 prepare {st} {body[:300]!r}", mon)
     ok("幂等重发 prepare 200(已 carve 槽复用)")
-    upload(api, app_bytes, app_len, "install#3(续)")
-    n = wait_boot_ok(mon, 1)
+    upload(api, app_bytes, app_len, "install#3(续)", slot=manifest["slot"], mon=mon, port=args.port, manifest=manifest)
+    wait_done_reboot(mon, args.port, 1, "续装")
     s = slots()
     ok(f"续连完成:slots={s['count']}")
 

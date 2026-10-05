@@ -18,3 +18,5 @@ tools/sim/esp_emu_bg.wasm
 build-qemu/
 sdkconfig.qemu-bak
 x509_crt_bundle
+# 真机冒烟日志与串口取证
+tools/realdevice/logs/
