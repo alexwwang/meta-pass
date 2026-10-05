@@ -14,6 +14,8 @@ overwrite each other, and the launcher is always one power cycle away.
 </p>
 
 [\![FoloToy plays #281](https://img.shields.io/badge/play-281-informational)](https://ai-passport.folotoy.cn/plays/281)
+>
+> **v2.1.0 release notes**: [English](docs/release-notes/v2.1.0.md) · [中文](docs/release-notes/v2.1.0.zh_CN.md) — dynamic slot table, overwrite + delete, mock mode, phone retry across reboot window.
 
 A stock Passport runs one firmware at a time; trying community plays means reflashing
 the whole flash and back. meta-pass lives in the factory partition as a launcher and
@@ -40,6 +42,17 @@ switch. No custom bootloader changes.
   pick and boot. The display name is written at install time (community firmware all
   carry the template's default `project_name`, so the real name can only come from
   the install channel).
+- **Dynamic slot management (dynslot)**: on devices with the dynamic partitioning
+  feature, step 2 of the USB installer shows a live slot table instead of a static
+  radio list — one row per carved slot (offset / size / state / name / max image),
+  per-row **Remove** button, and an **Auto** row that proposes exact geometry for a
+  new slot from free space. Installing into an occupied slot requires explicit
+  confirmation; removing a slot erases its first 4 KB (anti-resurrection), commits
+  the record, and re-materializes the partition table. Legacy 3-slot devices keep
+  the old pre-checked default. All new strings are bilingual (EN / zh) and a
+  language switch re-renders the table live. See
+  [install-slot/README.md](install-slot/README.md).
+
 - **Dual-use slot 2**: when empty, slot 2 can be repurposed as littlefs storage (e.g.
   for a future recording firmware); the launcher detects the absence of a valid image
   and mounts the FS instead.
@@ -88,12 +101,12 @@ switch. No custom bootloader changes.
 
 ### 1. Flash meta-pass (once)
 
-Download `meta-pass_v0.2.2.bin` from Releases, or build it yourself (see
+Download `meta-pass_v2.1.0.bin` from Releases, or build it yourself (see
 "Development"). Then:
 
 ```bash
 python -m esptool --chip esp32c3 -p <port> -b 460800 \
-    write-flash 0x0 meta-pass_v0.2.2.bin
+    write-flash 0x0 meta-pass_v2.1.0.bin
 ```
 
 The image ends at `0x780000` and never touches `cardid` (flashing tools only erase/write
@@ -262,7 +275,7 @@ are pure-logic modules with no ESP-IDF dependency.
 
 ## Verification record
 
-| Category | Result (2026-09-13; host-test row updated 2026-10-01) |
+| Category | Result (2026-10-06) |
 | --- | --- |
 | Build | Full `validate.sh` gate PASS; app 1,024,880 / 1,507,328 B (32% free); merged image 8 MB; `cardid` untouched |
 | Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json`/`meta_install_model` suites all pass; installer node tests all pass; channel ESP-IDF modules (`meta_store_net`/`meta_store_install`) are syntax-checked against IDF 5.x-signature stubs (`-fsyntax-only`, zero hardware) — *the WAN store-download suites (`meta_store_api` etc.) were retired with the download channel in `feat/mota`* |

@@ -13,6 +13,8 @@ meta-pass 是给 FoloToy AI Passport（ESP32-C3，8MB Flash）写的**多固件�
 </p>
 
 [\![FoloToy 玩法 #281](https://img.shields.io/badge/%E7%8E%A9%E6%8F%9C%E7%AD%94-281-informational)](https://ai-passport.folotoy.cn/plays/281)
+>
+> **v2.1.0 发布说明**：[English](docs/release-notes/v2.1.0.md) · [中文](docs/release-notes/v2.1.0.zh_CN.md) —— 动态槽位表、覆盖安装与删除、MOCK 模式、phone 端跨重启窗口重试。
 
 官方机器一次只能跑一个固件，试社区的 plays 就得整片刷掉再刷回来。meta-pass
 把自己放在 factory 分区当启动器，把剩余 Flash 划成三个 OTA 槽位装子固件：
@@ -34,6 +36,8 @@ bootloader 改动。
 
 ## 功能
 
+- **动态槽位管理（dynslot）**：携带动态分区特性的设备上，安装页第 2 步变成实时槽位表——每个 carve 槽一行（偏移/大小/状态/名字/最大镜像尺寸），带**删除**按钮和**自动规划**行（从空闲池算出确切 carve 几何）。覆盖已占用槽需显式确认；删除先擦 4KB（防残留）、提交记录、重物化表。旧三槽设备保持原来的预选中默认。所有新增文案双语（EN/zh），语言切换实时重绘。详见
+[install-slot/README.zh_CN.md](install-slot/README.zh_CN.md)。
 - **三槽位切换**：列表显示每个槽位的固件名/版本/大小/SHA-256，点选即启动；
   显示名在安装时写入（社区固件的 project_name 都是模板默认值，真名只能从安装通道带来）。
 - **双用槽位 2**：为空时可当作 littlefs 存储（如录音固件）；启动器检测到槽内无
@@ -76,11 +80,11 @@ bootloader 改动。
 
 ### 1. 烧录 meta-pass（只做一次）
 
-从 Releases 下载 `meta-pass_v0.2.2.bin`，或自行构建（见下文「开发」）。然后：
+从 Releases 下载 `meta-pass_v2.1.0.bin`，或自行构建（见下文「开发」）。然后：
 
 ```bash
 python -m esptool --chip esp32c3 -p <串口> -b 460800 \
-    write-flash 0x0 meta-pass_v0.2.2.bin
+    write-flash 0x0 meta-pass_v2.1.0.bin
 ```
 
 只会烧到 `0x780000` 为止，不触碰 `cardid`（刷机工具默认只擦写覆盖区域；
@@ -228,7 +232,7 @@ node tools/install-slot/test-extract.mjs   # 安装页解包/名字 blob 测试
 
 ## 验证记录
 
-| 类别 | 结果（2026-09-13；Host tests 行更新于 2026-10-01） |
+| 类别 | 结果（2026-10-06） |
 | --- | --- |
 | 构建 | `validate.sh` 全门禁 PASS；应用 1,024,880 / 1,507,328 B（32% 余量）；合并镜像 8 MB；`cardid` 不动 |
 | Host tests | `meta_image`/`meta_slots`/`meta_name`/`meta_store_json`/`meta_install_model` 套件全过；安装页 node 测试全过；通道 ESP-IDF 模块（`meta_store_net`/`meta_store_install`）经 IDF 5.x 签名桩头做 host 语法检查（`-fsyntax-only`，零硬件）——*WAN 商店下载套件（`meta_store_api` 等）随下载通道在 `feat/mota` 一并退役* |
