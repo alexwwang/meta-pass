@@ -242,8 +242,8 @@ export function packUpgradeContainer(files) {
 export function unpackUpgradeContainer(raw) {
   const fail = (m) => { throw new Error(`upgrade container: ${m}`); };
   if (!(raw instanceof Uint8Array) || raw.length < 16) fail("too small");
-  const magic = new TextDecoder().decode(raw.subarray(0, 6));
-  if (magic !== MPUP_MAGIC) fail(`bad magic "${magic}"`);
+  const magic = new TextDecoder().decode(raw.subarray(0, 8));
+  if (magic !== MPUP_MAGIC + "\0\0") fail(`bad magic "${magic}"`);
   const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const headerSize = dv.getUint32(8, true);
   const count = dv.getUint32(12, true);
@@ -306,8 +306,8 @@ const HYBRID_OTADATA_SIZE = 0x2000; // otadata 擦除态段大小
 export function parseUpgradeArtifact(raw) {
   if (raw instanceof Uint8Array && raw.length >= HYBRID_FOOTER_SIZE) {
     const f = raw.length - HYBRID_FOOTER_SIZE;
-    // 魔数字段 8B("MPUPV2" + 2 NUL),比较前 6 个非 NUL 字节(与 MPUPV1 检查同风格)
-    if (new TextDecoder().decode(raw.subarray(f, f + 6)) === HYBRID_MAGIC) {
+    // 魔数字段 8B("MPUPV2" + 2 NUL),完整比较 8 字节(N11)
+    if (new TextDecoder().decode(raw.subarray(f, f + 8)) === HYBRID_MAGIC + "\0\0") {
       const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
       const bodyLen = dv.getUint32(f + 8, true);
       if (bodyLen !== f) failHybrid("hybrid body_len mismatch");
@@ -464,13 +464,25 @@ export function comparePartitionTables(deviceTable, bundleTable, isDynslot) {
     return { ok: true };
   }
 
-  // fixed-slot: idf.py 生成的表文件尾部有 0xFF 填充；逐字节比对到包文件长度即可
+  // fixed-slot: idf.py 生成的表文件尾部有 0xFF 填充；逐字节比对到包文件长度即可。
+  // N10: 包短于 4KB 时,设备表 [bundleTable.length, PARTITION_TABLE_READ_SIZE) 必须
+  // 全为 0xFF —— 否则设备表在包前缀之后还有非 FF 条目(额外分区),拒绝升级。
   for (let i = 0; i < bundleTable.length; i++) {
     if (deviceTable[i] !== bundleTable[i]) {
       return {
         ok: false,
         reason: `device partition table differs at byte ${i} (device 0x${deviceTable[i].toString(16)}, bundle 0x${bundleTable[i].toString(16)}) — layout changed, refusing in-place upgrade`,
       };
+    }
+  }
+  if (bundleTable.length < PARTITION_TABLE_READ_SIZE) {
+    for (let i = bundleTable.length; i < PARTITION_TABLE_READ_SIZE; i++) {
+      if (deviceTable[i] !== 0xff) {
+        return {
+          ok: false,
+          reason: `device partition table has non-FF entry at byte ${i} (0x${deviceTable[i].toString(16)}) beyond bundle table — unexpected extra partition, refusing upgrade`,
+        };
+      }
     }
   }
   return { ok: true };

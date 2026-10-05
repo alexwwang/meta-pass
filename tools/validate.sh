@@ -113,8 +113,13 @@ PY
     # dynslot 设备侧胶水(meta_carve_flash.c 的 host 行为测试:RAM NOR 模型
     # AND 写语义 + 撕裂写注入,覆盖 §4.7 失败矩阵:全新/legacy 迁移黄金对拍
     # + L6 凭据搬移/记录重建表/store 死回安全表/提交轮转/扫描回填)
+    # esp_flash_host_fixture.c: f909fc8/207dc1c 新增的设备 API(默认芯片指针 /
+    # 缓存失效 / 只读区检查)的 host 桩;meta_store_host_fixture.c 提供 host_parts
+    # 注册表(只读区检查的数据源)。
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Itests/esp_stubs -Imain \
         tests/test_meta_carve_flash.c main/meta_carve_flash.c \
+        tests/esp_stubs/esp_flash_host_fixture.c \
+        tests/esp_stubs/meta_store_host_fixture.c \
         main/meta_carve_store.c main/meta_carve.c main/meta_md5.c \
         -o "${test_dir}/test_meta_carve_flash"
     "${test_dir}/test_meta_carve_flash"
@@ -166,6 +171,9 @@ PY
         "${node_bin}" tools/install-slot/test-backup-data.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs
+        # dynslot carve 记录编解码 / 安装与删除规划 / 视图模型 / mock 设备交互
+        # (USB 安装页动态槽位设计:docs/assets/dynslot-usb-slot-page-design.md §11 T1-T6)
+        "${node_bin}" tools/install-slot/test-dynslot-record.mjs
     else
         echo "WARN: node not found; skipping install-slot mjs tests" >&2
     fi
@@ -180,7 +188,7 @@ PY
         echo "ERROR: install-slot.html 页面版本占位符 __PAGE_VERSION__ 丢失" >&2
         return 1
     fi
-    if grep -Eq 'build [0-9]{4}-[0-9]{2}-[0-9]{2}' install-slot/install-slot.html; then
+    if grep -Eq 'build[[:space:]]*[:=]?[[:space:]]*["'\'']?[0-9]{4}-[0-9]{2}-[0-9]{2}' install-slot/install-slot.html; then
         echo "ERROR: install-slot.html 含写死的页面构建号(应使用 __PAGE_VERSION__ 占位符)" >&2
         return 1
     fi

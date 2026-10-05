@@ -68,6 +68,10 @@ const STATIC_FILES = new Map([
   ["/phone-install.js", { file: "phone-install.js", type: "text/javascript; charset=utf-8" }],
   ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   ["/launcher-upgrade.js", { file: "launcher-upgrade.js", type: "text/javascript; charset=utf-8" }],
+  // dynslot 槽位模型(USB 安装页动态槽位;设计 §4)
+  ["/dynslot-record.js", { file: "dynslot-record.js", type: "text/javascript; charset=utf-8" }],
+  // H1: mock 设备仅 dev 模式暴露(?mock=1 + META_PASS_DEV=1),生产环境不挂载
+  ...(process.env.META_PASS_DEV === "1" ? [["/mock-device.js", { file: "mock-device.js", type: "text/javascript; charset=utf-8" }]] : []),
   // 本地化的 esptool-js 及其依赖(jsdelivr +esm 构建,国内 CDN 不可达时页面整体卡死)
   ["/vendor/esptool-js.js", { file: "vendor/esptool-js.js", type: "text/javascript; charset=utf-8" }],
   ["/vendor/md5.js", { file: "vendor/md5.js", type: "text/javascript; charset=utf-8" }],
@@ -146,6 +150,10 @@ const server = http.createServer((req, res) => {
       // 页面与模块迭代期禁用缓存:浏览器缓存可能比仓库代码旧(ES 模块同样受限),
       // 曾导致"改了但页面没体现"。生产环境(Cloudflare Pages)发自己的缓存策略,不受影响。
       "cache-control": "no-store",
+      // N6: 安全头 — CSP 限制脚本来源,防 MIME 嗅探与 clickjacking
+      "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
     });
     // 每请求现读:页面迭代期免重启;版本占位符随响应替换为当前 git describe
     const html = fs.readFileSync(path.join(PAGE_DIR, "install-slot.html"), "utf8")
@@ -160,6 +168,8 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, {
       "content-type": staticEntry.type,
       "cache-control": "no-store",   // 同上:迭代期模块也必须新鲜
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
     });
     fs.createReadStream(path.join(PAGE_DIR, staticEntry.file)).pipe(res);
     return;
@@ -169,7 +179,20 @@ const server = http.createServer((req, res) => {
   // 页面同源加载,手机安装模块仅在 metapass/设备源加载,不需本地 CORS。)
 
   // GET /api/plays → 玩法列表（JSON 透传;query 原样转发,审计 B3）
+  // N23: query 参数白名单校验 —— 只允许 page/size 数字参数,防注入任意 query
   if (pathname === "/api/plays") {
+    const qp = urlObj.searchParams;
+    const allowed = ["page", "size"];
+    for (const key of qp.keys()) {
+      if (!allowed.includes(key)) {
+        sendError(res, 400, `invalid query parameter: ${key}`);
+        return;
+      }
+      if (!/^\d+$/.test(qp.get(key) ?? "")) {
+        sendError(res, 400, `invalid value for ${key}`);
+        return;
+      }
+    }
     proxyFetch("/api/plays" + urlObj.search, res);
     return;
   }
@@ -271,9 +294,10 @@ const server = http.createServer((req, res) => {
   }
 
   // GET /api/firmware?path=<encoded> → 固件下载；path 必须以 /api/download/ 开头
+  // N23: 完整路径结构校验 —— /api/download/<digits>/<filename>,防 ../ 与任意路径
   if (pathname === "/api/firmware") {
     const p = urlObj.searchParams.get("path") ?? "";
-    if (!p.startsWith("/api/download/")) {
+    if (!/^\/api\/download\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+$/.test(p)) {
       sendError(res, 403, "forbidden path");
       return;
     }

@@ -81,6 +81,33 @@
     #coffee-support .cap { max-width: 64px; font-size: 10px; }
     main { padding-right: 104px; }
   }
+  /* ===== dynslot 槽位表(设计 §8)：动态列表 / 模式徽标 / 摘要 / 删除按钮 ===== */
+  #mock-banner {
+    background: #6b21a8; color: #fff; border-radius: 8px; padding: 10px 12px;
+    margin: 0 0 14px; font-weight: 600;
+  }
+  .badge {
+    display: inline-block; background: #eef3ff; border: 1px solid #b9c7f5; color: #2c3e8f;
+    border-radius: 999px; padding: 2px 10px; font-size: 12px; margin: 0 0 10px;
+  }
+  .badge.legacy { background: #f2f3f5; border-color: #ccd0d5; color: #606770; }
+  .slot-rows { display: flex; flex-direction: column; gap: 6px; }
+  .slot-row {
+    display: flex; align-items: center; gap: 8px; border: 1px solid #e1e3e6;
+    border-radius: 8px; padding: 7px 10px; background: #fafbfc;
+  }
+  .slot-row:hover { background: #f0f6ff; }
+  .slot-row.recommended { border-color: #31a24c; background: #f2fbf4; }
+  .slot-row.auto { border-style: dashed; }
+  .slot-row.auto.disabled { opacity: .62; }
+  .slot-pick { flex: 1; display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+  .slot-idx { font-weight: 600; min-width: 66px; }
+  .slot-geo { color: #606770; font-size: 12px; }
+  .slot-state { flex: 1; font-size: 12.5px; }
+  .slot-state.empty { color: #8a8f98; }
+  .slot-limit { color: #606770; font-size: 12px; white-space: nowrap; }
+  .slot-remove { font-size: 12px; padding: 3px 10px; }
+  .slot-remove.danger { color: #b3261e; border-color: #e6b3ac; }
 </style>
 </head>
 <body>
@@ -98,6 +125,8 @@
   <h1 data-i18n="title_page">meta-pass · USB Slot Installer</h1>
   <p class="subtitle" data-i18n="subtitle">Write a child firmware into slot 0 / 1 / 2 over USB serial (Chrome + Web Serial).</p>
 
+  <p id="mock-banner" hidden></p>
+
   <p class="hint" data-i18n="hint">Hold <b>UP</b> while powering on to enter download mode, then plug in the USB cable.</p>
 
   <section>
@@ -113,9 +142,9 @@
 
   <section>
     <h2 data-i18n="step_slot">2. Select slot</h2>
-    <label><input type="radio" name="slot" value="0" checked> <span data-i18n="slot_0">Slot 0</span> <code>0x180000</code></label>
-    <label><input type="radio" name="slot" value="1"> <span data-i18n="slot_1">Slot 1</span> <code>0x360000</code></label>
-    <label><input type="radio" name="slot" value="2"> <span data-i18n="slot_2">Slot 2</span> <code>0x560000</code></label>
+    <p id="slot-mode-badge" class="badge" hidden></p>
+    <div id="slot-rows" class="slot-rows"></div>
+    <p id="slot-summary" class="info" style="margin-top:8px" hidden></p>
     <p id="slot-geo-info" class="info" style="margin-top:6px"></p>
   </section>
   <section>
@@ -225,24 +254,36 @@ import {
 } from "./slot-backup.js";
 import { deflate } from "./vendor/pako.js";
 import "./vendor/md5.js"; // side-effect: globalThis.__READFLASH_MD5__ (readFlash digest 校验用)
-  import {
-    checkUpgradeBundle,
-    comparePartitionTables,
-    upgradeWritePlan,
-    migrationErasePlan,
-    isErasedTable,
-    isLegacyFactoryLayout,
-    isDynslotLayout,
-    isFixedSlotLayout,
-    isDynslotSafeTable,
-    migrationWritePlan,
-    discoverSlots,
-    slotHasData,
-    parsePartitionTable,
-    parseUpgradeArtifact,
-    PARTITION_TABLE_OFFSET,
-    PARTITION_TABLE_READ_SIZE,
-  } from "./launcher-upgrade.js";
+import {
+  checkUpgradeBundle,
+  comparePartitionTables,
+  upgradeWritePlan,
+  migrationErasePlan,
+  isErasedTable,
+  isLegacyFactoryLayout,
+  isDynslotLayout,
+  isFixedSlotLayout,
+  isDynslotSafeTable,
+  migrationWritePlan,
+  discoverSlots,
+  slotHasData,
+  parsePartitionTable,
+  parseUpgradeArtifact,
+  PARTITION_TABLE_OFFSET,
+  PARTITION_TABLE_READ_SIZE,
+} from "./launcher-upgrade.js";
+
+// dynslot 槽位模型(设计 docs/assets/dynslot-usb-slot-page-design.md):记录编解码 /
+// 安装与删除规划 / 视图模型 —— 页面与 Node 宿主测试(tools/install-slot/test-dynslot-record.mjs)共用同一模块。
+import {
+  MODE, PLAN, SLOT_STATE, SLOT_KIND,
+  STORE_OFFSET, STORE_SECTOR_SIZE, REC_SIZE, PT_SIZE,
+  emptyCarve, carveValid, pickRecord, decodeAndValidate,
+  encodeRecord, materializeTable, insertSlot,
+  planInstall, planRemove, detectSlotMode, isDynMode, buildSlotView, checkTable,
+} from "./dynslot-record.js";
+// mock 设备(?mock=1):内存 flash 模拟真机读写语义,供无硬件的浏览器走查(设计 §10)。
+import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -253,77 +294,426 @@ const LEGACY_SLOTS = [
   { offset: 0x360000, size: 0x200000 },  // ota_1
   { offset: 0x560000, size: 0x29E000 },  // ota_2 (dual-use)
 ];
-// 当前设备槽位几何:连接探测后由 applyDiscoveredSlots() 重建;初始 = legacy。
+// 当前设备槽位几何:连接探测(loadSlotModel)与每次提交后由 renderSlotView() 重建;初始 = legacy 占位。
 let deviceSlots = LEGACY_SLOTS.map((s) => ({ ...s }));
 
-// 依据设备分区表重建槽位几何与相关 UI。factory 布局(无 ota_N)保留 legacy
-// 几何与原有 3 槽 UI;读表失败静默保留 legacy(旧行为,绝不更差)。
-function applyDiscoveredSlots(parts) {
-  const found = discoverSlots(parts);
-  const info = $("slot-geo-info");
-  if (found.length === 0) {
-    // factory 布局(分区表无 ota_N)或读表异常:明示当前是 legacy 兜底,
-    // 与"动态探测成功"在视觉上有别(用户反馈:探测无可见证据)。
-    if (info) {
-      info.style.display = "block";
-      info.textContent = t("slot_geo_legacy");
-    }
-    return;
-  }
-  if (info) {
-    info.style.display = "block";
-    info.textContent = t("slot_geo_dynamic", { count: found.length });
-  }
-  deviceSlots = found.map((s) => ({ offset: s.offset, size: s.size }));
-  rebuildSlotPickers();
-  // dynslot 模式:显示备份/还原的测试标记
-  const bkWarn = document.getElementById("dynslot-backup-warn");
-  const rstWarn = document.getElementById("dynslot-restore-warn");
-  if (bkWarn) bkWarn.style.display = "block";
-  if (rstWarn) rstWarn.style.display = "block";
+// ===== dynslot 槽位模型(设计 §3/§5–§8):渲染与动作的唯一决策源 =========
+// slotModel 由 loadSlotModel() 在连接时与每次提交后从 flash 重读;渲染器与
+// 安装/删除处理器只读 buildSlotView 的结果,绝不各自分类槽位。
+const slotModel = {
+  mode: MODE.LEGACY_FALLBACK,  // 未连接:legacy 占位(与旧版占位单选一致)
+  carve: null,                 // {slots, data} —— dynslot 模式采纳的记录内容
+  legacySlots: LEGACY_SLOTS.map((s) => ({ ...s })),
+  targetSector: 0,             // 下一次记录提交写入的扇区(0=A,1=B)
+  seq: 0,                      // 当前记录 seq(无记录 → 0;首提交 → 1)
+  loaded: false,               // 是否已完成一次连接探测
+  recordBroken: false,         // 记录扇区读取异常(≠「设备上无记录」)
+};
+let slotView = null;           // 最近一次 buildSlotView 结果(调试桥可读)
+let slotPickUserSet = false;   // 用户是否显式选过槽位(默认跟推荐,选过则保留)
+
+// 当前已载入镜像长度(0 = 未知/未选)。社区 tab 已知 firmwareSize 即视为已知;
+// 未获取玩法详情时 buildSlotView 以 deferred 让 auto 行显示「等待玩法详情」。
+function currentImageLen() {
+  if (activeTab === "local") return localImage ? localImage.length : 0;
+  const d = playDetail;
+  return d && Number.isInteger(d.firmwareSize) && d.firmwareSize > 0 ? d.firmwareSize : 0;
 }
 
-// 槽位选择 UI 重建:烧录单选(第 2 步)+ 备份勾选(第 5 步)。
-// 恢复目标下拉在 zip 加载时按当前 deviceSlots 长度生成,无需重建。
-function rebuildSlotPickers() {
-  const n = deviceSlots.length;
-  // 第 2 步 section:static HTML 中它是 step_slot 标题所在 section
-  const sections = document.querySelectorAll("section");
-  let slotSec = null;
-  for (const sec of sections) {
-    const h2 = sec.querySelector("h2");
-    if (h2 && (h2.dataset.i18n === "step_slot")) { slotSec = sec; break; }
+function bytesEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// 连接后 / 每次提交后:读记录 A/B + 分区表 → 判模式(设计 §3)→ 渲染槽位表。
+// 记录读取异常 ≠ 无记录:退回表派生行(装载只写 payload),避免把「读失败」
+// 误判成空设备、进而在有玩法的偏移上新建槽位。
+async function loadSlotModel() {
+  let rawA = null;
+  let rawB = null;
+  let recordError = false;
+  // 连接后立即读 4KB 数据容易超时(stub 刚就绪/波特率刚切换)——加一次重试
+  // 与 backup 的 readFlashChunked 不同:此处只需单次重试,不需要 L1/L2/L3 恢复
+  const readWithRetry = async (addr, size) => {
+    try { return await loader.readFlash(addr, size); }
+    catch (e) {
+      if (!e.message || !e.message.includes("timeout")) throw e;
+      await new Promise((r) => setTimeout(r, 200));
+      return await loader.readFlash(addr, size);
+    }
+  };
+  try {
+    rawA = await readWithRetry(STORE_OFFSET, STORE_SECTOR_SIZE);
+    rawB = await readWithRetry(STORE_OFFSET + STORE_SECTOR_SIZE, STORE_SECTOR_SIZE);
+  } catch (err) {
+    recordError = true;
+    slotModel.recordBroken = true;
+    log(t("msg_slot_record_read_failed", { err: err.message }), "error");
   }
-  if (slotSec) {
-    // 清掉除标题外的旧 radio
-    for (const el of [...slotSec.querySelectorAll("label")]) el.remove();
-    for (let s = 0; s < n; s++) {
-      const lab = document.createElement("label");
-      const inp = document.createElement("input");
-      inp.type = "radio"; inp.name = "slot"; inp.value = String(s);
-      if (s === 0) inp.checked = true;
-      const span = document.createElement("span");
-      span.textContent = `Slot ${s}`;
-      const code = document.createElement("code");
-      code.textContent = `0x${deviceSlots[s].offset.toString(16)} \u00b7 ${fmtBytes(deviceSlots[s].size)}`;
-      lab.append(inp, " ", span, " ", code);
-      slotSec.appendChild(lab);
+  const pick = recordError ? null : pickRecord(rawA, rawB);
+  slotModel.targetSector = pick ? pick.targetSector : 0;
+  if (pick && pick.credInA) log(t("msg_cred_in_record_sector"), "warn");
+  if (pick && pick.rec) {
+    slotModel.carve = { slots: pick.rec.slots, data: pick.rec.data };
+    slotModel.seq = pick.rec.seq;
+  } else {
+    slotModel.carve = null;
+    slotModel.seq = 0;
+  }
+
+  let parts = null;
+  try {
+    const devTable = await readWithRetry(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
+    parts = parsePartitionTable(devTable);
+  } catch (err) {
+    log(t("msg_slot_table_read_failed", { err: err.message }), "warn");
+  }
+
+  let mode = detectSlotMode({ record: slotModel.carve, partitions: parts });
+  if (mode === MODE.DYN_FRESH && !slotModel.carve) slotModel.carve = emptyCarve();
+  if (recordError && mode === MODE.DYN_FRESH) {
+    // 记录读失败但表可读:表派生行(设备的表由记录物化,条目 ⊆ 记录槽位,
+    // 装载写 payload 不会破坏记录;与旧页面行为一致)。
+    const fromTable = parts ? discoverSlots(parts) : [];
+    mode = fromTable.length > 0 ? MODE.LEGACY_FIXED : MODE.LEGACY_FALLBACK;
+    slotModel.legacySlots = fromTable.length > 0
+      ? fromTable.map((s) => ({ offset: s.offset, size: s.size }))
+      : LEGACY_SLOTS.map((s) => ({ ...s }));
+    slotModel.carve = null;
+  } else if (mode === MODE.LEGACY_FIXED) {
+    slotModel.legacySlots = discoverSlots(parts).map((s) => ({ offset: s.offset, size: s.size }));
+    slotModel.carve = null;
+  } else if (mode === MODE.LEGACY_FALLBACK) {
+    slotModel.legacySlots = LEGACY_SLOTS.map((s) => ({ ...s }));
+    slotModel.carve = null;
+  } else {
+    slotModel.legacySlots = [];
+  }
+  slotModel.mode = mode;
+  slotModel.loaded = true;
+  renderSlotView();
+  return mode;
+}
+
+// 记录提交(设计 §6/§7,顺序 = meta_carve_flash_commit):写目标扇区 → 读回解码
+// 校验 →(可选)物化表到 0x8000 → 读回逐字节比对 → 更新模型 + 轮转扇区 → 重渲染。
+// 失败抛错:E4 语义(记录已立,引导钩子下次启动物化表,状态不模糊)。
+async function commitCarve(nextCarve, { materialize = true } = {}) {
+  if (!carveValid(nextCarve)) throw new Error(t("err_carve_invalid"));
+  // H2: 每次 await 前校验 loader 未断开
+  function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected", { label: label ?? "操作" })); }
+  let seq = (slotModel.seq + 1) >>> 0;
+  if (seq === 0 || seq === 0xffffffff) seq = 1;   // = meta_carve_flash.c 回绕规则
+  const rec = encodeRecord({ seq, slots: nextCarve.slots, data: nextCarve.data });
+  if (!rec) throw new Error(t("err_record_encode"));
+  const sector = slotModel.targetSector;
+  const addr = STORE_OFFSET + sector * STORE_SECTOR_SIZE;
+  assertLoader("写入 carve 记录");
+  await loader.writeFlash({
+    fileArray: [{ data: u8ToBinaryString(rec), address: addr }],
+    flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+  });
+  assertLoader("读回 carve 记录");
+  const back = await loader.readFlash(addr, REC_SIZE);
+  if (!bytesEqual(back, rec) || !decodeAndValidate(back)) {
+    throw new Error(t("err_record_readback"));
+  }
+  if (materialize) {
+    const table = materializeTable(nextCarve);
+    if (!table) throw new Error(t("err_carve_invalid"));
+    assertLoader("写入分区表");
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(table), address: PARTITION_TABLE_OFFSET }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+    });
+    assertLoader("读回分区表");
+    const tblBack = await loader.readFlash(PARTITION_TABLE_OFFSET, PT_SIZE);
+    if (!checkTable(tblBack)) throw new Error(t("err_table_readback"));
+  }
+  const from = slotModel.seq;
+  slotModel.carve = nextCarve;
+  slotModel.seq = seq;
+  slotModel.targetSector = sector ^ 1;   // 轮转:下次写另一扇区(= 设备 commit)
+  slotModel.mode = MODE.DYN_SLOT;        // 记录已提交:fresh → 有记录(徽标/几何行立即更新)
+  renderSlotView();
+  return { from, to: seq, sector };
+}
+
+// 第 2 步选中的目标:{target:"slot",index} / {target:"auto"} / null(无选中)。
+function selectedSlotTarget() {
+  const el = document.querySelector('input[name="slot"]:checked');
+  if (!el) return null;
+  if (el.value === "auto") return { target: "auto" };
+  return { target: "slot", index: Number(el.value) };
+}
+
+// planInstall → NONE 时的用户可读错误(设计 L1:解释,绝不静默 defrag)。
+function planError(plan, imageLen) {
+  switch (plan.reason) {
+    case "no_space":
+      return t("err_install_no_space", {
+        need: fmtBytes(plan.need), gap: fmtBytes(plan.largestGap), free: fmtBytes(plan.totalFree),
+      });
+    case "too_large":
+      return t("err_install_too_large", {
+        image: fmtBytes(imageLen), slot: plan.index, limit: fmtBytes(plan.limit),
+      });
+    case "bad_slot":
+      return t("err_install_bad_slot");
+    default:
+      return t("err_install_no_image");
+  }
+}
+
+// 行状态文案(meta_slots.h 措辞:空槽 / 玩法名 / 无固件 —— 绝不显示 invalid)。
+function slotStateText(row) {
+  if (row.kind === "storage") return t("slot_kind_storage");
+  if (row.state === "unknown") return "";   // legacy 行不探测状态:避免与行号重复
+  if (row.state === "empty") return t("slot_state_empty");
+  if (row.state === "invalid") return t("slot_state_nofw");
+  return row.name || t("slot_unnamed", { n: row.slot });
+}
+
+function makeSlotRow(row) {
+  const div = document.createElement("div");
+  div.className = "slot-row" + (row.recommended ? " recommended" : "");
+  const lab = document.createElement("label");
+  lab.className = "slot-pick";
+  const inp = document.createElement("input");
+  inp.type = "radio";
+  inp.name = "slot";
+  inp.value = String(row.slot);
+  inp.disabled = !row.targetable;
+  const idx = document.createElement("span");
+  idx.className = "slot-idx";
+  idx.textContent = `Slot ${row.slot}`;
+  const geo = document.createElement("span");
+  geo.className = "slot-geo";
+  geo.textContent = `${hex(row.offset)} · ${fmtBytes(row.size)}`;
+  const state = document.createElement("span");
+  state.className = "slot-state" + (row.state === "empty" ? " empty" : "");
+  state.textContent = slotStateText(row) + (row.recommended ? ` ${t("slot_recommended")}` : "");
+  const limit = document.createElement("span");
+  limit.className = "slot-limit";
+  limit.textContent = row.kind === "app" ? t("slot_limit", { limit: fmtBytes(row.limit) }) : "";
+  lab.append(inp, " ", idx, " ", geo, " ", state, " ", limit);
+  div.appendChild(lab);
+  if (row.removeEnabled) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "slot-remove danger";
+    btn.dataset.index = String(row.slot);
+    btn.textContent = t("slot_remove");
+    div.appendChild(btn);
+  }
+  return div;
+}
+
+function makeAutoRow(auto) {
+  const div = document.createElement("div");
+  div.className = "slot-row auto" + (auto.enabled ? "" : " disabled");
+  if (auto.recommended) div.classList.add("recommended");
+  const lab = document.createElement("label");
+  lab.className = "slot-pick";
+  const inp = document.createElement("input");
+  inp.type = "radio";
+  inp.name = "slot";
+  inp.value = "auto";
+  inp.disabled = !auto.enabled;
+  const idx = document.createElement("span");
+  idx.className = "slot-idx";
+  idx.textContent = t("slot_auto_label");
+  const geo = document.createElement("span");
+  geo.className = "slot-geo";
+  geo.textContent = auto.enabled ? `${hex(auto.offset)} · ${fmtBytes(auto.size)}` : "—";
+  const state = document.createElement("span");
+  state.className = "slot-state";
+  if (auto.enabled) {
+    state.textContent = t("slot_auto_new");
+  } else if (auto.reason.code === "no_space") {
+    state.textContent = t("slot_auto_no_space", {
+      need: fmtBytes(auto.need), gap: fmtBytes(auto.largestGap), free: fmtBytes(auto.totalFree),
+    });
+  } else if (auto.reason.code === "deferred") {
+    state.textContent = t("slot_auto_deferred");
+  } else {
+    state.textContent = t("slot_auto_no_image");
+  }
+  if (auto.recommended && auto.enabled) state.textContent += ` ${t("slot_recommended")}`;
+  const limit = document.createElement("span");
+  limit.className = "slot-limit";
+  limit.textContent = auto.enabled ? t("slot_limit", { limit: fmtBytes(auto.limit) }) : "";
+  lab.append(inp, " ", idx, " ", geo, " ", state, " ", limit);
+  div.appendChild(lab);
+  return div;
+}
+
+// 渲染第 2 步槽位表 + 模式徽标 + 摘要 + 几何行 + 备份勾选(全部来自同一视图)。
+function renderSlotView() {
+  const view = buildSlotView({
+    carve: slotModel.carve,
+    imageLen: currentImageLen(),
+    mode: slotModel.mode,
+    legacySlots: slotModel.legacySlots,
+    deferred: activeTab === "community",
+  });
+  slotView = view;
+  // 兼容旧调用点(备份/恢复/探针/升级):几何 = 视图行(同一决策源派生)。
+  deviceSlots = view.rows.map((r) => ({ offset: r.offset, size: r.size }));
+
+  const rowsEl = $("slot-rows");
+  const prev = document.querySelector('input[name="slot"]:checked')?.value ?? null;
+  rowsEl.textContent = "";
+  for (const row of view.rows) rowsEl.appendChild(makeSlotRow(row));
+  if (view.dyn) rowsEl.appendChild(makeAutoRow(view.auto));
+
+  // 单选默认:用户显式选过 → 保留(失效则回退) → 否则推荐行(空槽) →
+  // dynslot:auto(仅当可用);绝不默认落到已占用槽 —— 覆盖必须是显式行为
+  // (与设备 suggestedSlot 同语义:占用槽不被推荐);两者都无 → 不选中,
+  // 烧录时由 err_pick_slot_first 要求显式选择。legacy:保留旧页面「默认首个可装槽」。
+  const enabled = [...rowsEl.querySelectorAll('input[name="slot"]')]
+    .filter((i) => !i.disabled).map((i) => i.value);
+  let want = slotPickUserSet ? prev : null;
+  if (!want || !enabled.includes(want)) {
+    const rec = rowsEl.querySelector('.slot-row.recommended input[name="slot"]');
+    if (rec && !rec.disabled) {
+      want = rec.value;
+    } else {
+      const autoEl = rowsEl.querySelector('input[name="slot"][value="auto"]');
+      want = view.dyn
+        ? (autoEl && !autoEl.disabled ? autoEl.value : null)
+        : (enabled[0] ?? null);
     }
   }
-  // 备份勾选组
-  const bkWrap = $("bk-slot0")?.closest("p");
-  if (bkWrap) {
-    bkWrap.textContent = "";
-    for (let s = 0; s < n; s++) {
-      const lab = document.createElement("label");
-      lab.style.marginRight = "10px";
-      const inp = document.createElement("input");
-      inp.type = "checkbox"; inp.id = `bk-slot${s}`; inp.checked = true;
-      const span = document.createElement("span");
-      span.textContent = `Slot ${s}`;
-      lab.append(inp, " ", span);
-      bkWrap.appendChild(lab);
+  const wantEl = want === null ? null : rowsEl.querySelector(`input[name="slot"][value="${want}"]`);
+  if (wantEl) wantEl.checked = true;
+
+  const badge = $("slot-mode-badge");
+  const badgeKey = view.mode === MODE.DYN_SLOT ? "slot_mode_dyn"
+    : view.mode === MODE.DYN_FRESH ? "slot_mode_fresh"
+    : view.mode === MODE.LEGACY_FIXED ? "slot_mode_fixed" : "slot_mode_fallback";
+  badge.textContent = t(badgeKey);
+  badge.classList.toggle("legacy", !view.dyn);
+  badge.hidden = !slotModel.loaded;
+
+  const sum = $("slot-summary");
+  if (slotModel.loaded) {
+    const s = view.summary;
+    sum.textContent = t("slot_summary", {
+      count: s.count, used: fmtBytes(s.usedSlots), data: fmtBytes(s.usedData),
+      free: fmtBytes(s.free), total: fmtBytes(s.total), gap: fmtBytes(s.largestGap),
+    });
+  }
+  sum.hidden = !slotModel.loaded;
+
+  const info = $("slot-geo-info");
+  info.style.display = "block";
+  if (!slotModel.loaded) info.textContent = t("slot_geo_pending");
+  else if (view.mode === MODE.DYN_SLOT) {
+    info.textContent = t("slot_geo_record", { count: view.summary.count, seq: slotModel.seq });
+  } else if (view.mode === MODE.DYN_FRESH) info.textContent = t("slot_geo_fresh");
+  else if (view.mode === MODE.LEGACY_FIXED) {
+    info.textContent = t("slot_geo_dynamic", { count: view.rows.length });
+  } else info.textContent = t("slot_geo_legacy");
+
+  // dynslot 模式:显示备份/还原的测试标记(设计 §8)
+  const bkWarn = document.getElementById("dynslot-backup-warn");
+  const rstWarn = document.getElementById("dynslot-restore-warn");
+  if (bkWarn) bkWarn.style.display = view.dyn ? "block" : "none";
+  if (rstWarn) rstWarn.style.display = view.dyn ? "block" : "none";
+
+  rebuildBackupCheckboxes(view);
+  return view;
+}
+
+// 第 5 步备份勾选:与槽位表同源重建(保留用户已勾选状态)。
+function rebuildBackupCheckboxes(view) {
+  const wrap = $("bk-slot0")?.closest("p");
+  if (!wrap) return;
+  const prev = new Map();
+  for (const inp of wrap.querySelectorAll('input[type="checkbox"]')) {
+    prev.set(inp.id, inp.checked);
+  }
+  wrap.textContent = "";
+  for (const row of view.rows) {
+    const lab = document.createElement("label");
+    lab.style.marginRight = "10px";
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.id = `bk-slot${row.slot}`;
+    inp.checked = prev.has(inp.id) ? prev.get(inp.id) : true;
+    const span = document.createElement("span");
+    span.textContent = `Slot ${row.slot}`;
+    lab.append(inp, " ", span);
+    wrap.appendChild(lab);
+  }
+}
+
+// 删除槽位(设计 §7,对齐设备 /api/install/remove):确认 → 擦镜像头(防复活)→
+// 记录去槽 + 物化表 → 重渲染(行消失、可用空间立即增长)。storage 槽无镜像头:
+// 内容不碰,只释放预留(E7)。
+async function removeSlotAction(index) {
+  if (busy || !loader) return;
+  if (!isDynMode(slotModel.mode)) return;
+  const slot = slotModel.carve?.slots?.[index];
+  if (!slot) { log(t("err_remove_target"), "error"); return; }
+  const name = slot.name || t("slot_unnamed", { n: index });
+  busy = true;
+  refreshInstallButton();
+  const ok = window.confirm(t("confirm_remove_slot", {
+    name, addr: hex(slot.offset), size: fmtBytes(slot.size),
+  }));
+  try {
+    if (!ok) { log(t("msg_remove_cancelled"), "warn"); return; }
+    if (slot.kind === SLOT_KIND.APP) {
+      const ff = new Uint8Array(0x1000).fill(0xff);
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(ff), address: slot.offset }],
+        flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      });
+      log(t("msg_slot_header_erased", { addr: hex(slot.offset) }), "ok");
+    } else {
+      log(t("msg_slot_storage_kept"), "warn");
     }
+    const rm = planRemove(slotModel.carve, index);
+    if (!rm) throw new Error(t("err_remove_target"));
+    slotPickUserSet = false;   // 删除会让后续行改号:显式选择作废,回默认推导
+    const info = await commitCarve(rm.carve, { materialize: true });
+    log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+    log(t("msg_table_materialized"), "ok");
+    log(t("msg_slot_removed", { name, freed: fmtBytes(rm.removed.size) }), "ok");
+  } catch (err) {
+    log(t("msg_remove_failed", { err: err.message }), "error");
+  } finally {
+    busy = false;
+    refreshInstallButton();
+  }
+}
+
+// mock 连接(?mock=1):无串口,直接装载内存设备并探测槽位模型(设计 §10)。
+async function connectMock() {
+  if (busy || connecting) { log(t("msg_busy"), "warn"); return; }
+  connecting = true;
+  try {
+    const dev = createMockDevice({ profile: MOCK_PROFILE });
+    globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
+    transport = dev.transport;
+    loader = dev;
+    $("chip-status").textContent = t("msg_chip_connected", { chip: dev.chipName });
+    $("chip-status").className = "ok";
+    log(t("msg_mock_connected", { profile: MOCK_PROFILE }), "warn");
+    await loadSlotModel();
+    log(t("msg_slots_discovered", { count: deviceSlots.length }), "ok");
+  } catch (err) {
+    loader = null;
+    transport = null;
+    $("chip-status").textContent = t("msg_connect_failed", { err: err.message });
+    $("chip-status").className = "error";
+    log(t("msg_connect_failed", { err: err.message }), "error");
+  } finally {
+    connecting = false;
+    refreshInstallButton();
   }
 }
 
@@ -467,6 +857,7 @@ const I18N = {
     msg_blob_written: "Display name written: {name}",
     msg_install_done: "Done. Power-cycle the device, then select the slot in meta-pass.",
     msg_install_failed: "Install failed: {err}",
+    msg_orphan_slot_warning: "Warning: slot geometry was committed but firmware write failed. The slot is allocated but empty — reinstall or delete it to avoid boot issues.",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
     backup_desc: "Backs up the selected slots to a verified zip file on this computer.",
@@ -511,6 +902,7 @@ const I18N = {
     msg_restore_pick_target: "Pick at least one target slot.",
     msg_restore_checking: "Checking slot {slot}: space and SHA-256…",
     err_restore_no_space: "Slot {slot} has no room: {reason}",
+    err_restore_target_invalid: "Invalid restore target slot: {slot}",
     err_restore_sha: "SHA-256 mismatch for {name}: expected {expected}, got {got}. Aborting.",
     err_restore_missing_file: "Zip is missing {name} listed in the manifest.",
     msg_restore_writing: "Writing {name} ({size}) to slot {slot} at {addr}…",
@@ -531,7 +923,7 @@ const I18N = {
     upgrade_mode_migration: "Fixed-slot → dynslot migration",
     msg_slots_discovered: "Discovered {count} slot(s) from the device partition table.",
     slot_geo_dynamic: "Live geometry: {count} slot(s) read from the device partition table.",
-    slot_geo_pending: "Not connected yet — radios below show placeholder geometry. Click Connect to read live slots from the device.",
+    slot_geo_pending: "Not connected yet — rows below show placeholder geometry. Click Connect to read live slots from the device.",
     dynslot_backup_test: "⚠ Dynamic-slot mode: backup is EXPERIMENTAL — unproven against non-contiguous carved slots. Use only for read-back testing.",
     dynslot_restore_test: "⚠ Dynamic-slot mode: restore is EXPERIMENTAL — slot offsets are determined at runtime and untested against variable carve layouts.",
     slot_geo_legacy: "No slot entries in the device table — showing legacy fixed geometry (read may have failed; reconnect to re-probe).",
@@ -549,6 +941,54 @@ const I18N = {
     msg_upgrade_migration: "No child-firmware data found. Wiping legacy residue in: {regions}.",
     msg_upgrade_erased: "Wiped legacy residue at {addr} ({size}).",
     msg_residue_wiped: "Slot {slot}: wiped stale data after the image (from {addr}, {size}) — slot restored to a clean state.",
+    // dynslot 槽位表(设计 §5/§8)
+    slot_mode_dyn: "dynslot (dynamic slots)",
+    slot_mode_fresh: "dynslot (no carve record yet — first install creates it)",
+    slot_mode_fixed: "fixed 3-slot (legacy)",
+    slot_mode_fallback: "factory fallback (no slot table)",
+    slot_state_empty: "(empty)",
+    slot_state_nofw: "(no firmware)",
+    slot_unnamed: "Slot {n}",
+    slot_kind_storage: "(storage reservation)",
+    slot_recommended: "(recommended)",
+    slot_limit: "max {limit}",
+    slot_remove: "Remove",
+    slot_auto_label: "Auto",
+    slot_auto_new: "(new slot)",
+    slot_auto_deferred: "(waiting for play details)",
+    slot_auto_no_image: "(choose a firmware file first)",
+    slot_auto_no_space: "(no room: needs {need}, largest gap {gap}, free {free} — delete a slot for a contiguous span)",
+    slot_summary: "{count} slots · used {used} (data {data}) · free {free} / {total} · largest gap {gap}",
+    slot_geo_record: "Live geometry from the carve record: {count} slot(s), seq {seq}.",
+    slot_geo_fresh: "Dynslot layout, no carve record yet — the first install writes it.",
+    mock_banner: "MOCK MODE ({profile}) — simulated device, nothing is written to real hardware.",
+    msg_mock_connected: "Mock device connected ({profile}) — simulated flash only.",
+    msg_slot_table_read_failed: "Failed to read the device partition table: {err}",
+    msg_slot_record_read_failed: "Failed to read the carve record: {err}",
+    msg_cred_in_record_sector: "Record sector A holds a legacy MPCK Wi-Fi credential backup — commits target sector B.",
+    msg_record_written: "Carve record committed: seq {from} → {to} (sector {sector}), read-back verified.",
+    msg_table_materialized: "Partition table materialized at 0x8000 and read-back verified.",
+    msg_slot_header_erased: "Erased image header at {addr} — the slot can never resurface as valid.",
+    msg_slot_storage_kept: "Storage slot: content untouched, only the reservation is released.",
+    msg_slot_removed: "Removed {name} — freed {freed}.",
+    msg_slot_created: "Slot {slot} created @ {addr} ({size}) · free space updated below.",
+    msg_slot_overwritten: "Slot {slot} overwritten · free unchanged.",
+    msg_remove_cancelled: "Remove cancelled — nothing changed.",
+    msg_install_cancelled: "Install cancelled — nothing changed.",
+    msg_remove_failed: "Remove failed: {err}",
+    confirm_remove_slot: "Remove {name} @ {addr} ({size})? The slot entry and its image header are deleted — this cannot be undone.",
+    confirm_overwrite_slot: "Overwrite {name} @ {addr} ({size})? This slot has an installed sub-firmware that will be replaced.",
+    err_pick_slot_first: "Select a target slot (or Auto) in step 2 first.",
+    err_install_no_image: "Choose a firmware file first.",
+    err_install_no_space: "No room for this image: needs {need}, largest gap {gap}, free {free}. Delete a slot in step 2 to free space.",
+    err_install_bad_slot: "The selected slot no longer exists — pick another row.",
+    err_install_too_large: "Image {image} exceeds slot {slot} limit {limit}.",
+    err_carve_invalid: "Carve record invariant violated — refusing to write.",
+    err_record_encode: "Failed to encode the carve record.",
+    err_record_readback: "Record read-back mismatch — written record does not verify.",
+    err_table_readback: "table: read-back mismatch — partition table write does not verify.",
+    err_disconnected: "Device disconnected during operation — reconnect in step 1.",
+    err_remove_target: "That slot cannot be removed.",
   },
   zh: {
     // 静态文案
@@ -627,6 +1067,7 @@ const I18N = {
     msg_blob_written: "Display name 已写入:{name}",
     msg_install_done: "完成。请重新上电,然后在 meta-pass 中选择对应 slot。",
     msg_install_failed: "烧录失败:{err}",
+    msg_orphan_slot_warning: "警告:槽位几何已提交但固件写入失败。槽位已分配但为空——请重新安装或删除该槽位,以免设备启动异常。",
     // 备份/恢复流程
     step_backup: "5. 备份子固件(读取槽位 → zip)",
     backup_desc: "将选中的槽位备份为一个带校验的 zip 文件,保存到本机。",
@@ -671,6 +1112,7 @@ const I18N = {
     msg_restore_pick_target: "请至少选择一个目标槽位。",
     msg_restore_checking: "检查槽位 {slot}:空间与 SHA-256…",
     err_restore_no_space: "槽位 {slot} 空间不足:{reason}",
+    err_restore_target_invalid: "无效的恢复目标槽位:{slot}",
     err_restore_sha: "{name} 的 SHA-256 不匹配:期望 {expected},实际 {got}。已中止。",
     err_restore_missing_file: "zip 缺少 manifest 中列出的 {name}。",
     msg_restore_writing: "写入 {name}({size})到槽位 {slot} @ {addr}…",
@@ -691,7 +1133,7 @@ const I18N = {
     upgrade_mode_migration: "固定槽位 → 动态槽位迁移",
     msg_slots_discovered: "已从设备分区表发现 {count} 个槽位。",
     slot_geo_dynamic: "动态几何:已从设备分区表读到 {count} 个槽位。",
-    slot_geo_pending: "尚未连接 —— 下方单选为占位几何。点击「连接」后从设备分区表读取实时槽位。",
+    slot_geo_pending: "尚未连接 —— 下方行为占位几何。点击「连接」后读取设备实时槽位。",
     slot_geo_legacy: "设备分区表中没有槽位条目 —— 当前显示 legacy 固定几何(可能读表失败,重新连接可重探)。",
     dynslot_backup_test: "⚠ 动态存储模式:备份功能处于测试阶段——针对非连续 carve 槽位的验证尚未完成。仅用于读回测试。",
     dynslot_restore_test: "⚠ 动态存储模式:还原功能处于测试阶段——槽位偏移在运行时确定，尚未验证可变 carve 布局。",
@@ -709,6 +1151,54 @@ const I18N = {
     msg_upgrade_migration: "未发现子固件数据。正在清除残留区域:{regions}。",
     msg_upgrade_erased: "已清除 {addr} 起的旧固件残留({size})。",
     msg_residue_wiped: "槽位 {slot}:已清理镜像之后的遗留数据(自 {addr} 起,{size})—— 槽位已恢复干净态。",
+    // dynslot 槽位表(设计 §5/§8)
+    slot_mode_dyn: "动态槽位(dynslot)",
+    slot_mode_fresh: "动态槽位(尚无 carve 记录,首次安装时写入)",
+    slot_mode_fixed: "固定 3 槽(legacy)",
+    slot_mode_fallback: "原厂兜底(无槽位表)",
+    slot_state_empty: "(空槽)",
+    slot_state_nofw: "(无固件)",
+    slot_unnamed: "槽位 {n}",
+    slot_kind_storage: "(存储预留)",
+    slot_recommended: "(推荐)",
+    slot_limit: "上限 {limit}",
+    slot_remove: "删除",
+    slot_auto_label: "自动",
+    slot_auto_new: "(新槽位)",
+    slot_auto_deferred: "(等待玩法详情)",
+    slot_auto_no_image: "(请先选择固件文件)",
+    slot_auto_no_space: "(空间不足:需 {need},最大空洞 {gap},可用 {free} — 可删除槽位腾出连续空间)",
+    slot_summary: "{count} 个槽位 · 已用 {used}(数据 {data})· 可用 {free} / {total} · 最大空洞 {gap}",
+    slot_geo_record: "carve 记录实时几何:{count} 个槽位,seq {seq}。",
+    slot_geo_fresh: "动态槽位布局,尚无 carve 记录 —— 首次安装时写入。",
+    mock_banner: "MOCK 模式({profile})—— 模拟设备,不会写任何真实硬件。",
+    msg_mock_connected: "模拟设备已连接({profile})—— 仅内存 flash。",
+    msg_slot_table_read_failed: "读取设备分区表失败:{err}",
+    msg_slot_record_read_failed: "读取 carve 记录失败:{err}",
+    msg_cred_in_record_sector: "记录扇区 A 是旧版 MPCK Wi-Fi 凭据备份 —— 提交将写入扇区 B。",
+    msg_record_written: "carve 记录已提交:seq {from} → {to}(扇区 {sector}),读回校验通过。",
+    msg_table_materialized: "分区表已物化到 0x8000,读回比对通过。",
+    msg_slot_header_erased: "已擦除 {addr} 的镜像头 —— 该槽绝不会再被扫描复活。",
+    msg_slot_storage_kept: "存储槽:内容未动,只释放了预留空间。",
+    msg_slot_removed: "已删除 {name} —— 释放 {freed}。",
+    msg_slot_created: "槽位 {slot} 已创建 @ {addr}({size})· 下方可用空间已更新。",
+    msg_slot_overwritten: "槽位 {slot} 已覆盖 · 可用空间不变。",
+    msg_remove_cancelled: "已取消删除 —— 未做任何改动。",
+    msg_install_cancelled: "已取消烧录 —— 未做任何改动。",
+    msg_remove_failed: "删除失败:{err}",
+    confirm_remove_slot: "删除 {name} @ {addr}({size})?槽位条目与镜像头都会被删除 —— 不可恢复。",
+    confirm_overwrite_slot: "覆盖 {name} @ {addr}({size})?该槽已安装子固件,烧录后将被替换。",
+    err_pick_slot_first: "请先在第 2 步选择目标槽位(或「自动」)。",
+    err_install_no_image: "请先选择一个固件文件。",
+    err_install_no_space: "空间不足:需 {need},最大空洞 {gap},可用 {free}。可在第 2 步删除槽位腾出空间。",
+    err_install_bad_slot: "所选槽位已不存在 —— 请换一行。",
+    err_install_too_large: "镜像 {image} 超出槽位 {slot} 上限 {limit}。",
+    err_carve_invalid: "carve 记录结构不变量被破坏 —— 拒绝写入。",
+    err_record_encode: "carve 记录编码失败。",
+    err_record_readback: "记录读回不一致 —— 写入未通过校验。",
+    err_table_readback: "table: 读回不一致 —— 分区表写入未通过校验。",
+    err_disconnected: "操作过程中设备断开连接——请在第 1 步重新连接。",
+    err_remove_target: "该槽位不可删除。",
   },
 };
 
@@ -735,7 +1225,11 @@ function applyLang(lang) {
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
   document.querySelectorAll("[data-i18n]").forEach((el) => {
     const v = I18N[lang][el.dataset.i18n];
-    if (v != null) el.innerHTML = v;
+    if (v == null) return;
+    // N20: 纯文案用 textContent 防 XSS;仅含 HTML 标签的少数条目(hint/no_webserial)
+    // 保留 innerHTML —— 内容来自硬编码 i18n 字典,非用户输入。
+    if (/<[a-z][\s\S]*>/i.test(v)) el.innerHTML = v;
+    else el.textContent = v;
   });
   document.querySelectorAll("[data-i18n-ph]").forEach((el) => {
     const v = I18N[lang][el.dataset.i18nPh];
@@ -744,6 +1238,10 @@ function applyLang(lang) {
   document.title = I18N[lang].title_page;
   $("lang-en").classList.toggle("active", lang === "en");
   $("lang-zh").classList.toggle("active", lang === "zh");
+  // 动态内容(槽位表/徽标/摘要/几何行)由 renderSlotView 用 t() 生成,
+  // 不在 data-i18n 静态替换范围内 —— 切语言时必须重渲染。首次 applyLang
+  // (模块初始化)时 slotView 尚未建立 → 跳过,避免 TDZ/重复渲染。
+  if (slotView) renderSlotView();
 }
 
 $("lang-en").addEventListener("click", () => applyLang("en"));
@@ -807,12 +1305,26 @@ let activeTab = "local";
 let localImage = null;   // { data, length, source, name }
 let playDetail = null;   // 社区玩法详情
 
-// 页面加载即检测 Web Serial 支持(headless/非 Chrome 场景给出清晰提示)
-if (!("serial" in navigator)) {
+// mock 模式(?mock=1 / ?mock=fresh / ?mock=legacy / #mock):页面模拟设备。
+// 横幅自加载起常显 —— mock 会话绝不能被误当成真机会话(设计 §10)。
+const MOCK_PROFILE = mockProfileFromLocation(location);
+if (MOCK_PROFILE) {
+  const banner = $("mock-banner");
+  banner.hidden = false;
+  banner.textContent = t("mock_banner", { profile: MOCK_PROFILE });
+}
+
+// 页面加载即检测 Web Serial 支持(headless/非 Chrome 场景给出清晰提示)。
+// mock 模式不需要串口 —— 不能因为无 serial 而锁死 Connect。
+if (!MOCK_PROFILE && !("serial" in navigator)) {
   $("no-webserial").hidden = false;
   $("btn-connect").disabled = true;
   log(t("msg_no_serial"), "error");
 }
+
+// 初始视图:未连接时按 legacy 占位几何渲染(与旧版占位单选一致);
+// 徽标/摘要在探测完成后出现(设计 §5)。
+renderSlotView();
 
 function refreshInstallButton() {
   $("btn-install").disabled = busy || !loader;
@@ -964,6 +1476,7 @@ $("btn-upgrade").addEventListener("click", async () => {
     $("upgrade-status").textContent = t("msg_upgrade_failed", { err: err.message });
     $("upgrade-status").className = "error";
     log(t("msg_upgrade_failed", { err: err.message }), "error");
+    setUpgradeProgress(0);   // N16: 失败时重置进度条
   } finally {
     busy = false;
     refreshInstallButton();
@@ -973,6 +1486,11 @@ $("btn-upgrade").addEventListener("click", async () => {
 function markDisconnected() {
   loader = null;
   transport = null;
+  busy = false;   // N17: 断开时重置 busy,防操作中途断开导致状态不一致
+  setUpgradeProgress(0);   // N17: 重置所有进度条
+  setBackupProgress(0);
+  setRestoreProgress(0);
+  setProgress(0);
   $("chip-status").textContent = t("msg_device_gone");
   $("chip-status").className = "error";
   log(t("msg_device_gone"), "warn");
@@ -981,6 +1499,7 @@ function markDisconnected() {
 
 // ===== 1. 连接设备 =====
 $("btn-connect").addEventListener("click", async () => {
+  if (MOCK_PROFILE) { await connectMock(); return; }   // mock 模式:无串口,直接装载模拟设备(设计 §10)
   if (!ESPLoader) {
     log(t("msg_esptool_loading"), "error");
     return;
@@ -1046,21 +1565,13 @@ $("btn-connect").addEventListener("click", async () => {
     if (!String(chip).includes("ESP32-C3")) {
       log(t("msg_warn_chip", { chip }), "error");
     }
-    // 槽位几何发现(dynslot carved 槽位偏移任意):读设备分区表重建槽位 UI。
-    // 失败静默保留 legacy 3 槽 —— 旧行为,绝不更差。
+    // 槽位模型(设计 §3/§5):读 carve 记录 A/B + 分区表 → 判模式 → 渲染槽位表。
+    // 读取失败由 loadSlotModel 内部降级并写日志(legacy 兜底,绝不更差)。
     try {
-      const devTable = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
-      applyDiscoveredSlots(parsePartitionTable(devTable));
+      await loadSlotModel();
       log(t("msg_slots_discovered", { count: deviceSlots.length }), "ok");
-    } catch {
-      // 读表失败不再静默:legacy 兜底与"页面是旧版"在视觉上无法区分,
-      // 必须把状态写出来(真机反馈两次踩这个歧义)。
-      const info = $("slot-geo-info");
-      if (info) {
-        info.style.display = "block";
-        info.textContent = t("slot_geo_legacy");
-      }
-      log(t("slot_geo_legacy"), "warn");
+    } catch (err) {
+      log(t("msg_slot_table_read_failed", { err: err.message }), "warn");
     }
   } catch (err) {
     // 失败必须释放本轮已打开的串口:否则下次 open 同一端口会抛
@@ -1087,13 +1598,26 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
-// ===== 2. 槽位选择(radio 直接读值,无需额外逻辑)=====
+// ===== 2. 槽位选择(动态行渲染 + 删除按钮事件委托)=====
+// 行由 renderSlotView() 从视图模型生成;安装读 selectedSlotTarget(),
+// 删除走 confirm + 记录提交(removeSlotAction)。radio 值 = 行下标 / "auto"。
+$("slot-rows").addEventListener("click", (ev) => {
+  const btn = ev.target.closest(".slot-remove");
+  if (!btn) return;
+  removeSlotAction(Number(btn.dataset.index));
+});
+// 用户显式选过槽位后重渲染才保留其选择;否则默认跟推荐(设备 suggestedSlot 语义),
+// 避免「高亮推荐行」与「选中行」分叉导致误覆盖。
+$("slot-rows").addEventListener("change", (ev) => {
+  if (ev.target.matches('input[name="slot"]')) slotPickUserSet = true;
+});
 
 // ===== 3a. 本地文件 =====
 $("file-input").addEventListener("change", async (ev) => {
   const file = ev.target.files[0];
   localImage = null;
   $("file-info").textContent = "";
+  renderSlotView();   // 清除已载入镜像:auto 行与各行上限立即回落
   if (!file) return;
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
@@ -1105,6 +1629,7 @@ $("file-input").addEventListener("change", async (ev) => {
     log(t("msg_validated", { name: file.name, source: img.source, size: img.length }), "ok");
     // 预填显示名:文件名去扩展名,剔除非可打印 ASCII;剔完为空则留空不写 blob
     $("disp-name").value = sanitizeDisplayName(file.name.replace(/\.[^.]*$/, ""));
+    renderSlotView();   // 载入后:auto 行与各行上限立即反映新镜像尺寸
   } catch (err) {
     $("file-info").textContent = err.message;
     $("file-info").className = "error";
@@ -1120,6 +1645,7 @@ function parsePlayId(input) {
 
 $("btn-fetch-play").addEventListener("click", async () => {
   playDetail = null;
+  renderSlotView();   // 玩法详情被重置:auto 行回到等待态
   $("play-info").textContent = "";
   const id = parsePlayId($("play-url").value);
   if (!id) {
@@ -1134,6 +1660,7 @@ $("btn-fetch-play").addEventListener("click", async () => {
     const d = json.downloadUrl ? json : (json.play ?? json.data ?? json); // 兼容 {ok, play} 等包裹结构
     if (!d.downloadUrl) throw new Error(t("err_no_download_url"));
     playDetail = d;
+    renderSlotView();   // 已知 firmwareSize:auto 行可给出真实提案
     const title = (d.title && (d.title.en || d.title.zh)) || `Play #${id}`;
     // 预填显示名:英文标题(非 ASCII 会被剔除,剔完为空则留空不写 blob)
     $("disp-name").value = sanitizeDisplayName((d.title && d.title.en) || "");
@@ -1152,7 +1679,7 @@ $("btn-fetch-play").addEventListener("click", async () => {
     $("play-info").appendChild(dl);
     log(t("msg_play_ok", { id, title, size: d.firmwareSize ?? "?" }), "ok");
   } catch (err) {
-    $("play-info").innerHTML = `<span class="error">${err.message}</span>`;
+    $("play-info").textContent = err.message;
     log(t("msg_fetch_failed", { err: err.message }), "error");
   }
 });
@@ -1164,6 +1691,7 @@ document.querySelectorAll(".tab").forEach((btn) => {
     activeTab = btn.dataset.tab;
     $("tab-local").hidden = activeTab !== "local";
     $("tab-community").hidden = activeTab !== "community";
+    renderSlotView();   // tab 影响 deferred/auto 行
   });
 });
 
@@ -1325,7 +1853,7 @@ $("btn-probe").addEventListener("click", async () => {
     const vendorNew = vf.includes("digest");
     log(`[probe] vendor build: ${vendorNew ? "NEW (per-frame ACK + MD5 digest)" : "OLD — 请强制刷新(Cmd+Shift+R)后再试"}`, vendorNew ? "warn" : "error");
     const t0 = Date.now();
-    const probeAddr = deviceSlots[0].offset;
+    const probeAddr = (deviceSlots[0] ?? { offset: 0x180000 }).offset;   // 空槽位表也可探测(pool_0 起点)
     const data = await loader.readFlash(probeAddr, PROBE_READ_SIZE);
     const hexAddr = "0x" + probeAddr.toString(16);
     log(`[probe] ${PROBE_READ_SIZE}B @${hexAddr} OK · ${Date.now() - t0}ms · head=0x${data[0].toString(16)}${data[1].toString(16).padStart(2, "0")}`, "ok");
@@ -1619,6 +2147,7 @@ $("btn-backup").addEventListener("click", async () => {
         log(t("msg_backup_failed", { err: t("msg_backup_pick_slot") }), "warn");
         $("backup-status").textContent = t("msg_backup_save_cancelled");
         $("backup-status").className = "error";
+        setBackupProgress(0);   // N9: 取消时重置进度条
         return;   // 用户取消保存:数据已在内存,不再重复读取,直接结束
       }
       savedVia = "downloads-fallback";   // 选择器异常(权限等)降级下载
@@ -1641,6 +2170,7 @@ $("btn-backup").addEventListener("click", async () => {
     $("backup-status").textContent = t("msg_backup_failed", { err: err.message });
     $("backup-status").className = "error";
     log(t("msg_backup_failed", { err: err.message }), "error");
+    setBackupProgress(0);   // N16: 失败时重置进度条
   } finally {
     busy = false;
     deviceNvs = null;   // 设备分区表缓存随连接会话失效
@@ -1716,7 +2246,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       for (let s = 0; s < deviceSlots.length; s++) {
         const opt = document.createElement("option");
         opt.value = String(s);
-        opt.textContent = s === from ? t("msg_restore_same_slot", { slot: s }) : t(`slot_${s}`);
+        opt.textContent = s === from ? t("msg_restore_same_slot", { slot: s }) : `Slot ${s}`;   // 动态行:行号即槽位号,不再依赖 slot_N 字典
         if (s === from) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -1743,6 +2273,12 @@ $("btn-restore").addEventListener("click", async () => {
       to: Number($(`restore-target-${s.slot}`).value),
     }));
     if (jobs.length === 0) throw new Error(t("msg_restore_pick_target"));
+    // N4: 校验 job.to 在 deviceSlots 范围内,防 DOM 篡改或槽数变化导致越界
+    for (const job of jobs) {
+      if (!Number.isInteger(job.to) || job.to < 0 || job.to >= deviceSlots.length) {
+        throw new Error(t("err_restore_target_invalid", { slot: job.to }));
+      }
+    }
     let done = 0;
     const restoredSlots = [];
     for (const job of jobs) {
@@ -1828,9 +2364,11 @@ $("btn-restore").addEventListener("click", async () => {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
     $("restore-status").className = "error";
     log(t("msg_restore_failed", { err: err.message }), "error");
+    setRestoreProgress(0);   // N16: 失败时重置进度条
   } finally {
     busy = false;
     deviceNvs = null;   // 设备分区表缓存随连接会话失效
+    restoreZip = null;   // N18: 清空,防后续操作使用过期数据
     refreshInstallButton();
   }
 });
@@ -1878,10 +2416,7 @@ $("btn-install").addEventListener("click", async () => {
   $("install-status").textContent = "";
   setProgress(0);
   try {
-    const slot = Number(document.querySelector('input[name="slot"]:checked').value);
-    const s = deviceSlots[slot];
-    const address = s.offset;
-    const slotLimit = maxAppImageSize(s.size);
+    // 1) 镜像先取(社区下载可能耗时),再解析目标与几何 —— 设计 §6。
     let image;
     if (activeTab === "local") {
       if (!localImage) throw new Error(t("err_choose_file_first"));
@@ -1889,12 +2424,59 @@ $("btn-install").addEventListener("click", async () => {
     } else {
       image = await prepareCommunityImage();
     }
-    if (image.length > slotLimit) {
-      throw new Error(`App image is ${image.length} bytes — exceeds slot ${slot} limit of ${slotLimit} bytes (${Math.floor(slotLimit / 1024)} KB).`);
+    const target = selectedSlotTarget();
+    if (!target) throw new Error(t("err_pick_slot_first"));
+
+    const dynMode = isDynMode(slotModel.mode);
+    let plan = null;
+    let s;
+    let slot;
+    let slotLimit;
+    if (dynMode) {
+      await loadSlotModel();   // 记录可能已过期:重读后再规划(设计 §6 step 1)
+      plan = planInstall(slotModel.carve, image.length, target);
+      if (plan.action === PLAN.NONE) throw new Error(planError(plan, image.length));
+      s = { offset: plan.offset, size: plan.size };
+      slot = plan.index;
+      slotLimit = plan.limit;
+    } else {
+      if (target.target !== "slot") throw new Error(t("err_pick_slot_first"));
+      slot = target.index;
+      s = deviceSlots[slot];
+      if (!s) throw new Error(t("err_pick_slot_first"));
+      slotLimit = maxAppImageSize(s.size);
     }
-    // 槽位级残留清理:装到哪个槽只清哪个槽(tail 之后的区域)。原厂机经市场
-    // 轻量包迁移后,旧固件字节会残留在新布局槽位内;安装即替换该槽,顺带
-    // 把它清回出厂态,避免残留混入后续备份的 extra 文件。干净设备零写开销。
+    if (image.length > slotLimit) {
+      throw new Error(t("err_install_too_large", {
+        image: fmtBytes(image.length), slot, limit: fmtBytes(slotLimit),
+      }));
+    }
+
+    // 覆盖已安装子固件(VALID 槽)必须显式确认:占用槽绝不被默认选中
+    // (见 renderSlotView),但用户可主动选中 —— 与删除同一「解释再动手」原则(§6)。
+    if (plan && plan.action === PLAN.REUSE) {
+      const cur = slotModel.carve.slots[plan.index];
+      if (cur && cur.state === SLOT_STATE.VALID) {
+        const okOver = window.confirm(t("confirm_overwrite_slot", {
+          name: cur.name || t("slot_unnamed", { n: plan.index }),
+          addr: hex(cur.offset), size: fmtBytes(cur.size),
+        }));
+        if (!okOver) { log(t("msg_install_cancelled"), "warn"); return; }
+      }
+    }
+
+    // 2) 几何步(仅新建槽):记录先写 + 表物化,均读回校验(设计 §6 / E3)。
+    if (plan && plan.action === PLAN.CREATE) {
+      const nextCarve = insertSlot(slotModel.carve, plan.index, {
+        offset: plan.offset, size: plan.size,
+      });
+      const info = await commitCarve(nextCarve, { materialize: true });
+      log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+      log(t("msg_table_materialized"), "ok");
+    }
+
+    // 3) payload(既有路径不变:清残留 → 写镜像 → 尾扇区 MSIG/MAEG/MNAM)。
+    const address = s.offset;
     const tailOffset = Math.ceil(image.length / 4096) * 4096 + 4096;
     if (tailOffset < s.size) {
       const wiped = await wipeSlotResidue(
@@ -1922,9 +2504,9 @@ $("btn-install").addEventListener("click", async () => {
       tail = new Uint8Array(4096).fill(0xff);
     }
     if (tail && dispName) {
-      const window = packNameBlobTail(dispName);
-      if (!window) throw new Error(t("err_blob_pack", { name: dispName }));
-      tail.set(window, 4056);   // MNAM 窗口右对齐,前部保持 0xFF
+      const nameWindow = packNameBlobTail(dispName);
+      if (!nameWindow) throw new Error(t("err_blob_pack", { name: dispName }));
+      tail.set(nameWindow, 4056);   // MNAM 窗口右对齐,前部保持 0xFF
     }
     if (tail) {
       const tailAddr = address + image.tailSectorOffset;
@@ -1939,21 +2521,44 @@ $("btn-install").addEventListener("click", async () => {
       if (image.tailSector) log(t("msg_sig_written"), "ok");
       if (dispName) log(t("msg_blob_written", { name: dispName }), "ok");
     }
+
+    // 4) 元数据提交(仅 dynslot;几何未变 → 不写表 = meta_carve_flash_set_valid
+    //    镜像;play_id 原样保留,USB 安装恒为 0)。
+    if (plan) {
+      const sha = new Uint8Array(await crypto.subtle.digest("SHA-256", image.data));
+      const slots = slotModel.carve.slots.slice();
+      slots[plan.index] = {
+        ...slots[plan.index],
+        state: SLOT_STATE.VALID,
+        imageLen: image.length,
+        sha,
+        name: dispName,
+      };
+      const info = await commitCarve({ slots, data: slotModel.carve.data }, { materialize: false });
+      log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+    }
+
     setProgress(100);
-    const msg = t("msg_install_done");
-    $("install-status").textContent = msg;
+    const outcome = plan && plan.action === PLAN.CREATE
+      ? t("msg_slot_created", { slot: plan.index, addr: hex(plan.offset), size: fmtBytes(plan.size) })
+      : t("msg_slot_overwritten", { slot });
+    $("install-status").textContent = t("msg_install_done");
     $("install-status").className = "ok";
-    log(msg, "ok");
+    log(outcome, "ok");
+    log(t("msg_install_done"), "ok");
   } catch (err) {
     $("install-status").textContent = err.message;
     $("install-status").className = "error";
     log(t("msg_install_failed", { err: err.message }), "error");
+    // N3: install CREATE — commitCarve 成功但 payload 写失败 → 槽位已分配但无镜像
+    if (plan && plan.action === PLAN.CREATE) {
+      log(t("msg_orphan_slot_warning"), "warn");
+    }
   } finally {
     busy = false;
     refreshInstallButton();
   }
 });
-
 log(t("msg_ready"));
 // 页面版本(纳入版本管理):源码只存占位符 __PAGE_VERSION__,部署时替换。
 //   CI(GitHub Pages / Cloudflare Pages)→ 替换为 git 短 SHA;
@@ -1967,9 +2572,11 @@ log(`[page] __PAGE_VERSION__ · chunk=32KB stop-and-wait baud=921600(fallback 11
 // (仅读写内存数据,无副作用;正式部署无害)。
 window.__installSlotDebug = {
   get loader() { return loader; },
+  get slotModel() { return slotModel; },   // 只读:自动化断言用(设计 T8)
+  get slotView() { return slotView; },
   readFlashChunked,
   log,
-  build: "2026-09-17-probe4",
+  build: "__PAGE_VERSION__",
 };
 window.__installSlotReady = true;   // 模块初始化完成:关闭 file:// 兜底横幅检测
 </script>

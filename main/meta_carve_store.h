@@ -15,12 +15,12 @@
 //   [16,752)   slot[8] × 92B: state u8 | kind u8 | reserved u16(0xFF) |
 //              offset u32 | size u32 | image_len u32 | play_id u32 |
 //              sha256[32] | name[40]
-//   [752,3776) 内嵌 carved 表(0xC00,自带 MD5 marker)
-//   [3776,4032) data[8] × 32B: play_id u32 | offset u32 | size u32 |
+//   [752,3824) 内嵌 carved 表（0xC00，自带 MD5 marker）
+//   [3824,4080) data[8] × 32B: play_id u32 | offset u32 | size u32 |
 //              state u8 | subtype u8 | type u8 | reserved u8(0xFF) | label[16]
-//   [4032,4036) crc32(覆盖 [0,4032),标准 CRC-32:初值 0xFFFFFFFF、
-//              反射多项式 0xEDB88320、末异或,zlib/Python zlib.crc32 同值)
-//   [4036,4096) 0xFF
+//   [4080,4084) crc32(覆盖 [0,4080)，标准 CRC-32:初值 0xFFFFFFFF、
+//              反射多项式 0xEDB88320、末异或，zlib/Python zlib.crc32 同值)
+//   [4084,4096) 0xFF
 //
 // v1(只读兼容,老布局):slot 88B 无 play_id、无 data 区、crc @3792;
 // 解码后 play_id=0、data_count=0(不与数据记录联动)。写出永远是 v2。
@@ -60,14 +60,23 @@
 #define META_CARVE_REC_DATA_SIZE 32u           // v2 数据条目
 #define META_CARVE_REC_TABLE_OFF (META_CARVE_REC_HEADER + \
                                   META_CARVE_MAX_SLOTS * META_CARVE_REC_SLOT_SIZE)  /* 752 */
-#define META_CARVE_REC_DATA_OFF  (META_CARVE_REC_TABLE_OFF + META_PT_SIZE)           /* 3776 */
+#define META_CARVE_REC_DATA_OFF  (META_CARVE_REC_TABLE_OFF + META_PT_SIZE)           /* 3824 */
 #define META_CARVE_REC_CRC_OFF   (META_CARVE_REC_DATA_OFF + \
-                                  META_DATA_MAX * META_CARVE_REC_DATA_SIZE)          /* 4032 */
+                                  META_DATA_MAX * META_CARVE_REC_DATA_SIZE)          /* 4080 */
+
+// 布局钉死：行尾注释曾与宏脱节 48 字节（752+0xC00=3824 被注成 3776），
+// 外部镜像实现（install-slot/dynslot-record.js，USB 安装页）照注释写偏移就错。
+// 改宏必须同步：本头注释、JS 镜像、tests/fixtures/gen_carve_record.c 夹具。
+_Static_assert(META_CARVE_REC_TABLE_OFF == 752u,  "carve record TABLE_OFF drifted");
+_Static_assert(META_CARVE_REC_DATA_OFF == 3824u,  "carve record DATA_OFF drifted");
+_Static_assert(META_CARVE_REC_CRC_OFF == 4080u,   "carve record CRC_OFF drifted");
 // v1 老布局(解码兼容用,不再写出)。
 #define META_CARVE_REC_V1_SLOT_SIZE 88u
 #define META_CARVE_REC_V1_TABLE_OFF (META_CARVE_REC_HEADER + \
                                      META_CARVE_MAX_SLOTS * META_CARVE_REC_V1_SLOT_SIZE) /* 720 */
 #define META_CARVE_REC_V1_CRC_OFF   (META_CARVE_REC_V1_TABLE_OFF + META_PT_SIZE)         /* 3792 */
+_Static_assert(META_CARVE_REC_V1_TABLE_OFF == 720u, "carve record v1 TABLE_OFF drifted");
+_Static_assert(META_CARVE_REC_V1_CRC_OFF == 3792u,  "carve record v1 CRC_OFF drifted");
 
 typedef struct {
     uint32_t      seq;     // 单调递增(允许回绕);0/0xFFFFFFFF 视为无效

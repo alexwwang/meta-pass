@@ -1050,6 +1050,7 @@ static void goto_page(page_t page)
     }
     if (reboot_after_teardown) {
         ESP_LOGW(TAG, "carve table materialized; rebooting for clean state");
+        meta_carve_flash_reboot_clear();
         esp_restart();
     }
 }

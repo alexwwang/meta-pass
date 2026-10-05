@@ -4,6 +4,57 @@
 
 # Changelog
 
+## Unreleased (2026-10-05)
+
+- **USB installer: dynamic (dynslot) slot management page**: step 2 of
+  `install-slot.html` stops being a static 3-radio list. On Connect the page
+  reads the carve record (A/B sectors at 0x35A000) plus the device partition
+  table and renders a live slot table: one row per carved slot (offset/size/
+  state/name/max image), a mode badge (`dynslot (dynamic slots)` /
+  `dynslot (no carve record yet)` / `fixed 3-slot (legacy)` / `factory
+  fallback`), a summary line (slot count, used slots/bytes, data bytes, free /
+  total, largest gap) and a per-row **Remove** button in dynslot modes. A
+  dashed `Auto` row shows the exact planned geometry for a new slot once a
+  firmware file is chosen (`new @offset · size`, or `needs X, largest gap Y,
+  free Z` when the pool cannot fit it); the recommended row mirrors the
+  device's suggested-slot rule (first empty fit, else Auto) and the checked
+  radio follows it until the user picks another row. **Install** resolves the
+  target through the shared planner: creating a slot commits the record first
+  (seq +1, A/B rotation, read-back verified), materializes the 0x8000 table
+  (byte-compared), then writes the payload and finally commits VALID +
+  image_len + SHA-256 + display name; overwriting an existing slot skips the
+  geometry step. **Remove** confirms by name/offset/size, erases the slot's
+  first 4 KB (anti-resurrection, bytes beyond the header stay until reused),
+  commits the record without the slot + re-materializes the table, and the row
+  disappears with free space updated immediately — same order and guarantees
+  as the device's `POST /api/install/remove`. All new strings are bilingual
+  (EN/zh) and a language switch re-renders the dynamic table live. New pure
+  module `install-slot/dynslot-record.js` (byte-exact record codec + planner +
+  view model, shared by page and host tests, pinned by C-generated golden
+  fixtures) and `install-slot/mock-device.js` + `?mock=1|fresh|legacy` page
+  mode with a persistent MOCK banner for hardware-free browser testing
+  (local server whitelist updated for the two new modules). Host gate:
+  `tools/install-slot/test-dynslot-record.mjs` (12 PASS) registered in
+  `tools/validate.sh`; browser walkthrough verified connect → list →
+  auto-allocate install → remove → summary with byte-level flash read-back.
+
+- **USB installer: occupied slots are never targeted by default; overwrite
+  requires confirmation**: human review of the dynamic slot page found that
+  the radio fallback ("first fitting row") could silently aim an install at a
+  slot that already has a sub-firmware installed. In dynslot modes the default
+  now resolves recommended empty slot -> `Auto` (when the pool fits the image)
+  -> nothing, so loading a firmware can never pre-select an occupied slot;
+  with no default, Install answers `err_pick_slot_first` instead of writing.
+  Installing into an occupied VALID slot pops a `confirm()` naming
+  slot/offset/size/name -- cancel logs "Install cancelled -- nothing changed"
+  with zero writes. Removing a slot voids an explicit radio pick (row indices
+  shift after the splice, so a stale index must not retarget another slot).
+  The disabled `Auto` row now states the reason up front ("no room: needs X,
+  largest gap Y, free Z -- delete a slot for a contiguous span"). Legacy
+  fixed-3-slot devices keep the old pre-checked default. Verified in mock mode
+  end-to-end: both slots occupied -> no default pick -> guided error; explicit
+  pick -> confirm -> cancel leaves seq/flash untouched, accept overwrites.
+
 ## v2.0.0 (2026-10-04)
 
 - **v3.2-r10.38 (2026-10-02) dynslot — dynamic slot partitioning + slot removal

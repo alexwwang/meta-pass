@@ -133,6 +133,7 @@ bool meta_carve_flash_has_record(void)
 
 static esp_err_t carve_region_protected(void *arg, size_t start_addr, size_t size)
 {
+    (void)arg;   // os_func 钩子签名要求;设备/host 两侧都不使用(host -Werror 对齐)
     if (!esp_partition_is_flash_region_writable(start_addr, size)) {
         return ESP_ERR_NOT_ALLOWED;   // 与 IDF 一致:readonly 分区 → 调用方返回错误
     }
@@ -179,6 +180,12 @@ bool meta_carve_flash_reboot_pending(void)
     return s_reboot_pending;
 }
 
+// N21: 复位前显式清除,避免依赖 BSS 重置的隐式清零
+void meta_carve_flash_reboot_clear(void)
+{
+    s_reboot_pending = false;
+}
+
 esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
 {
     if (!table) return ESP_ERR_INVALID_ARG;
@@ -191,6 +198,10 @@ esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
     // 校验修复,§4.7),这里只对这两次调用临时摘掉 region_protected 钩子,
     // start/end/缓存管理全部原样复用 IDF flash_ops。commit 的调用方都在
     // 同一 httpd 任务串行执行,无并发窗口。
+    // M5: 防重入 —— 虽当前调用方串行,但加静态锁避免未来并发风险
+    static bool s_in_progress = false;
+    if (s_in_progress) return ESP_FAIL;
+    s_in_progress = true;
     static esp_flash_os_functions_t s_pt_os_func;
     esp_flash_t *const chip = esp_flash_default_chip;
     s_pt_os_func = *chip->os_func;
@@ -205,12 +216,14 @@ esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
     chip->os_func = saved_os;
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "table sector erase/write failed: %s", esp_err_to_name(e));
+        s_in_progress = false;
         return ESP_FAIL;
     }
     // 读回进 s_live:调用方传入的 table 不与 s_live 重叠(记录表在 s_best/s_tmp)。
     if (esp_flash_read(NULL, s_live, META_PT_FLASH_OFFSET, META_PT_SIZE) != ESP_OK ||
         memcmp(s_live, table, META_PT_SIZE) != 0) {
         ESP_LOGE(TAG, "table read-back mismatch");
+        s_in_progress = false;
         return ESP_FAIL;
     }
     // 分区缓存失效:esp_partition 的 SRAM 缓存只在"首次访问"从 flash 表
@@ -221,6 +234,7 @@ esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
     // 物化是分区表变化的唯一漏斗,且全部调用方与在途 OTA 串行(单 httpd
     // 任务 + prepare 拒并发),此处 unload 后下次访问即从刚写好的表重建。
     esp_partition_unload_all();
+    s_in_progress = false;
     return ESP_OK;
 }
 
@@ -309,7 +323,6 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
         if (e != ESP_OK) return e;
         s_reboot_pending = true;
     }
-    
 
     ESP_LOGI(TAG, "carve committed: seq=%lu slots=%u materialize=%d",
              (unsigned long)seq, (unsigned)s_in.count, (int)materialize);

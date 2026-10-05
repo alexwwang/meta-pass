@@ -50,6 +50,7 @@ esp_err_t meta_carve_flash_sync_states(const meta_slot_info_t *slots, int count)
 // 0x8000 表读写(裸 flash;写 = 擦 4KB 扇区 → 写 0xC00 → 读回比对)。
 bool meta_carve_flash_table_read(uint8_t out[META_PT_SIZE]);
 bool meta_carve_flash_reboot_pending(void);   // 运行时装过 carved 表 → 退出商店页复位
+void meta_carve_flash_reboot_clear(void);     // 复位前显式清除(N21)
 esp_err_t meta_carve_flash_set_valid(int slot, const char *name,
                                      uint32_t image_len,
                                      const uint8_t sha256[32]);   // 运行时装过 carved 表 → 退出商店页复位
