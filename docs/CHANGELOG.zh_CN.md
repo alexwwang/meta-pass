@@ -4,7 +4,7 @@
 
 # Changelog
 
-## Unreleased (2026-10-05)
+## v2.1.0 (2026-10-06)
 
 - **USB 安装页：动态（dynslot）槽位管理**：`install-slot.html` 第 2 步不再是
   静态三个单选。连接时页面读取 carve 记录（0x35A000 的 A/B 扇区）+ 设备分区表，

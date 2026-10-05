@@ -4,7 +4,7 @@
 
 # Changelog
 
-## Unreleased (2026-10-05)
+## v2.1.0 (2026-10-06)
 
 - **USB installer: dynamic (dynslot) slot management page**: step 2 of
   `install-slot.html` stops being a static 3-radio list. On Connect the page
