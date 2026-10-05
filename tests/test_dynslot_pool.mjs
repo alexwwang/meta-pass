@@ -109,7 +109,7 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   const withStorage = geomFromListing({ count: 2, free: 0, slots: [
     { slot: 0, state: "empty", name: "", size: 0x20000, len: 0,
       limit: 0, offset: 0x180000, kind: "storage" },
-    { slot: 1, state: "valid", name: "x", size: 0x40000, len: 1,
+    { slot: 1, state: "empty", name: "", size: 0x40000, len: 0,
       limit: 0x3f000, offset: 0x360000, kind: "app" },
   ] }, 0x10000);
   assert.deepEqual(withStorage.current, [{ slot: 1, limit: 0x3f000, fit: true }]);

@@ -862,24 +862,37 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   console.log("PASS 9a: slots listing contract (token gated, carve-derived limit/free, 401 without token)");
 }
 
-// 9b. 删除成功路径:200 → carve 即时收缩 → 复位窗口内 status 不可达 →
-//     waitDeviceBack 等到恢复 → 刷新清单仍无该槽。
+// 9b. 删除成功路径:200 → carve 即时收缩 → 复位窗口被 GET 重试透明吸收 →
+//     窗口超预算时仍报告不可达(status 0)→ waitDeviceBack 恢复 → 清单无该槽。
 {
   const dev = makeDevice();
   globalThis.fetch = dispatchFetch(installMockFetch(), dev);
   const rm = await bridge.remove(1);
   assert.equal(rm.status, 200);
   assert.deepEqual(dev.carve.map((s) => s.slot), [0, 2]);
+  // 新契约(d4209a0):GET 退避重试跨复位窗口,单次 status 调用对重启无感
+  // —— mock 窗口(2 轮)< 重试上限,透明成功而非报不可达。
   const during = await bridge.status();
-  assert.equal(during.ok, false);
-  assert.equal(during.status, 0, "device must be unreachable during reboot window");
+  assert.equal(during.ok, true, "GET retry must transparently absorb the reboot window");
+
+  // 复位窗口超过重试上限时必须仍可检测:耗尽重试 → status 0,
+  // waitDeviceBack 继续轮询直至恢复。patch setTimeout 让退避即刻返回。
+  const dev2 = makeDevice({ rebootPolls: 8 });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev2);
+  assert.equal((await bridge.remove(1)).status, 200);
+  const realST = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, _ms) => realST(fn, 0);
+  let dead;
+  try { dead = await bridge.status(); } finally { globalThis.setTimeout = realST; }
+  assert.equal(dead.ok, false);
+  assert.equal(dead.status, 0, "reboot window beyond retry budget must surface as unreachable");
   const back = await phone.waitDeviceBack(bridge,
     { tries: 5, delayMs: 1, sleep: async () => {} });
   assert.equal(back, true);
   const info = phone.parseSlots((await bridge.slots()).text);
   assert.equal(info.count, 2);
   assert.deepEqual(info.slots.map((s) => s.slot), [0, 2]);
-  console.log("PASS 9b: remove → 200, slot gone, reboot window unreachable, waitDeviceBack recovers");
+  console.log("PASS 9b: remove → 200, slot gone, window absorbed by retry / beyond-budget → status 0, waitDeviceBack recovers");
 }
 
 // 9c. 拒绝面(顺序与设备端一致):坏体 400 → 忙碌 409 → 不在 carve 404;
@@ -947,16 +960,22 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   assert.ok(info);
   const geom = dyn.geomFromListing(info, APP.length);
   assert.equal(geom.proposal, null);            // legacy 全占,无处新建
-  const pre = await phone.prepareImage(meta, 0, {}, "", { geom, slotIsNew: false });
+  assert.equal(geom.suggestedSlot, 1);          // 建议 = 首个 empty(占用槽不再可装)
+  assert.deepEqual(geom.current.map((s) => s.fit), [false, true, true]);
+  // 占用槽不再是合法选择(d4209a0:fit 只对 empty):选 slot0(valid)→ 门拒。
+  const occ = await phone.prepareImage(meta, 0, {}, "", { geom, slotIsNew: false });
+  assert.equal(occ.ok, false);
+  assert.match(occ.reason, /chosen slot 0 does not fit/);
+  const pre = await phone.prepareImage(meta, 1, {}, "", { geom, slotIsNew: false });
   assert.equal(pre.ok, true, JSON.stringify(pre));
   assert.equal(pre.offer.carveOffset, undefined);
   assert.equal(pre.offer.carveSize, undefined);
   assert.deepEqual(pre.offer.slots, [
-    { slot: 0, limit: 0x1d5000, fit: true },
+    { slot: 0, limit: 0x1d5000, fit: false },
     { slot: 1, limit: 0x1ff000, fit: true },
     { slot: 2, limit: 0x29d000, fit: true },
   ]);
-  assert.equal(pre.offer.suggestedSlot, 0);
+  assert.equal(pre.offer.suggestedSlot, 1);
   // 选中不在声称表里的下标 → chosen-slot 门拒(无提案路径的下标门禁)。
   const bad = await phone.prepareImage(meta, 5, {}, "", { geom, slotIsNew: false });
   assert.equal(bad.ok, false);

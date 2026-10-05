@@ -4,6 +4,21 @@
 
 # Changelog
 
+## Unreleased
+
+- **Test suite: close out stale phone/pool contract assertions left by
+  d4209a0** ("survive controlled reboot", v2.0 dev). That commit changed two
+  behaviors without updating the host tests, leaving `test_phone_install.mjs`
+  red since Oct 4 (first failure masked the rest): (1) bridge GET calls retry
+  network errors with backoff, so a single `status()` call now absorbs the
+  post-remove reboot window instead of reporting `status: 0` — 9b rewritten to
+  assert the transparent-absorption contract plus a beyond-retry-budget
+  unreachable branch; (2) `geomFromListing` fit is `empty`-only, so occupied
+  slots are no longer selectable/suggested — 10a rewritten to assert the
+  occupied-slot rejection, and the `test_dynslot_pool.mjs` withStorage fixture
+  switched its app slot to `empty` to keep exercising the existing-slot-first
+  branch.
+
 ## v2.1.0 (2026-10-06)
 
 - **USB installer: dynamic (dynslot) slot management page**: step 2 of

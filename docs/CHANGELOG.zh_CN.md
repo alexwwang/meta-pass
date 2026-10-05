@@ -4,6 +4,16 @@
 
 # Changelog
 
+## Unreleased
+
+- **测试套件：清理 d4209a0（v2.0 开发，"survive controlled reboot"）遗留的失效断言**。
+  该 commit 改了行为没同步改 host 测试，导致 `test_phone_install.mjs` 自 10 月 4 日起
+  一直红（首个失败遮蔽了后续）：(1) bridge GET 调用对网络错误退避重试，单次
+  `status()` 现在透明跨删除后复位窗口而非报 `status 0` —— 9b 重写为断言"透明吸收"
+  契约并补"窗口超预算仍报不可达"分支；(2) `geomFromListing` 的 fit 只对 empty 槽，
+  占用槽不再可选/可建议 —— 10a 重写为断言占用槽门拒，`test_dynslot_pool.mjs`
+  的 withStorage 夹具 app 槽改为 `empty` 以保留"现有槽优先"分支覆盖。
+
 ## v2.1.0 (2026-10-06)
 
 - **USB 安装页：动态（dynslot）槽位管理**：`install-slot.html` 第 2 步不再是
