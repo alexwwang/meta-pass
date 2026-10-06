@@ -143,13 +143,13 @@ cat <<EOF
 
 升级已装的 meta-pass(保留 NVS 存储数据与全部子固件):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
-  2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
+  2. Chrome 打开 https://metapass.chuanxilu.net/ (或 node tools/install-slot/server.mjs)
   3. Connect → "Upgrade launcher" → 选择 build/meta-pass_${VERSION}.bin → Upgrade
   (页面校验文件指纹 SHA-256,并先读回设备分区表逐字节比对,不一致则拒绝升级)
 
 安装到设备(首次烧录,USB 安装页自动处理签名/显示名):
   1. 设备按住 UP 键插 USB → 屏幕出现"安装模式"
-  2. Chrome 打开 https://meta-pass.pages.dev/ (或 node tools/install-slot/server.mjs)
+  2. Chrome 打开 https://metapass.chuanxilu.net/ (或 node tools/install-slot/server.mjs)
   3. Connect → 选槽位 → 选择 build/meta-pass_${VERSION}.bin → Install
 
 命令行烧写(可选;PORT 换成你的串口,macOS 形如 /dev/cu.usbserial-xxxx):

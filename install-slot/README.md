@@ -3,7 +3,7 @@
 [简体中文](README.zh_CN.md) | English
 
 Zero-dependency Chrome page that writes child firmware directly into a
-meta-pass OTA slot over USB serial. Live at **https://meta-pass.pages.dev/**
+meta-pass OTA slot over USB serial. Live at **https://metapass.chuanxilu.net/**
 (Cloudflare Pages); `tools/install-slot/server.mjs` is retained for local
 development.
 
@@ -14,7 +14,7 @@ development.
 The page + API proxy are served together from Cloudflare Pages:
 
 ```
-https://meta-pass.pages.dev/
+https://metapass.chuanxilu.net/
 ```
 
 The Pages `_worker.js` (in this directory) serves the install page at `/`

@@ -12,7 +12,7 @@
 页面 + API 代理由 Cloudflare Pages 提供：
 
 ```
-https://meta-pass.pages.dev/
+https://metapass.chuanxilu.net/
 ```
 
 本目录下的 `_worker.js` 在 `/` 提供安装页面，将 `/api/plays`、`/api/play`、
