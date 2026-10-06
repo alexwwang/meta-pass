@@ -3,7 +3,7 @@ compatibility_date = "2024-01-01"
 
 # Cloudflare Pages 配置:
 # install-slot/ 是静态资源目录, _worker.js 在里面处理 /api/* 反向代理
-# 部署后地址: https://meta-pass.pages.dev
+# 部署后地址: https://metapass.chuanxilu.net
 pages_build_output_dir = "./install-slot"
 
 # 本地部署: wrangler pages deploy
