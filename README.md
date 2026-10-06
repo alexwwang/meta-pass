@@ -91,7 +91,7 @@ switch. No custom bootloader changes.
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="WiFi provisioning page: hotspot name metapass-D886, instructions to open http://192.168.4.1"
+       alt="Install modal: app size exceeds slot capacity, shows slot options disabled with size limit"
        width="800">
 </p>
 
