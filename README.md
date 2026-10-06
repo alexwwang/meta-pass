@@ -9,7 +9,7 @@ overwrite each other, and the launcher is always one power cycle away.
 
 <p align="center">
   <img src="docs/assets/images/meta-pass-cover.png"
-       alt="meta-pass launcher: slot list with Pocket Walkie / Passport Radar / empty Slot 2"
+       alt="meta-pass launcher: slot list with Instrument Metronom / Chaotic Pendulum / City Radio / byside"
        width="800">
 </p>
 
@@ -83,15 +83,15 @@ switch. No custom bootloader changes.
 
 <p align="center">
   <img src="docs/assets/images/meta-pass-usb-installer.png"
-       alt="USB serial install page: connect, pick slot, pick source, display name, progress and log"
+       alt="App store store list: search results with sizes, tap to show install modal"
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-wifi-import.png"
-       alt="Wi-Fi import page: SSID, password, one-time pairing code, countdown"
+       alt="WiFi provisioning page: hotspot name metapass-D886, instructions to open http://192.168.4.1"
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="Unsigned firmware warning: BOOT / CANCEL menu, OK click to confirm"
+       alt="Install modal: app size exceeds slot capacity, shows slot options disabled with size limit"
        width="800">
 </p>
 

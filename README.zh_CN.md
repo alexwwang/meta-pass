@@ -8,7 +8,7 @@ meta-pass 是给 FoloToy AI Passport（ESP32-C3，8MB Flash）写的**多固件�
 
 <p align="center">
   <img src="docs/assets/images/meta-pass-cover.png"
-       alt="meta-pass 启动器：三槽列表，显示 Pocket Walkie / Passport Radar / 空 Slot 2"
+       alt="meta-pass 启动器：槽位列表页，显示 SLOT 0-3 及 STORE DOWNLOAD"
        width="800">
 </p>
 
@@ -62,15 +62,15 @@ bootloader 改动。
 
 <p align="center">
   <img src="docs/assets/images/meta-pass-usb-installer.png"
-       alt="USB 串口安装页：连接、选槽、选固件来源、显示名、进度与日志"
+       alt="商店列表页：显示各玩法大小，点击弹出安装对话框"
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-wifi-import.png"
-       alt="Wi-Fi 导入页：SSID、密码、一次性配对码、倒计时"
+       alt="WiFi 配网页：热点名 metapass-D886，提示打开 http://192.168.4.1"
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="未签名固件警告：BOOT / CANCEL 菜单，OK 单击确认"
+       alt="安装确认弹窗：应用体积超槽位上限，选项置灰显示容量限制"
        width="800">
 </p>
 
