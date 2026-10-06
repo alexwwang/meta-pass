@@ -4,7 +4,7 @@
 
 meta-pass is a **multi-firmware launcher** for the FoloToy AI Passport (ESP32-C3,
 8MB flash): flash meta-pass once, then install community firmware into three slots at
-any time and boot them from a menu — **no more full reflashes**. Plays no longer
+any time and boot them from a menu — **no more full reflashes**. Slot layout is dynamic on compatible devices: carve new slots from free space or remove unused ones, all from the USB installer. Plays no longer
 overwrite each other, and the launcher is always one power cycle away.
 
 <p align="center">
@@ -19,17 +19,15 @@ overwrite each other, and the launcher is always one power cycle away.
 
 A stock Passport runs one firmware at a time; trying community plays means reflashing
 the whole flash and back. meta-pass lives in the factory partition as a launcher and
-turns the remaining flash into three OTA slots for child firmware:
+turns the remaining flash into a dynamic slot pool for child firmware — carve slots on the fly or let the installer auto-allocate from free space:
 
 ```text
 0x000000   bootloader
 0x008000   partition table   nvs / phy_init (identical to stock)
 0x010000   factory (1.44MB)  ← the meta-pass launcher itself
-0x180000   ota_0 (1.84MB)    ← slot 0 (last 4KB = display-name blob)
+0x180000   slot pool         ← carved slots grow here; MPSC carve records at 0x35A000/0x35C000
 0x356000   cardid (16KB)     ← device identity; untouched by every channel
-0x360000   ota_1 (2MB)       ← slot 1 (last 4KB = display-name blob)
-0x560000   ota_2 (2.61MB)    ← slot 2: bootable child slot OR littlefs recording storage
-                               dual-use: boot checks for image, else mounts littlefs
+0x360000   free space        ← new slots auto-allocated from here
 0x7FE000   otadata           ← written by the launcher to pick a slot, then reboot
 ```
 

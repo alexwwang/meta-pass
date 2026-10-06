@@ -17,17 +17,15 @@ meta-pass 是给 FoloToy AI Passport（ESP32-C3，8MB Flash）写的**多固件�
 > **v2.1.0 发布说明**：[English](docs/release-notes/v2.1.0.md) · [中文](docs/release-notes/v2.1.0.zh_CN.md) —— 动态槽位表、覆盖安装与删除、MOCK 模式、phone 端跨重启窗口重试。
 
 官方机器一次只能跑一个固件，试社区的 plays 就得整片刷掉再刷回来。meta-pass
-把自己放在 factory 分区当启动器，把剩余 Flash 划成三个 OTA 槽位装子固件：
+把自己放在 factory 分区当启动器，把剩余 Flash 划成动态槽位池装子固件——可以随时 carve 新槽或让安装器从空闲空间自动分配：
 
 ```text
 0x000000   bootloader
 0x008000   分区表             nvs / phy_init（与官方一致）
 0x010000   factory (1.44MB)  ← meta-pass 启动器本体
-0x180000   ota_0 (1.84MB)    ← 槽位 0（尾部 4KB = 显示名 blob）
+0x180000   slot pool         ← carve 槽生长于此；MPSC carve 记录在 0x35A000/0x35C000
 0x356000   cardid (16KB)     ← 设备身份，所有通道都不碰
-0x360000   ota_1 (2MB)       ← 槽位 1（尾部 4KB = 显示名 blob）
-0x560000   ota_2 (2.61MB)    ← 槽位 2：子固件槽或录音存储（双用）
-                               双用途：检测到镜像时启动，无镜像则挂载 littlefs
+0x360000   free space        ← 新槽从此处自动分配
 0x7FE000   otadata           ← 启动器选槽后写这里再重启
 ```
 
