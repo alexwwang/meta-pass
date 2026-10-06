@@ -91,7 +91,7 @@ switch. No custom bootloader changes.
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="Install modal: app size exceeds slot capacity, shows slot options disabled with size limit"
+       alt="Dynamic slot table: offset/size/state/name/max-size per row with Remove buttons and Auto-allocate"
        width="800">
 </p>
 

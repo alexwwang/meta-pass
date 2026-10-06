@@ -70,7 +70,7 @@ bootloader 改动。
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="安装确认弹窗：应用体积超槽位上限，选项置灰显示容量限制"
+       alt="动态槽位表：每行显示偏移/大小/状态/名字/最大镜像，带删除按钮和自动规划"
        width="800">
 </p>
 
