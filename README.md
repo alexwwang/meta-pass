@@ -15,7 +15,7 @@ overwrite each other, and the launcher is always one power cycle away.
 
 [\![FoloToy plays #281](https://img.shields.io/badge/play-281-informational)](https://ai-passport.folotoy.cn/plays/281)
 >
-> **v2.1.0 release notes**: [English](docs/release-notes/v2.1.0.md) · [中文](docs/release-notes/v2.1.0.zh_CN.md) — dynamic slot table, overwrite + delete, mock mode, phone retry across reboot window.
+>**v2.1.0 release notes**: [English](docs/release-notes/v2.1.0.md) · [简体中文](docs/release-notes/v2.1.0.zh_CN.md) — dynamic slot table, overwrite + delete, mock mode, phone retry across reboot window.
 
 A stock Passport runs one firmware at a time; trying community plays means reflashing
 the whole flash and back. meta-pass lives in the factory partition as a launcher and
