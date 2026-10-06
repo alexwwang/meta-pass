@@ -92,7 +92,7 @@ python -m esptool --chip esp32c3 -p <串口> -b 460800 \
 
 **方式 A：USB 串口安装页**（不需要设备开热点）：
 
-用 Chrome 打开 **https://meta-pass.pages.dev/**（托管页面 + API 代理，零安装）——
+用 Chrome 打开 **https://metapass.chuanxilu.net/**（托管页面 + API 代理，零安装）——
 或本地运行 `node tools/install-slot/server.mjs` → http://localhost:4191/。
 
 设备按住 UP 键开机 → 页面 Connect → 选槽位 → 选本地文件或粘贴 plays 链接 →
@@ -161,7 +161,7 @@ WiFi 下的手机扫码（或手动输入显示的网址 + 配对码）→ 在�
 | --- | --- |
 | `main/` | 启动器 UI（`main.c`）、存储层（`meta_store`）、LAN 安装通道（`meta_store_net` WiFi/配网/httpd + `meta_store_install` 本地安装 HTTP/OTA + `meta_store_json` 有界 JSON 提取器 + `meta_install_model` 安装规则）、纯逻辑模块（`meta_image`/`meta_slots`/`meta_name`）、子固件 hook（`metapass_hook.h`） |
 | `components/bsp/` | 板级支持包（官方原样 + 显式 `BSP_BTN_LONG` 1.5 秒阈值） |
-| `install-slot/` | USB 串口安装页，线上地址 https://meta-pass.pages.dev/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
+| `install-slot/` | USB 串口安装页，线上地址 https://metapass.chuanxilu.net/（Cloudflare Pages：静态资源 + `_worker.js` API 代理） |
 | `tools/install-slot/` | `server.mjs` 本地服务器（直接服务规范的 `install-slot/` 页面——单一来源，零依赖） |
 | `tools/validate.sh` | 统一门禁：静态检查 + host tests + 固件构建 + 受保护布局校验 |
 | `tools/build-firmware.sh` | 一条命令的本地固件构建（自动找 ESP-IDF、编译、合并、校验、打印烧写指引，新手友好） |

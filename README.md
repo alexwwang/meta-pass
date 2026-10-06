@@ -114,7 +114,7 @@ the covered region; **never** run `erase-flash` on an identity-written device).
 
 **Option A: USB serial install page** (no hotspot needed):
 
-Open **https://meta-pass.pages.dev/** in Chrome (hosted page + API proxy, zero
+Open **https://metapass.chuanxilu.net/** in Chrome (hosted page + API proxy, zero
 setup) — or run locally with `node tools/install-slot/server.mjs` →
 http://localhost:4191/.
 
@@ -194,7 +194,7 @@ publisher — third-party developers submit binaries for signing rather than sel
 | --- | --- |
 | `main/` | Launcher UI (`main.c`), storage layer (`meta_store`), LAN install channel (`meta_store_net` WiFi/provisioning/httpd + `meta_store_install` local install HTTP/OTA + `meta_store_json` bounded JSON parser + `meta_install_model` install rules), pure-logic modules (`meta_image`/`meta_slots`/`meta_name`), child-firmware hook (`metapass_hook.h`) |
 | `components/bsp/` | Board support package (stock + explicit `BSP_BTN_LONG` 1.5 s threshold) |
-| `install-slot/` | USB serial install page, live at https://meta-pass.pages.dev/ (Cloudflare Pages: static assets + `_worker.js` API proxy) |
+| `install-slot/` | USB serial install page, live at https://metapass.chuanxilu.net/ (Cloudflare Pages: static assets + `_worker.js` API proxy) |
 | `tools/install-slot/` | `server.mjs` localhost server (serves the canonical `install-slot/` page directly — single source, zero dependencies) |
 | `tools/validate.sh` | Unified gate: static checks + host tests + firmware build + protected-layout verification |
 | `tools/build-firmware.sh` | One-command local firmware build for beginners (finds ESP-IDF, builds, merges, verifies, prints flashing guide) |
