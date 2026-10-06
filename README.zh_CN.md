@@ -12,6 +12,7 @@ meta-pass 是给 FoloToy AI Passport（ESP32-C3，8MB Flash）写的**多固件�
        width="800">
 </p>
 
+[\![FoloToy 玩法 #944 (v2)](https://img.shields.io/badge/%E7%8E%A9%E6%8F%9C%E7%AD%94-944-informational)](https://ai-passport.folotoy.cn/plays/944/)
 [\![FoloToy 玩法 #281](https://img.shields.io/badge/%E7%8E%A9%E6%8F%9C%E7%AD%94-281-informational)](https://ai-passport.folotoy.cn/plays/281)
 >
 > **v2.1.0 发布说明**：[English](docs/release-notes/v2.1.0.md) · [中文](docs/release-notes/v2.1.0.zh_CN.md) —— 动态槽位表、覆盖安装与删除、MOCK 模式、phone 端跨重启窗口重试。

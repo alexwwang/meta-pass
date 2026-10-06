@@ -13,6 +13,7 @@ overwrite each other, and the launcher is always one power cycle away.
        width="800">
 </p>
 
+[\![FoloToy plays #944 (v2)](https://img.shields.io/badge/play-944-informational)](https://ai-passport.folotoy.cn/plays/944/)
 [\![FoloToy plays #281](https://img.shields.io/badge/play-281-informational)](https://ai-passport.folotoy.cn/plays/281)
 >
 >**v2.1.0 release notes**: [English](docs/release-notes/v2.1.0.md) · [简体中文](docs/release-notes/v2.1.0.zh_CN.md) — dynamic slot table, overwrite + delete, mock mode, phone retry across reboot window.
