@@ -70,7 +70,7 @@ bootloader 改动。
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-unsigned-warning.png"
-       alt="安装确认弹窗：应用体积超槽位上限，选项置灰显示容量限制"
+       alt="WiFi 配网页：热点名 metapass-D886，提示打开 http://192.168.4.1"
        width="800">
 </p>
 
