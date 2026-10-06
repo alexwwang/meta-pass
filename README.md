@@ -83,7 +83,7 @@ switch. No custom bootloader changes.
 
 <p align="center">
   <img src="docs/assets/images/meta-pass-usb-installer.png"
-       alt="App store store list: search results with sizes, tap to show install modal"
+       alt="App store list: browse plays with sizes, tap to show install modal"
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-wifi-import.png"

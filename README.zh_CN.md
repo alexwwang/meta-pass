@@ -62,7 +62,7 @@ bootloader 改动。
 
 <p align="center">
   <img src="docs/assets/images/meta-pass-usb-installer.png"
-       alt="商店列表页：显示各玩法大小，点击弹出安装对话框"
+       alt="商店列表页：浏览玩法列表，点击弹出安装对话框"
        width="800">
   &nbsp;&nbsp;&nbsp;
   <img src="docs/assets/images/meta-pass-wifi-import.png"
