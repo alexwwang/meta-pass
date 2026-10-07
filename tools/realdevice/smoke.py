@@ -493,11 +493,9 @@ def main():
         die(f"二装后 slots={n} != 2", mon)
     ok("slots=2 持久")
 
-    # ── S4 删除闭环(归档 no-op + 擦除删除)──────────────────────────────
-    # 注意:LAN/USB 纯固件安装的槽 play_id=0(REC: playId=0 for USB installs),
-    # archive_slot_and_data 对 play_id=0 返回 INVALID_STATE(WARN,无害) —
-    # 数据归档子路径需要带数据的商店玩法安装,本冒烟覆盖不到。
-    stage("S4 删除闭环(归档 no-op + 擦除删除)")
+    # ── S4 删除闭环(DATA 归档 + 擦除删除)───────────────────────────────
+    # S2 使用真实 playId=1 + DATA；删除 slot0 必须将 DATA 转为 ARCHIVED。
+    stage("S4 删除闭环(DATA 归档 + 擦除删除)")
     st, _ = api.post("/api/install/remove", b'{"slot":0}')
     if st != 200:
         die(f"remove(归档) {st}", mon)
@@ -505,7 +503,11 @@ def main():
     s = slots()
     if s["count"] != 1:
         die(f"删槽0后 count={s['count']} != 1", mon)
-    ok("删除槽0(归档路径):count=1,纯 APP 槽无数据可归档(WARN 预期)")
+    archived = [d for d in s.get("data", [])
+                if d.get("play_id") == 1 and d.get("label") == "recordings"]
+    if len(archived) != 1 or int(archived[0].get("state", -1)) != 2:
+        die(f"删除槽0后 DATA 未进入 ARCHIVED: {archived}", mon)
+    ok("删除槽0:count=1, DATA recordings → ARCHIVED")
     # 删除后剩余槽会重新编号(紧凑化),取当前实际索引而非硬编码 1
     s = slots()
     rem = s["slots"][0]["slot"] if s.get("slots") else 0
@@ -576,14 +578,29 @@ def main():
     s = slots()
     ok(f"续连完成:slots={s['count']}")
 
-    # ── S6 取证 ─────────────────────────────────────────────────────────
-    stage("S6 取证")
+    # ── S6 取证 + DATA 字节级回读 ─────────────────────────────────────
+    stage("S6 取证 + DATA 字节级回读")
+    s = slots()
+    rec = next((d for d in s.get("data", [])
+                if d.get("play_id") == 1 and d.get("label") == "recordings"), None)
+    if rec is None:
+        die("找不到已归档 recordings DATA 记录", mon)
+    if int(rec.get("state", -1)) != 2:
+        die(f"recordings 状态异常: {rec}", mon)
+    ok(f"DATA record persisted: offset=0x{int(rec['offset']):x} size={int(rec['size'])} state=ARCHIVED")
     mon.stop()
     evid = os.path.join(LOGDIR, time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(evid, exist_ok=True)
     esptool(args.port, f"read_flash 0x8000 0xC00 {evid}/table.bin", timeout=60)
     esptool(args.port, f"read_flash 0x35A000 0x2000 {evid}/store.bin", timeout=60)
-    ok(f"表区 + store 区已回读 → {evid}/")
+    data_dump = os.path.join(evid, "recordings.bin")
+    data_off = int(rec["offset"])
+    esptool(args.port, f"read_flash 0x{data_off:x} {len(data_bytes):x} {data_dump}", timeout=60)
+    actual = open(data_dump, "rb").read()
+    if actual != data_bytes:
+        die("DATA 首传镜像字节回读不一致", mon)
+    ok("DATA 首传镜像字节级回读 PASS")
+    ok(f"表区 + store 区 + DATA 区已回读 → {evid}/")
 
     print(f"\n{PASS} 全部阶段通过。日志:{logfile}")
     print("人工抽验(2 分钟):列表导航/OK 启动玩法/彩蛋 —— 自动化不覆盖物理按键。")
