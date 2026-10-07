@@ -51,8 +51,9 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   full.set([0xaa, 0x50, 0x01, subtype], pt + 32);
   full.set([dataOff & 0xff, (dataOff >> 8) & 0xff, (dataOff >> 16) & 0xff, (dataOff >> 24) & 0xff], pt + 36);
   full.set([dataSize & 0xff, (dataSize >> 8) & 0xff, (dataSize >> 16) & 0xff, (dataSize >> 24) & 0xff], pt + 40);
-  full.set([...Buffer.from(label)], pt + 48);
-  full[pt + 48 + label.length] = 0;
+  // ESP partition entry label is the 16-byte field at entry +12.
+  full.set([...Buffer.from(label)], pt + 44);
+  full[pt + 44 + label.length] = 0;
   return full;
 }
 
