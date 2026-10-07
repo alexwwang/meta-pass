@@ -489,7 +489,7 @@ esp_err_t meta_carve_flash_ensure(void)
          * boot.  app_main is always the launcher, so repair the live table to
          * launcher view rather than restoring the full carve table.
          */
-        uint8_t launcher_table[META_PT_SIZE];
+        static uint8_t launcher_table[META_PT_SIZE];
         if (!meta_pt_from_carve_active(&s_best.carve, 0, launcher_table)) {
             ESP_LOGE(TAG, "cannot materialize launcher runtime table");
             return ESP_FAIL;
