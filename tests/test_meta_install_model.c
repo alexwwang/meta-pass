@@ -594,7 +594,7 @@ static void test_place_offer(void)
     // ── 全新放置:槽位 + 两条数据,一次 OK ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1572864,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"rec\"},"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"subtype\":130,\"initialImageSize\":123,\"label\":\"rec\"},"
         "{\"playId\":7,\"size\":8192,\"label\":\"cfg\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(m.data_count == 2);
@@ -605,6 +605,7 @@ static void test_place_offer(void)
     assert(next.slot[0].play_id == 7);
     assert(next.data_count == 2);
     assert(next.data[0].play_id == 7 && next.data[0].state == META_DATA_PRISTINE);
+    assert(next.data[0].subtype == 130);
     assert(strcmp(next.data[0].label, "rec") == 0);
     // 数据 first-fit 落在槽位之后(pool_0 先填):rec 紧邻槽尾(0x1A0000);
     // 数据偏移按 META_CARVE_OFFSET_ALIGN(64KB)对齐 → cfg 跳到下一 64KB 界。
