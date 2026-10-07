@@ -627,6 +627,18 @@ esp_err_t meta_install_session_open(const meta_install_session_req_t *req)
             s_session.session_offset = 0;
             s_session.ota_open = false;
             s_session.flash_touched = false;
+            s_session.data_done_mask = 0;
+            s_session.data_erased_mask = 0;
+            memset(s_session.data_offset, 0, sizeof(s_session.data_offset));
+            for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+                /* Existing DATA is user state: preserve it. Empty initial images
+                 * need no transfer either. */
+                if (s_session.manifest.data[i].play_id == 0 ||
+                    s_session.manifest.data[i].initial_image_size == 0 ||
+                    (s_session.data_dirty_mask & (1u << i))) {
+                    s_session.data_done_mask |= (1u << i);
+                }
+            }
             mbedtls_sha256_init(&s_session.sha);
             mbedtls_sha256_starts(&s_session.sha, 0);
             s_session.sha_started = true;
@@ -708,6 +720,151 @@ esp_err_t meta_install_chunk_write(const void *data, uint32_t length)
 out:
     session_unlock();
     return rc;
+}
+
+static const meta_carve_data_t *manifest_data_record(uint8_t idx)
+{
+    if (idx >= s_session.manifest.data_count || idx >= META_DATA_MAX) return NULL;
+    const uint32_t pid = s_session.manifest.data[idx].play_id;
+    if (pid == 0) return NULL;
+    const int rec = meta_carve_find_data(meta_carve_flash_carve(), pid,
+                                         s_session.manifest.data[idx].label);
+    if (rec < 0) return NULL;
+    return &meta_carve_flash_carve()->data[rec];
+}
+
+esp_err_t meta_install_data_write(uint8_t data_index, uint32_t offset,
+                                   const void *data, uint32_t length,
+                                   bool *duplicate)
+{
+    if (duplicate) *duplicate = false;
+    if (!data || length == 0 || length > META_INSTALL_MAX_CHUNK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    session_lock();
+    esp_err_t rc = ESP_OK;
+    if (!s_session.session_opened || !s_session.manifest_valid ||
+        data_index >= s_session.manifest.data_count ||
+        data_index >= META_DATA_MAX) {
+        rc = ESP_ERR_INVALID_STATE;
+        goto out;
+    }
+
+    const uint32_t expected = s_session.manifest.data[data_index].initial_image_size;
+    if (expected == 0 || s_session.manifest.data[data_index].play_id == 0) {
+        /* Nothing to upload for this entry. */
+        if (duplicate) *duplicate = true;
+        goto out;
+    }
+    if (s_session.data_dirty_mask & (1u << data_index)) {
+        /* Existing child DATA is deliberately preserved across upgrade. */
+        if (duplicate) *duplicate = true;
+        goto out;
+    }
+
+    const meta_chunk_verdict_t v = meta_install_model_chunk(
+        true, s_session.data_offset[data_index], expected,
+        offset, length, META_INSTALL_MAX_CHUNK);
+    if (v == META_CHUNK_DUP) {
+        if (duplicate) *duplicate = true;
+        goto out;
+    }
+    if (v != META_CHUNK_OK) {
+        rc = ESP_ERR_INVALID_ARG;
+        goto out;
+    }
+
+    const meta_carve_data_t *rec = manifest_data_record(data_index);
+    if (!rec || rec->size < s_session.manifest.data[data_index].size) {
+        rc = ESP_ERR_INVALID_STATE;
+        goto out;
+    }
+
+    /* First DATA byte destroys the old allocation contents. Mark the whole
+     * install touched before erase, exactly like APP/esp_ota_begin. */
+    if (!(s_session.data_erased_mask & (1u << data_index))) {
+        s_session.flash_touched = true;
+        rc = esp_flash_erase_region(NULL, rec->offset, rec->size);
+        if (rc != ESP_OK) {
+            fail_locked("data erase failed");
+            goto out;
+        }
+        s_session.data_erased_mask |= (1u << data_index);
+    }
+
+    rc = esp_flash_write(NULL, (const uint8_t *)data,
+                         rec->offset + offset, length);
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "data write failed index=%u offset=%u: %s",
+                 (unsigned)data_index, (unsigned)offset, esp_err_to_name(rc));
+        fail_locked("data write failed");
+        goto out;
+    }
+
+    s_session.data_offset[data_index] += length;
+    if (s_session.data_offset[data_index] == expected) {
+        s_session.data_done_mask |= (1u << data_index);
+    }
+    s_session.last_activity_ms = now_ms();
+out:
+    session_unlock();
+    return rc;
+}
+
+static bool data_upload_ready_locked(void)
+{
+    if (s_session.manifest.data_count == 0) return true;
+    const uint32_t all = (1u << s_session.manifest.data_count) - 1u;
+    return (s_session.data_done_mask & all) == all;
+}
+
+/* Verify only newly-created DATA initial payloads. Existing DATA belongs to
+ * the user and must never be compared with the factory image on upgrade. */
+static esp_err_t verify_new_data_locked(void)
+{
+    uint8_t buf[INSTALL_IO_BUF];
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        if (s_session.data_dirty_mask & (1u << i)) continue;
+        const uint32_t len = s_session.manifest.data[i].initial_image_size;
+        if (len == 0) continue;
+        const meta_carve_data_t *rec = manifest_data_record(i);
+        if (!rec || rec->size < s_session.manifest.data[i].size) return ESP_ERR_INVALID_STATE;
+
+        mbedtls_sha256_context ctx;
+        if (!data_upload_ready_locked()) {
+        ESP_LOGE(TAG, "finalize: child data upload incomplete");
+        fail_locked("data upload incomplete");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const esp_err_t data_verify = verify_new_data_locked();
+    if (data_verify != ESP_OK) {
+        fail_locked("data verify failed");
+        return data_verify;
+    }
+
+    uint8_t digest[32];
+        mbedtls_sha256_init(&ctx);
+        mbedtls_sha256_starts(&ctx, 0);
+        uint32_t off = 0;
+        while (off < len) {
+            const uint32_t n = (len - off > sizeof(buf)) ? sizeof(buf) : (len - off);
+            if (esp_flash_read(NULL, buf, rec->offset + off, n) != ESP_OK) {
+                mbedtls_sha256_free(&ctx);
+                return ESP_FAIL;
+            }
+            mbedtls_sha256_update(&ctx, buf, n);
+            off += n;
+        }
+        mbedtls_sha256_finish(&ctx, digest);
+        mbedtls_sha256_free(&ctx);
+        if (memcmp(digest, s_session.manifest.data[i].sha256, 32) != 0) {
+            ESP_LOGE(TAG, "data sha256 mismatch index=%u label=%s",
+                     (unsigned)i, s_session.manifest.data[i].label);
+            return ESP_ERR_INVALID_CRC;
+        }
+    }
+    return ESP_OK;
 }
 
 esp_err_t meta_install_finalize(void)
