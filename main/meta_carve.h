@@ -213,7 +213,8 @@ bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE]);
  
 // Runtime partition table for an active Child Firmware.
 // All APP entries remain visible for boot selection, but DATA entries are
-// materialized only for the active play_id. This permits different children
+// materialized only for the active play_id. active_play_id == 0 materializes
+// the launcher view with no Child DATA entries. This permits different children
 // to use the same data label (for example "storage") without duplicate labels
 // in the ESP-IDF partition table.
 bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
