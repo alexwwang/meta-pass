@@ -158,7 +158,7 @@ static void test_no_record(void)
 
     // legacy 表 → 放行(旧设备首启 dynslot,迁移尚未发生)。
     uint8_t *legacy = fixture("tests/fixtures/legacy_table.bin");
-    v = decide(legacy, NULL);
+    v = decide(legacy, NULL, -1);
     assert(v.action == META_BOOT_TABLE_PROCEED);
     free(legacy);
 
@@ -259,7 +259,7 @@ static void test_failure_matrix(void)
 
     // 4) 子固件乱写池/表:表被换成 play 563 → RECORD 或 SAFE 兜底(视记录存活)。
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
-    v = decide(child, &good);
+    v = decide(child, &good, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     v = decide(child, NULL, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
