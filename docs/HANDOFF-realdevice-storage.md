@@ -18,23 +18,76 @@ Work only on branch `feat/storage`; never develop directly on `main`.
 
 A real power-loss test is separate from a soft reset. Never report soft reset as power-loss PASS.
 
-## Simulator
+## First test: passport-sim
 
-Repository:
+This is the first mandatory local test. Do not proceed to real hardware until it passes.
 
+Simulator:
 https://github.com/VOID001/FoloToy-Passport-Simulator
 
-Run locally:
+Prerequisites:
+- Node.js >= 20 and npm.
+- Local checkout of passport-sim.
+- The simulator checkout is next to meta-pass, or `PASSPORT_SIM_DIR` is set.
+- `public/wasm/pkg/esp_emu_bg.wasm` is prepared.
+
+Prepare:
 
 ```bash
 git clone https://github.com/VOID001/FoloToy-Passport-Simulator.git ../passport-sim
-cd ../passport-sim && npm install
+cd ../passport-sim
+npm install
+npm run prepare:emulator
+cd ../meta-pass
+```
+
+Verify the test harness:
+
+```bash
+test -f tools/sim/run-sim-test.sh
+test -f tools/sim/metapass-boot.test.mjs
+test -f tools/sim/esp_emu.js
+test -f tools/sim/ai-passport-board.js
+```
+
+The harness must load the real `esp_emu_bg.wasm`, create `WasmEmulator("esp32c3")`, load a real ESP32-C3 Full Flash image at 0x0, and drive the real firmware through the board bridge. It must check CPU progress, a rendered 240x320 frame, and button behavior. These checks are already present in the current `feat/storage` harness.
+
+Run:
+
+```bash
 cd ../meta-pass
 ./tools/validate.sh --firmware
 PASSPORT_SIM_DIR=../passport-sim ./tools/validate.sh --sim
 ```
 
-PASS means the actual ESP32-C3 QEMU emulator boots the firmware, accepts the real image, produces display frames, and all simulator tests pass.
+Expected:
+- all Node tests report `ok`;
+- simulator process exits 0;
+- output ends with `PASS — meta-pass 模拟器端到端测试通过`.
+
+On failure, first preserve:
+
+```bash
+git rev-parse HEAD
+node --version
+cd ../passport-sim && git rev-parse HEAD
+cd ../meta-pass
+sha256sum build/FoloToy-AI-Passport-full.bin
+PASSPORT_SIM_DIR=../passport-sim tools/sim/run-sim-test.sh 2>&1 | tee tools/sim/sim-run.log
+```
+
+Classify before changing code:
+- missing simulator/wasm: ENVIRONMENT
+- invalid full image: FIRMWARE_IMAGE
+- QEMU load/boot failure: BOOT
+- no display frame: DISPLAY/APP_BOOT
+- CPU progress/PC failure: CPU/CRASH
+- button failure: BUTTON/FIRMWARE_INPUT
+- incorrect test assumption: TEST_HARNESS
+
+Only modify `feat/storage` when evidence points to meta-pass.
+
+The current agent environment cannot actually execute the local Node/QEMU simulator runtime, so this task is not claimed as PASS here. It must be executed by the next local agent before real-device testing.
 
 ## Real-device prerequisites
 
