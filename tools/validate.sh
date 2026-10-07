@@ -5,7 +5,7 @@ mode="${1:---all}"
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
-    echo "Usage: $0 [--all|--static|--firmware]" >&2
+    echo "Usage: $0 [--all|--static|--firmware|--sim]" >&2
 }
 
 run_static_checks() {
@@ -152,6 +152,9 @@ PY
     # 扫描静默校验门(r10.11/BUG-21;同上,IDF checkout 缺失时跳过源码事实检查)
     python3 tests/test_bug21_scan_silent.py
     python3 tests/test_verify_firmware.py
+    # 真机 smoke.py 是 self-hosted/USB 门禁，不在云端 static CI 自动烧板；
+    # 这里至少做 Python 语法门，避免 DATA/USB 流程提交后脚本本身不可运行。
+    python3 -m py_compile tools/realdevice/smoke.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin
     node_bin="$(command -v node || true)"
@@ -254,6 +257,9 @@ case "${mode}" in
         ;;
     --firmware)
         run_firmware_checks
+        ;;
+    --sim)
+        tools/sim/run-sim-test.sh
         ;;
     *)
         usage
