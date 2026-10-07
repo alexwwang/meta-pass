@@ -1,0 +1,59 @@
+name: Real-device USB smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      ip:
+        description: "ESP32 device LAN IPv4"
+        required: true
+        type: string
+      port:
+        description: "USB serial port"
+        required: true
+        default: "/dev/cu.usbmodem142401"
+        type: string
+      idf_path:
+        description: "ESP-IDF 5.5.3 path on the self-hosted runner"
+        required: true
+        default: "~/esp/esp-idf-v5.5.3"
+        type: string
+      fresh:
+        description: "Erase the whole device before the run"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  realdevice:
+    name: USB hardware smoke
+    runs-on: self-hosted
+    timeout-minutes: 60
+    env:
+      IDF_PATH: ${{ inputs.idf_path }}
+    steps:
+      - uses: actions/checkout@d23441a248e1d6b34aea4fa41551a30e30af803 # v6
+
+      - name: Build firmware for the attached device
+        run: |
+          source "${IDF_PATH/#\~/$HOME}/export.sh"
+          ./tools/validate.sh --firmware
+
+      - name: Run USB + LAN real-device smoke
+        run: |
+          args=(--ip "${{ inputs.ip }}" --port "${{ inputs.port }}")
+          if [ "${{ inputs.fresh }}" = "true" ]; then
+            args+=(--fresh)
+          fi
+          python3 tools/realdevice/smoke.py "${args[@]}"
+
+      - name: Upload hardware evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: realdevice-smoke-${{ github.run_id }}
+          path: tools/realdevice/logs/**
+          if-no-files-found: warn
+          retention-days: 14
