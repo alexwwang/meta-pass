@@ -148,6 +148,16 @@ bool meta_install_model_parse(const char *json, size_t len,
             } else {
                 v_initial = 0;
             }
+            char data_sha[META_SHA256_HEX_LEN + 1];
+            memset(data_sha, 0, sizeof(data_sha));
+            if (v_initial > 0) {
+                if (!meta_store_json_get_array_string(json, len, "data", i,
+                                                      "sha256", data_sha, sizeof(data_sha)) ||
+                    !meta_store_json_parse_sha256(data_sha, strlen(data_sha),
+                                                  out->data[i].sha256)) {
+                    return false;
+                }
+            }
             if (!meta_store_json_get_array_string(json, len, "data", i, "label", label, sizeof(label))) return false;
             if (label[0] == '\0') return false;
             out->data[i].play_id = (uint32_t)v_pid;
@@ -274,7 +284,18 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
         const uint32_t pid = m->data[d].play_id;
         const char *label = m->data[d].label;
         if (pid == 0) continue;
-        if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 已存在,保留
+        const int existing = meta_carve_find_data(cur, pid, label);
+        if (existing >= 0) {
+            if (m->data[d].size > cur->data[existing].size) {
+                if (out_label) {
+                    strncpy(out_label, label, META_DATA_LABEL_MAX);
+                    out_label[META_DATA_LABEL_MAX] = '\0';
+                }
+                fill_no_fit(out_nf, cur, m->data[d].size);
+                return changed;
+            }
+            continue;   // 已存在且容量足够,保留用户数据
+        }
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
@@ -363,7 +384,10 @@ meta_install_place_verdict_t meta_install_model_place_offer(
             }
             return META_PLACE_REJECTED;
         }
-        if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 升级:保留既有记录
+        const int existing = meta_carve_find_data(cur, pid, label);
+        if (existing >= 0) {
+            if (m->data[d].size > cur->data[existing].size) return META_PLACE_NO_FIT_DATA;
+            continue;   // 升级:保留既有记录
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
@@ -394,7 +418,7 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         rec.size = m->data[d].size;
         rec.state = META_DATA_PRISTINE;
         rec.type = 1;
-        rec.subtype = 1;
+        rec.subtype = m->data[d].subtype;
         strncpy(rec.label, label, sizeof(rec.label) - 1);
         if (!meta_carve_data_append(&next, &rec)) return META_PLACE_REJECTED;  // 数组满
     }
