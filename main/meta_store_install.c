@@ -72,6 +72,13 @@ typedef struct {
 } session_token_t;
 
 typedef struct {
+    uint32_t old_offset;
+    uint32_t old_size;
+    uint32_t new_offset;
+    uint32_t new_size;
+} data_move_t;
+
+typedef struct {
     // ---- 快照字段(状态机唯一事实源;poll/status JSON 由此组装) ----
     bool     active;             // 店内 token 会话存活
     bool     offer_ready;        // 手机已 prepare,等待设备物理确认
@@ -1513,7 +1520,6 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     meta_install_no_fit_t nf;
     meta_install_place_verdict_t verdict = META_PLACE_OK;
     int8_t new_group_slot = -1;
-    data_move_t data_moves[META_DATA_MAX];
     uint8_t data_move_count = 0;
     data_new_extent_t new_data_extents[META_DATA_MAX];
     uint8_t new_data_extent_count = 0;
