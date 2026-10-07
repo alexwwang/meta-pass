@@ -65,8 +65,6 @@ void bootloader_hooks_include(void)
 {
 }
 
-static const char *TAG = "meta-boot";
-
 /* otadata 扇区地址与 OTA 槽数量由分区表逐条扫描得出,不硬编码 —— 分区表布局
  * 将来若调整,策略自动跟随(与安装页"读回比对"同一自适应哲学)。
  * 槽计数规则与 IDF 一致:subtype 高位为 OTA 标志、低位为槽号
