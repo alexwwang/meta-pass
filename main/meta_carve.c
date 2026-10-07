@@ -762,6 +762,7 @@ bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
     for (uint8_t i = 0; i < c->data_count; i++) {
         const meta_carve_data_t *d = &c->data[i];
         if (d->play_id != active_play_id) continue;
+        if (d->state == META_DATA_ARCHIVED) continue;
         if (t.count >= META_PT_MAX_ENTRIES) return false;
         pt_set_entry(&t, d->type, d->subtype, d->offset, d->size, d->label);
     }
