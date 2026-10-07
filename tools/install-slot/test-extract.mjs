@@ -163,6 +163,17 @@ function buildAppImage() {
   assert.equal(m.required_size,
     Math.ceil(app.length / 0x1000) * 0x1000 + dataSize);
   console.log("PASS 3d: APP+DATA manifest separates required capacity from initial image bytes");
+
+  // LittleFS is an ESP-IDF-defined data subtype (0x83) and follows the same
+  // child DATA allocation contract as FAT/SPIFFS.
+  full.set([0xaa, 0x50, 0x01, 0x83], pt + 64);
+  full.set([0x00, 0x00, 0x02, 0x00], pt + 68);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 72);
+  full.set([...Buffer.from("littlefs")], pt + 80);
+  const little = parseFirmwareManifest(full);
+  assert.equal(little.supported, true);
+  assert.ok(little.data.some((d) => d.subtype === 0x83));
+  console.log("PASS 3d-LittleFS: subtype 0x83 accepted as Child DATA");
 }
 
 // 3e. Initial DATA payload extraction is bounded by the actual non-erased image extent.
