@@ -385,9 +385,8 @@ bool meta_carve_valid(const meta_carve_t *c)
     }
     for (uint8_t i = 0; i < c->count; i++) {
         const meta_carve_slot_t *s = &c->slot[i];
-        if (s->kind > META_CARVE_KIND_STORAGE) {
-            return false;
-        }
+        if (s->kind != META_CARVE_KIND_APP) {
+            return false;   // committed runtime carve contains APP slots only
         if (s->state > META_SLOT_INVALID) {
             return false;
         }
