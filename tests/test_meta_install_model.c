@@ -696,7 +696,7 @@ static void test_place_offer(void)
 
         // ── 升级 DATA 扩容:不能原地扩大,必须找到不重叠的新 extent。
         meta_carve_t grow = with_data;
-        const int grow_idx = meta_carve_find_data(&grow, 7, "rec");
+        const int grow_idx = meta_carve_find_data(&grow, 1, "rec");
         assert(grow_idx >= 0);
         const uint32_t old_off = grow.data[grow_idx].offset;
         assert(build_carve_offer(js, sizeof(js), 0x1F000,
