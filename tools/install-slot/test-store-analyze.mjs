@@ -139,6 +139,28 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 1: golden analyze (MNAM name, suggestedSlot=0, slot limits)");
 }
 
+// ---- 1b. storage manifest: DATA capacity is surfaced separately from initial payload ----
+{
+  const app = buildAppImage([100, 64]);
+  const parts = [
+    ...META_PARTS,
+    ["storage", 1, 0x82, 0x700000, 0x80000],
+  ];
+  const { fetchImpl } = makeEnv({ app, parts });
+  const out = await makeAnalyzer(fetchImpl).analyze(563);
+  assert.equal(out.ok, true);
+  assert.equal(out.data.length, 1);
+  assert.equal(out.data[0].label, "storage");
+  assert.equal(out.data[0].requiredSize, 0x80000);
+  assert.equal(out.data[0].initialImageSize, 0);
+  assert.equal(out.data[0].subtype, 0x82);
+  assert.ok(out.storage);
+  assert.equal(out.storage.requiredSize,
+    Math.ceil(app.length / 0x1000) * 0x1000 + 0x80000);
+  assert.equal(out.storage.supported, true);
+  console.log("PASS 1b: analyze exposes APP+DATA storage manifest without changing admission behavior");
+}
+
 // ---- 2. 无 MNAM → 名退回 slug;extracted 字节与镜像一致 ----
 {
   const app = buildAppImage([256]);
