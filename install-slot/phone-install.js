@@ -469,13 +469,14 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     slots,
     // Device allocation contract: APP + each Child DATA extent form one
     // allocation group. Keep required capacity separate from initial payload.
-    data: dataImages.map((d) => ({
+    data: await Promise.all(dataImages.map(async (d) => ({
       playId: play.id,
       size: d.required_size,
       label: d.label,
       subtype: d.subtype,
       initialImageSize: d.initial_image_size,
-    })),
+      sha256: d.initial_image_size > 0 ? await sha256Hex(d.data) : undefined,
+    }))),
     reason: typeof a.reason === "string" && a.reason ? a.reason : "ok",
   };
   if (slotIsNew) {
