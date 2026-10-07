@@ -132,16 +132,28 @@ bool meta_install_model_parse(const char *json, size_t len,
         if (data_count > META_DATA_MAX) return false;
         out->data_count = (uint8_t)data_count;
         for (size_t i = 0; i < data_count; i++) {
-            int64_t v_pid = 0, v_sz2 = 0;
+            int64_t v_pid = 0, v_sz2 = 0, v_subtype = 0, v_initial = 0;
             char label[META_DATA_LABEL_MAX + 1];
             if (!meta_store_json_get_array_int(json, len, "data", i, "playId", &v_pid)) return false;
             if (v_pid < 0 || v_pid > UINT32_MAX) return false;
             if (!meta_store_json_get_array_int(json, len, "data", i, "size", &v_sz2)) return false;
             if (v_sz2 <= 0 || v_sz2 > UINT32_MAX) return false;
+            if (meta_store_json_get_array_int(json, len, "data", i, "subtype", &v_subtype)) {
+                if (v_subtype < 0 || v_subtype > 0xFF) return false;
+            } else {
+                v_subtype = 0x82; // legacy M5 offers defaulted to SPIFFS
+            }
+            if (meta_store_json_get_array_int(json, len, "data", i, "initialImageSize", &v_initial)) {
+                if (v_initial < 0 || v_initial > (uint32_t)v_sz2) return false;
+            } else {
+                v_initial = 0;
+            }
             if (!meta_store_json_get_array_string(json, len, "data", i, "label", label, sizeof(label))) return false;
             if (label[0] == '\0') return false;
             out->data[i].play_id = (uint32_t)v_pid;
             out->data[i].size = (uint32_t)v_sz2;
+            out->data[i].subtype = (uint8_t)v_subtype;
+            out->data[i].initial_image_size = (uint32_t)v_initial;
             strncpy(out->data[i].label, label, sizeof(out->data[i].label) - 1);
             out->data[i].label[sizeof(out->data[i].label) - 1] = '\0';
         }
@@ -286,7 +298,7 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
         rec.size = m->data[d].size;
         rec.state = META_DATA_PRISTINE;
         rec.type = 1;
-        rec.subtype = 1;
+        rec.subtype = m->data[d].subtype;
         strncpy(rec.label, label, sizeof(rec.label) - 1);
         if (!meta_carve_data_append(out_next, &rec)) return changed;  // 数组满
         changed = true;
