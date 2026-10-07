@@ -168,7 +168,7 @@ function buildAppImage() {
 // 3e. Unsupported custom data partition is an explicit admission failure.
 {
   const app = buildAppImage();
-  const full = new Uint8Array(0x30000).fill(0xff);
+  const full = new Uint8Array(0x20000 + 0x10000).fill(0xff);
   const pt = 0x8000;
   full.set([0xaa, 0x50, 0x00, 0x00], pt);
   full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
