@@ -77,6 +77,8 @@ static void test_record_match_proceed(void)
 static void test_runtime_views(void)
 {
     meta_carve_t c = seed_carve();
+    /* Keep one APP slot so pool_1 is available for the synthetic DATA record. */
+    c.count = 1;
     /* Give slot 0 a child identity and a data allocation. */
     c.slot[0].play_id = 105;
     uint32_t data_off = 0;
