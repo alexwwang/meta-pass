@@ -246,7 +246,7 @@ export function parseDataPartitions(buf) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     const type = buf[off + 2];
     const subtype = buf[off + 3];
-    // subtype 0x81 = fat, 0x82 = spiffs — 数据分区
+    // subtype 0x81 = fat, 0x82 = spiffs, 0x83 = littlefs — 数据分区
     if (type === 1 && (subtype === 0x81 || subtype === 0x82)) {
       const offset = u32le(buf, off + 4);
       const size = u32le(buf, off + 8);
