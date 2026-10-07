@@ -335,7 +335,16 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     // 分区,当前 boot 的分区缓存与 legacy 槽扫描都已过期,靠退出时重启
     // 清账;不立刻复位,保住手机侧会话 token(2026-10-04 交互修订)。
     if (materialize) {
-        const esp_err_t e = meta_carve_flash_table_write(rec->table);
+        /*
+         * "materialize" means the launcher runtime view, never the durable
+         * full carve. Child DATA is exposed only by
+         * meta_carve_flash_materialize_active() immediately before boot.
+         */
+        static uint8_t launcher_table[META_PT_SIZE];
+        if (!meta_pt_from_carve_active(&s_in, 0, launcher_table)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        const esp_err_t e = meta_carve_flash_table_write(launcher_table);
         if (e != ESP_OK) return e;
         s_reboot_pending = true;
     }
