@@ -425,7 +425,8 @@ bool meta_carve_valid(const meta_carve_t *c)
         for (uint8_t j = 0; j < i; j++) {
             // (label, subtype) 全局唯一 —— 首配语义下重复条目不可区分;
             // 跨玩法同名共享(M4)是未来设备配置项,v1 直接拒。
-            if (c->data[j].subtype == d->subtype &&
+            if (c->data[j].play_id == d->play_id &&
+                c->data[j].subtype == d->subtype &&
                 strcmp(c->data[j].label, d->label) == 0) {
                 return false;
             }
@@ -708,6 +709,50 @@ bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE])
         }
         t.e[j] = key;
     }
+    meta_pt_encode(&t, out);
+    return true;
+}
+
+
+bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
+                               uint8_t out[META_PT_SIZE])
+{
+    if (!c || !out || active_play_id == 0 || !meta_carve_valid(c)) {
+        return false;
+    }
+
+    meta_pt_t t;
+    memset(&t, 0, sizeof(t));
+
+    // Keep every APP entry visible: bootloader/launcher still needs the full
+    // child-app set. Data entries are the only entries scoped to the active
+    // Child Firmware.
+    for (size_t i = 0; i < FIXED_COUNT; i++) {
+        const fixed_entry_t *f = &FIXED[i];
+        pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
+    }
+    for (uint8_t i = 0; i < c->count; i++) {
+        char label[6] = { 'o', 't', 'a', '_', (char)('0' + i), '\0' };
+        pt_set_entry(&t, 0, (uint8_t)(0x10 + i),
+                     c->slot[i].offset, c->slot[i].size, label);
+    }
+    for (uint8_t i = 0; i < c->data_count; i++) {
+        const meta_carve_data_t *d = &c->data[i];
+        if (d->play_id != active_play_id) continue;
+        if (t.count >= META_PT_MAX_ENTRIES) return false;
+        pt_set_entry(&t, d->type, d->subtype, d->offset, d->size, d->label);
+    }
+
+    for (uint8_t i = 1; i < t.count; i++) {
+        const meta_pt_entry_t key = t.e[i];
+        uint8_t j = i;
+        while (j > 0 && t.e[j - 1].offset > key.offset) {
+            t.e[j] = t.e[j - 1];
+            j--;
+        }
+        t.e[j] = key;
+    }
+
     meta_pt_encode(&t, out);
     return true;
 }
