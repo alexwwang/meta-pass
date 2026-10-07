@@ -37,30 +37,13 @@ import { unpackNameBlobTail } from "./name-blob.js";
 import { POOL_TOTAL } from "./dynslot-pool.js";
 const UNPACK_MAX = POOL_TOTAL - TAIL_SECTOR;
 
-// 合并镜像分区表检查(r9 政策:白名单外数据分区一律警告放行):
-//   白名单(标准存储:nvs/phy_init/otadata/cardid/store/coredump)→ 静默通过。
-//   其余 type=1 数据分区(0x40 自定义区如 play 675 的 rec;标准文件系统如
-//   play 563 的 easter 0x82 SPIFFS、play 200 的 voicefs 0x81 FAT、play 2 的
-//   legacy_cardid 0x02 NVS)→ supported=true 照常可装,reason='custom-partitions'
-//   + detail=<label> 警告透传:解包只取 factory 应用,该分区内容不会随镜像
-//   进入设备;若子固件运行时真读写它,会缺存储而部分功能降级(设备 NOTE 行
-//   显示分区名,用户自决)。硬拒会让市场上带资源分区的玩法全部不可装 ——
-//   2026-09-27 实测 563(easter)因市场方新增彩蛋分区被拒,政策据此修正。
-// 应用类型分区(type=0,含 factory/ota_*/recovery 等)一律不检查:解包只取
-// factory 应用镜像写入槽位,其余应用分区内容在目标布局中完全惰性(563 的
-// recovery 即此类)。
-export const ALLOWED_PARTITION_LABELS = new Set([
-  "nvs", "phy_init", "otadata", "cardid", "store", "coredump",
-]);
-// subtype 0x40:ESP-IDF 预留给“任意自定义数据用途”的数据分区 subtype。
-const CUSTOM_DATA_SUBTYPE = 0x40;
-
+// DATA admission is owned by parseFirmwareManifest(): only global NVS/PHY and
+// supported child filesystem DATA are accepted; unsupported DATA is a hard reject.
 const REASON_NOT_FOUND = "not-found";
 const REASON_UNAVAILABLE = "unavailable";
 const REASON_FORMAT = "format";
 const REASON_NO_FACTORY = "no-factory";
 const REASON_WRONG_CHIP = "wrong-chip";
-const REASON_CUSTOM_PARTITIONS = "custom-partitions";
 const REASON_TOO_LARGE = "too-large";
 
 
@@ -194,17 +177,6 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
 
     if (!isFullImage(got.buf)) return { error: REASON_FORMAT };
     const parts = listPartitions(got.buf);
-    let partitionWarning = null;
-    if (parts) {
-      for (const p of parts) {
-        if (p.type !== 0x01) continue; // 应用分区惰性,见 ALLOWED_PARTITION_LABELS 注释
-        if (ALLOWED_PARTITION_LABELS.has(p.label)) continue;
-        // r9:白名单外数据分区一律警告放行(0x40 自定义区与标准文件系统 subtype
-        // 同性质 —— 内容不进设备,装了最坏功能降级)。首个分区名作 detail 透传。
-        if (!partitionWarning) partitionWarning = p.label;
-      }
-    }
-
     let ext;
     let dataPartitions = []; // M5: 数据分区声明
     let firmwareManifest = null;
@@ -252,8 +224,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       // 设备端详情页显示警告后由用户决定;reason='ok' 表示无任何警告。
       reason: !storageSupported
         ? (firmwareManifest.reason || "unsupported-partition")
-        : (supported ? (partitionWarning ? REASON_CUSTOM_PARTITIONS : "ok") : REASON_TOO_LARGE),
-      ...(partitionWarning ? { detail: partitionWarning } : {}),
+        : (supported ? "ok" : REASON_TOO_LARGE),
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
       dataPartitions, // M5: 数据分区声明
       manifest: firmwareManifest, // storage MVP: APP+DATA capacity model
