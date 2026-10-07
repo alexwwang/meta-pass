@@ -63,7 +63,7 @@ PASSPORT_SIM_DIR=../passport-sim ./tools/validate.sh --sim
 Expected:
 - all Node tests report `ok`;
 - simulator process exits 0;
-- output ends with `PASS — meta-pass 模拟器端到端测试通过`.
+- output ends with `PASS — meta-pass simulator end-to-end test passed`.
 
 On failure, first preserve:
 
