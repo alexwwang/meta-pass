@@ -41,7 +41,8 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
 
     cmd = [sys.executable, os.path.join(REPO, "tools", "realdevice", "smoke.py"),
-           "--ip", args.ip, "--port", args.port, "--app", args.app]
+           "--ip", args.ip, "--port", args.port, "--app", args.app,
+           "--logdir", run_dir]
     if args.fresh:
         cmd.append("--fresh")
 
@@ -76,30 +77,28 @@ def main():
     open(os.path.join(run_dir, "stdout.log"), "w", encoding="utf-8").write(stdout)
     open(os.path.join(run_dir, "stderr.log"), "w", encoding="utf-8").write(stderr)
 
-    candidates = []
-    if os.path.isdir(LOGROOT):
-        for root, _, files in os.walk(LOGROOT):
-            for name in files:
-                if name == "uart.log" or (name.startswith("smoke-") and name.endswith(".log")):
-                    p = os.path.join(root, name)
-                    if p != os.path.join(run_dir, name):
-                        candidates.append(p)
-    if candidates:
-        newest = max(candidates, key=os.path.getmtime)
-        shutil.copy2(newest, os.path.join(run_dir, "uart.log"))
-        report["uart_source"] = newest
+    uart_path = os.path.join(run_dir, "uart.log")
+    report["uart_source"] = uart_path if os.path.isfile(uart_path) else None
 
     for label, path in (("slots", "/api/install/slots"), ("status", "/api/install/status")):
         status, body = http_get("http://" + args.ip + path)
         report.setdefault("http_observations", {})[label] = {"status": status}
         open(os.path.join(run_dir, label + ".response"), "wb").write(body)
 
+    stage_names = {}
     for line in stdout.splitlines():
         m = re.match(r"=== (S\d+ .+?) ===", line)
         if m:
-            report["stages"].append({"name": m.group(1), "status": "OBSERVED"})
-        if "软复位" in line:
+            name = m.group(1)
+            stage_names[name] = {"name": name, "status": "PASS" if proc.returncode == 0 else "UNKNOWN"}
+        if "软复位" in line or "soft reset" in line.lower():
             report["soft_reset_tested"] = True
+    report["stages"] = list(stage_names.values())
+    if proc.returncode != 0:
+        # smoke.py exits at the first failing stage, so only the stages reached
+        # before the failure are known; mark the last reached stage as FAIL.
+        if report["stages"]:
+            report["stages"][-1]["status"] = "FAIL"
 
     if proc.returncode == 0:
         report["status"] = "PASS"
