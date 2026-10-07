@@ -20,8 +20,9 @@
      "carve loaded: seq=1 slots=1"(方案B + 记录态启动)
   S3 二次安装(carve 第二个槽)→ slots count=2
   S4 删除归档 + DATA ARCHIVED 断言 + 删除擦除(数据生命周期真实链)
-  S5 中断续连:第三次安装传 30% 后掐断 → esptool 软复位(忠实等价断电:
-     RAM 丢、flash 现状保留、NVS 续连标志在)→ 断言 "install resume"
+  S5 中断续连:第三次安装传 30% 后掐断 → esptool 软复位(验证 RAM 丢失、
+     flash/NVS 持久状态保留；这是断电的近似故障注入，不等价于物理断电)→
+     断言 "install resume"
      → 免重配对(新 token 从串口取)→ 幂等重发 prepare → 传完 → finalize
   S6 取证:read_flash 回读表区 + store 区 + DATA extent，DATA 做字节级比对
 
