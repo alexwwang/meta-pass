@@ -408,16 +408,17 @@ static void fail_locked(const char *msg)
      * A failed session must release the whole group, not leave an INVALID APP
      * consuming pool capacity. Existing slots remain INVALID when their APP
      * bytes were touched. */
+    if (touched && slot >= 0 && s_slots) {
+        meta_slot_mark_invalid(&s_slots[slot]);
+        ESP_LOGW(TAG, "install failed; slot %d marked INVALID", slot);
+    }
+
     if (have_carved_new) {
         (void)meta_carve_flash_remove((int)carved);
         ESP_LOGW(TAG, "install failed; reclaimed new carved slot %d", carved);
     }
 
     offer_and_upload_clear();
-    if (!have_carved_new && touched && slot >= 0 && s_slots) {
-        meta_slot_mark_invalid(&s_slots[slot]);
-        ESP_LOGW(TAG, "install failed; slot %d marked INVALID", slot);
-    }
     status_set("failed", msg);
 }
 
