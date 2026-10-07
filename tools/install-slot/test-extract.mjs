@@ -46,7 +46,8 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   const full = new Uint8Array(Math.max(0x10000 + app.length, dataOff + dataSize)).fill(0xff);
   full.set([0xaa, 0x50, 0x00, 0x00], pt);
   full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
-  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  // Synthetic factory is 0x3000, so DATA at 0x20000 does not overlap.
+  full.set([0x00, 0x30, 0x00, 0x00], pt + 8);
   full.set(app, 0x10000);
   full.set([0xaa, 0x50, 0x01, subtype], pt + 32);
   full.set([dataOff & 0xff, (dataOff >> 8) & 0xff, (dataOff >> 16) & 0xff, (dataOff >> 24) & 0xff], pt + 36);
