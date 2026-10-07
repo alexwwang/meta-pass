@@ -132,12 +132,10 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
     }
     const uint32_t sector = ESP_PARTITION_TABLE_OFFSET / 4096u;
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
-        ESP_LOGE(TAG, "carve: erase table sector failed");
         return false;
     }
     if (bootloader_flash_write(ESP_PARTITION_TABLE_OFFSET, (void *)table, META_PT_SIZE,
                                false) != ESP_OK) {
-        ESP_LOGE(TAG, "carve: write table failed");
         return false;
     }
     /* 读回复核走共享缓冲:此刻 live 视图已消费完(decide 不会把 v.table 指回
@@ -145,7 +143,6 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
     if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET, s_scratch, META_PT_SIZE,
                               false) != ESP_OK ||
         memcmp(s_scratch, table, META_PT_SIZE) != 0) {
-        ESP_LOGE(TAG, "carve: table read-back mismatch");
         return false;
     }
     /* 新表(安全/记录/legacy 三种来源都必然声明 otadata)扫描取偏移后清两扇区
@@ -153,16 +150,13 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
     uint32_t ota_offset = 0;
     uint32_t ota_count = 0;
     if (!scan_partition_table(&ota_offset, &ota_count) || ota_offset == 0) {
-        ESP_LOGE(TAG, "carve: no otadata entry after restore; using fixed 0x7FE000");
         ota_offset = 0x7FE000u;
     }
     for (uint32_t copy = 0; copy < 2u; ++copy) {
         if (bootloader_flash_erase_sector(ota_offset / 4096u + copy) != ESP_OK) {
-            ESP_LOGE(TAG, "carve: erase otadata copy %u failed", (unsigned)copy);
             return false;
         }
     }
-    ESP_LOGW(TAG, "carve: table restored; otadata wiped -> factory boot");
     return true;
 }
 
