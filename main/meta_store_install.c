@@ -110,6 +110,8 @@ typedef struct {
     int8_t   carved_new_slot;
     bool     table_changed;
     uint32_t data_dirty_mask;
+    data_move_t data_moves[META_DATA_MAX];
+    uint8_t data_move_count;
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -1144,6 +1146,14 @@ static esp_err_t finalize_locked(void)
         }
     }
 
+    /*
+     * Only now is the new APP+DATA group bootable/valid. Retire migrated
+     * source DATA after both registry and carve validity have committed.
+     * Until this point the old extent remains the rollback source.
+     */
+    cleanup_migrated_sources(s_session.data_moves, s_session.data_move_count);
+    s_session.data_move_count = 0;
+
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
 
     // P0-5 仲裁①:升级数据迁移块退役。原实现把数据字节拷进
@@ -1613,7 +1623,8 @@ new_group_checked:
                 before, &placed, new_data_extents, &new_data_extent_count);
             const esp_err_t me = (ne == ESP_OK)
                 ? prepare_data_moves_locked(before, &placed,
-                                            data_moves, &data_move_count)
+                                            s_session.data_moves,
+                                            &s_session.data_move_count)
                 : ne;
             if (me != ESP_OK) {
                 cleanup_new_data_extents(new_data_extents, new_data_extent_count);
@@ -1651,7 +1662,6 @@ new_group_checked:
                      esp_err_to_name(ce));
             return reply(req, "500 Internal Server Error", "carve commit failed");
         }
-        cleanup_migrated_sources(data_moves, data_move_count);
     }
     s_session.table_changed = m.has_carve && place_changed;
     s_session.carved_new_slot = new_group_slot;
