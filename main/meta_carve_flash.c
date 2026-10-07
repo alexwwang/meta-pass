@@ -482,14 +482,22 @@ esp_err_t meta_carve_flash_ensure(void)
     const bool live_ok = meta_carve_flash_table_read(s_live);
 
     if (have) {
-        // 防御性对账:hook 正常已在引导期修复;此处兜住"hook 修复后又被改"的窗口。
-        if (live_ok && !meta_pt_equal(s_live, s_best.table)) {
-            ESP_LOGW(TAG, "live table differs from committed carve; re-materializing");
-            const esp_err_t e = meta_carve_flash_table_write(s_best.table);
-            if (e != ESP_OK) return e;
-        } else if (!live_ok) {
-            ESP_LOGE(TAG, "cannot read live table");
+        /*
+         * The committed carve is the durable allocation authority.  The live
+         * partition table is a runtime projection: launcher view contains no
+         * Child DATA; a child view is materialized only immediately before its
+         * boot.  app_main is always the launcher, so repair the live table to
+         * launcher view rather than restoring the full carve table.
+         */
+        uint8_t launcher_table[META_PT_SIZE];
+        if (!meta_pt_from_carve_active(&s_best.carve, 0, launcher_table)) {
+            ESP_LOGE(TAG, "cannot materialize launcher runtime table");
             return ESP_FAIL;
+        }
+        if (!live_ok || !meta_pt_equal(s_live, launcher_table)) {
+            ESP_LOGW(TAG, "live table differs from launcher runtime view; re-materializing");
+            const esp_err_t e = meta_carve_flash_table_write(launcher_table);
+            if (e != ESP_OK) return e;
         }
         s_carve = s_best.carve;
         s_seq = s_best.seq;
