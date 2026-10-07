@@ -79,6 +79,9 @@ typedef struct {
     bool     session_opened;     // 手机已开上传 session
     int8_t   confirmed_slot;     // 物理确认的槽位(-1 = 无)
     uint32_t session_offset;     // 设备已写偏移(断点续传基准)
+    uint32_t data_offset[META_DATA_MAX]; // per-child-data initial payload progress
+    uint32_t data_done_mask;       // bit i = data i is complete/skipped
+    uint32_t data_erased_mask;     // bit i = data i allocation has been erased
     char     name[META_NAME_LEN + 1];
     const char *state;           // pairing/offer/confirmed/uploading/done/failed/cancelled
     const char *message;
@@ -240,6 +243,9 @@ static void offer_and_upload_clear(void)
     s_session.confirmed_slot = -1;
     s_session.session_opened = false;
     s_session.session_offset = 0;
+    memset(s_session.data_offset, 0, sizeof(s_session.data_offset));
+    s_session.data_done_mask = 0;
+    s_session.data_erased_mask = 0;
     s_session.flash_touched = false;
     s_session.carved_new_slot = -1;
     s_session.table_changed = false;
