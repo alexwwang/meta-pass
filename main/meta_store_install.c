@@ -240,6 +240,88 @@ static void cleanup_new_data_locked(void)
     }
 }
 
+typedef struct {
+    uint32_t old_offset;
+    uint32_t old_size;
+    uint32_t new_offset;
+    uint32_t new_size;
+} data_move_t;
+
+static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
+                                           const meta_carve_t *after,
+                                           data_move_t moves[META_DATA_MAX],
+                                           uint8_t *out_n)
+{
+    uint8_t n = 0;
+    if (out_n) *out_n = 0;
+    if (!before || !after || !s_session.manifest_valid) return ESP_ERR_INVALID_ARG;
+
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const uint32_t pid = s_session.manifest.data[i].play_id;
+        if (pid == 0) continue;
+        const int old_idx = meta_carve_find_data(before, pid,
+                                                  s_session.manifest.data[i].label);
+        const int new_idx = meta_carve_find_data(after, pid,
+                                                  s_session.manifest.data[i].label);
+        if (old_idx < 0 || new_idx < 0) continue;
+
+        const meta_carve_data_t *old = &before->data[old_idx];
+        const meta_carve_data_t *now = &after->data[new_idx];
+        if (old->offset == now->offset) continue;
+        if (now->size < old->size || n >= META_DATA_MAX) {
+            return ESP_ERR_INVALID_STATE;
+        }
+
+        moves[n].old_offset = old->offset;
+        moves[n].old_size = old->size;
+        moves[n].new_offset = now->offset;
+        moves[n].new_size = now->size;
+
+        /*
+         * The new extent is not committed yet, so the old record remains the
+         * durable source of truth. Copy first; only then commit the carve that
+         * switches the DATA record to the new extent.
+         */
+        esp_err_t e = esp_flash_erase_region(NULL, now->offset, now->size);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "data migration erase failed @0x%08lx: %s",
+                     (unsigned long)now->offset, esp_err_to_name(e));
+            goto rollback;
+        }
+        e = meta_carve_flash_data_copy(old->offset, old->size, now->offset);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "data migration copy failed old=0x%08lx new=0x%08lx: %s",
+                     (unsigned long)old->offset, (unsigned long)now->offset,
+                     esp_err_to_name(e));
+            goto rollback;
+        }
+        n++;
+    }
+
+    if (out_n) *out_n = n;
+    return ESP_OK;
+
+rollback:
+    for (uint8_t i = 0; i < n; i++) {
+        (void)esp_flash_erase_region(NULL, moves[i].new_offset, moves[i].new_size);
+    }
+    if (out_n) *out_n = 0;
+    return ESP_FAIL;
+}
+
+static void cleanup_migrated_sources(const data_move_t moves[META_DATA_MAX],
+                                     uint8_t n)
+{
+    for (uint8_t i = 0; i < n; i++) {
+        const esp_err_t e = esp_flash_erase_region(NULL, moves[i].old_offset,
+                                                   moves[i].old_size);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "old data extent remains after migration @0x%08lx: %s",
+                     (unsigned long)moves[i].old_offset, esp_err_to_name(e));
+        }
+    }
+}
+
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
 {
