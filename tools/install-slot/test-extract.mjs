@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest } from "../../install-slot/extract-app-image.js";
+import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
   tailSectorOffset, blobOffset, maxAppImageSize,
@@ -163,6 +163,35 @@ function buildAppImage() {
   assert.equal(m.required_size,
     Math.ceil(app.length / 0x1000) * 0x1000 + dataSize);
   console.log("PASS 3d: APP+DATA manifest separates required capacity from initial image bytes");
+}
+
+// 3e. Initial DATA payload extraction is bounded by the actual non-erased image extent.
+{
+  const app = buildAppImage();
+  const pt = 0x8000;
+  const dataOff = 0x20000;
+  const dataSize = 0x30000;
+  const full = new Uint8Array(dataOff + dataSize).fill(0xff);
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
+  full.set([dataOff, 0x00, 0x00, 0x00], pt + 36);
+  full.set([dataSize, 0x00, 0x00, 0x00], pt + 40);
+  full.set([...Buffer.from("storage")], pt + 48);
+  for (let i = 0; i < 0x1234; i++) full[dataOff + i] = i & 0xff;
+
+  const images = extractDataImages(full);
+  assert.equal(images.length, 1);
+  assert.equal(images[0].offset, dataOff);
+  assert.equal(images[0].required_size, dataSize);
+  assert.equal(images[0].initial_image_size, 0x1234);
+  assert.equal(images[0].data.length, 0x1234);
+  assert.equal(images[0].data[0], 0);
+  assert.equal(images[0].data[0x1233], 0x33);
+  assert.ok(images[0].data.every((b, i) => b === (i & 0xff)));
+  console.log("PASS 3e: initial DATA payload extracted without uploading erased tail");
 }
 
 // 3e. Unsupported custom data partition is an explicit admission failure.
