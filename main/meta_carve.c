@@ -387,6 +387,7 @@ bool meta_carve_valid(const meta_carve_t *c)
         const meta_carve_slot_t *s = &c->slot[i];
         if (s->kind != META_CARVE_KIND_APP) {
             return false;   // committed runtime carve contains APP slots only
+        }
         if (s->state > META_SLOT_INVALID) {
             return false;
         }
