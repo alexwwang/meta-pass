@@ -602,9 +602,9 @@ static void test_place_offer(void)
                                           label, &nf) == META_PLACE_OK);
     assert(idx == 0 && changed);
     assert(next.count == 1 && next.slot[0].offset == 0x180000);
-    assert(next.slot[0].play_id == 7);
+    assert(next.slot[0].play_id == 1);
     assert(next.data_count == 2);
-    assert(next.data[0].play_id == 7 && next.data[0].state == META_DATA_PRISTINE);
+    assert(next.data[0].play_id == 1 && next.data[0].state == META_DATA_PRISTINE);
     assert(next.data[0].subtype == 130);
     assert(strcmp(next.data[0].label, "rec") == 0);
     // 数据 first-fit 落在槽位之后(pool_0 先填):rec 紧邻槽尾(0x1A0000);
@@ -638,7 +638,7 @@ static void test_place_offer(void)
                                           label, &nf) == META_PLACE_OK);
     assert(idx == 0 && changed);
     assert(next.count == 1 && next.data_count == 1);
-    assert(next.data[0].play_id == 7 && strcmp(next.data[0].label, "rec") == 0);
+    assert(next.data[0].play_id == 1 && strcmp(next.data[0].label, "rec") == 0);
 
     // ── unsupported data subtype → REJECTED ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
@@ -674,7 +674,7 @@ static void test_place_offer(void)
         assert(meta_carve_place_data(&with_data, 0x2000, &off));
         meta_carve_data_t rec;
         memset(&rec, 0, sizeof(rec));
-        rec.play_id = 7; rec.offset = off; rec.size = 0x2000;
+        rec.play_id = 1; rec.offset = off; rec.size = 0x2000;
         rec.state = META_DATA_DIRTY; rec.type = 1; rec.subtype = 1;
         strncpy(rec.label, "rec", sizeof(rec.label) - 1);
         assert(meta_carve_data_append(&with_data, &rec));
@@ -688,11 +688,11 @@ static void test_place_offer(void)
                                               &changed, label, &nf) == META_PLACE_OK);
         // rec 保留原偏移/DIRTY;只有 cfg 新放。
         assert(next.count == 2 && next.data_count == 2);
-        assert(meta_carve_find_data(&next, 7, "rec") >= 0);
-        const meta_carve_data_t *kept = &next.data[meta_carve_find_data(&next, 7, "rec")];
+        assert(meta_carve_find_data(&next, 1, "rec") >= 0);
+        const meta_carve_data_t *kept = &next.data[meta_carve_find_data(&next, 1, "rec")];
         assert(kept->offset == off && kept->state == META_DATA_DIRTY);
-        assert(meta_carve_find_data(&next, 7, "cfg") >= 0);
-        assert(next.data[meta_carve_find_data(&next, 7, "cfg")].state == META_DATA_PRISTINE);
+        assert(meta_carve_find_data(&next, 1, "cfg") >= 0);
+        assert(next.data[meta_carve_find_data(&next, 1, "cfg")].state == META_DATA_PRISTINE);
 
         // ── 升级 DATA 扩容:不能原地扩大,必须找到不重叠的新 extent。
         meta_carve_t grow = with_data;
@@ -705,7 +705,7 @@ static void test_place_offer(void)
         assert(meta_install_model_parse(js, strlen(js), &m));
         assert(meta_install_model_place_offer(&m, &grow, &next, &idx,
                                               &changed, label, &nf) == META_PLACE_OK);
-        const int grown_idx = meta_carve_find_data(&next, 7, "rec");
+        const int grown_idx = meta_carve_find_data(&next, 1, "rec");
         assert(grown_idx >= 0);
         assert(next.data[grown_idx].size == 0x4000);
         assert(next.data[grown_idx].offset != old_off);
