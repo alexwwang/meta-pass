@@ -447,12 +447,19 @@ def main():
     proposal = node_proposal(json.dumps(s), app_len)
     if not proposal:
         die("node 提案为空(池放不下首个槽?)")
+    # Child DATA fixture:容量 8KB，但首传镜像 4KB；后续会从真机 flash 回读。
+    data_bytes = bytes((i * 37 + 11) & 0xff for i in range(4096))
+    data_images = [{"label": "recordings", "size": 8192, "bytes": data_bytes}]
+    data_sha = hashlib.sha256(data_bytes).hexdigest()
     manifest = {
         "protocol": 1, "playId": 1, "revisionId": 1, "name": "smoke-one",
         "storeSha256": "00" * 32, "imageLen": app_len,
-        "sha256": __import__("hashlib").sha256(app_bytes).hexdigest(),
+        "sha256": hashlib.sha256(app_bytes).hexdigest(),
         "suggestedSlot": 0, "slot": proposal["slot"],
         "slots": [{"slot": 0, "limit": app_len, "fit": True}],
+        "data": [{"playId": 1, "label": "recordings", "size": 8192,
+                  "subtype": 0x82, "initialImageSize": len(data_bytes),
+                  "sha256": data_sha}],
         "reason": "ok",
         "carveOffset": proposal["carveOffset"], "carveSize": proposal["carveSize"],
     }
@@ -460,7 +467,7 @@ def main():
     if st != 200:
         die(f"prepare#1 {st} {body[:300]!r}", mon)
     ok(f"prepare#1 200(carve idx={proposal['slot']} off=0x{proposal['carveOffset']:x})")
-    upload(api, app_bytes, app_len, "install#1", slot=proposal["slot"], mon=mon, port=args.port, manifest=manifest)
+    upload(api, app_bytes, app_len, "install#1", slot=proposal["slot"], mon=mon, port=args.port, manifest=manifest, data_images=data_images, data_resume_probe=True)
     n = wait_done_reboot(mon, args.port, 1, "首装")
     if n != 1:
         die(f"首装后 slots={n} != 1(变砖或 carve 未持久化)", mon)
@@ -475,6 +482,7 @@ def main():
     manifest["carveSize"] = proposal["carveSize"]
     manifest["playId"] = manifest["revisionId"] = 2
     manifest["name"] = "smoke-two"
+    manifest["data"] = []
     st, body = api.post("/api/install/prepare", json.dumps(manifest).encode())
     if st != 200:
         die(f"prepare#2 {st} {body[:300]!r}", mon)
