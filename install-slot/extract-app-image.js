@@ -156,6 +156,15 @@ export function parseFirmwareManifest(buf) {
     }
     if (type !== 0x01) continue;
 
+    // Data partition ownership:
+    // - subtype 0x00 (OTA metadata) is meta-pass-owned;
+    // - cardid is a legacy meta-pass-owned data partition;
+    // - NVS/PHY are global MVP resources and are not child DATA;
+    // - filesystem DATA is allocated per child;
+    // - other custom DATA is rejected rather than silently copied.
+    const metaOwned = subtype === 0x00 || label === "cardid";
+    if (metaOwned) continue;
+
     const supported =
       subtype === 0x81 || // FAT
       subtype === 0x82 || // SPIFFS
