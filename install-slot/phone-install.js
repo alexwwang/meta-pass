@@ -24,7 +24,7 @@
 // 纯 JS SHA-256:内置实现(与 FIPS 180-4 / 固件 mbedtls 同算法),注入实现
 // (setSha256,测试用 node:crypto)优先。
 
-import { extractAppImage, isFullImage } from "./extract-app-image.js";
+import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-image.js";
 import { exportBackup, importBackup } from "./backup-data.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { sanitizeDisplayName } from "./name-blob.js";
@@ -393,6 +393,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
 
   stage("解包");
   let ext;
+  let dataImages = [];
   try {
     // 解包上限 = 最大槽位上限(0x29E000-4KB=2740224)。extractAppImage
     // 的默认上限是硬编码 2MB 槽(2093056)——用它解 2.2MB 应用必炸,
@@ -406,6 +407,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
                   geom.proposal ? geom.proposal.limit : 0] : [0]),
     );
     ext = extractAppImage(merged, maxSlotLimit);
+    dataImages = extractDataImages(merged);
   } catch (e) {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
   }
@@ -473,7 +475,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     offer.carveOffset = geom.proposal.carveOffset;
     offer.carveSize = geom.proposal.carveSize;
   }
-  return { ok: true, offer, merged, ext, analyze: a, play };
+  return { ok: true, offer, merged, ext, dataImages, analyze: a, play };
 }
 
 export async function preflight(id, hooks = {}) {
