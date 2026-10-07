@@ -420,8 +420,8 @@ bool meta_carve_valid(const meta_carve_t *c)
         if (d->play_id == 0 || d->type != 1 || d->state > META_DATA_ARCHIVED) {
             return false;
         }
-        if (d->subtype == 0) {
-            return false;   // DATA_OTA:子固件条目会在表序里抢单系统 otadata
+        if (d->subtype != 0x81 && d->subtype != 0x82 && d->subtype != 0x83) {
+            return false;   // only child filesystem DATA is allocatable in MVP
         }
         if (d->size < META_CARVE_MIN_DATA || d->size % POOL.size_granule != 0) {
             return false;
