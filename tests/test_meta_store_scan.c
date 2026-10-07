@@ -30,6 +30,7 @@
 #include "esp_app_desc.h"
 
 #include "meta_store.h"
+#include "meta_carve_flash.h"
 #include "meta_sign.h"
 
 /* meta_store_boot_slot() now materializes the active Child DATA view. This
