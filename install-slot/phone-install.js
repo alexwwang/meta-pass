@@ -172,6 +172,15 @@ export function createBridge(deviceOrigin, token) {
       headers: { "X-Meta-Offset": String(off), "Content-Type": "application/octet-stream" },
       body: buf,
     }),
+    dataChunk: (index, off, buf) => call("/api/install/data", {
+      method: "POST",
+      headers: {
+        "X-Meta-Data-Index": String(index),
+        "X-Meta-Offset": String(off),
+        "Content-Type": "application/octet-stream",
+      },
+      body: buf,
+    }),
     finalize: () => call("/api/install/finalize", { method: "POST" }),
     cancel: () => call("/api/install/cancel", { method: "POST" }),
     // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
@@ -648,6 +657,53 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
     retries = 0;
     hooks.resume?.(offset);
     hooks.progress?.(offset, offer.imageLen);
+  }
+
+  // Child DATA: existing allocations are reported done and are never overwritten.
+  const dataImages = Array.isArray(hooks.dataImages) ? hooks.dataImages : [];
+  const dataState = Array.isArray(sess?.data) ? sess.data : [];
+  for (let i = 0; i < dataImages.length; i++) {
+    const img = dataImages[i];
+    const expected = Number(img?.initial_image_size ?? 0);
+    if (!expected) continue;
+    if (!(img.data instanceof Uint8Array) || img.data.length !== expected) {
+      return fail("data-upload", `data ${i} buffer/length mismatch`);
+    }
+    const ds = dataState.find((x) => x && x.index === i);
+    if (ds?.done) continue;
+    let doff = Number.isFinite(ds?.offset) ? ds.offset : 0;
+    if (doff > expected) return fail("data-upload", `device data ${i} offset beyond image`);
+    let retriesData = 0;
+    hooks.stage?.(`upload data ${i + 1}/${dataImages.length}`);
+    while (doff < expected) {
+      const len = Math.min(maxChunk, expected - doff);
+      const dr = await bridge.dataChunk(i, doff, img.data.subarray(doff, doff + len));
+      if (dr.ok) {
+        doff += len;
+        retriesData = 0;
+        continue;
+      }
+      let s2 = null;
+      try { s2 = parseJsonReply(await bridge.status()); } catch { /* fatal below */ }
+      const ds2 = Array.isArray(s2?.data) ? s2.data.find((x) => x && x.index === i) : null;
+      const devOff = Number.isFinite(ds2?.offset) ? ds2.offset : null;
+      if (s2 && (s2.state === "failed" || s2.state === "cancelled" || s2.state === "done")) {
+        return fail("data-upload", dr.text || `HTTP ${dr.status}`, { status: dr.status, index: i, offset: doff });
+      }
+      if (devOff === null) {
+        return fail("data-upload", dr.text || `HTTP ${dr.status}`, { status: dr.status, index: i, offset: doff });
+      }
+      if (devOff === doff) {
+        if (++retriesData >= 3) {
+          return fail("data-upload", dr.text || `HTTP ${dr.status}`,
+            { status: dr.status, index: i, offset: doff, retries: retriesData });
+        }
+        continue;
+      }
+      doff = devOff;
+      retriesData = 0;
+      hooks.resume?.(doff);
+    }
   }
 
   hooks.stage?.("finalize");
