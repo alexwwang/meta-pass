@@ -327,6 +327,22 @@ static void cleanup_migrated_sources(const data_move_t moves[META_DATA_MAX],
     }
 }
 
+static void cleanup_reclaimed_sources(const meta_carve_t *before,
+                                      const meta_carve_t *after)
+{
+    if (!before || !after) return;
+    for (uint8_t i = 0; i < before->data_count; i++) {
+        const meta_carve_data_t *old = &before->data[i];
+        const int idx = meta_carve_find_data(after, old->play_id, old->label);
+        if (idx >= 0 && after->data[idx].offset == old->offset) continue;
+        const esp_err_t e = esp_flash_erase_region(NULL, old->offset, old->size);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "reclaimed data extent remains @0x%08lx: %s",
+                     (unsigned long)old->offset, esp_err_to_name(e));
+        }
+    }
+}
+
 typedef struct {
     uint32_t offset;
     uint32_t size;
@@ -1180,6 +1196,8 @@ static esp_err_t finalize_locked(void)
      * Until this point the old extent remains the rollback source.
      */
     cleanup_migrated_sources(s_session.data_moves, s_session.data_move_count);
+    cleanup_reclaimed_sources(s_session.carve_snapshot_valid ? &s_session.carve_before : NULL,
+                              meta_carve_flash_carve());
     s_session.data_move_count = 0;
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
