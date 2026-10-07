@@ -134,7 +134,7 @@ export function extractAppImage(buf, maxSize) {
   return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, tailSector, tailSectorOffset };
 }
 
-// 解析分区表中 subtype=0x81/0x82 的数据分区( fat/spiffs )。
+// 解析分区表中 subtype=0x81/0x82/0x83 的数据分区(FAT/SPIFFS/LittleFS)。
 // 返回 [{offset, size, type, label}] 数组;无则空数组。
 export function parseFirmwareManifest(buf) {
   if (!isFullImage(buf)) throw new Error("firmware manifest requires a full flash image");
@@ -159,6 +159,7 @@ export function parseFirmwareManifest(buf) {
     const supported =
       subtype === 0x81 || // FAT
       subtype === 0x82 || // SPIFFS
+      subtype === 0x83 || // LittleFS
       subtype === 0x02 || // NVS (global in MVP)
       subtype === 0x01;   // PHY (global in MVP)
     const meta = {
