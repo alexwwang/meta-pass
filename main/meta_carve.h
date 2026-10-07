@@ -167,6 +167,11 @@ bool meta_carve_remove(meta_carve_t *c, uint8_t idx);
 bool meta_carve_place_data(const meta_carve_t *cur, uint32_t size,
                            uint32_t *out_offset);
 
+/* Find a new extent for an existing DATA record without allowing the new
+ * extent to overlap that record. Used by transactional DATA resize/migration. */
+bool meta_carve_place_data_move(const meta_carve_t *cur, uint8_t old_idx,
+                                uint32_t new_size, uint32_t *out_offset);
+
 // 按 (play_id, label) 查数据记录下标;无 → -1。play_id 0 永不匹配。
 int meta_carve_find_data(const meta_carve_t *c, uint32_t play_id, const char *label);
 
