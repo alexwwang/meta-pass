@@ -243,6 +243,9 @@ PYEOF
     install -m 0644 \
         "${validation_build_dir}/meta-pass_${version}.bin" \
         "${repo_root}/build/meta-pass_${version}.bin"
+    install -m 0644 \
+        "${validation_build_dir}/FoloToy-AI-Passport-full.bin" \
+        "${repo_root}/build/FoloToy-AI-Passport-full.bin"
     echo "Firmware build: PASS (hybrid single-file: build/meta-pass_${version}.bin)"
 )
 
