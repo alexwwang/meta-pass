@@ -44,7 +44,6 @@
  */
 
 #include "esp_err.h"
-#include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_flash_partitions.h"
 #include "bootloader_flash_priv.h"
@@ -242,10 +241,10 @@ static void enforce_carve_table(int active_slot)
     const meta_boot_table_verdict_t v =
         meta_carve_boot_decide(s_scratch, have ? &s_best : NULL, active_slot);
     if (v.action == META_BOOT_TABLE_PROCEED) {
-        ESP_LOGI(TAG, "carve: %s", v.reason);
+
         return;
     }
-    ESP_LOGW(TAG, "carve repair: %s", v.reason);
+
     meta_carve_boot_restore(v.table);
 }
 
@@ -263,17 +262,15 @@ static bool enforce_single_session_on_copy(uint32_t ota_offset, uint32_t copy_in
         return false;
     }
 
-    ESP_LOGI(TAG, "otadata copy %u in VALID state -> erasing (single-session policy)",
-             (unsigned)copy_index);
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
-        ESP_LOGE(TAG, "erase otadata copy %u failed", (unsigned)copy_index);
+
         return false;
     }
     /* 复核:擦除后该扇区应为全 0xFF,state 读回 0xFFFFFFFF(≠ VALID)。 */
     meta_otadata_entry_t check;
     if (bootloader_flash_read(sector * 4096u, &check, sizeof(check), false) != ESP_OK ||
         check.ota_state == META_OTA_IMG_VALID) {
-        ESP_LOGE(TAG, "otadata copy %u still VALID after erase", (unsigned)copy_index);
+
     }
     return true;
 }
@@ -306,29 +303,26 @@ static bool resume_running_slot_on_copy(uint32_t ota_offset, uint32_t ota_count,
     }
     /* CRC 复核:坏副本交给 bootloader 按原逻辑判无效并回退 factory,不强行续期。 */
     if (entry.crc != bootloader_common_ota_select_crc(&entry)) {
-        ESP_LOGW(TAG, "otadata copy %u looks PENDING but CRC is bad -> not resuming",
-                 (unsigned)copy_index);
+
         return false;
     }
 
     const uint32_t slot = (entry.ota_seq - 1u) % ota_count;
-    ESP_LOGI(TAG, "deep-sleep wake: resuming ota_%u (otadata copy %u PENDING -> VALID)",
-             (unsigned)slot, (unsigned)copy_index);
 
     entry.ota_state = ESP_OTA_IMG_VALID;
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
-        ESP_LOGE(TAG, "erase otadata copy %u failed", (unsigned)copy_index);
+
         return false;
     }
     if (bootloader_flash_write(addr, &entry, sizeof(entry), false) != ESP_OK) {
-        ESP_LOGE(TAG, "write otadata copy %u failed", (unsigned)copy_index);
+
         return false;
     }
     /* 复核:state 应读回 VALID。 */
     esp_ota_select_entry_t check;
     if (bootloader_flash_read(addr, &check, sizeof(check), false) != ESP_OK ||
         check.ota_state != ESP_OTA_IMG_VALID) {
-        ESP_LOGE(TAG, "otadata copy %u not VALID after resume write", (unsigned)copy_index);
+
     }
     return true;
 }
