@@ -223,6 +223,24 @@ function initialDataImageSize(buf, offset, size) {
   return last < 0 ? 0 : last - offset + 1;
 }
 
+
+export function extractDataImages(buf) {
+  const manifest = parseFirmwareManifest(buf);
+  if (!manifest.supported) {
+    throw new Error(manifest.reason || "unsupported-partition");
+  }
+  return manifest.data
+    .filter(d => d.initial_image_size > 0)
+    .map(d => ({
+      label: d.label,
+      subtype: d.subtype,
+      offset: d.offset,
+      required_size: d.required_size,
+      initial_image_size: d.initial_image_size,
+      data: buf.slice(d.offset, d.offset + d.initial_image_size),
+    }));
+}
+
 export function parseDataPartitions(buf) {
   const result = [];
   for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
