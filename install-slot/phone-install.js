@@ -416,7 +416,15 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
                   geom.proposal ? geom.proposal.limit : 0] : [0]),
     );
     ext = extractAppImage(merged, maxSlotLimit);
-    try { dataImages = extractDataImages(merged); } catch { dataImages = []; }
+    try {
+      dataImages = extractDataImages(merged);
+    } catch (e) {
+      return {
+        ok: false,
+        stage: "extract",
+        reason: String(e && e.message ? e.message : e),
+      };
+    }
   } catch (e) {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
   }
