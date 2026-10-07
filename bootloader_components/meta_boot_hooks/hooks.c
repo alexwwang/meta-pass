@@ -135,7 +135,7 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
         ESP_LOGE(TAG, "carve: erase table sector failed");
         return false;
     }
-    if (bootloader_flash_write(ESP_PARTITION_TABLE_OFFSET, table, META_PT_SIZE,
+    if (bootloader_flash_write(ESP_PARTITION_TABLE_OFFSET, (void *)table, META_PT_SIZE,
                                false) != ESP_OK) {
         ESP_LOGE(TAG, "carve: write table failed");
         return false;
