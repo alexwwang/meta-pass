@@ -470,24 +470,25 @@ bool meta_carve_valid(const meta_carve_t *c)
 
 // ---- 表物化 ---------------------------------------------------------------
 
-typedef struct {
-    uint8_t  type;
-    uint8_t  subtype;
-    uint32_t offset;
-    uint32_t size;
-    const char *label;
-} fixed_entry_t;
-
 // 固定系统条目(offset 升序):与 partitions.csv 安全表同源。
-static const fixed_entry_t FIXED[] = {
-    { 1, 2, 0x9000u,    0x6000u,   "nvs" },
-    { 1, 1, 0xF000u,    0x1000u,   "phy_init" },
-    { 0, 0, 0x10000u,   0x170000u, "factory" },
-    { 1, 2, 0x356000u,  0x4000u,   "cardid" },
-    { 1, 2, 0x35A000u,  0x6000u,   "store" },
-    { 1, 0, 0x7FE000u,  0x2000u,   "otadata" },
-};
-#define FIXED_COUNT (sizeof(FIXED) / sizeof(FIXED[0]))
+// 直接写入避免 bootloader 携带 fixed_entry_t 元数据表及其指针/字符串表。
+static void pt_add_fixed(meta_pt_t *t, bool with_pools)
+{
+    pt_set_entry(t, 1, 2, 0x9000u, 0x6000u, "nvs");
+    pt_set_entry(t, 1, 1, 0xF000u, 0x1000u, "phy_init");
+    pt_set_entry(t, 0, 0, 0x10000u, 0x170000u, "factory");
+    if (with_pools) {
+        pt_set_entry(t, 1, 0x40, META_POOL0_START,
+                     META_POOL0_END - META_POOL0_START, "pool_0");
+    }
+    pt_set_entry(t, 1, 2, 0x356000u, 0x4000u, "cardid");
+    pt_set_entry(t, 1, 2, 0x35A000u, 0x6000u, "store");
+    if (with_pools) {
+        pt_set_entry(t, 1, 0x40, META_POOL1_START,
+                     META_POOL1_END - META_POOL1_START, "pool_1");
+    }
+    pt_set_entry(t, 1, 0, 0x7FE000u, 0x2000u, "otadata");
+}
 
 static void pt_set_entry(meta_pt_t *t, uint8_t type, uint8_t subtype,
                          uint32_t offset, uint32_t size, const char *label)
@@ -602,20 +603,7 @@ static void build_fixed_only(uint8_t out[META_PT_SIZE], bool with_pools)
 {
     meta_pt_t t;
     t.count = 0;
-    for (size_t i = 0; i < FIXED_COUNT; i++) {
-        const fixed_entry_t *f = &FIXED[i];
-        if (with_pools && f->offset == 0x356000u) {
-            // cardid 前插入 pool_0(升序)。
-            pt_set_entry(&t, 1, 0x40, META_POOL0_START,
-                         META_POOL0_END - META_POOL0_START, "pool_0");
-        }
-        if (with_pools && f->offset == 0x7FE000u) {
-            // otadata 前插入 pool_1(升序)。
-            pt_set_entry(&t, 1, 0x40, META_POOL1_START,
-                         META_POOL1_END - META_POOL1_START, "pool_1");
-        }
-        pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
-    }
+    pt_add_fixed(&t, with_pools);
     meta_pt_encode(&t, out);
 }
 
@@ -685,10 +673,7 @@ bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE])
     t.count = 0;
     // 全量收集(固定 + 槽位 + 数据)再按 offset 升序:数据记录在数组里是
     // 分配序(乱序),表内顺序不影响 IDF 查找,但升序保持黄金产物逐字节一致。
-    for (size_t i = 0; i < FIXED_COUNT; i++) {
-        const fixed_entry_t *f = &FIXED[i];
-        pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
-    }
+    pt_add_fixed(&t, false);
     for (uint8_t i = 0; i < c->count; i++) {
         char label[6] = { 'o', 't', 'a', '_', (char)('0' + i), '\0' };
         pt_set_entry(&t, 0, (uint8_t)(0x10 + i),
@@ -726,10 +711,7 @@ bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
     // Keep every APP entry visible: bootloader/launcher still needs the full
     // child-app set. Data entries are the only entries scoped to the active
     // Child Firmware.
-    for (size_t i = 0; i < FIXED_COUNT; i++) {
-        const fixed_entry_t *f = &FIXED[i];
-        pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
-    }
+    pt_add_fixed(&t, false);
     for (uint8_t i = 0; i < c->count; i++) {
         char label[6] = { 'o', 't', 'a', '_', (char)('0' + i), '\0' };
         pt_set_entry(&t, 0, (uint8_t)(0x10 + i),
