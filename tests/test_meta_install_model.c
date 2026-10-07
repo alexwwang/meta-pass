@@ -602,6 +602,7 @@ static void test_place_offer(void)
                                           label, &nf) == META_PLACE_OK);
     assert(idx == 0 && changed);
     assert(next.count == 1 && next.slot[0].offset == 0x180000);
+    assert(next.slot[0].play_id == 7);
     assert(next.data_count == 2);
     assert(next.data[0].play_id == 7 && next.data[0].state == META_DATA_PRISTINE);
     assert(strcmp(next.data[0].label, "rec") == 0);
