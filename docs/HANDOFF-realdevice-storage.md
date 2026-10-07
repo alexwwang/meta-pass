@@ -1,3 +1,5 @@
+[中文](HANDOFF-realdevice-storage.zh_CN.md)
+
 # Handoff | feat/storage Real-device validation
 
 This file is the executable handoff for the next local coding agent.
