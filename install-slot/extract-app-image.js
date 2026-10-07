@@ -151,7 +151,7 @@ export function parseFirmwareManifest(buf) {
     for (let i = 16; i < 32 && buf[off + i] !== 0; i++) label += String.fromCharCode(buf[off + i]);
 
     if (type === 0x00) {
-      if (subtype === 0x00) partitions.push({ kind: "app", label, offset, size });
+      if (subtype === 0x00) partitions.push({ kind: "app", label, type: "app", subtype, offset, size });
       continue;
     }
     if (type !== 0x01) continue;
