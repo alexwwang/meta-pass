@@ -194,10 +194,11 @@ export function parseFirmwareManifest(buf) {
 
   const align = (n) => Math.ceil(n / 0x1000) * 0x1000;
   const app = apps.find(p => p.subtype === 0x00);
-  const required_size = align(app.size) +
+  const appImageSize = espImageLength(buf, app.offset);
+  const required_size = align(appImageSize) +
     data.reduce((sum, p) => sum + align(p.required_size), 0);
   return {
-    app: { ...app, required_size: app.size },
+    app: { ...app, image_size: appImageSize, required_size: appImageSize },
     data,
     unsupported: [],
     required_size,
