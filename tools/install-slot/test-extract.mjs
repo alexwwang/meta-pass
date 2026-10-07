@@ -139,11 +139,9 @@ function buildAppImage() {
   const dataOff = 0x20000;
   const dataSize = 0x30000;
   const full = new Uint8Array(dataOff + dataSize).fill(0xff);
-  // factory APP: physical partition is larger than the actual APP image.
-  full.set([0xaa, 0x50, 0x00, 0x00], pt);
-  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
-  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
-  full.set(app, 0x10000);
+  // Canonical full-image fixture supplies the factory APP entry; extend it
+  // only for the DATA extent used by this manifest test.
+  full.set(buildFullImage(app));
   // SPIFFS data partition: required capacity is 0x30000, but initial payload
   // occupies only the first 0x1234 bytes.
   full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
@@ -167,10 +165,7 @@ function buildAppImage() {
   // LittleFS is an ESP-IDF-defined data subtype (0x83) and follows the same
   // child DATA allocation contract as FAT/SPIFFS.
   const littleFull = new Uint8Array(0x30000).fill(0xff);
-  littleFull.set([0xaa, 0x50, 0x00, 0x00], pt);
-  littleFull.set([0x00, 0x00, 0x01, 0x00], pt + 4);
-  littleFull.set([0x00, 0x00, 0x30, 0x00], pt + 8);
-  littleFull.set(app, 0x10000);
+  littleFull.set(buildFullImage(app));
   littleFull.set([0xaa, 0x50, 0x01, 0x83], pt + 32);
   littleFull.set([0x00, 0x00, 0x02, 0x00], pt + 36);
   littleFull.set([0x00, 0x00, 0x01, 0x00], pt + 40);
