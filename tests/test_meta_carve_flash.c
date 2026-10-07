@@ -499,6 +499,37 @@ static void test_erase_data(void)
     printf("PASS erase_data (durable across restart)\n");
 }
 
+static void test_arc_prepare_transaction(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+
+    meta_carve_rec_t rec;
+    make_rec_with_data(&rec, 333, "old", 0x2A0000, 0x1000, META_DATA_ARCHIVED);
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+
+    uint8_t data[0x1000];
+    memset(data, 0x5A, sizeof(data));
+    assert(esp_flash_write(NULL, data, 0x2A0000, sizeof(data)) == ESP_OK);
+
+    // Prepare removes the record from the allocation metadata but must NOT erase
+    // its physical bytes: an install transaction may still roll the carve back.
+    assert(meta_carve_flash_arc_prepare(0x1000) == 0x1000);
+    assert(meta_carve_flash_carve()->data_count == 0);
+    uint8_t got[0x1000];
+    assert(esp_flash_read(NULL, got, 0x2A0000, sizeof(got)) == ESP_OK);
+    assert(memcmp(got, data, sizeof(got)) == 0);
+
+    // Simulate deterministic rollback of the prepare phase.
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+    assert(meta_carve_flash_carve()->data_count == 1);
+    assert(meta_carve_flash_carve()->data[0].play_id == 333);
+    assert(meta_carve_flash_carve()->data[0].offset == 0x2A0000);
+    printf("PASS arc_prepare_transaction (metadata rollback keeps source bytes)\\n");
+}
+
 static void test_arc(void)
 {
     reset_all();
@@ -658,6 +689,7 @@ int main(void)
     test_archive_slot_and_data();
     test_erase_data();
     test_arc();
+    test_arc_prepare_transaction();
     test_mark_dirty_selected();
     test_data_copy();
     printf("PASS test_meta_carve_flash\n");
