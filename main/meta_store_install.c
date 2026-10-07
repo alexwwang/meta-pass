@@ -1077,6 +1077,33 @@ static esp_err_t finalize_locked(void)
         return ESP_ERR_INVALID_SIZE;
     }
 
+    // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让
+    // finalize 失败(审计 M5):注册表已标 VALID 而显示名缺失的槽位会通过
+    // 校验却没有名字 —— 设计要求 blob 写入成功才算安装完成。
+    {
+        const uint32_t tail_off = meta_sign_sector_offset(meta.image_len);
+        if (tail_off + META_SIG_SECTOR <= part->size) {
+            uint8_t window[META_NAME_BLOB_RESERVE];
+            memset(window, 0xFF, sizeof(window));
+            if (meta_name_pack_tail(name, window, sizeof(window)) != 0) {
+                esp_err_t werr = esp_partition_erase_range(part, tail_off,
+                                                           META_SIG_SECTOR);
+                if (werr == ESP_OK) {
+                    werr = esp_partition_write(part, tail_off + META_NAME_BLOB_OFF,
+                                               window, sizeof(window));
+                }
+                if (werr != ESP_OK) {
+                    ESP_LOGE(TAG, "MNAM write on slot %d failed: %s", slot,
+                             esp_err_to_name(werr));
+                    fail_locked("name write failed");
+                    return ESP_ERR_INVALID_STATE;
+                }
+                ESP_LOGI(TAG, "MNAM write on slot %d: ok", slot);
+            }
+        }
+    }
+
+
     // 展示名 + 注册表(先算好全部入参,避免终态后读已清字段)。
     char sha_hex[META_SHA256_HEX_LEN + 1];
     {
@@ -1112,32 +1139,6 @@ static esp_err_t finalize_locked(void)
                      esp_err_to_name(cv));
             fail_locked("carve state update failed");
             return ESP_ERR_INVALID_STATE;
-        }
-    }
-
-    // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让
-    // finalize 失败(审计 M5):注册表已标 VALID 而显示名缺失的槽位会通过
-    // 校验却没有名字 —— 设计要求 blob 写入成功才算安装完成。
-    {
-        const uint32_t tail_off = meta_sign_sector_offset(meta.image_len);
-        if (tail_off + META_SIG_SECTOR <= part->size) {
-            uint8_t window[META_NAME_BLOB_RESERVE];
-            memset(window, 0xFF, sizeof(window));
-            if (meta_name_pack_tail(name, window, sizeof(window)) != 0) {
-                esp_err_t werr = esp_partition_erase_range(part, tail_off,
-                                                           META_SIG_SECTOR);
-                if (werr == ESP_OK) {
-                    werr = esp_partition_write(part, tail_off + META_NAME_BLOB_OFF,
-                                               window, sizeof(window));
-                }
-                if (werr != ESP_OK) {
-                    ESP_LOGE(TAG, "MNAM write on slot %d failed: %s", slot,
-                             esp_err_to_name(werr));
-                    fail_locked("name write failed");
-                    return ESP_ERR_INVALID_STATE;
-                }
-                ESP_LOGI(TAG, "MNAM write on slot %d: ok", slot);
-            }
         }
     }
 
