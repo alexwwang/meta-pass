@@ -155,11 +155,8 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   const dataSize = 0x30000;
   const full = buildManifestImage(app, dataOff, dataSize, 0x82, "storage");
   // SPIFFS data partition: required capacity is 0x30000, but initial payload
-  // occupies only the first 0x1234 bytes.
-  full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
-  full.set([dataOff, 0x00, 0x00, 0x00], pt + 36);
-  full.set([dataSize, 0x00, 0x00, 0x00], pt + 40);
-  full.set([...Buffer.from("storage")], pt + 32 + 16);
+  // occupies only the first 0x1234 bytes. buildManifestImage already encoded
+  // the DATA entry with canonical little-endian fields.
   full.fill(0x5a, dataOff, dataOff + 0x1234);
 
   const m = parseFirmwareManifest(full);
