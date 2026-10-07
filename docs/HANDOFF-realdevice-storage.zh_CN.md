@@ -461,31 +461,32 @@ smoke 失败后不得只输出“FAIL”。
 - 不得把 soft reset 写成 power-loss PASS。
 - 最终输出必须包含真实执行过的命令、结果、报告路径和未完成项。
 
-## 11. 当前已知代码状态
+## 11. 当前代码状态
 
-`tools/realdevice/smoke.py` 已经覆盖：
+`tools/realdevice/smoke.py` 已覆盖：
 
-- APP + DATA。
+- APP + DATA 安装。
 - DATA resume checkpoint。
-- DATA done idempotency。
-- ARCHIVED DATA。
-- DATA Flash byte comparison。
+- DATA done 幂等跳过。
+- ARCHIVED DATA 生命周期。
+- DATA Flash 字节级比对。
 - reboot / resume 基础链路。
 
-但它还需要继续完善：
+`tools/realdevice/run_smoke.py` 已提供本地验收包装层，负责：
 
-1. per-run artifact directory。
-2. report.json/report.md。
-3. 所有 stage 的显式 PASS/FAIL 状态。
-4. failure category。
-5. 命令 stdout/stderr 落盘。
-6. failure 时自动采集 slots/status。
-7. token 脱敏。
-8. 明确区分 soft reset 与真实 power loss。
-9. Flash dump 与 report 的关联。
-10. 测试结束后给出可直接交给 coding agent 的诊断摘要。
+1. 每次运行独立 evidence directory。
+2. 保存命令、stdout/stderr、UART 与 HTTP observations。
+3. 记录 git branch/commit、固件 SHA-256、工具版本、USB port/IP。
+4. 生成 `report.json` 与 `report.md`。
+5. 失败时输出 failure category，并保留诊断证据。
+6. 明确区分 soft reset 与真实 physical power loss。
 
-这些不是可选优化，而是为了让真机失败能够真正反哺代码开发。
+当前仍有两个**有意保留在本地 agent 环境完成**的验证项：
+
+- passport-sim 的真实 Node/QEMU 执行：当前 agent 环境没有可运行的 simulator/WASM runtime，因此不能在这里声称 PASS。
+- 真实 physical power-loss：需要真实断电能力；soft reset 不能替代它。
+
+因此，当前代码与测试工具已经达到“交给本地 agent 执行验证”的状态，但尚未达到“功能已真机验收完成”的状态。
 
 ## 12. 最终完成定义
 
