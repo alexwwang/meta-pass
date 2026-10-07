@@ -1271,13 +1271,12 @@ static esp_err_t h_install_status(httpd_req_t *req)
                          ? app_desc->version : "0.0.0-placeholder";
     char fw_esc[META_BACKUP_VERSION_MAX * 2 + 1];
     json_escape(fw_ver, fw_esc, sizeof(fw_esc));
-    char body[448];
-    const int n = snprintf(
-        body, sizeof(body),
+    static char body[1024];
+    int off = snprintf(body, sizeof(body),
         "{\"protocol\":%d,\"state\":\"%s\",\"message\":\"%s\","
         "\"active\":%s,\"offer\":%s,\"confirmed\":%s,\"session\":%s,"
-        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ",\"name\":\"%s\","
-        "\"firmware_version\":\"%s\"}",
+        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ","
+        "\"name\":\"%s\",\"firmware_version\":\"%s\",\"data\":[",
         META_INSTALL_PROTOCOL_V1,
         s_session.state ? s_session.state : "idle",
         s_session.message ? s_session.message : "",
@@ -1289,6 +1288,16 @@ static esp_err_t h_install_status(httpd_req_t *req)
         s_session.session_offset,
         s_session.manifest_valid ? s_session.manifest.image_len : 0u,
         name_esc, fw_esc);
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const bool done = (s_session.data_done_mask & (1u << i)) != 0;
+        off += snprintf(body + off, sizeof(body) - (size_t)off,
+                        "%s{\"index\":%u,\"offset\":%" PRIu32
+                        ",\"expected\":%" PRIu32 ",\"done\":%s}",
+                        i ? "," : "", (unsigned)i, s_session.data_offset[i],
+                        s_session.manifest.data[i].initial_image_size,
+                        done ? "true" : "false");
+    }
+    snprintf(body + off, sizeof(body) - (size_t)off, "]}");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, body, (size_t)n);
