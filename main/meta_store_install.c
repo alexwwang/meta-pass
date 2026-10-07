@@ -586,6 +586,7 @@ esp_err_t meta_install_offer_reject(void)
         // P0-5:拒绝同取消 —— 新建槽回收(守卫同 cancel)。
         const int8_t carved = s_session.carved_new_slot;
         const bool have_carve = s_session.manifest_valid && carved >= 0;
+        cleanup_new_data_locked();
         offer_and_upload_clear();
         if (have_carve) meta_carve_flash_remove((int)carved);
         s_session.name[0] = '\0';
@@ -1057,6 +1058,7 @@ esp_err_t meta_install_cancel(void)
     // 下 carved_new_slot=0(静态零初始化)误删槽 0。
     const int8_t carved = s_session.carved_new_slot;
     const bool have_carve = s_session.manifest_valid && carved >= 0;
+    cleanup_new_data_locked();
     offer_and_upload_clear();
     if (have_carve) {
         meta_carve_flash_remove((int)carved);
@@ -1423,8 +1425,11 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     }
     // 覆盖旧 offer:上一 offer 若物化过新建槽且从未上传,先回收(幂等:
     // 槽里无镜像,remove 即回到 prepare 前状态)。
-    if (s_session.manifest_valid && s_session.carved_new_slot >= 0) {
-        meta_carve_flash_remove((int)s_session.carved_new_slot);
+    if (s_session.manifest_valid) {
+        cleanup_new_data_locked();
+        if (s_session.carved_new_slot >= 0) {
+            meta_carve_flash_remove((int)s_session.carved_new_slot);
+        }
     }
     offer_and_upload_clear();          // 覆盖旧 offer 时清残留(未确认路径)
     s_session.manifest = m;
