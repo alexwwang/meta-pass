@@ -66,9 +66,13 @@ reboot lands after a successful install.**
    consult the table. Idempotent retries (phone re-sending the same prepare)
    hit the place_offer idempotent branch → no duplicate materialization.
 3. **Success:** if this session materialized the table (`table_changed`),
-   reboot ~300 ms after the response flushes (esp_timer, same rhythm as the
-   remove flow). The device list and the boot path are fully consistent on
-   the next boot.
+   finalize first returns `done` and does **not reboot during the current HTTP
+   session**. The phone must be able to poll `done`; an immediate reboot would
+   turn an accepted finalize into a transient status-unreachable failure.
+   The implementation therefore marks reboot pending
+   (`meta_carve_flash_reboot_pending`) and reboots when leaving the store page.
+   The durable carve record is still written before table materialization, so
+   the next boot and power-loss recovery use the same committed state.
 4. **Cancel / reject / overwritten offer:** a **session-created slot** is
    reclaimed via `meta_carve_flash_remove` (no user data inside: empty or a
    half-written garbage image); existing slots keep the INVALID path. A
