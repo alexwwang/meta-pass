@@ -1556,6 +1556,7 @@ export function boot(opts = {}) {
     stageEl.textContent = "上传";
     log("✓ " + pre.offer.name + " → 槽位 " + slot + ",开始上传");
     const r = await runInstall(bridge, pre.offer, pre.ext, {
+      dataImages: pre.dataImages,
       status: (s) => { if (s.confirmed) stageEl.textContent = "设备已确认,上传中"; },
       progress: (off, totalB) => {
         bar.value = off / totalB;
