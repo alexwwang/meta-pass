@@ -379,10 +379,13 @@ def main():
     ap.add_argument("--app", default=os.path.join(REPO, "build", "FoloToy-AI-Passport.bin"))
     ap.add_argument("--fresh", action="store_true",
                     help="全片擦除(会抹 WiFi 凭证,需重新配网)")
+    ap.add_argument("--logdir", default=LOGDIR,
+                    help="本次运行的日志/证据目录")
     args = ap.parse_args()
 
-    os.makedirs(LOGDIR, exist_ok=True)
-    logfile = os.path.join(LOGDIR, f"smoke-{time.strftime('%Y%m%d-%H%M%S')}.log")
+    logroot = os.path.abspath(args.logdir)
+    os.makedirs(logroot, exist_ok=True)
+    logfile = os.path.join(logroot, "uart.log")
     app_bytes = open(args.app, "rb").read()
     app_len = len(app_bytes)
     print(f"app image {app_len}B | log {logfile}")
@@ -590,7 +593,7 @@ def main():
         die(f"recordings 状态异常: {rec}", mon)
     ok(f"DATA record persisted: offset=0x{int(rec['offset']):x} size={int(rec['size'])} state=ARCHIVED")
     mon.stop()
-    evid = os.path.join(LOGDIR, time.strftime("%Y%m%d-%H%M%S"))
+    evid = os.path.join(logroot, "flash")
     os.makedirs(evid, exist_ok=True)
     esptool(args.port, f"read_flash 0x8000 0xC00 {evid}/table.bin", timeout=60)
     esptool(args.port, f"read_flash 0x35A000 0x2000 {evid}/store.bin", timeout=60)
