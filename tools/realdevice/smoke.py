@@ -28,6 +28,7 @@
 自动停/起 monitor。日志全程落 tools/realdevice/logs/smoke-<ts>.log。
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -149,6 +150,18 @@ class Api:
         req = urllib.request.Request(self.base + "/api/install/chunk", data=data,
                                      headers=self._hdr({
                                          "Content-Type": "application/octet-stream",
+                                         "X-Meta-Offset": str(offset)}))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def data_chunk(self, index, offset, data):
+        req = urllib.request.Request(self.base + "/api/install/data", data=data,
+                                     headers=self._hdr({
+                                         "Content-Type": "application/octet-stream",
+                                         "X-Meta-Data-Index": str(index),
                                          "X-Meta-Offset": str(offset)}))
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
