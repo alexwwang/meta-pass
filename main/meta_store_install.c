@@ -119,6 +119,8 @@ typedef struct {
     uint32_t data_dirty_mask;
     data_move_t data_moves[META_DATA_MAX];
     uint8_t data_move_count;
+    meta_carve_t carve_before;
+    bool carve_committed;
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -394,6 +396,9 @@ static void offer_and_upload_clear(void)
     s_session.carved_new_slot = -1;
     s_session.table_changed = false;
     s_session.data_dirty_mask = 0;
+    s_session.data_move_count = 0;
+    s_session.carve_committed = false;
+    memset(&s_session.carve_before, 0, sizeof(s_session.carve_before));
 }
 
 // 终态失败(文档 §6.5):中止 OTA;flash 被动过即槽位 INVALID;清 offer 手机侧重来。
@@ -415,7 +420,18 @@ static void fail_locked(const char *msg)
         ESP_LOGW(TAG, "install failed; slot %d marked INVALID", slot);
     }
 
-    if (have_carved_new) {
+    if (s_session.carve_committed) {
+        for (uint8_t i = 0; i < s_session.data_move_count; i++) {
+            (void)esp_flash_erase_region(NULL,
+                                         s_session.data_moves[i].new_offset,
+                                         s_session.data_moves[i].new_size);
+        }
+        const esp_err_t rr = meta_carve_flash_commit(&s_session.carve_before, true);
+        if (rr != ESP_OK) {
+            ESP_LOGE(TAG, "install failed; carve rollback failed: %s",
+                     esp_err_to_name(rr));
+        }
+    } else if (have_carved_new) {
         (void)meta_carve_flash_remove((int)carved);
         ESP_LOGW(TAG, "install failed; reclaimed new carved slot %d", carved);
     }
@@ -1614,6 +1630,8 @@ new_group_checked:
     if (m.has_carve && place_changed) {
         const meta_carve_t *before = meta_carve_flash_carve();
         if (before) {
+            s_session.carve_before = *before;
+            s_session.carve_committed = false;
             const esp_err_t ne = prepare_new_data_extents_locked(
                 before, &placed, new_data_extents, &new_data_extent_count);
             const esp_err_t me = (ne == ESP_OK)
