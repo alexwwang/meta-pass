@@ -1,3 +1,5 @@
+[English](HANDOFF-realdevice-storage.md)
+
 # Handoff｜feat/storage 真机验收与后续修复
 
 ## 0. 目的
