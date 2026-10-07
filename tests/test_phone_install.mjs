@@ -343,8 +343,14 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
     }
     if (pathn === "/api/install/finalize" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
-      if (d.offset !== imageLen) return new Response("finalize app incomplete", { status: 500 });
-      if (d.data.some((x) => !x.done)) return new Response("finalize data incomplete", { status: 500 });
+      if (d.offset !== imageLen) {
+        d.message = "finalize app incomplete";
+        return new Response("finalize app incomplete", { status: 500 });
+      }
+      if (d.data.some((x) => !x.done)) {
+        d.message = "finalize data incomplete";
+        return new Response("finalize data incomplete", { status: 500 });
+      }
       // neverDone(审计 M1 回归):finalize 接受但状态永远不到 done —— 手机侧
       // 必须报失败,而不是静默成功。
       if (neverDone) return new Response("ok", { status: 200 });
