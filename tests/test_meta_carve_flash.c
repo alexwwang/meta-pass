@@ -377,7 +377,7 @@ static void make_rec_with_data(meta_carve_rec_t *rec, uint32_t play_id,
     rec->carve.data[0].size = size;
     rec->carve.data[0].state = state;
     rec->carve.data[0].type = 1;   // DATA
-    rec->carve.data[0].subtype = 1;  // non-OTA data type
+    rec->carve.data[0].subtype = 0x82;  // non-OTA data type
     if (label) {
         strncpy(rec->carve.data[0].label, label,
                 sizeof(rec->carve.data[0].label) - 1);
@@ -518,7 +518,7 @@ static void test_arc(void)
     rec.carve.data[1].size = 0x1000;
     rec.carve.data[1].state = META_DATA_ARCHIVED;
     rec.carve.data[1].type = 1;
-    rec.carve.data[1].subtype = 1;
+    rec.carve.data[1].subtype = 0x82;
     strncpy(rec.carve.data[1].label, "b", sizeof(rec.carve.data[1].label) - 1);
 
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
@@ -598,7 +598,7 @@ static void test_mark_dirty_selected(void)
     rec.carve.data[1].size = 0x2000;
     rec.carve.data[1].state = META_DATA_PRISTINE;
     rec.carve.data[1].type = 1;
-    rec.carve.data[1].subtype = 1;
+    rec.carve.data[1].subtype = 0x82;
     strncpy(rec.carve.data[1].label, "rec",
             sizeof(rec.carve.data[1].label) - 1);
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
