@@ -272,9 +272,22 @@ static void fail_locked(const char *msg)
 {
     const int8_t slot = s_session.confirmed_slot;
     const bool touched = s_session.flash_touched;
+    const int8_t carved = s_session.carved_new_slot;
+    const bool have_carved_new = s_session.manifest_valid && carved >= 0;
+
     cleanup_new_data_locked();
+
+    /* A newly allocated APP+DATA group is only a reservation until finalize.
+     * A failed session must release the whole group, not leave an INVALID APP
+     * consuming pool capacity. Existing slots remain INVALID when their APP
+     * bytes were touched. */
+    if (have_carved_new) {
+        (void)meta_carve_flash_remove((int)carved);
+        ESP_LOGW(TAG, "install failed; reclaimed new carved slot %d", carved);
+    }
+
     offer_and_upload_clear();
-    if (touched && slot >= 0 && s_slots) {
+    if (!have_carved_new && touched && slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[slot]);
         ESP_LOGW(TAG, "install failed; slot %d marked INVALID", slot);
     }
