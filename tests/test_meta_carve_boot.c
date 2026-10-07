@@ -53,9 +53,10 @@ static meta_carve_t seed_carve(void)
     return c;
 }
 
-static meta_boot_table_verdict_t decide(const uint8_t *live, const meta_carve_rec_t *rec)
+static meta_boot_table_verdict_t decide(const uint8_t *live, const meta_carve_rec_t *rec,
+                                       int active_slot)
 {
-    return meta_carve_boot_decide(live, rec);
+    return meta_carve_boot_decide(live, rec, active_slot);
 }
 
 static void test_record_match_proceed(void)
@@ -68,9 +69,53 @@ static void test_record_match_proceed(void)
     assert(meta_pt_from_carve(&c, rec.table));
 
     // live == committed → 放行(零额外重启路径)。
-    meta_boot_table_verdict_t v = decide(rec.table, &rec);
+    meta_boot_table_verdict_t v = decide(rec.table, &rec, -1);
     assert(v.action == META_BOOT_TABLE_PROCEED);
     printf("PASS record match proceeds\n");
+}
+
+static void test_runtime_views(void)
+{
+    meta_carve_t c = seed_carve();
+    /* Give slot 0 a child identity and a data allocation. */
+    c.slot[0].play_id = 105;
+    c.data_count = 1;
+    c.data[0].play_id = 105;
+    c.data[0].offset = 0x200000;
+    c.data[0].size = 0x10000;
+    c.data[0].state = META_DATA_PRISTINE;
+    c.data[0].type = 1;
+    c.data[0].subtype = 0x82;
+    strcpy(c.data[0].label, "storage");
+    assert(meta_carve_valid(&c));
+
+    meta_carve_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.seq = 11;
+    rec.carve = c;
+    assert(meta_pt_from_carve(&c, rec.table));
+
+    uint8_t launcher[META_PT_SIZE];
+    uint8_t child[META_PT_SIZE];
+    assert(meta_pt_from_carve_active(&c, 0, launcher));
+    assert(meta_pt_from_carve_active(&c, 105, child));
+
+    meta_boot_table_verdict_t v = decide(launcher, &rec, -1);
+    assert(v.action == META_BOOT_TABLE_PROCEED);
+    v = decide(child, &rec, 0);
+    assert(v.action == META_BOOT_TABLE_PROCEED);
+
+    /* A child table must not be accepted as the cold-launcher view. */
+    v = decide(child, &rec, -1);
+    assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
+    assert(v.table);
+    assert(meta_pt_equal(v.table, launcher));
+
+    /* And the launcher view must not be accepted while resuming slot 0. */
+    v = decide(launcher, &rec, 0);
+    assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
+    assert(v.table);
+    assert(meta_pt_equal(v.table, child));
 }
 
 static void test_record_mismatch_restores(void)
@@ -84,7 +129,7 @@ static void test_record_mismatch_restores(void)
 
     // 子固件整体替换成 play 563 的表 → 从记录重写。
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
-    meta_boot_table_verdict_t v = decide(child, &rec);
+    meta_boot_table_verdict_t v = decide(child, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     assert(v.reason && v.reason[0]);
     free(child);
@@ -93,12 +138,12 @@ static void test_record_mismatch_restores(void)
     uint8_t torn[META_PT_SIZE];
     memcpy(torn, rec.table, META_PT_SIZE);
     torn[64] ^= 0x5A;
-    v = decide(torn, &rec);
+    v = decide(torn, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
 
     // 迁移窗口:记录已提交、表还是 legacy → hook 直接替启动器补物化。
     uint8_t *legacy = fixture("tests/fixtures/legacy_table.bin");
-    v = decide(legacy, &rec);
+    v = decide(legacy, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     free(legacy);
     printf("PASS record mismatch restores\n");
@@ -108,7 +153,7 @@ static void test_no_record(void)
 {
     // 安全表 → 放行(新设备冷启动、store 死后已回退的设备)。
     uint8_t *safe = fixture("tests/fixtures/safe_table.bin");
-    meta_boot_table_verdict_t v = decide(safe, NULL);
+    meta_boot_table_verdict_t v = decide(safe, NULL, -1);
     assert(v.action == META_BOOT_TABLE_PROCEED);
 
     // legacy 表 → 放行(旧设备首启 dynslot,迁移尚未发生)。
@@ -119,7 +164,7 @@ static void test_no_record(void)
 
     // 子固件乱写表 + store 死 → 回内置安全表。
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
-    v = decide(child, NULL);
+    v = decide(child, NULL, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
     assert(v.reason && v.reason[0]);
     free(child);
@@ -128,7 +173,7 @@ static void test_no_record(void)
     uint8_t corrupt[META_PT_SIZE];
     memcpy(corrupt, safe, META_PT_SIZE);
     corrupt[40] ^= 1;
-    v = decide(corrupt, NULL);
+    v = decide(corrupt, NULL, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
     free(safe);
     printf("PASS no record\n");
@@ -155,11 +200,11 @@ static void test_invalid_record_treated_as_absent(void)
     rec.carve = mig;                  // 记录说 3 槽
     assert(meta_pt_from_carve(&shrunk, rec.table));  // 表却是 1 槽
     uint8_t *safe = fixture("tests/fixtures/safe_table.bin");
-    meta_boot_table_verdict_t v = decide(safe, &rec);
+    meta_boot_table_verdict_t v = decide(safe, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);  // committed 权威
     assert(v.table == rec.table);
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
-    v = decide(child, &rec);
+    v = decide(child, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     free(safe);
     free(child);
@@ -190,14 +235,14 @@ static void test_failure_matrix(void)
     bool from_a = false;
     assert(meta_carve_rec_pick(torn, older_b, &picked, &from_a));
     assert(!from_a && picked.seq == 3);
-    meta_boot_table_verdict_t v = decide(picked.table, &picked);
+    meta_boot_table_verdict_t v = decide(picked.table, &picked, -1);
     assert(v.action == META_BOOT_TABLE_PROCEED);
 
     // 2) mid table write:live 半写 + 有效记录 → RESTORE_RECORD。
     uint8_t half[META_PT_SIZE];
     memcpy(half, good.table, META_PT_SIZE);
     memset(half + 128, 0x00, 64);   // 单扇区写到一半的典型形态
-    v = decide(half, &good);
+    v = decide(half, &good, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
 
     // 3) store 死(双记录坏)+ live 损坏 → RESTORE_SAFE(池内容不寻址,重装恢复 L7)。
@@ -208,7 +253,7 @@ static void test_failure_matrix(void)
     assert(!meta_carve_rec_pick(dead, dead, &out, &from_a));
     uint8_t *corrupt = fixture("tests/fixtures/safe_table.bin");
     corrupt[100] ^= 0x01;
-    v = decide(corrupt, NULL);
+    v = decide(corrupt, NULL, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
     free(corrupt);
 
@@ -216,7 +261,7 @@ static void test_failure_matrix(void)
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
     v = decide(child, &good);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
-    v = decide(child, NULL);
+    v = decide(child, NULL, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
     free(child);
     printf("PASS failure matrix\n");
@@ -225,6 +270,7 @@ static void test_failure_matrix(void)
 int main(void)
 {
     test_record_match_proceed();
+    test_runtime_views();
     test_record_mismatch_restores();
     test_no_record();
     test_invalid_record_treated_as_absent();
