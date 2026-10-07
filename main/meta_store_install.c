@@ -412,9 +412,8 @@ static void fail_locked(const char *msg)
     cleanup_new_data_locked();
 
     /* A newly allocated APP+DATA group is only a reservation until finalize.
-     * A failed session must release the whole group, not leave an INVALID APP
-     * consuming pool capacity. Existing slots remain INVALID when their APP
-     * bytes were touched. */
+     * If prepare already committed a replacement carve, rollback restores the
+     * exact pre-prepare allocation after discarding any copied DATA extents. */
     if (touched && slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[slot]);
         ESP_LOGW(TAG, "install failed; slot %d marked INVALID", slot);
