@@ -55,6 +55,10 @@ esp_err_t meta_carve_flash_set_valid(int slot, const char *name,
                                      uint32_t image_len,
                                      const uint8_t sha256[32]);   // 运行时装过 carved 表 → 退出商店页复位
 esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE]);
+ 
+// Materialize the runtime partition view for a Child Firmware immediately
+// before boot. active_play_id == 0 means launcher/no child data.
+esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id);
 
 // ---- M5 数据生命周期 -------------------------------------------------------
 
