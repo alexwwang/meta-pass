@@ -1202,9 +1202,9 @@ static esp_err_t finalize_locked(void)
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
 
-    // P0-5: upgrade DATA migration is journaled in s_session.data_moves.
-    // Source extents were deliberately retained until registry + carve validity
-    // committed above; failed sessions therefore keep the previous DATA intact.
+    // M5: existing-DATA resize migration is journaled in s_session.data_moves.
+    // Source extents are deliberately retained until registry + carve validity
+    // commit above; failed sessions therefore keep the previous DATA intact.
 
     // M5 F4(仲裁②):只对"升级保留"的既有记录标 DIRTY;本会话新建记录
     // 保持 PRISTINE —— 新建区域刚擦除无用户数据,且全标 DIRTY 会让
