@@ -58,6 +58,12 @@ const frameHash = (frame) =>
 
 const lastHash = () => frameHash(frames.at(-1));
 
+const bootState = () => ({
+  cycles: emulator.cycles(),
+  pc: emulator.pc(),
+  frames: frames.length,
+});
+
 // 注入一次完整按键(按下 + 松开),返回 [按下前, 松开后] 两帧哈希。
 const pressButton = async (name) => {
   const before = lastHash();
@@ -132,6 +138,16 @@ test("meta-pass 完整镜像在 QEMU 里引导并渲染出 240x320 屏幕", () =
     if (px[i] !== 255) nonWhite = true;
   }
   assert.ok(nonZero && nonWhite, "画面不是纯色,显示管线已激活");
+  const state = bootState();
+  assert.ok(state.cycles >= BOOT_CYCLES, `QEMU 周期不足: ${state.cycles}`);
+  assert.ok(state.pc > 0, `CPU PC 无效: ${state.pc}`);
+});
+
+test("QEMU CPU 在 boot 后仍持续运行而非停在异常状态", () => {
+  const state = bootState();
+  assert.ok(state.pc > 0, `CPU PC 无效: ${state.pc}`);
+  assert.ok(state.cycles >= BOOT_CYCLES, `boot 后周期不足: ${state.cycles}`);
+  assert.ok(state.frames > 0, "boot 后没有任何显示帧");
 });
 
 test("DOWN 键移动列表选中项(画面随之重绘)", async () => {
