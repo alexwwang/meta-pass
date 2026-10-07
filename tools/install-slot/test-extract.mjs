@@ -166,11 +166,16 @@ function buildAppImage() {
 
   // LittleFS is an ESP-IDF-defined data subtype (0x83) and follows the same
   // child DATA allocation contract as FAT/SPIFFS.
-  full.set([0xaa, 0x50, 0x01, 0x83], pt + 64);
-  full.set([0x00, 0x00, 0x02, 0x00], pt + 68);
-  full.set([0x00, 0x00, 0x01, 0x00], pt + 72);
-  full.set([...Buffer.from("littlefs")], pt + 80);
-  const little = parseFirmwareManifest(full);
+  const littleFull = new Uint8Array(0x30000).fill(0xff);
+  littleFull.set([0xaa, 0x50, 0x00, 0x00], pt);
+  littleFull.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  littleFull.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  littleFull.set(app, 0x10000);
+  littleFull.set([0xaa, 0x50, 0x01, 0x83], pt + 32);
+  littleFull.set([0x00, 0x00, 0x02, 0x00], pt + 36);
+  littleFull.set([0x00, 0x00, 0x01, 0x00], pt + 40);
+  littleFull.set([...Buffer.from("littlefs")], pt + 48);
+  const little = parseFirmwareManifest(littleFull);
   assert.equal(little.supported, true);
   assert.ok(little.data.some((d) => d.subtype === 0x83));
   console.log("PASS 3d-LittleFS: subtype 0x83 accepted as Child DATA");
