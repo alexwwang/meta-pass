@@ -121,6 +121,7 @@ typedef struct {
     uint8_t data_move_count;
     meta_carve_t carve_before;
     bool carve_committed;
+    bool carve_snapshot_valid;
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -398,6 +399,7 @@ static void offer_and_upload_clear(void)
     s_session.data_dirty_mask = 0;
     s_session.data_move_count = 0;
     s_session.carve_committed = false;
+    s_session.carve_snapshot_valid = false;
     memset(&s_session.carve_before, 0, sizeof(s_session.carve_before));
 }
 
@@ -428,6 +430,15 @@ static void fail_locked(const char *msg)
         const esp_err_t rr = meta_carve_flash_commit(&s_session.carve_before, true);
         if (rr != ESP_OK) {
             ESP_LOGE(TAG, "install failed; carve rollback failed: %s",
+                     esp_err_to_name(rr));
+        }
+    } else if (s_session.carve_snapshot_valid) {
+        // ARC may have committed metadata before the install itself was carved.
+        // Its physical bytes are intentionally still intact, so restore the exact
+        // pre-prepare carve on every deterministic failure path.
+        const esp_err_t rr = meta_carve_flash_commit(&s_session.carve_before, true);
+        if (rr != ESP_OK) {
+            ESP_LOGE(TAG, "install failed; pre-prepare carve rollback failed: %s",
                      esp_err_to_name(rr));
         }
     } else if (have_carved_new) {
@@ -1551,12 +1562,15 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
             const uint32_t free_b = cur0 ? meta_carve_free(cur0) : 0;
             const uint32_t want = nf.needed > free_b ? nf.needed - free_b : nf.needed;
             ESP_LOGI(TAG, "prepare: ARC reclaim %u bytes before retry", (unsigned)want);
-            (void)meta_carve_flash_arc(want);
+            (void)meta_carve_flash_arc_prepare(want);
             verdict = meta_install_model_place_offer(&m, meta_carve_flash_carve(),
                                                      &placed, &place_idx,
                                                      &place_changed, place_label, &nf);
         }
         if (verdict == META_PLACE_REJECTED) {
+            if (s_session.carve_snapshot_valid) {
+                (void)meta_carve_flash_commit(&s_session.carve_before, true);
+            }
             session_unlock();
             ESP_LOGW(TAG, "prepare: carve proposal rejected (label=%s)", place_label);
             return reply(req, "400 Bad Request", "carve proposal rejected");
@@ -1574,6 +1588,9 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         }
 new_group_checked:
         if (verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) {
+            if (s_session.carve_snapshot_valid) {
+                (void)meta_carve_flash_commit(&s_session.carve_before, true);
+            }
             session_unlock();
             ESP_LOGW(TAG, "prepare: no-fit (%s) needed=%u gap=%u arch=%u pri=%u",
                      verdict == META_PLACE_NO_FIT_SLOT ? "slot" : "data",
@@ -1631,8 +1648,7 @@ new_group_checked:
     if (m.has_carve && place_changed) {
         const meta_carve_t *before = meta_carve_flash_carve();
         if (before) {
-            s_session.carve_before = *before;
-            s_session.carve_committed = false;
+                s_session.carve_committed = false;
             const esp_err_t ne = prepare_new_data_extents_locked(
                 before, &placed, new_data_extents, &new_data_extent_count);
             const esp_err_t me = (ne == ESP_OK)
