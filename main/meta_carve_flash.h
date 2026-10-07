@@ -92,6 +92,7 @@ esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 // 池压力 ARC:整条回收 ARCHIVED 数据记录,最旧优先,直到释放 ≥ target 字节。
 // 先提交更新后的记录、再擦字节;返回实际回收字节数(0 = 无可用归档 /
 // 提交失败)。DIRTY(在用)不回收;PRISTINE 属第 4 级(最后手段),不在此回收。
+uint32_t meta_carve_flash_arc_prepare(uint32_t target);
 uint32_t meta_carve_flash_arc(uint32_t target);
 
 // M5: 升级数据迁移 —— 在池内拷贝数据(bytes)并返回结果。
