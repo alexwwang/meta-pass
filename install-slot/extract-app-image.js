@@ -230,7 +230,6 @@ export function extractDataImages(buf) {
     throw new Error(manifest.reason || "unsupported-partition");
   }
   return manifest.data
-    .filter(d => d.initial_image_size > 0)
     .map(d => ({
       label: d.label,
       subtype: d.subtype,
