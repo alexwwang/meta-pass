@@ -1632,16 +1632,20 @@ new_group_checked:
     if (m.has_carve && place_changed) {
         const esp_err_t ce = meta_carve_flash_commit(&placed, true);
         if (ce != ESP_OK) {
-            cleanup_new_data_extents(new_data_extents, new_data_extent_count);
-            for (uint8_t i = 0; i < data_move_count; i++) {
-                (void)esp_flash_erase_region(NULL, data_moves[i].new_offset,
-                                             data_moves[i].new_size);
-            }
+            /*
+             * commit() writes the durable carve before the runtime table.
+             * If it reports an error, the record may already have advanced.
+             * Do NOT erase any newly prepared extent here: doing so could turn
+             * a partially committed record into a durable pointer to erased
+             * DATA. An unreferenced extent is reclaimable; a referenced one
+             * must remain intact for recovery.
+             */
             s_session.manifest_valid = false;
             s_session.offer_ready = false;
             s_session.data_dirty_mask = 0;
             session_unlock();
-            ESP_LOGE(TAG, "prepare: carve commit failed: %s", esp_err_to_name(ce));
+            ESP_LOGE(TAG, "prepare: carve commit failed: %s; leaving prepared extents for recovery",
+                     esp_err_to_name(ce));
             return reply(req, "500 Internal Server Error", "carve commit failed");
         }
         cleanup_migrated_sources(data_moves, data_move_count);
