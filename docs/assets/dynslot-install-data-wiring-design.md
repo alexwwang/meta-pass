@@ -8,10 +8,12 @@ Date: 2026-10-03
 Branch: `feat/dynslot`
 Parent: `dynslot-m5-design.md` (lifecycle), `dynslot-design.md` §4.5 (reclaim ladder).
 
-Status: **final (2026-10-04)** — revised after review (§1.0/§4/§7) and
-arbitrated: (1) data_copy migration block retired, (2) F4 mask-based DIRTY,
-(3) plan B materialization (end-of-install reboot + fabricated handles).
-Implement per §1.0/§2/§3/§5; P1-4 landed, P0-5 device/phone wiring done.
+Status: **final (2026-10-04, implementation addendum)** — revised after review (§1.0/§4/§7) and
+arbitrated: (1) the original incorrect P0-5 data_copy migration block is retired, (2) F4 mask-based DIRTY,
+(3) plan B materialization (end-of-install reboot + fabricated handles). The current implementation retains
+M5's **correct pool-internal DATA resize migration** (erase destination, copy bytes, then switch the durable
+carve; rollback preserves the old extent). This is existing-DATA upgrade behavior, not the P0-5 initial DATA
+payload path. Implement per §1.0/§2/§3/§5; P1-4 landed, P0-5 device/phone wiring done.
 
 ## 1. Problem
 
