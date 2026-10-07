@@ -181,7 +181,7 @@ static bool load_record(uint32_t addr)
            meta_carve_rec_validate(&s_best);
 }
 
-static void enforce_carve_table(void)
+static void enforce_carve_table(int active_slot)
 {
     bool have = false;
 
@@ -220,7 +220,7 @@ static void enforce_carve_table(void)
         return;
     }
     const meta_boot_table_verdict_t v =
-        meta_carve_boot_decide(s_scratch, have ? &s_best : NULL);
+        meta_carve_boot_decide(s_scratch, have ? &s_best : NULL, active_slot);
     if (v.action == META_BOOT_TABLE_PROCEED) {
         ESP_LOGI(TAG, "carve: %s", v.reason);
         return;
@@ -321,21 +321,34 @@ void bootloader_after_init(void)
     return;
 #endif
 
-    /* 第一优先级:dynslot carve 表校验/修复(§4.4)——必须先于 otadata 决策,
-     * 否则被篡改的表可能在修复前就左右本次引导(B5)。 */
-    enforce_carve_table();
+    const bool deep_sleep_wake =
+        (esp_rom_get_reset_reason(0) == RESET_REASON_CORE_DEEP_SLEEP);
 
+    /*
+     * Peek the PENDING target only for deep-sleep resume. This is not an OTA
+     * policy decision: it merely tells the carve gate which derived runtime
+     * table is expected. Cold boot deliberately uses launcher view (-1).
+     */
     uint32_t ota_offset = 0;
     uint32_t ota_count = 0;
+    int active_slot = -1;
+    if (deep_sleep_wake && scan_partition_table(&ota_offset, &ota_count) &&
+        ota_count > 0) {
+        active_slot = peek_pending_slot(ota_offset, ota_count);
+    }
+
+    /* 第一优先级:dynslot carve 表校验/修复(§4.4)——必须先于 otadata 决策,
+     * 否则被篡改的表可能在修复前就左右本次引导(B5)。 */
+    enforce_carve_table(active_slot);
+
+    ota_offset = 0;
+    ota_count = 0;
     if (!scan_partition_table(&ota_offset, &ota_count)) {
         return; /* 无 otadata 分区:策略无对象,直接放行 */
     }
     if (ota_count == 0) {
         return; /* 无 OTA 槽:续期无对象(冷启动的擦除仍无妨,此处统一放行) */
     }
-
-    const bool deep_sleep_wake =
-        (esp_rom_get_reset_reason(0) == RESET_REASON_CORE_DEEP_SLEEP);
 
     bool changed = false;
     for (uint32_t i = 0; i < 2; ++i) {
