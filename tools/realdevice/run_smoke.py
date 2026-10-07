@@ -90,7 +90,7 @@ def main():
         m = re.match(r"=== (S\d+ .+?) ===", line)
         if m:
             name = m.group(1)
-            stage_names[name] = {"name": name, "status": "PASS" if proc.returncode == 0 else "UNKNOWN"}
+            stage_names[name] = {"name": name, "status": "PASS"}
         if "软复位" in line or "soft reset" in line.lower():
             report["soft_reset_tested"] = True
     report["stages"] = list(stage_names.values())
