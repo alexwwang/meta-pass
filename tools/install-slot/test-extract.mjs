@@ -41,6 +41,20 @@ function buildAppImage() {
   return buf;
 }
 
+function buildManifestImage(app, dataOff, dataSize, subtype, label) {
+  const pt = 0x8000;
+  const full = new Uint8Array(Math.max(0x10000 + app.length, dataOff + dataSize)).fill(0xff);
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, subtype], pt + 32);
+  full.set([dataOff & 0xff, (dataOff >> 8) & 0xff, (dataOff >> 16) & 0xff, (dataOff >> 24) & 0xff], pt + 36);
+  full.set([dataSize & 0xff, (dataSize >> 8) & 0xff, (dataSize >> 16) & 0xff, (dataSize >> 24) & 0xff], pt + 40);
+  full.set([...Buffer.from(label)], pt + 48);
+  return full;
+}
+
 // 1. 最小合法镜像:长度精确等于构造长度,原样返回
 {
   const app = buildAppImage();
@@ -138,10 +152,7 @@ function buildAppImage() {
   const pt = 0x8000;
   const dataOff = 0x20000;
   const dataSize = 0x30000;
-  const full = new Uint8Array(dataOff + dataSize).fill(0xff);
-  // Canonical full-image fixture supplies the factory APP entry; extend it
-  // only for the DATA extent used by this manifest test.
-  full.set(buildFullImage(app));
+  const full = buildManifestImage(app, dataOff, dataSize, 0x82, "storage");
   // SPIFFS data partition: required capacity is 0x30000, but initial payload
   // occupies only the first 0x1234 bytes.
   full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
@@ -164,12 +175,7 @@ function buildAppImage() {
 
   // LittleFS is an ESP-IDF-defined data subtype (0x83) and follows the same
   // child DATA allocation contract as FAT/SPIFFS.
-  const littleFull = new Uint8Array(0x30000).fill(0xff);
-  littleFull.set(buildFullImage(app));
-  littleFull.set([0xaa, 0x50, 0x01, 0x83], pt + 32);
-  littleFull.set([0x00, 0x00, 0x02, 0x00], pt + 36);
-  littleFull.set([0x00, 0x00, 0x01, 0x00], pt + 40);
-  littleFull.set([...Buffer.from("littlefs")], pt + 48);
+  const littleFull = buildManifestImage(app, 0x20000, 0x10000, 0x83, "littlefs");
   const little = parseFirmwareManifest(littleFull);
   assert.equal(little.supported, true);
   assert.ok(little.data.some((d) => d.subtype === 0x83));
@@ -182,15 +188,7 @@ function buildAppImage() {
   const pt = 0x8000;
   const dataOff = 0x20000;
   const dataSize = 0x30000;
-  const full = new Uint8Array(dataOff + dataSize).fill(0xff);
-  full.set([0xaa, 0x50, 0x00, 0x00], pt);
-  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
-  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
-  full.set(app, 0x10000);
-  full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
-  full.set([dataOff, 0x00, 0x00, 0x00], pt + 36);
-  full.set([dataSize, 0x00, 0x00, 0x00], pt + 40);
-  full.set([...Buffer.from("storage")], pt + 48);
+  const full = buildManifestImage(app, dataOff, dataSize, 0x82, "storage");
   for (let i = 0; i < 0x1234; i++) full[dataOff + i] = i & 0xff;
 
   const images = extractDataImages(full);
