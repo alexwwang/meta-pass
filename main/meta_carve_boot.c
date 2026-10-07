@@ -8,7 +8,7 @@ meta_boot_table_verdict_t meta_carve_boot_decide(
     int active_slot)
 {
     meta_boot_table_verdict_t v = { META_BOOT_TABLE_RESTORE_SAFE,
-                                    "unknown table and no committed carve",
+                                    "unknown",
                                     NULL };
     static uint8_t expected[META_PT_SIZE];
     if (!live) {
@@ -30,14 +30,14 @@ meta_boot_table_verdict_t meta_carve_boot_decide(
         }
         if (!ok) {
             v.action = META_BOOT_TABLE_RESTORE_SAFE;
-            v.reason = "committed carve cannot materialize runtime view";
+            v.reason = "materialize failed";
             return v;
         }
         if (meta_pt_equal(live, expected)) {
             v.action = META_BOOT_TABLE_PROCEED;
             v.reason = active_slot >= 0
-                ? "live table matches active child runtime view"
-                : "live table matches launcher runtime view";
+                ? "child table match"
+                : "launcher table match";
             return v;
         }
         v.action = META_BOOT_TABLE_RESTORE_RECORD;
@@ -56,17 +56,17 @@ meta_boot_table_verdict_t meta_carve_boot_decide(
     meta_pt_safe(s_ref);
     if (meta_pt_equal(live, s_ref)) {
         v.action = META_BOOT_TABLE_PROCEED;
-        v.reason = "safe table";
+        v.reason = "safe";
         return v;
     }
     meta_pt_legacy(s_ref);
     if (meta_pt_equal(live, s_ref)) {
         v.action = META_BOOT_TABLE_PROCEED;
-        v.reason = "legacy v1.x table (migration pending)";
+        v.reason = "legacy";
         return v;
     }
     v.action = META_BOOT_TABLE_RESTORE_SAFE;
-    v.reason = "corrupt/foreign table and no committed carve";
+    v.reason = "foreign table";
     v.table = s_ref;   // 注意:此刻 s_ref 持有 legacy 字节 → 指回安全表。
     meta_pt_safe(s_ref);
     return v;
