@@ -264,12 +264,17 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
       assert.equal(out.suggestedSlot, 0);
       const ex = await makeAnalyzer(fetchImpl).extracted(563);
       assert.equal(ex.error, undefined, `${label}: extracted 可用`);
+    } else if (sub === 0x02) {
+      // Global NVS is meta-pass-owned in MVP: accepted, but excluded from child DATA.
+      assert.equal(out.supported, true, `${label}: global NVS must not block admission`);
+      assert.equal(out.data.length, 0);
+      assert.equal(out.reason, "ok");
     } else {
       assert.equal(out.supported, false, `${label}: unsupported DATA must be rejected`);
       assert.equal(out.reason, "unsupported-partition");
     }
   }
-  console.log("PASS 5c: any non-whitelist data partition -> warn & allow (easter/legacy_cardid/voicefs)");
+  console.log("PASS 5c: filesystem DATA admitted, global NVS ignored, unsupported DATA rejected");
 }
 }
 
