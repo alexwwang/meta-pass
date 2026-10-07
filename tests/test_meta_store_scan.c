@@ -38,7 +38,7 @@
  * real implementation.
  */
 const meta_carve_t *meta_carve_flash_carve(void) { return NULL; }
-int meta_carve_flash_materialize_active(uint32_t active_play_id) {
+esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id) {
     (void)active_play_id;
     return 0;
 }
