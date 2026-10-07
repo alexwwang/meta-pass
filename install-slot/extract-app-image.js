@@ -136,6 +136,92 @@ export function extractAppImage(buf, maxSize) {
 
 // 解析分区表中 subtype=0x81/0x82 的数据分区( fat/spiffs )。
 // 返回 [{offset, size, type, label}] 数组;无则空数组。
+export function parseFirmwareManifest(buf) {
+  if (!isFullImage(buf)) throw new Error("firmware manifest requires a full flash image");
+
+  const partitions = [];
+  const unsupported = [];
+  for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
+    if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
+    const type = buf[off + 2];
+    const subtype = buf[off + 3];
+    const offset = u32le(buf, off + 4);
+    const size = u32le(buf, off + 8);
+    let label = "";
+    for (let i = 16; i < 32 && buf[off + i] !== 0; i++) label += String.fromCharCode(buf[off + i]);
+
+    if (type === 0x00) {
+      if (subtype === 0x00) partitions.push({ kind: "app", label, offset, size });
+      continue;
+    }
+    if (type !== 0x01) continue;
+
+    const supported =
+      subtype === 0x81 || // FAT
+      subtype === 0x82 || // SPIFFS
+      subtype === 0x02 || // NVS (global in MVP)
+      subtype === 0x01;   // PHY (global in MVP)
+    const meta = {
+      kind: "data",
+      label,
+      type: "data",
+      subtype,
+      offset,
+      size,
+      required_size: size,
+      initial_image_size: initialDataImageSize(buf, offset, size),
+      supported,
+    };
+    if (supported) partitions.push(meta);
+    else unsupported.push(meta);
+  }
+
+  const apps = partitions.filter(p => p.kind === "app");
+  const data = partitions.filter(p => p.kind === "data" && p.subtype !== 0x02 && p.subtype !== 0x01);
+  if (!apps.some(p => p.subtype === 0x00)) {
+    throw new Error("no factory app partition");
+  }
+  if (unsupported.length) {
+    return {
+      app: apps.find(p => p.subtype === 0x00),
+      data,
+      unsupported,
+      required_size: null,
+      supported: false,
+      reason: "unsupported-partition",
+    };
+  }
+
+  const align = (n) => Math.ceil(n / 0x1000) * 0x1000;
+  const app = apps.find(p => p.subtype === 0x00);
+  const required_size = align(app.size) +
+    data.reduce((sum, p) => sum + align(p.required_size), 0);
+  return {
+    app: { ...app, required_size: app.size },
+    data,
+    unsupported: [],
+    required_size,
+    supported: true,
+    reason: "ok",
+  };
+}
+
+function initialDataImageSize(buf, offset, size) {
+  const end = Math.min(buf.length, offset + size);
+  if (offset >= end) return 0;
+  let last = -1;
+  // Full images use 0xFF for erased/unwritten flash. Preserve the exact
+  // initial payload extent; allocation admission is based on required_size,
+  // not this image byte count.
+  for (let i = end - 1; i >= offset; i--) {
+    if (buf[i] !== 0xFF) {
+      last = i;
+      break;
+    }
+  }
+  return last < 0 ? 0 : last - offset + 1;
+}
+
 export function parseDataPartitions(buf) {
   const result = [];
   for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
