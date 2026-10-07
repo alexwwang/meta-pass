@@ -249,13 +249,6 @@ static void cleanup_new_data_locked(void)
     }
 }
 
-typedef struct {
-    uint32_t old_offset;
-    uint32_t old_size;
-    uint32_t new_offset;
-    uint32_t new_size;
-} data_move_t;
-
 static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
                                            const meta_carve_t *after,
                                            data_move_t moves[META_DATA_MAX],
@@ -1633,10 +1626,11 @@ new_group_checked:
                 : ne;
             if (me != ESP_OK) {
                 cleanup_new_data_extents(new_data_extents, new_data_extent_count);
-                for (uint8_t i = 0; i < data_move_count; i++) {
-                    (void)esp_flash_erase_region(NULL, data_moves[i].new_offset,
-                                                 data_moves[i].new_size);
+                for (uint8_t i = 0; i < s_session.data_move_count; i++) {
+                    (void)esp_flash_erase_region(NULL, s_session.data_moves[i].new_offset,
+                                                 s_session.data_moves[i].new_size);
                 }
+                s_session.data_move_count = 0;
                 offer_and_upload_clear();
                 session_unlock();
                 ESP_LOGE(TAG, "prepare: data migration failed: %s",
