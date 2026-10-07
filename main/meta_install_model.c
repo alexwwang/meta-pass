@@ -356,6 +356,13 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         const uint32_t pid = m->data[d].play_id;
         const char *label = m->data[d].label;
         if (pid == 0) continue;                                     // 声明占位,忽略
+        if (m->data[d].subtype != 0x81 && m->data[d].subtype != 0x82) {
+            if (out_label) {
+                strncpy(out_label, label, META_DATA_LABEL_MAX);
+                out_label[META_DATA_LABEL_MAX] = '\\0';
+            }
+            return META_PLACE_REJECTED;
+        }
         if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 升级:保留既有记录
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
