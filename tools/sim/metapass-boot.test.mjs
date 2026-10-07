@@ -79,7 +79,25 @@ before(async () => {
   // 单文件发布件只有 1.1MB,app 尾之外(含 store 区)不在其中,无法预置;
   // fresh 出厂(0 槽)下 DOWN 是设计内 no-op(dynslot 语义,见 git log)。
   const mergedPath = firmwarePath.replace(/meta-pass_v[^/]*\.bin$/, "FoloToy-AI-Passport-full.bin");
-  const image = new Uint8Array(await readFile(mergedPath));
+  let image;
+  try {
+    image = new Uint8Array(await readFile(mergedPath));
+  } catch {
+    // CI 的 --firmware 门只保留发布单文件；为避免 sim 因工件形态漏测，
+    // 从 MPUPV2 尾段的 bodyLen 恢复成 8MB flash 镜像。发布件 body 本身
+    // 已含 bootloader + partition table + app，未覆盖区保持擦除态。
+    const published = new Uint8Array(await readFile(firmwarePath));
+    const footer = Buffer.from(published.buffer, published.byteOffset + published.byteLength - 44, 44);
+    if (footer.subarray(0, 8).toString() !== "MPUPV2\\0\\0") {
+      throw new Error("发布镜像缺少 MPUPV2 footer，无法恢复 QEMU flash");
+    }
+    const bodyLen = footer.readUInt32LE(8);
+    if (bodyLen <= 0 || bodyLen > published.byteLength - 44) {
+      throw new Error(`MPUPV2 bodyLen 非法: ${bodyLen}`);
+    }
+    image = new Uint8Array(0x800000).fill(0xff);
+    image.set(published.subarray(0, bodyLen), 0);
+  }
   const store = await readFile(new URL("../../tests/fixtures/carve_store_3slots.bin", import.meta.url));
   image.set(store, 0x35A000);
   emulator.load_firmware(image);
