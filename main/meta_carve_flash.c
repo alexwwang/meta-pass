@@ -260,6 +260,54 @@ static bool load_best(meta_carve_rec_t *best, meta_carve_rec_t *tmp, bool *from_
 
 // ---- 提交 -----------------------------------------------------------------
 
+
+esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id)
+{
+    if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
+
+    // play_id == 0 is the launcher view: keep APP partitions visible but expose
+    // no Child Data partitions. A non-zero id is validated by the pure builder.
+    uint8_t table[META_PT_SIZE];
+    bool ok = false;
+    if (active_play_id == 0) {
+        ok = meta_pt_from_carve(&s_carve, table);
+        if (ok) {
+            // Remove all child DATA entries from the runtime view. Build the
+            // canonical APP-only view explicitly rather than relying on a
+            // special partition-table decoder.
+            meta_pt_t t;
+            if (!meta_pt_decode(table, &t)) return ESP_FAIL;
+            for (uint8_t i = 0; i < t.count;) {
+                bool child_data = false;
+                for (uint8_t d = 0; d < s_carve.data_count; d++) {
+                    if (t.e[i].offset == s_carve.data[d].offset &&
+                        t.e[i].size == s_carve.data[d].size) {
+                        child_data = true;
+                        break;
+                    }
+                }
+                if (child_data) {
+                    memmove(&t.e[i], &t.e[i + 1],
+                            (size_t)(t.count - i - 1) * sizeof(t.e[0]));
+                    t.count--;
+                } else {
+                    i++;
+                }
+            }
+            meta_pt_encode(&t, table);
+        }
+    } else {
+        ok = meta_pt_from_carve_active(&s_carve, active_play_id, table);
+    }
+    if (!ok) return ESP_ERR_INVALID_ARG;
+
+    if (meta_carve_flash_table_read(s_live) &&
+        meta_pt_equal(s_live, table)) {
+        return ESP_OK;
+    }
+    return meta_carve_flash_table_write(table);
+}
+
 esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
 {
     if (!carve) return ESP_ERR_INVALID_ARG;
