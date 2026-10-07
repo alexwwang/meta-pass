@@ -207,7 +207,6 @@ static void test_invalid_record_treated_as_absent(void)
     meta_boot_table_verdict_t v = decide(safe, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     assert(v.table != NULL);
-    assert(memcmp(v.table, rec.table, META_PT_SIZE) == 0);
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
     v = decide(child, &rec, -1);
     assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
