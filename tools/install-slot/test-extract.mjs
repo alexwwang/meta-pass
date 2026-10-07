@@ -225,6 +225,23 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   console.log("PASS 3e: unsupported data partition rejected explicitly");
 }
 
+// 3f. Malformed partition geometry must be rejected before DATA allocation.
+{
+  const app = buildAppImage();
+  const full = new Uint8Array(0x18000).fill(0xff);
+  const pt = 0x8000;
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x00, 0x00], pt + 4);
+  full.set([0x00, 0x30, 0x00, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
+  full.set([0x00, 0x10, 0x01, 0x00], pt + 36);
+  full.set([0x00, 0x10, 0x00, 0x00], pt + 40);
+  full.set([...Buffer.from("storage")], pt + 44);
+  assert.throws(() => parseFirmwareManifest(full), /overlapping-partitions/);
+  console.log("PASS 3f: overlapping partition geometry rejected");
+}
+
 // ===== 4. 显示名 blob(name-blob.js,与 tests/test_meta_name.c 双向锁定)=====
 
 // 期望字节序列与 C 侧 host test 逐字节一致(手工按格式算出,双向锁定)
