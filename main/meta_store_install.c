@@ -1500,6 +1500,8 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     int8_t new_group_slot = -1;
     data_move_t data_moves[META_DATA_MAX];
     uint8_t data_move_count = 0;
+    data_new_extent_t new_data_extents[META_DATA_MAX];
+    uint8_t new_data_extent_count = 0;
     if (m.has_carve) {
         const meta_carve_t *cur0 = meta_carve_flash_carve();
         verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
@@ -1602,9 +1604,14 @@ new_group_checked:
     if (m.has_carve && place_changed) {
         const meta_carve_t *before = meta_carve_flash_carve();
         if (before) {
-            const esp_err_t me = prepare_data_moves_locked(
-                before, &placed, data_moves, &data_move_count);
+            const esp_err_t ne = prepare_new_data_extents_locked(
+                before, &placed, new_data_extents, &new_data_extent_count);
+            const esp_err_t me = (ne == ESP_OK)
+                ? prepare_data_moves_locked(before, &placed,
+                                            data_moves, &data_move_count)
+                : ne;
             if (me != ESP_OK) {
+                cleanup_new_data_extents(new_data_extents, new_data_extent_count);
                 for (uint8_t i = 0; i < data_move_count; i++) {
                     (void)esp_flash_erase_region(NULL, data_moves[i].new_offset,
                                                  data_moves[i].new_size);
@@ -1623,6 +1630,7 @@ new_group_checked:
     if (m.has_carve && place_changed) {
         const esp_err_t ce = meta_carve_flash_commit(&placed, true);
         if (ce != ESP_OK) {
+            cleanup_new_data_extents(new_data_extents, new_data_extent_count);
             for (uint8_t i = 0; i < data_move_count; i++) {
                 (void)esp_flash_erase_region(NULL, data_moves[i].new_offset,
                                              data_moves[i].new_size);
