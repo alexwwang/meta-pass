@@ -60,6 +60,7 @@ typedef struct {
         uint32_t size;                          // 数据分区 required_size
         uint8_t  subtype;                       // ESP-IDF data subtype
         uint32_t initial_image_size;            // initial payload bytes; 0 = empty
+        uint8_t  sha256[32];                    // SHA-256 of initial payload; zero when size=0
         char     label[META_DATA_LABEL_MAX + 1]; // 子固件分区标签(≤16B)
     } data[META_DATA_MAX];
 } meta_install_manifest_t;
