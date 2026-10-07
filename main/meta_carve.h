@@ -210,6 +210,14 @@ void meta_pt_legacy(uint8_t out[META_PT_SIZE]);
 // carved 表(§4.2 状态2):固定条目 + 槽位条目(offset 升序合并)。
 // carve 非法 → false 且不写 out。
 bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE]);
+ 
+// Runtime partition table for an active Child Firmware.
+// All APP entries remain visible for boot selection, but DATA entries are
+// materialized only for the active play_id. This permits different children
+// to use the same data label (for example "storage") without duplicate labels
+// in the ESP-IDF partition table.
+bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
+                               uint8_t out[META_PT_SIZE]);
 
 bool meta_pt_equal(const uint8_t a[META_PT_SIZE], const uint8_t b[META_PT_SIZE]);
 
