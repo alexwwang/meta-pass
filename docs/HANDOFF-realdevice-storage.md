@@ -1,4 +1,4 @@
-[中文](HANDOFF-realdevice-storage.zh_CN.md)
+[Chinese](HANDOFF-realdevice-storage.zh_CN.md)
 
 # Handoff | feat/storage Real-device validation
 
