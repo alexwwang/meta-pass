@@ -227,7 +227,7 @@ def wait_done_reboot(mon, port, want, desc):
     """等 finalize 后的受控复位。done→重启是 UI tick 驱动(goto_page 的
     PAGE_STORE_DL 分支):无人值守续连模式下 UI 在列表页,重启不发生 —
     这是设计行为(复位推迟到退出商店页)。此处等 45s,未到则用 esptool
-    软复位兜底(与 S5 同款,等价断电:RAM 丢、flash 现状、NVS 保留)。"""
+    软复位兜底(与 S5 同款,近似覆盖断点续传的 RAM 丢失场景; 不等价于真实断电)。"""
     n = wait_boot_ok(mon, want, timeout=45)
     if n is None:
         ok(f"{desc}: UI 未在商店页,无自复位 —— esptool 软复位兜底")
@@ -525,7 +525,7 @@ def main():
         die(f"删槽1后 count={s['count']} != 0", mon)
     ok("删除槽1(eraseData):count=0")
 
-    # ── S5 中断续连(软复位 = 断电的忠实近似)─────────────────────────────
+    # ── S5 中断续连(软复位续传验证(非真实断电))─────────────────────────────
     stage("S5 中断续连")
     s = slots()
     proposal = node_proposal(json.dumps(s), app_len)
@@ -545,7 +545,7 @@ def main():
     cut = app_len // 3
     for off in range(0, cut, CHUNK):
         api.chunk(off, app_bytes[off:off + CHUNK])
-    ok(f"上传 {cut}B 后掐断 —— 软复位(等价断电:RAM 丢、flash 现状、NVS 保留)")
+    ok(f"上传 {cut}B 后掐断 —— 软复位(近似覆盖断点续传的 RAM 丢失场景; 不等价于真实断电)")
     mon.stop()
     esptool(args.port, "run", timeout=30)
     deadline = time.time() + 90
