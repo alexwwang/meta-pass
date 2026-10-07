@@ -295,14 +295,21 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
                 return changed;
             }
             if (m->data[d].size > cur->data[existing].size) {
-                if (out_label) {
-                    strncpy(out_label, label, META_DATA_LABEL_MAX);
-                    out_label[META_DATA_LABEL_MAX] = '\0';
+                uint32_t move_off = 0;
+                if (!meta_carve_place_data_move(cur, (uint8_t)existing,
+                                                m->data[d].size, &move_off)) {
+                    if (out_label) {
+                        strncpy(out_label, label, META_DATA_LABEL_MAX);
+                        out_label[META_DATA_LABEL_MAX] = '\0';
+                    }
+                    fill_no_fit(out_nf, cur, m->data[d].size);
+                    return changed;
                 }
-                fill_no_fit(out_nf, cur, m->data[d].size);
-                return changed;
+                out_next->data[existing].offset = move_off;
+                out_next->data[existing].size = m->data[d].size;
+                changed = true;
             }
-            continue;   // 已存在且容量足够,保留用户数据
+            continue;   // 已存在且容量足够保留;容量变大则迁移
         }
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
@@ -420,7 +427,6 @@ meta_install_place_verdict_t meta_install_model_place_offer(
                 }
                 next.data[existing].offset = move_off;
                 next.data[existing].size = m->data[d].size;
-                changed = true;
             }
             continue;   // 升级:容量足够则保留,变大则迁移
         }
