@@ -57,7 +57,9 @@ typedef struct {
     uint8_t  data_count;                        // 下方 data[] 长度(0..META_DATA_MAX)
     struct {
         uint32_t play_id;                       // 归属玩法 id(>0 有效;0 = 忽略)
-        uint32_t size;                          // 数据分区大小
+        uint32_t size;                          // 数据分区 required_size
+        uint8_t  subtype;                       // ESP-IDF data subtype
+        uint32_t initial_image_size;            // initial payload bytes; 0 = empty
         char     label[META_DATA_LABEL_MAX + 1]; // 子固件分区标签(≤16B)
     } data[META_DATA_MAX];
 } meta_install_manifest_t;
