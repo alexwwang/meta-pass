@@ -1676,6 +1676,7 @@ new_group_checked:
                      esp_err_to_name(ce));
             return reply(req, "500 Internal Server Error", "carve commit failed");
         }
+        s_session.carve_committed = true;
     }
     s_session.table_changed = m.has_carve && place_changed;
     s_session.carved_new_slot = new_group_slot;
