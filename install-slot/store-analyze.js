@@ -210,16 +210,14 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     let firmwareManifest = null;
     try {
       ext = extractAppImage(got.buf, UNPACK_MAX);
-      // M5: 解析数据分区(可选,失败不影响主流程)
-      try {
-        firmwareManifest = parseFirmwareManifest(got.buf);
-        dataPartitions = firmwareManifest.data;
-      } catch (e) {
-        dataPartitions = [];
-        firmwareManifest = null;
-      }
+      // DATA is part of the allocation contract, not an optional annotation.
+      // A manifest parse failure or an unsupported child DATA subtype must stop
+      // admission before the device is asked to carve or erase anything.
+      firmwareManifest = parseFirmwareManifest(got.buf);
+      dataPartitions = firmwareManifest.data;
     } catch (err) {
-      return { error: mapExtractError(err) };
+      return { error: err?.message === "unsupported-partition"
+        ? "unsupported-partition" : mapExtractError(err) };
     }
 
     // 显示名优先取固件自带 MNAM(可打印 ASCII),否则退回商店 slug(服务端保证 ASCII)。
@@ -231,7 +229,9 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     // "镜像能不能放进池?"——真正落点由 /api/install/slots 的设备 carve
     // 状态 + phone-install.js 的 geomFromListing 决定。
     const poolLimit = POOL_TOTAL - TAIL_SECTOR;
-    const poolFit = ext.length <= poolLimit;
+    const storageSupported = firmwareManifest.supported === true;
+    const requiredSize = firmwareManifest.required_size;
+    const poolFit = storageSupported && Number.isInteger(requiredSize) && requiredSize <= poolLimit;
     const slots = poolFit
       ? [{ slot: 0, limit: poolLimit, fit: true }]
       : [];
@@ -250,7 +250,9 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       supported,
       // 警告可继续:subtype 0x40 自定义数据分区不阻断安装,reason 透传分区名,
       // 设备端详情页显示警告后由用户决定;reason='ok' 表示无任何警告。
-      reason: supported ? (partitionWarning ? REASON_CUSTOM_PARTITIONS : "ok") : REASON_TOO_LARGE,
+      reason: !storageSupported
+        ? (firmwareManifest.reason || "unsupported-partition")
+        : (supported ? (partitionWarning ? REASON_CUSTOM_PARTITIONS : "ok") : REASON_TOO_LARGE),
       ...(partitionWarning ? { detail: partitionWarning } : {}),
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
       dataPartitions, // M5: 数据分区声明
