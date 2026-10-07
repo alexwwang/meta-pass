@@ -1560,6 +1560,19 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     uint8_t new_data_extent_count = 0;
     if (m.has_carve) {
         const meta_carve_t *cur0 = meta_carve_flash_carve();
+        /*
+         * Snapshot the exact durable allocation before ANY tier-3 reclaim or
+         * DATA migration.  fail_locked()/no-fit rollback relies on this copy;
+         * without it, an ARC commit made during prepare becomes irreversible
+         * when a later placement, migration, or carve commit fails.
+         */
+        if (cur0) {
+            s_session.carve_before = *cur0;
+            s_session.carve_snapshot_valid = true;
+        } else {
+            s_session.carve_snapshot_valid = false;
+            memset(&s_session.carve_before, 0, sizeof(s_session.carve_before));
+        }
         verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
                                                  &place_changed, place_label, &nf);
         // F4 掩码须在放置前对"既有记录"快照(prepare 重发幂等时 carve 已含
