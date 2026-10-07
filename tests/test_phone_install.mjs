@@ -1131,7 +1131,7 @@ const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
     reason: "ok",
   };
   const r = await phone.runInstall(bridge, offer, APP, { dataImages });
-  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
   assert.deepEqual(dev.data[0].bytes, [...data]);
   assert.equal(dev.data[0].done, true);
   assert.ok(dev.calls.includes("POST /api/install/data"));
