@@ -223,7 +223,7 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
 // ---- 5. unsupported child DATA → hard reject before device admission ----
 {
   const app = buildAppImage([64]);
-  const parts = [...META_PARTS, ["spiffs", 1, 130, 0x7f0000, 0x10000]];
+  const parts = [...META_PARTS, ["spiffs", 1, 0x84, 0x7f0000, 0x10000]];
   const { fetchImpl } = makeEnv({ app, parts });
   const out = await makeAnalyzer(fetchImpl).analyze(563);
   assert.equal(out.supported, false, "unsupported child DATA must block admission");
