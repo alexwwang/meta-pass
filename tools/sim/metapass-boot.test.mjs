@@ -23,7 +23,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { initSync, WasmEmulator } from "./esp_emu.js";
 import { AiPassportBoard } from "./ai-passport-board.js";
 
@@ -38,8 +39,8 @@ const RELEASE_CYCLES = 20_000_000;     // 松开后等重绘
 // 为什么是 12M 而不是几百毫秒:固件按键回调只认 BSP_BTN_CLICK,
 // 而按住 1500ms(BSP_BTN_LONG_MS)以上只产生 LONG 事件,CLICK 不再触发,
 // 列表导航因此毫无反应。之前用 600M 周期测按键,就是这个原因全被吞掉。
-const firmwarePath = process.env.META_PASS_IMAGE ||
-  new URL("../../build/meta-pass_v0.2.2-35-gaa25c52.bin", import.meta.url);
+const buildDir = new URL("../../build/", import.meta.url);
+let firmwarePath;
 
 // 引导一次,4 个测试顺序共享同一模拟器实例。
 let emulator;
@@ -75,6 +76,16 @@ const pressButton = async (name) => {
 };
 
 before(async () => {
+  if (process.env.META_PASS_IMAGE) {
+    firmwarePath = process.env.META_PASS_IMAGE;
+  } else {
+    const entries = (await readdir(buildDir, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && /^meta-pass_v.*\.bin$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+    assert.ok(entries.length > 0, "build/ 下没有 meta-pass_v*.bin，请先运行 tools/validate.sh --firmware");
+    firmwarePath = join(buildDir.pathname, entries.at(-1));
+  }
   const wasm = initSync(await readFile(new URL("./esp_emu_bg.wasm", import.meta.url)));
   emulator = new WasmEmulator("esp32c3");
   emulator.load_default_rom();
@@ -84,7 +95,7 @@ before(async () => {
   // 列表页 = 3 槽 + STORE 行,按键测试的"环形列表"假设成立。
   // 单文件发布件只有 1.1MB,app 尾之外(含 store 区)不在其中,无法预置;
   // fresh 出厂(0 槽)下 DOWN 是设计内 no-op(dynslot 语义,见 git log)。
-  const mergedPath = firmwarePath.replace(/meta-pass_v[^/]*\.bin$/, "FoloToy-AI-Passport-full.bin");
+  const mergedPath = join(buildDir.pathname, "FoloToy-AI-Passport-full.bin");
   let image;
   try {
     image = new Uint8Array(await readFile(mergedPath));
