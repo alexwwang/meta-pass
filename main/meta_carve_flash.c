@@ -659,41 +659,51 @@ esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label)
     return ESP_OK;
 }
 
-uint32_t meta_carve_flash_arc(uint32_t target)
+static uint32_t arc_prepare_locked(uint32_t target)
 {
     if (!s_active || !s_have_record || target == 0) return 0;
 
-    // 最旧优先(数组序 = 分配序),整条回收 ARCHIVED 记录。整条回收保证擦除
-    // 区间按 4KB 对齐(esp_flash_erase_region 要求);可能略超 target —— 多
-    // 回收总是安全方向。
     s_work = s_carve;
-    uint32_t off[META_DATA_MAX], sz[META_DATA_MAX];
-    uint8_t n = 0;
     uint32_t reclaimed = 0;
     uint8_t i = 0;
-    while (i < s_work.data_count && reclaimed < target && n < META_DATA_MAX) {
+    while (i < s_work.data_count && reclaimed < target) {
         if (s_work.data[i].state != META_DATA_ARCHIVED || s_work.data[i].size == 0) {
             i++;
             continue;
         }
-        off[n] = s_work.data[i].offset;
-        sz[n]  = s_work.data[i].size;
-        n++;
         reclaimed += s_work.data[i].size;
-        if (!meta_carve_remove_data(&s_work, i)) return 0;   // 压缩:下标不前进
+        if (!meta_carve_remove_data(&s_work, i)) return 0;
     }
-    if (n == 0) return 0;
+    if (reclaimed == 0) return 0;
 
-    // 记录先行:先持久化"不再引用这些区域",再擦字节 —— 断电只会残留未引用空间。
+    // Transactional callers must be able to roll the metadata back. Do not erase
+    // the physical bytes here; they remain the rollback source until finalize.
     const esp_err_t ce = meta_carve_flash_commit(&s_work, false);
-    if (ce != ESP_OK) return 0;
+    return ce == ESP_OK ? reclaimed : 0;
+}
 
-    for (uint8_t k = 0; k < n; k++) {
-        const esp_err_t e = esp_flash_erase_region(NULL, off[k], sz[k]);
-        if (e != ESP_OK) {
-            ESP_LOGW(TAG, "ARC erase failed @0x%08lx: %s",
-                     (unsigned long)off[k], esp_err_to_name(e));
-        }
+uint32_t meta_carve_flash_arc_prepare(uint32_t target)
+{
+    return arc_prepare_locked(target);
+}
+
+uint32_t meta_carve_flash_arc(uint32_t target)
+{
+    if (!s_active || !s_have_record || target == 0) return 0;
+
+    const meta_carve_t before = s_carve;
+    const uint32_t reclaimed = arc_prepare_locked(target);
+    if (reclaimed == 0) return 0;
+
+    // Non-transactional legacy API: erase exactly the data records removed by
+    // the metadata commit. The transactional install path calls arc_prepare()
+    // and defers this erase until its final commit instead.
+    const meta_carve_t *after = &s_carve;
+    for (uint8_t i = 0; i < before.data_count; i++) {
+        const meta_carve_data_t *old = &before.data[i];
+        const int idx = meta_carve_find_data(after, old->play_id, old->label);
+        if (idx >= 0 && after->data[idx].offset == old->offset) continue;
+        (void)esp_flash_erase_region(NULL, old->offset, old->size);
     }
     return reclaimed;
 }
