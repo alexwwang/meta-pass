@@ -10,7 +10,7 @@ Parent: `dynslot-m5-design.md` (lifecycle), `dynslot-design.md` §4.5 (reclaim l
 
 Status: **final (2026-10-04, implementation addendum)** — revised after review (§1.0/§4/§7) and
 arbitrated: (1) the original incorrect P0-5 data_copy migration block is retired, (2) F4 mask-based DIRTY,
-(3) plan B materialization (end-of-install reboot + fabricated handles). The current implementation retains
+(3) plan B materialization (deferred store-exit reboot + fabricated handles). The current implementation retains
 M5's **correct pool-internal DATA resize migration** (erase destination, copy bytes, then switch the durable
 carve; rollback preserves the old extent). This is existing-DATA upgrade behavior, not the P0-5 initial DATA
 payload path. Implement per §1.0/§2/§3/§5; P1-4 landed, P0-5 device/phone wiring done.
@@ -37,7 +37,7 @@ This draft wires both layers: new-slot materialization (F1) + record
 creation (F2) in one transaction, and the reclaim ladder into the no-fit
 decision.
 
-### 1.0 How F1 materializes (final 2026-10-04: plan B — end-of-install reboot)
+### 1.0 How F1 materializes (final 2026-10-04: plan B — deferred store-exit reboot)
 
 **Hard constraint: the IDF partition-table cache.** `esp_partition_find_first`
 (used by both `meta_store_slot_partition` and `esp_ota_begin`) loads the 0x8000
@@ -47,7 +47,7 @@ the NEXT boot and are consistent by construction — so the only open question
 is how THIS boot's upload/verify path addresses the carved slot.
 
 **Plan B (arbitrated 2026-10-04): fabricated handles for the upload; the
-reboot lands after a successful install.**
+the reboot lands when the store page is exited after a successful install.**
 
 1. **Prepare (the confirm step):** `place_offer` decides on a copy (shape
    check → idempotent scan + data backfill → slot first → per-entry data
@@ -81,7 +81,7 @@ reboot lands after a successful install.**
    `carved_new_slot` is reset to -1 BEFORE the session clear so the
    just-installed slot can never be reclaimed.
 
-**Rejected alternatives:** reboot right after prepare (an extra phone-device
+**Rejected alternatives:** reboot during the active finalize/session exchange (an extra phone-device
 round-trip to re-send prepare; and the remove flow shows "reboot" is only a
 rhythm convention here); zero reboots end-to-end (fabricated handles PLUS
 re-deriving the device list scan from the carve record — saving ~3 s in
