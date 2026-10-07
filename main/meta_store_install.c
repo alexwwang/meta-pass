@@ -276,6 +276,7 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
         moves[n].old_size = old->size;
         moves[n].new_offset = now->offset;
         moves[n].new_size = now->size;
+        const uint8_t move_idx = n++;
 
         /*
          * The new extent is not committed yet, so the old record remains the
@@ -286,6 +287,7 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
         if (e != ESP_OK) {
             ESP_LOGE(TAG, "data migration erase failed @0x%08lx: %s",
                      (unsigned long)now->offset, esp_err_to_name(e));
+            (void)move_idx;
             goto rollback;
         }
         e = meta_carve_flash_data_copy(old->offset, old->size, now->offset);
@@ -295,7 +297,6 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
                      esp_err_to_name(e));
             goto rollback;
         }
-        n++;
     }
 
     if (out_n) *out_n = n;
