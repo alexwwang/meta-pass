@@ -274,29 +274,77 @@ def try_restore_token(port, api):
     return None
 
 
-def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=None):
-    """session + 分块上传 + finalize。全程停止串口 monitor:真机证实
-    idf monitor (re)start 后 ~30-50s USB 重枚举(rst:0x15,随机 Saved PC,
-    非固件复位)会掐断在途上传;无 monitor 时上传稳定。复位兜底用 API
-    轮询代替串口等启动。chunk/finalize 幂等,断连整包重传。"""
+def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=None,
+           data_images=None, data_resume_probe=False):
+    """session + APP/DATA 分块上传 + finalize。
+
+    DATA 的 session data[].offset/done 是设备侧事实源。真机测试默认覆盖
+    首传；data_resume_probe=True 时故意先传 DATA 前半段，再 GET status
+    读取 offset，只发送 suffix，验证续传不重复写 prefix。
+    """
+    data_images = data_images or []
     if mon:
         mon.stop()
     try:
         for attempt in (1, 2, 3):
             try:
                 st, body = api.post("/api/install/session", json.dumps({
-                    "imageLen": total, "sha256": __import__("hashlib").sha256(app_bytes).hexdigest(),
+                    "imageLen": total,
+                    "sha256": hashlib.sha256(app_bytes).hexdigest(),
                     "slot": slot}).encode())
                 if st != 200:
                     die(f"{desc}: session {st} {body[:200]!r}")
-                for off in range(0, total, CHUNK):
+                session = json.loads(body)
+                for off in range(int(session.get("offset", 0)), total, CHUNK):
                     st, body = api.chunk(off, app_bytes[off:off + CHUNK])
                     if st != 200:
                         die(f"{desc}: chunk@{off} {st} {body[:200]!r}")
+
+                states = session.get("data") or []
+                if len(states) != len(data_images):
+                    die(f"{desc}: session data entries={len(states)} != manifest={len(data_images)}")
+                for i, item in enumerate(data_images):
+                    expected = len(item["bytes"])
+                    ds = next((x for x in states if x.get("index") == i), None)
+                    if ds is None or int(ds.get("expected", 0)) != expected:
+                        die(f"{desc}: DATA[{i}] session state mismatch: {ds}")
+                    if ds.get("done"):
+                        ok(f"{desc}: DATA[{i}] already done; skip (idempotent)")
+                        continue
+                    doff = int(ds.get("offset", 0))
+                    if data_resume_probe and doff == 0 and expected > 1:
+                        cut = max(1, expected // 2)
+                        st, body = api.data_chunk(i, 0, item["bytes"][:cut])
+                        if st != 200:
+                            die(f"{desc}: data[{i}] prefix {st} {body[:200]!r}")
+                        st, body = api.get("/api/install/status")
+                        if st != 200:
+                            die(f"{desc}: status after DATA prefix {st}")
+                        status = json.loads(body)
+                        live = next((x for x in status.get("data", [])
+                                     if x.get("index") == i), None)
+                        if live is None or int(live.get("offset", -1)) != cut:
+                            die(f"{desc}: DATA[{i}] resume offset={live}, expected={cut}")
+                        ok(f"{desc}: DATA[{i}] resume checkpoint offset={cut}")
+                        doff = cut
+                    for off in range(doff, expected, CHUNK):
+                        st, body = api.data_chunk(i, off, item["bytes"][off:off + CHUNK])
+                        if st != 200:
+                            die(f"{desc}: data[{i}]@{off} {st} {body[:200]!r}")
+                    st, body = api.get("/api/install/status")
+                    if st != 200:
+                        die(f"{desc}: status after DATA[{i}] {st}")
+                    status = json.loads(body)
+                    live = next((x for x in status.get("data", [])
+                                 if x.get("index") == i), None)
+                    if live is None or not live.get("done") or int(live.get("offset", -1)) != expected:
+                        die(f"{desc}: DATA[{i}] not done: {live}")
+                    ok(f"{desc}: DATA[{i}] done offset={expected}")
+
                 st, body = api.post("/api/install/finalize", b"{}")
                 if st != 200:
                     die(f"{desc}: finalize {st} {body[:300]!r}")
-                ok(f"{desc}: finalize 200(受控复位由商店 DL 页 tick 触发,不等固定时延)")
+                ok(f"{desc}: finalize 200(APP + DATA integrity)")
                 return
             except (TimeoutError, ConnectionResetError, OSError) as e:
                 if attempt == 3:
@@ -322,7 +370,6 @@ def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=No
     finally:
         if mon:
             mon.start()
-
 
 def main():
     ap = argparse.ArgumentParser()
