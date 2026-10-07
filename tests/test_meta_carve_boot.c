@@ -81,12 +81,12 @@ static void test_runtime_views(void)
     c.slot[0].play_id = 105;
     c.data_count = 1;
     c.data[0].play_id = 105;
-    c.data[0].offset = 0x200000;
     c.data[0].size = 0x10000;
     c.data[0].state = META_DATA_PRISTINE;
     c.data[0].type = 1;
     c.data[0].subtype = 0x82;
     strcpy(c.data[0].label, "storage");
+    assert(meta_carve_place_data(&c, c.data[0].size, &c.data[0].offset));
     assert(meta_carve_valid(&c));
 
     meta_carve_rec_t rec;
