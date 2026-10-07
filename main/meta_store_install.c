@@ -1327,6 +1327,10 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         ESP_LOGW(TAG, "prepare: manifest shape/bounds rejected");
         return reply(req, "400 Bad Request", "manifest rejected");
     }
+    if (m.data_count > 0 && !m.has_carve) {
+        ESP_LOGW(TAG, "prepare: child DATA requires dynslot carve");
+        return reply(req, "400 Bad Request", "data requires carve");
+    }
     meta_install_geom_t g;
     geom_refresh(&g);
     // P0-5 修正:carve 提案的 fit 权威是下方 place_offer —— 新槽尚未物化,
