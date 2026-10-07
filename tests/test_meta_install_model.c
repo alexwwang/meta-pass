@@ -675,7 +675,7 @@ static void test_place_offer(void)
         meta_carve_data_t rec;
         memset(&rec, 0, sizeof(rec));
         rec.play_id = 1; rec.offset = off; rec.size = 0x2000;
-        rec.state = META_DATA_DIRTY; rec.type = 1; rec.subtype = 1;
+        rec.state = META_DATA_DIRTY; rec.type = 1; rec.subtype = 0x82;
         strncpy(rec.label, "rec", sizeof(rec.label) - 1);
         assert(meta_carve_data_append(&with_data, &rec));
         // 提案槽必须避开既有数据记录(rec@0x1A0000+0x2000,64KB 对齐) → 0x1B0000。
