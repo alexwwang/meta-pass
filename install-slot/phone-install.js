@@ -467,6 +467,15 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     suggestedSlot,
     slot,               // 交互 v2:手机选定槽位;-1 = 设备物理确认
     slots,
+    // Device allocation contract: APP + each Child DATA extent form one
+    // allocation group. Keep required capacity separate from initial payload.
+    data: dataImages.map((d) => ({
+      playId: play.id,
+      size: d.required_size,
+      label: d.label,
+      subtype: d.subtype,
+      initialImageSize: d.initial_image_size,
+    })),
     reason: typeof a.reason === "string" && a.reason ? a.reason : "ok",
   };
   if (slotIsNew) {
