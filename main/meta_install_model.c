@@ -337,6 +337,7 @@ meta_install_place_verdict_t meta_install_model_place_offer(
     }
     if (next.slot[idx].offset != m->carve_offset) return META_PLACE_REJECTED;
     if (m->phone_slot >= 0 && m->phone_slot != (int8_t)idx) return META_PLACE_REJECTED;
+    next.slot[idx].play_id = m->play_id;
 
     // 放数据条目。
     for (uint8_t d = 0; d < m->data_count; d++) {
