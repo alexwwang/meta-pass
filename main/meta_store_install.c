@@ -1143,14 +1143,11 @@ static esp_err_t finalize_locked(void)
         }
     }
 
-    if (!meta_slot_set_valid(&s_slots[slot], name, ver, meta.image_len, sha_hex)) {
-        fail_locked("registry write failed");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // carve 记录同步晋升 VALID(见 meta_carve_flash_set_valid):清单以记录
-    // 为事实源,占位 EMPTY 会让同会话的第二次安装把第一个应用当空槽覆盖。
-    // 失败按安装失败处理(镜像已写,重装备份覆盖同几何,安全)。
+    /*
+     * Promote the durable carve first.  Registry metadata remains the old
+     * authority until this succeeds, so a carve-write failure can roll back
+     * without invalidating an otherwise valid previous registry entry.
+     */
     {
         const esp_err_t cv = meta_carve_flash_set_valid(slot, name,
                                                         meta.image_len, digest);
@@ -1160,6 +1157,11 @@ static esp_err_t finalize_locked(void)
             fail_locked("carve state update failed");
             return ESP_ERR_INVALID_STATE;
         }
+    }
+
+    if (!meta_slot_set_valid(&s_slots[slot], name, ver, meta.image_len, sha_hex)) {
+        fail_locked("registry write failed");
+        return ESP_ERR_INVALID_STATE;
     }
 
     /*
