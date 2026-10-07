@@ -286,6 +286,14 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
         if (pid == 0) continue;
         const int existing = meta_carve_find_data(cur, pid, label);
         if (existing >= 0) {
+            if (cur->data[existing].type != 1 ||
+                cur->data[existing].subtype != m->data[d].subtype) {
+                if (out_label) {
+                    strncpy(out_label, label, META_DATA_LABEL_MAX);
+                    out_label[META_DATA_LABEL_MAX] = '\0';
+                }
+                return changed;
+            }
             if (m->data[d].size > cur->data[existing].size) {
                 if (out_label) {
                     strncpy(out_label, label, META_DATA_LABEL_MAX);
@@ -386,6 +394,14 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         }
         const int existing = meta_carve_find_data(cur, pid, label);
         if (existing >= 0) {
+            if (cur->data[existing].type != 1 ||
+                cur->data[existing].subtype != m->data[d].subtype) {
+                if (out_label) {
+                    strncpy(out_label, label, META_DATA_LABEL_MAX);
+                    out_label[META_DATA_LABEL_MAX] = '\0';
+                }
+                return META_PLACE_REJECTED;
+            }
             if (m->data[d].size > cur->data[existing].size) {
                 if (out_label) {
                     strncpy(out_label, label, META_DATA_LABEL_MAX);
