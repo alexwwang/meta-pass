@@ -407,7 +407,7 @@ static void test_active_data_materialization(void)
 
     meta_carve_data_t a = {
         .play_id = 100, .offset = 0x1C0000, .size = 0x10000,
-        .state = META_DATA_DIRTY, .subtype = 2, .type = 1,
+        .state = META_DATA_DIRTY, .subtype = 0x82, .type = 1,
     };
     strcpy(a.label, "storage");
     assert(meta_carve_data_append(&c, &a));
