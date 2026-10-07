@@ -220,8 +220,8 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       slots,
       suggestedSlot: supported ? 0 : -1,
       supported,
-      // 警告可继续:subtype 0x40 自定义数据分区不阻断安装,reason 透传分区名,
-      // 设备端详情页显示警告后由用户决定;reason='ok' 表示无任何警告。
+      // Unsupported child DATA is an admission failure, not a warning: the device
+      // must never be asked to carve or mutate storage for an image it cannot map.
       reason: !storageSupported
         ? (firmwareManifest.reason || "unsupported-partition")
         : (supported ? "ok" : REASON_TOO_LARGE),
