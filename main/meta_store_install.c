@@ -1453,6 +1453,8 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     meta_install_no_fit_t nf;
     meta_install_place_verdict_t verdict = META_PLACE_OK;
     int8_t new_group_slot = -1;
+    data_move_t data_moves[META_DATA_MAX];
+    uint8_t data_move_count = 0;
     if (m.has_carve) {
         const meta_carve_t *cur0 = meta_carve_flash_carve();
         verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
@@ -1546,11 +1548,40 @@ new_group_checked:
     s_session.manifest = m;
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
+
+    /*
+     * DATA resize is a real migration, not a metadata-only resize.  Keep the
+     * old carve authoritative until all old bytes have been copied to the
+     * new extent; only then commit the new carve record.
+     */
+    if (m.has_carve && place_changed) {
+        const meta_carve_t *before = meta_carve_flash_carve();
+        if (before) {
+            const esp_err_t me = prepare_data_moves_locked(
+                before, &placed, data_moves, &data_move_count);
+            if (me != ESP_OK) {
+                for (uint8_t i = 0; i < data_move_count; i++) {
+                    (void)esp_flash_erase_region(NULL, data_moves[i].new_offset,
+                                                 data_moves[i].new_size);
+                }
+                offer_and_upload_clear();
+                session_unlock();
+                ESP_LOGE(TAG, "prepare: data migration failed: %s",
+                         esp_err_to_name(me));
+                return reply(req, "500 Internal Server Error", "data migration failed");
+            }
+        }
+    }
+
     // P0-5:carve 提交(记录+表一次事务)。失败 → 400(副本未入 carve,
     // 设备状态未被污染)。
     if (m.has_carve && place_changed) {
         const esp_err_t ce = meta_carve_flash_commit(&placed, true);
         if (ce != ESP_OK) {
+            for (uint8_t i = 0; i < data_move_count; i++) {
+                (void)esp_flash_erase_region(NULL, data_moves[i].new_offset,
+                                             data_moves[i].new_size);
+            }
             s_session.manifest_valid = false;
             s_session.offer_ready = false;
             s_session.data_dirty_mask = 0;
@@ -1558,6 +1589,7 @@ new_group_checked:
             ESP_LOGE(TAG, "prepare: carve commit failed: %s", esp_err_to_name(ce));
             return reply(req, "500 Internal Server Error", "carve commit failed");
         }
+        cleanup_migrated_sources(data_moves, data_move_count);
     }
     s_session.table_changed = m.has_carve && place_changed;
     s_session.carved_new_slot = new_group_slot;
