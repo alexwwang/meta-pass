@@ -416,7 +416,7 @@ meta_install_place_verdict_t meta_install_model_place_offer(
             }
             if (m->data[d].size > cur->data[existing].size) {
                 uint32_t move_off = 0;
-                if (!meta_carve_place_data_move(cur, (uint8_t)existing,
+                if (!meta_carve_place_data_move(&next, (uint8_t)existing,
                                                 m->data[d].size, &move_off)) {
                     if (out_label) {
                         strncpy(out_label, label, META_DATA_LABEL_MAX);
