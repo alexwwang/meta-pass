@@ -359,7 +359,7 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         if (m->data[d].subtype != 0x81 && m->data[d].subtype != 0x82) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
-                out_label[META_DATA_LABEL_MAX] = '\\0';
+                out_label[META_DATA_LABEL_MAX] = '\0';
             }
             return META_PLACE_REJECTED;
         }
