@@ -322,6 +322,51 @@ static void cleanup_migrated_sources(const data_move_t moves[META_DATA_MAX],
     }
 }
 
+typedef struct {
+    uint32_t offset;
+    uint32_t size;
+} data_new_extent_t;
+
+static esp_err_t prepare_new_data_extents_locked(
+    const meta_carve_t *before, const meta_carve_t *after,
+    data_new_extent_t extents[META_DATA_MAX], uint8_t *out_n)
+{
+    uint8_t n = 0;
+    if (out_n) *out_n = 0;
+    if (!before || !after || !s_session.manifest_valid) return ESP_ERR_INVALID_ARG;
+
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const uint32_t pid = s_session.manifest.data[i].play_id;
+        if (pid == 0) continue;
+        const int old_idx = meta_carve_find_data(before, pid,
+                                                  s_session.manifest.data[i].label);
+        const int new_idx = meta_carve_find_data(after, pid,
+                                                  s_session.manifest.data[i].label);
+        if (old_idx >= 0 || new_idx < 0) continue;
+
+        if (n >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+        extents[n].offset = after->data[new_idx].offset;
+        extents[n].size = after->data[new_idx].size;
+        if (esp_flash_erase_region(NULL, extents[n].offset, extents[n].size) != ESP_OK) {
+            for (uint8_t j = 0; j < n; j++) {
+                (void)esp_flash_erase_region(NULL, extents[j].offset, extents[j].size);
+            }
+            return ESP_FAIL;
+        }
+        n++;
+    }
+    if (out_n) *out_n = n;
+    return ESP_OK;
+}
+
+static void cleanup_new_data_extents(const data_new_extent_t extents[META_DATA_MAX],
+                                     uint8_t n)
+{
+    for (uint8_t i = 0; i < n; i++) {
+        (void)esp_flash_erase_region(NULL, extents[i].offset, extents[i].size);
+    }
+}
+
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
 {
