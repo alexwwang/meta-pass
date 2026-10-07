@@ -1370,6 +1370,7 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     char place_label[META_DATA_LABEL_MAX + 1];
     meta_install_no_fit_t nf;
     meta_install_place_verdict_t verdict = META_PLACE_OK;
+    int8_t new_group_slot = -1;
     if (m.has_carve) {
         const meta_carve_t *cur0 = meta_carve_flash_carve();
         verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
@@ -1402,6 +1403,18 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
             ESP_LOGW(TAG, "prepare: carve proposal rejected (label=%s)", place_label);
             return reply(req, "400 Bad Request", "carve proposal rejected");
         }
+        if (verdict == META_PLACE_OK && place_changed && place_idx >= 0 && cur0) {
+            const meta_carve_slot_t *ps = &placed.slot[place_idx];
+            for (uint8_t i = 0; i < cur0->count; i++) {
+                if (cur0->slot[i].offset == ps->offset &&
+                    cur0->slot[i].size == ps->size) {
+                    new_group_slot = -1;
+                    goto new_group_checked;
+                }
+            }
+            new_group_slot = (int8_t)place_idx;
+        }
+new_group_checked:
         if (verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) {
             session_unlock();
             ESP_LOGW(TAG, "prepare: no-fit (%s) needed=%u gap=%u arch=%u pri=%u",
@@ -1465,27 +1478,7 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         }
     }
     s_session.table_changed = m.has_carve && place_changed;
-    s_session.carved_new_slot = -1;
-    if (m.has_carve && place_changed && place_idx >= 0) {
-        /*
-         * place_idx is also used for idempotent DATA backfill on an existing
-         * APP slot. Only treat it as a newly allocated group when no slot with
-         * the same offset/size existed in the pre-offer carve.
-         */
-        const meta_carve_t *before = meta_carve_flash_carve();
-        if (before) {
-            const meta_carve_slot_t *ps = &placed.slot[place_idx];
-            bool existed = false;
-            for (uint8_t i = 0; i < before->count; i++) {
-                if (before->slot[i].offset == ps->offset &&
-                    before->slot[i].size == ps->size) {
-                    existed = true;
-                    break;
-                }
-            }
-            if (!existed) s_session.carved_new_slot = (int8_t)place_idx;
-        }
-    }
+    s_session.carved_new_slot = new_group_slot;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
     if (m.has_carve) {
         // carve 路径:槽位下标以设备分配器为准(phone_slot 已在 place_offer 核对)。
