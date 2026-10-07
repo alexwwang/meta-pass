@@ -190,7 +190,7 @@ export function parseFirmwareManifest(buf) {
   // Reject overlapping/overflowing ranges before using any DATA extent for
   // allocation; otherwise a malformed image could make the initial payload
   // point into another partition (or wrap a 32-bit end address).
-  const ranges = partitions
+  const ranges = partitions.concat(unsupported)
     .filter(p => p.size > 0)
     .map(p => ({ label: p.label, offset: p.offset, end: p.offset + p.size }));
   if (ranges.some(p => p.end > 0x100000000 || p.end <= p.offset)) {
