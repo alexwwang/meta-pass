@@ -1119,7 +1119,7 @@ const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
 // ── DATA 初始镜像上传:session 返回 per-entry offset/done,新建 DATA 逐块写入 ──
 {
   const data = new Uint8Array([1, 2, 3, 4, 5]);
-  const dataImages = [{ initialImageSize: data.length, data }];
+  const dataImages = [{ initial_image_size: data.length, data }];
   const dev = makeDevice({ dataImages });
   globalThis.fetch = dispatchFetch(installMockFetch(), dev);
   const offer = {
