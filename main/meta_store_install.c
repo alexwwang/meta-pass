@@ -1479,10 +1479,20 @@ static esp_err_t h_install_session(httpd_req_t *req)
         return reply(req, "400 Bad Request", "session rejected");
     }
 
-    char resp[96];
-    snprintf(resp, sizeof(resp),
-             "{\"state\":\"ready\",\"offset\":%" PRIu32 ",\"maxChunk\":%u}",
+    static char resp[768];
+    int roff = snprintf(resp, sizeof(resp),
+             "{\"state\":\"ready\",\"offset\":%" PRIu32 ",\"maxChunk\":%u,\"data\":[",
              s_session.session_offset, META_INSTALL_MAX_CHUNK);
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const bool done = (s_session.data_done_mask & (1u << i)) != 0;
+        roff += snprintf(resp + roff, sizeof(resp) - (size_t)roff,
+                         "%s{\"index\":%u,\"offset\":%" PRIu32
+                         ",\"expected\":%" PRIu32 ",\"done\":%s}",
+                         i ? "," : "", (unsigned)i, s_session.data_offset[i],
+                         s_session.manifest.data[i].initial_image_size,
+                         done ? "true" : "false");
+    }
+    snprintf(resp + roff, sizeof(resp) - (size_t)roff, "]}");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, resp);
 }
@@ -1543,6 +1553,51 @@ static esp_err_t h_install_chunk(httpd_req_t *req)
             return reply(req, "500 Internal Server Error", "chunk write failed");
         }
         got_total += (size_t)got;
+    }
+    return reply(req, "200 OK", "ok");
+}
+
+// POST /api/install/data —— Child DATA 初始镜像流。
+static esp_err_t h_install_data(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!s_session.confirmed || !s_session.session_opened) {
+        return reply(req, "409 Conflict", "not confirmed");
+    }
+
+    char idx_str[8], off_str[16];
+    uint32_t offset = 0;
+    uint32_t index = 0;
+    if (httpd_req_get_hdr_value_str(req, META_INSTALL_DATA_INDEX_HDR,
+                                    idx_str, sizeof(idx_str)) != ESP_OK ||
+        !parse_u32(idx_str, &index) || index >= META_DATA_MAX ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR,
+                                    off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset)) {
+        return reply(req, "400 Bad Request", "missing/bad data headers");
+    }
+
+    const uint32_t length = (uint32_t)req->content_len;
+    if (length == 0 || length > META_INSTALL_MAX_CHUNK) {
+        return reply(req, "400 Bad Request", "data chunk length out of range");
+    }
+
+    static uint8_t io_buf[INSTALL_IO_BUF];
+    uint32_t got_total = 0;
+    while (got_total < length) {
+        const uint32_t want = (length - got_total > INSTALL_IO_BUF)
+                                  ? INSTALL_IO_BUF : (length - got_total);
+        const int got = httpd_req_recv(req, (char *)io_buf, want);
+        if (got <= 0) return reply(req, "400 Bad Request", "data chunk read error");
+        bool dup = false;
+        const esp_err_t e = meta_install_data_write((uint8_t)index,
+                                                     offset + got_total,
+                                                     io_buf, (uint32_t)got, &dup);
+        if (e != ESP_OK) {
+            return reply(req, "500 Internal Server Error", "data write failed");
+        }
+        got_total += (uint32_t)got;
     }
     return reply(req, "200 OK", "ok");
 }
