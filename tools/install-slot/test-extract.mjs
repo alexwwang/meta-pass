@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { extractAppImage, espImageLength, isFullImage } from "../../install-slot/extract-app-image.js";
+import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
   tailSectorOffset, blobOffset, maxAppImageSize,
@@ -127,6 +127,64 @@ function buildAppImage() {
   assert.throws(() => espImageLength(truncated, 0), /Truncated|segment|extends/i,
     "unresolvable image must throw");
   console.log("PASS 3c: layout probe — plain-24B→240, 24B+16B-ext→256; unresolvable throws");
+}
+
+
+ // 3d. Firmware storage manifest: APP + filesystem data is one allocation group.
+ // required_size uses the actual APP image length plus aligned DATA capacities;
+ // initial_image_size measures only bytes actually present in the supplied image.
+{
+  const app = buildAppImage();
+  const pt = 0x8000;
+  const dataOff = 0x20000;
+  const dataSize = 0x30000;
+  const full = new Uint8Array(dataOff + dataSize).fill(0xff);
+  // factory APP: physical partition is larger than the actual APP image.
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  // SPIFFS data partition: required capacity is 0x30000, but initial payload
+  // occupies only the first 0x1234 bytes.
+  full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
+  full.set([dataOff, 0x00, 0x00, 0x00], pt + 36);
+  full.set([dataSize, 0x00, 0x00, 0x00], pt + 40);
+  full.set([...Buffer.from("storage")], pt + 32 + 16);
+  full.fill(0x5a, dataOff, dataOff + 0x1234);
+
+  const m = parseFirmwareManifest(full);
+  assert.equal(m.supported, true);
+  assert.equal(m.reason, "ok");
+  assert.equal(m.app.image_size, app.length);
+  assert.equal(m.data.length, 1);
+  assert.equal(m.data[0].label, "storage");
+  assert.equal(m.data[0].required_size, dataSize);
+  assert.equal(m.data[0].initial_image_size, 0x1234);
+  assert.equal(m.required_size,
+    Math.ceil(app.length / 0x1000) * 0x1000 + dataSize);
+  console.log("PASS 3d: APP+DATA manifest separates required capacity from initial image bytes");
+}
+
+// 3e. Unsupported custom data partition is an explicit admission failure.
+{
+  const app = buildAppImage();
+  const full = new Uint8Array(0x30000).fill(0xff);
+  const pt = 0x8000;
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, 0x40], pt + 32);
+  full.set([0x00, 0x20, 0x00, 0x00], pt + 36);
+  full.set([0x00, 0x10, 0x00, 0x00], pt + 40);
+  full.set([...Buffer.from("custom")], pt + 48);
+
+  const m = parseFirmwareManifest(full);
+  assert.equal(m.supported, false);
+  assert.equal(m.reason, "unsupported-partition");
+  assert.equal(m.unsupported.length, 1);
+  assert.equal(m.unsupported[0].label, "custom");
+  console.log("PASS 3e: unsupported data partition rejected explicitly");
 }
 
 // ===== 4. 显示名 blob(name-blob.js,与 tests/test_meta_name.c 双向锁定)=====
