@@ -469,6 +469,9 @@ bool meta_carve_valid(const meta_carve_t *c)
 }
 
 // ---- 表物化 ---------------------------------------------------------------
+static void pt_set_entry(meta_pt_t *t, uint8_t type, uint8_t subtype,
+                         uint32_t offset, uint32_t size, const char *label);
+
 
 // 固定系统条目(offset 升序):与 partitions.csv 安全表同源。
 // 直接写入避免 bootloader 携带 fixed_entry_t 元数据表及其指针/字符串表。
