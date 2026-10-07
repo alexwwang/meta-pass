@@ -1823,7 +1823,7 @@ esp_err_t meta_install_net_start(void)
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/finalize/cancel
+    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
@@ -1848,6 +1848,7 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/prepare", HTTP_POST, h_install_prepare, NULL },
         { "/api/install/session", HTTP_POST, h_install_session, NULL },
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
+        { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
