@@ -732,13 +732,13 @@ static void test_place_offer(void)
         assert(meta_carve_place_data(&full, 0x1000, &off));
         meta_carve_data_t rec; memset(&rec, 0, sizeof(rec));
         rec.play_id = 9; rec.offset = off; rec.size = 0x1000;
-        rec.state = META_DATA_ARCHIVED; rec.type = 1; rec.subtype = 1;
+        rec.state = META_DATA_ARCHIVED; rec.type = 1; rec.subtype = 0x82;
         strncpy(rec.label, "old", sizeof(rec.label) - 1);
         assert(meta_carve_data_append(&full, &rec));
         assert(meta_carve_place_data(&full, 0x2000, &off));
         memset(&rec, 0, sizeof(rec));
         rec.play_id = 9; rec.offset = off; rec.size = 0x2000;
-        rec.state = META_DATA_PRISTINE; rec.type = 1; rec.subtype = 1;
+        rec.state = META_DATA_PRISTINE; rec.type = 1; rec.subtype = 0x82;
         strncpy(rec.label, "new", sizeof(rec.label) - 1);
         assert(meta_carve_data_append(&full, &rec));
 
