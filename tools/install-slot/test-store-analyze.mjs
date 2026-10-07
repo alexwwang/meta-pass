@@ -161,6 +161,27 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 1b: analyze exposes APP+DATA storage manifest without changing admission behavior");
 }
 
+// ---- 1c. DATA capacity participates in admission, not just APP size ----
+{
+  const app = buildAppImage([64]);
+  const poolLimit = POOL_TOTAL - 0x1000;
+  const appNeed = Math.ceil(app.length / 0x1000) * 0x1000;
+  const dataSize = poolLimit - appNeed + 0x1000;
+  const dataOffset = 0x200000;
+  const parts = [
+    ...META_PARTS,
+    ["storage", 1, 0x82, dataOffset, dataSize],
+  ];
+  const { fetchImpl } = makeEnv({ app, parts });
+  const out = await makeAnalyzer(fetchImpl).analyze(563);
+  assert.equal(out.storage.supported, true);
+  assert.equal(out.storage.requiredSize, appNeed + dataSize);
+  assert.ok(out.storage.requiredSize > poolLimit);
+  assert.equal(out.supported, false);
+  assert.equal(out.reason, "too-large");
+  console.log("PASS 1c: APP+DATA required capacity gates pool admission");
+}
+
 // ---- 2. 无 MNAM → 名退回 slug;extracted 字节与镜像一致 ----
 {
   const app = buildAppImage([256]);
