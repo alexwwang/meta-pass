@@ -1156,12 +1156,9 @@ static esp_err_t finalize_locked(void)
 
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
 
-    // P0-5 仲裁①:升级数据迁移块退役。原实现把数据字节拷进
-    // manifest.carve_offset(= 应用槽位起点,finalize 时已写入镜像)——
-    // 几何上必然互相覆盖;且 P0-5 下数据记录由分配器放在独立偏移、与槽位
-    // 永不重叠(place_offer 保留既有 (play_id,label) 记录),升级无需搬家,
-    // 迁移需求是空集。data_copy 工具保留(test_data_copy 钉死 NOR 语义;
-    // v2 压缩若需数据搬迁再启用)。
+    // P0-5: upgrade DATA migration is journaled in s_session.data_moves.
+    // Source extents were deliberately retained until registry + carve validity
+    // committed above; failed sessions therefore keep the previous DATA intact.
 
     // M5 F4(仲裁②):只对"升级保留"的既有记录标 DIRTY;本会话新建记录
     // 保持 PRISTINE —— 新建区域刚擦除无用户数据,且全标 DIRTY 会让
