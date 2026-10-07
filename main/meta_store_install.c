@@ -225,6 +225,21 @@ static const esp_partition_t *slot_partition_any(int8_t slot)
 // 统一执行:手机会话从"装完"一直活到用户退出商店页。挂起标志在 carve
 // 层(meta_carve_flash_reboot_pending),物化的唯一漏斗是 commit(materialize)。
 
+// 清理本次 prepare 新建的 DATA 记录。既有记录属于升级保留数据,
+// 绝不能因 APP 上传失败而擦掉;新建记录则必须连同其字节一起移除,
+// 否则下一次 prepare 会把它误判成既有用户数据而永久占坑。
+static void cleanup_new_data_locked(void)
+{
+    if (!s_session.manifest_valid) return;
+    for (uint8_t i = 0; i < s_session.manifest.data_count &&
+                        i < META_DATA_MAX; i++) {
+        if (s_session.manifest.data[i].play_id == 0) continue;
+        if (s_session.data_dirty_mask & (1u << i)) continue;
+        (void)meta_carve_flash_erase_data(s_session.manifest.data[i].play_id,
+                                           s_session.manifest.data[i].label);
+    }
+}
+
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
 {
@@ -257,6 +272,7 @@ static void fail_locked(const char *msg)
 {
     const int8_t slot = s_session.confirmed_slot;
     const bool touched = s_session.flash_touched;
+    cleanup_new_data_locked();
     offer_and_upload_clear();
     if (touched && slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[slot]);
