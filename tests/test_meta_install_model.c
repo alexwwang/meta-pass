@@ -649,6 +649,15 @@ static void test_place_offer(void)
                                           label, &nf) == META_PLACE_REJECTED);
     assert(strcmp(label, "custom") == 0);
 
+    // ── LittleFS subtype 0x83 → accepted ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\"carveOffset\":1703936,\"carveSize\":131072,"
+        "\"data\":[{\"playId\":1,\"size\":4096,\"subtype\":131,\"label\":\"lfs\"}],", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx,
+                                          &changed, label, &nf) == META_PLACE_OK);
+    assert(next.data[meta_carve_find_data(&next, 1, "lfs")].subtype == 0x83);
+
     // ── 保留标签 → REJECTED ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1703936,\"carveSize\":131072,"
