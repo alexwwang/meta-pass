@@ -4,25 +4,47 @@
 #include <string.h>
 
 meta_boot_table_verdict_t meta_carve_boot_decide(
-    const uint8_t live[META_PT_SIZE], const meta_carve_rec_t *rec)
+    const uint8_t live[META_PT_SIZE], const meta_carve_rec_t *rec,
+    int active_slot)
 {
     meta_boot_table_verdict_t v = { META_BOOT_TABLE_RESTORE_SAFE,
                                     "unknown table and no committed carve",
                                     NULL };
+    static uint8_t expected[META_PT_SIZE];
     if (!live) {
         return v;
     }
 
-    // 1) 有合法 committed 记录:字节比对,失配即权威修复(B5)。
+    // A committed carve is the durable allocation authority, but it is not
+    // itself the normal runtime partition table.  Runtime views are derived:
+    // launcher => no child DATA; deep-sleep child => only that child's DATA.
     if (rec != NULL && meta_carve_rec_validate(rec)) {
-        if (meta_pt_equal(live, rec->table)) {
+        bool ok = false;
+        if (active_slot >= 0 && active_slot < (int)rec->carve.count &&
+            rec->carve.slot[active_slot].kind == META_CARVE_KIND_APP) {
+            ok = meta_pt_from_carve_active(&rec->carve,
+                                           rec->carve.slot[active_slot].play_id,
+                                           expected);
+        } else if (active_slot < 0) {
+            ok = meta_pt_from_carve_active(&rec->carve, 0, expected);
+        }
+        if (!ok) {
+            v.action = META_BOOT_TABLE_RESTORE_SAFE;
+            v.reason = "committed carve cannot materialize runtime view";
+            return v;
+        }
+        if (meta_pt_equal(live, expected)) {
             v.action = META_BOOT_TABLE_PROCEED;
-            v.reason = "live table matches committed carve";
+            v.reason = active_slot >= 0
+                ? "live table matches active child runtime view"
+                : "live table matches launcher runtime view";
             return v;
         }
         v.action = META_BOOT_TABLE_RESTORE_RECORD;
-        v.reason = "live table differs from committed carve";
-        v.table = rec->table;
+        v.reason = active_slot >= 0
+            ? "live table differs from active child runtime view"
+            : "live table differs from launcher runtime view";
+        v.table = expected;
         return v;
     }
 
