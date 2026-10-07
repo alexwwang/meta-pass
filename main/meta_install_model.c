@@ -345,6 +345,11 @@ meta_install_place_verdict_t meta_install_model_place_offer(
     if (out_label) out_label[0] = '\0';
     if (!m || !cur || !m->has_carve || !out_next) return META_PLACE_REJECTED;
     if (m->protocol != META_INSTALL_PROTOCOL_V1) return META_PLACE_REJECTED;
+    for (uint8_t d = 0; d < m->data_count; d++) {
+        if (m->data[d].play_id != 0 && m->data[d].play_id != m->play_id) {
+            return META_PLACE_REJECTED;
+        }
+    }
     const uint32_t need = meta_carve_need(m->image_len);
     if (need == 0 || m->carve_size != need) return META_PLACE_REJECTED;
 
