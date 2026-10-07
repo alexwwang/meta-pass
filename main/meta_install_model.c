@@ -386,8 +386,16 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         }
         const int existing = meta_carve_find_data(cur, pid, label);
         if (existing >= 0) {
-            if (m->data[d].size > cur->data[existing].size) return META_PLACE_NO_FIT_DATA;
+            if (m->data[d].size > cur->data[existing].size) {
+                if (out_label) {
+                    strncpy(out_label, label, META_DATA_LABEL_MAX);
+                    out_label[META_DATA_LABEL_MAX] = '\0';
+                }
+                fill_no_fit(out_nf, cur, m->data[d].size);
+                return META_PLACE_NO_FIT_DATA;
+            }
             continue;   // 升级:保留既有记录
+        }
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
