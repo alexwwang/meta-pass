@@ -1520,7 +1520,6 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     meta_install_no_fit_t nf;
     meta_install_place_verdict_t verdict = META_PLACE_OK;
     int8_t new_group_slot = -1;
-    uint8_t data_move_count = 0;
     data_new_extent_t new_data_extents[META_DATA_MAX];
     uint8_t new_data_extent_count = 0;
     if (m.has_carve) {
