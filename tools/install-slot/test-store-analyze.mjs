@@ -199,36 +199,32 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   console.log("PASS 4: wrong chip id -> reason=wrong-chip");
 }
 
-// ---- 5. custom-partitions 警告放行:陌生 subtype 数据分区 → supported=true + detail ----
+// ---- 5. unsupported child DATA → hard reject before device admission ----
 {
   const app = buildAppImage([64]);
   const parts = [...META_PARTS, ["spiffs", 1, 130, 0x7f0000, 0x10000]];
   const { fetchImpl } = makeEnv({ app, parts });
   const out = await makeAnalyzer(fetchImpl).analyze(563);
-  assert.equal(out.supported, true, "r9:白名单外数据分区警告放行");
-  assert.equal(out.reason, "custom-partitions");
-  assert.equal(out.detail, "spiffs");
-  console.log("PASS 5: unknown data partition (subtype!=0x40) -> warn & allow (r9 policy)");
+  assert.equal(out.supported, false, "unsupported child DATA must block admission");
+  assert.equal(out.reason, "unsupported-partition");
+  console.log("PASS 5: unsupported child DATA -> hard reject");
 }
 
-// ---- 5b. 警告可继续:subtype 0x40 自定义数据分区(play 675 的 rec)→ supported=true + 警告 ----
+// ---- 5b. subtype 0x40 custom DATA → hard reject ----
 {
   const app = buildAppImage([64]);
   const parts = [...META_PARTS, ["rec", 1, 0x40, 0x7f0000, 0x80000]];
   const { fetchImpl } = makeEnv({ app, parts });
   const out = await makeAnalyzer(fetchImpl).analyze(563);
-  assert.equal(out.supported, true, "0x40 自定义数据区不阻断安装");
-  assert.equal(out.reason, "custom-partitions");
-  assert.equal(out.detail, "rec");
-  assert.equal(out.suggestedSlot, 0, "警告路径仍给出建议槽位");
+  assert.equal(out.supported, false, "custom DATA must block admission");
+  assert.equal(out.reason, "unsupported-partition");
   const ex = await makeAnalyzer(fetchImpl).extracted(563);
-  assert.equal(ex.error, undefined, "警告路径 extracted 可用");
-  console.log("PASS 5b: custom data partition subtype 0x40 -> warn & allow (play 675 rec)");
+  assert.equal(ex.error, "unsupported-partition");
+  console.log("PASS 5b: custom data partition subtype 0x40 -> hard reject");
 
-// ---- 5c. r9 政策:任意白名单外数据分区(含标准文件系统 subtype)一律警告放行 ----
-// 真实回归:563 新增 easter(subtype 0x82 SPIFFS 彩蛋资源),旧政策硬拒导致
-// 市场主流玩法全部 unsupported。设备只刷 factory 应用,数据分区内容不进设备,
-// 最坏后果是子固件运行时缺资源分区、部分功能降级 —— 与 rec 同性质,警告即可。
+// ---- 5c. supported standard DATA remains supported; unsupported subtypes reject ----
+// Standard filesystem DATA is part of the allocation/runtime-table contract and
+// therefore remains supported. NVS/PHY are global MVP resources and are excluded.
 {
   const app = buildAppImage([64]);
   // [label, type, subtype, offset, size]
@@ -241,12 +237,16 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
     const parts = [...META_PARTS, [label, 1, sub, 0x7f0000, 0x80000]];
     const { fetchImpl } = makeEnv({ app, parts });
     const out = await makeAnalyzer(fetchImpl).analyze(563);
-    assert.equal(out.supported, true, `${label}: 数据分区不阻断安装`);
-    assert.equal(out.reason, "custom-partitions");
-    assert.equal(out.detail, label, "警告透传首个分区名(设备 NOTE 行用)");
-    assert.equal(out.suggestedSlot, 0);
-    const ex = await makeAnalyzer(fetchImpl).extracted(563);
-    assert.equal(ex.error, undefined, `${label}: extracted 可用`);
+    if (sub === 0x82 || sub === 0x81) {
+      assert.equal(out.supported, true, `${label}: supported filesystem DATA is admissible`);
+      assert.equal(out.reason, "ok");
+      assert.equal(out.suggestedSlot, 0);
+      const ex = await makeAnalyzer(fetchImpl).extracted(563);
+      assert.equal(ex.error, undefined, `${label}: extracted 可用`);
+    } else {
+      assert.equal(out.supported, false, `${label}: unsupported DATA must be rejected`);
+      assert.equal(out.reason, "unsupported-partition");
+    }
   }
   console.log("PASS 5c: any non-whitelist data partition -> warn & allow (easter/legacy_cardid/voicefs)");
 }
