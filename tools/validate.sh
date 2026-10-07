@@ -154,7 +154,7 @@ PY
     python3 tests/test_verify_firmware.py
     # 真机 smoke.py 是 self-hosted/USB 门禁，不在云端 static CI 自动烧板；
     # 这里至少做 Python 语法门，避免 DATA/USB 流程提交后脚本本身不可运行。
-    python3 -m py_compile tools/realdevice/smoke.py
+    python3 -m py_compile tools/realdevice/smoke.py tools/realdevice/run_smoke.py
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin
     node_bin="$(command -v node || true)"
