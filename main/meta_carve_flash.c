@@ -42,7 +42,7 @@ static meta_carve_rec_t s_tmp;             // A/B 比较暂存
 esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
                                      uint32_t dst_offset)
 {
-    if (!size || size > 0x100000) return ESP_ERR_INVALID_SIZE;  // 上限 1MB
+    if (!size) return ESP_ERR_INVALID_SIZE;
     if (size % META_CARVE_SIZE_GRANULE != 0) return ESP_ERR_INVALID_SIZE;  // 擦除粒度
     const meta_pool_desc_t *p = meta_carve_pool();
     // 验证 src/dst 都在池内且对齐
