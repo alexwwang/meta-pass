@@ -640,6 +640,15 @@ static void test_place_offer(void)
     assert(next.count == 1 && next.data_count == 1);
     assert(next.data[0].play_id == 7 && strcmp(next.data[0].label, "rec") == 0);
 
+    // ── unsupported data subtype → REJECTED ──
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\"carveOffset\":1703936,\"carveSize\":131072,"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"subtype\":64,\"label\":\"custom\"}],", 1));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);
+    assert(strcmp(label, "custom") == 0);
+
     // ── 保留标签 → REJECTED ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1703936,\"carveSize\":131072,"
