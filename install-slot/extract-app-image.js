@@ -186,6 +186,23 @@ export function parseFirmwareManifest(buf) {
     else unsupported.push(meta);
   }
 
+  // The child manifest must describe a physically coherent partition table.
+  // Reject overlapping/overflowing ranges before using any DATA extent for
+  // allocation; otherwise a malformed image could make the initial payload
+  // point into another partition (or wrap a 32-bit end address).
+  const ranges = partitions
+    .filter(p => p.size > 0)
+    .map(p => ({ label: p.label, offset: p.offset, end: p.offset + p.size }));
+  if (ranges.some(p => p.end > 0x100000000 || p.end <= p.offset)) {
+    throw new Error("invalid-partition-range");
+  }
+  ranges.sort((a, b) => a.offset - b.offset);
+  for (let i = 1; i < ranges.length; i++) {
+    if (ranges[i - 1].end > ranges[i].offset) {
+      throw new Error("overlapping-partitions");
+    }
+  }
+
   const apps = partitions.filter(p => p.kind === "app");
   const data = partitions.filter(p => p.kind === "data" && p.subtype !== 0x02 && p.subtype !== 0x01);
   if (!apps.some(p => p.subtype === 0x00)) {
