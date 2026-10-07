@@ -15,14 +15,15 @@
 覆盖(对应设计验收清单):
   S1 配对:串口取配对码 → POST /api/install/pair 换 token
   S2 fresh 首装:节点侧跑真 dynslot-pool.js 算 carve 提案 → prepare
-     (phone_picked 直确认)→ session → 4KB 分块上传 → finalize
-     → 断言 done-reboot + 串口 "carve loaded: seq=1 slots=1"(方案B + 记录态启动)
+     (phone_picked 直确认)→ session → APP + Child DATA 分块上传 → DATA
+     offset checkpoint/suffix resume → finalize → 断言 done-reboot + 串口
+     "carve loaded: seq=1 slots=1"(方案B + 记录态启动)
   S3 二次安装(carve 第二个槽)→ slots count=2
-  S4 删除归档 + 导出清单 + 删除擦除 + 导入恢复(备份闭环,设备侧全链)
+  S4 删除归档 + DATA ARCHIVED 断言 + 删除擦除(数据生命周期真实链)
   S5 中断续连:第三次安装传 30% 后掐断 → esptool 软复位(忠实等价断电:
      RAM 丢、flash 现状保留、NVS 续连标志在)→ 断言 "install resume"
      → 免重配对(新 token 从串口取)→ 幂等重发 prepare → 传完 → finalize
-  S6 取证:read_flash 回读表区 + store 区存 logs/,字节级现场
+  S6 取证:read_flash 回读表区 + store 区 + DATA extent，DATA 做字节级比对
 
 串口所有权分段交替:monitor(idf.py)持口时 esptool 不可跑;esptool 前后
 自动停/起 monitor。日志全程落 tools/realdevice/logs/smoke-<ts>.log。
