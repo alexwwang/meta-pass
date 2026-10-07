@@ -1,5 +1,3 @@
-#define TAG "meta_boot"
-
 /*
  * SPDX-License-Identifier: MIT
  *
@@ -39,8 +37,7 @@
  * 此时 state 判定不可靠 → 检测到 flash 加密启用则放弃干预(与 IDF write_
  * otadata 的 write_encrypted 对应;本设备未启用加密,防御性处理)。
  *
- * 日志:ESP_LOGI 在此阶段输出到 UART0(与 "boot:" 前缀日志同通道),
- * 便于真机串口核对策略是否生效。
+ * 本路径不依赖 ESP_LOG，避免二阶段 bootloader 引入额外日志/DRAM 开销。
  */
 
 #include "esp_err.h"
@@ -235,7 +232,6 @@ static void enforce_carve_table(int active_slot)
 
     if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET, s_scratch,
                               META_PT_SIZE, false) != ESP_OK) {
-        ESP_LOGE(TAG, "carve: cannot read live table; skipping enforcement");
         return;
     }
     const meta_boot_table_verdict_t v =
@@ -307,8 +303,6 @@ static bool resume_running_slot_on_copy(uint32_t ota_offset, uint32_t ota_count,
         return false;
     }
 
-    const uint32_t slot = (entry.ota_seq - 1u) % ota_count;
-
     entry.ota_state = ESP_OTA_IMG_VALID;
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
 
@@ -376,12 +370,9 @@ void bootloader_after_init(void)
 
     if (deep_sleep_wake) {
         if (changed) {
-            ESP_LOGI(TAG, "deep-sleep wake handled; bootloader will resume the child slot");
         } else {
-            ESP_LOGI(TAG, "deep-sleep wake: no running child to resume; default boot applies");
         }
     } else if (changed) {
-        ESP_LOGI(TAG, "single-session policy enforced; bootloader will default to factory/launcher");
     }
 }
 
