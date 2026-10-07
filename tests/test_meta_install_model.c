@@ -594,7 +594,7 @@ static void test_place_offer(void)
     // ── 全新放置:槽位 + 两条数据,一次 OK ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1572864,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"subtype\":130,\"initialImageSize\":123,\"label\":\"rec\"},"
+        "\"data\":[{\"playId\":7,\"size\":4096,\"subtype\":130,\"initialImageSize\":123,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"label\":\"rec\"},"
         "{\"playId\":7,\"size\":8192,\"label\":\"cfg\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(m.data_count == 2);
