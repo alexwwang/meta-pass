@@ -1,3 +1,5 @@
+#define TAG "meta_boot"
+
 /*
  * SPDX-License-Identifier: MIT
  *
