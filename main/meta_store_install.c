@@ -1077,6 +1077,28 @@ static esp_err_t finalize_locked(void)
         return ESP_ERR_INVALID_SIZE;
     }
 
+
+
+
+    // 展示名 + 注册表(先算好全部入参,避免终态后读已清字段)。
+    char sha_hex[META_SHA256_HEX_LEN + 1];
+    {
+        static const char k_hex[] = "0123456789abcdef";
+        for (int i = 0; i < 32; i++) {
+            sha_hex[i * 2]     = k_hex[digest[i] >> 4];
+            sha_hex[i * 2 + 1] = k_hex[digest[i] & 0x0F];
+        }
+        sha_hex[META_SHA256_HEX_LEN] = '\0';
+    }
+    char name[META_NAME_LEN + 1];
+    memcpy(name, s_session.name, sizeof(name));
+    char ver[META_VERSION_LEN + 1] = "?";
+    esp_app_desc_t desc;
+    if (esp_ota_get_partition_description(part, &desc) == ESP_OK) {
+        memcpy(ver, desc.version, sizeof(ver) - 1);
+        ver[sizeof(ver) - 1] = '\0';
+    }
+
     // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让
     // finalize 失败(审计 M5):注册表已标 VALID 而显示名缺失的槽位会通过
     // 校验却没有名字 —— 设计要求 blob 写入成功才算安装完成。
@@ -1101,26 +1123,6 @@ static esp_err_t finalize_locked(void)
                 ESP_LOGI(TAG, "MNAM write on slot %d: ok", slot);
             }
         }
-    }
-
-
-    // 展示名 + 注册表(先算好全部入参,避免终态后读已清字段)。
-    char sha_hex[META_SHA256_HEX_LEN + 1];
-    {
-        static const char k_hex[] = "0123456789abcdef";
-        for (int i = 0; i < 32; i++) {
-            sha_hex[i * 2]     = k_hex[digest[i] >> 4];
-            sha_hex[i * 2 + 1] = k_hex[digest[i] & 0x0F];
-        }
-        sha_hex[META_SHA256_HEX_LEN] = '\0';
-    }
-    char name[META_NAME_LEN + 1];
-    memcpy(name, s_session.name, sizeof(name));
-    char ver[META_VERSION_LEN + 1] = "?";
-    esp_app_desc_t desc;
-    if (esp_ota_get_partition_description(part, &desc) == ESP_OK) {
-        memcpy(ver, desc.version, sizeof(ver) - 1);
-        ver[sizeof(ver) - 1] = '\0';
     }
 
     if (!meta_slot_set_valid(&s_slots[slot], name, ver, meta.image_len, sha_hex)) {
