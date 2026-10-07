@@ -594,8 +594,8 @@ static void test_place_offer(void)
     // ── 全新放置:槽位 + 两条数据,一次 OK ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1572864,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"subtype\":130,\"initialImageSize\":123,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"label\":\"rec\"},"
-        "{\"playId\":7,\"size\":8192,\"label\":\"cfg\"}],", 0));
+        "\"data\":[{\"playId\":1,\"size\":4096,\"subtype\":130,\"initialImageSize\":123,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"label\":\"rec\"},"
+        "{\"playId\":1,\"size\":8192,\"label\":\"cfg\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(m.data_count == 2);
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
@@ -632,7 +632,7 @@ static void test_place_offer(void)
     // ── 幂等 + 缺失数据补放:changed=true(旧固件只放槽位的老数据迁移) ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1572864,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"rec\"}],", 0));
+        "\"data\":[{\"playId\":1,\"size\":4096,\"label\":\"rec\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
                                           label, &nf) == META_PLACE_OK);
@@ -643,7 +643,7 @@ static void test_place_offer(void)
     // ── unsupported data subtype → REJECTED ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1703936,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"subtype\":64,\"label\":\"custom\"}],", 1));
+        "\"data\":[{\"playId\":1,\"size\":4096,\"subtype\":64,\"label\":\"custom\"}],", 1));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
                                           label, &nf) == META_PLACE_REJECTED);
@@ -652,7 +652,7 @@ static void test_place_offer(void)
     // ── 保留标签 → REJECTED ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1703936,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"nvs\"}],", 1));
+        "\"data\":[{\"playId\":1,\"size\":4096,\"label\":\"nvs\"}],", 1));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
                                           label, &nf) == META_PLACE_REJECTED);
@@ -661,8 +661,8 @@ static void test_place_offer(void)
     // ── manifest 内重复 label → REJECTED ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1703936,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":7,\"size\":4096,\"label\":\"rec\"},"
-        "{\"playId\":7,\"size\":4096,\"label\":\"rec\"}],", 1));
+        "\"data\":[{\"playId\":1,\"size\":4096,\"label\":\"rec\"},"
+        "{\"playId\":1,\"size\":4096,\"label\":\"rec\"}],", 1));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
                                           label, &nf) == META_PLACE_REJECTED);
@@ -681,8 +681,8 @@ static void test_place_offer(void)
         // 提案槽必须避开既有数据记录(rec@0x1A0000+0x2000,64KB 对齐) → 0x1B0000。
         assert(build_carve_offer(js, sizeof(js), 0x1F000,
             "\"carveOffset\":1769472,\"carveSize\":131072,"
-            "\"data\":[{\"playId\":7,\"size\":8192,\"label\":\"rec\"},"
-            "{\"playId\":7,\"size\":4096,\"label\":\"cfg\"}],", 1));
+            "\"data\":[{\"playId\":1,\"size\":8192,\"label\":\"rec\"},"
+            "{\"playId\":1,\"size\":4096,\"label\":\"cfg\"}],", 1));
         assert(meta_install_model_parse(js, strlen(js), &m));
         assert(meta_install_model_place_offer(&m, &with_data, &next, &idx,
                                               &changed, label, &nf) == META_PLACE_OK);
@@ -701,7 +701,7 @@ static void test_place_offer(void)
         const uint32_t old_off = grow.data[grow_idx].offset;
         assert(build_carve_offer(js, sizeof(js), 0x1F000,
             "\"carveOffset\":1769472,\"carveSize\":131072,"
-            "\"data\":[{\"playId\":7,\"size\":16384,\"label\":\"rec\"}],", 1));
+            "\"data\":[{\"playId\":1,\"size\":16384,\"label\":\"rec\"}],", 1));
         assert(meta_install_model_parse(js, strlen(js), &m));
         assert(meta_install_model_place_offer(&m, &grow, &next, &idx,
                                               &changed, label, &nf) == META_PLACE_OK);
@@ -753,7 +753,7 @@ static void test_place_offer(void)
         meta_carve_t roomy = cur;   // 1 槽 @0x180000+0x20000
         assert(build_carve_offer(js, sizeof(js), 0x1F000,
             "\"carveOffset\":1703936,\"carveSize\":131072,"
-            "\"data\":[{\"playId\":7,\"size\":6291456,\"label\":\"big\"}],", 1));
+            "\"data\":[{\"playId\":1,\"size\":6291456,\"label\":\"big\"}],", 1));
         assert(meta_install_model_parse(js, strlen(js), &m));
         assert(meta_install_model_place_offer(&m, &roomy, &next, &idx, &changed,
                                               label, &nf) == META_PLACE_NO_FIT_DATA);
