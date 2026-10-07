@@ -693,6 +693,23 @@ static void test_place_offer(void)
         assert(kept->offset == off && kept->state == META_DATA_DIRTY);
         assert(meta_carve_find_data(&next, 7, "cfg") >= 0);
         assert(next.data[meta_carve_find_data(&next, 7, "cfg")].state == META_DATA_PRISTINE);
+
+        // ── 升级 DATA 扩容:不能原地扩大,必须找到不重叠的新 extent。
+        meta_carve_t grow = with_data;
+        const int grow_idx = meta_carve_find_data(&grow, 7, "rec");
+        assert(grow_idx >= 0);
+        const uint32_t old_off = grow.data[grow_idx].offset;
+        assert(build_carve_offer(js, sizeof(js), 0x1F000,
+            "\"carveOffset\":1769472,\"carveSize\":131072,"
+            "\"data\":[{\"playId\":7,\"size\":16384,\"label\":\"rec\"}],", 1));
+        assert(meta_install_model_parse(js, strlen(js), &m));
+        assert(meta_install_model_place_offer(&m, &grow, &next, &idx,
+                                              &changed, label, &nf) == META_PLACE_OK);
+        const int grown_idx = meta_carve_find_data(&next, 7, "rec");
+        assert(grown_idx >= 0);
+        assert(next.data[grown_idx].size == 0x4000);
+        assert(next.data[grown_idx].offset != old_off);
+        assert(next.data[grown_idx].state == META_DATA_DIRTY);
     }
 
     // ── NO_FIT_SLOT:满载 → 数字(largestGap=0,回收量按状态拆) ──
