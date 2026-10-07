@@ -717,7 +717,7 @@ bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE])
 bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
                                uint8_t out[META_PT_SIZE])
 {
-    if (!c || !out || active_play_id == 0 || !meta_carve_valid(c)) {
+    if (!c || !out || !meta_carve_valid(c)) {
         return false;
     }
 
