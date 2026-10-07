@@ -181,6 +181,32 @@ static bool load_record(uint32_t addr)
            meta_carve_rec_validate(&s_best);
 }
 
+static int peek_pending_slot(uint32_t ota_offset, uint32_t ota_count)
+{
+    if (ota_count == 0) return -1;
+    bool found = false;
+    uint32_t best_seq = 0;
+    uint32_t best_slot = 0;
+    for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t addr =
+            ota_offset + i * 4096u;
+        esp_ota_select_entry_t entry;
+        if (bootloader_flash_read(addr, &entry, sizeof(entry), false) != ESP_OK) {
+            continue;
+        }
+        const meta_otadata_entry_t *mirror =
+            (const meta_otadata_entry_t *)&entry;
+        if (!meta_boot_policy_entry_must_resume(mirror)) continue;
+        if (entry.crc != bootloader_common_ota_select_crc(&entry)) continue;
+        if (!found || (int32_t)(entry.ota_seq - best_seq) > 0) {
+            found = true;
+            best_seq = entry.ota_seq;
+            best_slot = (entry.ota_seq - 1u) % ota_count;
+        }
+    }
+    return found ? (int)best_slot : -1;
+}
+
 static void enforce_carve_table(int active_slot)
 {
     bool have = false;
