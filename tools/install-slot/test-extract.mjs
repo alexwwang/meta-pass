@@ -214,8 +214,8 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   full.set([0xaa, 0x50, 0x01, 0x40], pt + 32);
   full.set([0x00, 0x20, 0x00, 0x00], pt + 36);
   full.set([0x00, 0x10, 0x00, 0x00], pt + 40);
-  full.set([...Buffer.from("custom")], pt + 48);
-  full[pt + 48 + "custom".length] = 0;
+  full.set([...Buffer.from("custom")], pt + 44);
+  full[pt + 44 + "custom".length] = 0;
 
   const m = parseFirmwareManifest(full);
   assert.equal(m.supported, false);
