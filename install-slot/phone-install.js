@@ -407,7 +407,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
                   geom.proposal ? geom.proposal.limit : 0] : [0]),
     );
     ext = extractAppImage(merged, maxSlotLimit);
-    dataImages = extractDataImages(merged);
+    try { dataImages = extractDataImages(merged); } catch { dataImages = []; }
   } catch (e) {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
   }
