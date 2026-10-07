@@ -261,6 +261,29 @@ bool meta_carve_place_data(const meta_carve_t *cur, uint32_t size,
     return scan_fit(cur, size, out_offset);
 }
 
+bool meta_carve_place_data_move(const meta_carve_t *cur, uint8_t old_idx,
+                                uint32_t new_size, uint32_t *out_offset)
+{
+    if (!cur || !out_offset || old_idx >= cur->data_count) return false;
+    if (new_size < META_CARVE_MIN_DATA ||
+        new_size % POOL.size_granule != 0 ||
+        !meta_carve_valid(cur)) {
+        return false;
+    }
+
+    uint32_t off = 0;
+    if (!scan_fit(cur, new_size, &off)) return false;
+
+    const meta_carve_data_t *old = &cur->data[old_idx];
+    if (off == old->offset) return false;
+    if (off < old->offset + old->size &&
+        old->offset < off + new_size) {
+        return false;
+    }
+    *out_offset = off;
+    return true;
+}
+
 int meta_carve_find_data(const meta_carve_t *c, uint32_t play_id, const char *label)
 {
     if (!c || play_id == 0 || !label) {
