@@ -833,18 +833,6 @@ static esp_err_t verify_new_data_locked(void)
         if (!rec || rec->size < s_session.manifest.data[i].size) return ESP_ERR_INVALID_STATE;
 
         mbedtls_sha256_context ctx;
-        if (!data_upload_ready_locked()) {
-        ESP_LOGE(TAG, "finalize: child data upload incomplete");
-        fail_locked("data upload incomplete");
-        return ESP_ERR_INVALID_SIZE;
-    }
-    const esp_err_t data_verify = verify_new_data_locked();
-    if (data_verify != ESP_OK) {
-        fail_locked("data verify failed");
-        return data_verify;
-    }
-
-    uint8_t digest[32];
         mbedtls_sha256_init(&ctx);
         mbedtls_sha256_starts(&ctx, 0);
         uint32_t off = 0;
@@ -880,6 +868,17 @@ esp_err_t meta_install_finalize(void)
 static esp_err_t finalize_locked(void)
 {
     if (!s_session.session_opened) return ESP_ERR_INVALID_STATE;
+
+    if (!data_upload_ready_locked()) {
+        ESP_LOGE(TAG, "finalize: child data upload incomplete");
+        fail_locked("data upload incomplete");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const esp_err_t data_verify = verify_new_data_locked();
+    if (data_verify != ESP_OK) {
+        fail_locked("data verify failed");
+        return data_verify;
+    }
 
     const uint32_t expected = s_session.manifest_valid ? s_session.manifest.image_len : 0;
     if (!meta_install_model_finalize_ready(s_session.session_offset, expected)) {
