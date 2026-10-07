@@ -454,8 +454,12 @@ static void test_active_data_materialization(void)
         assert(strcmp(t.e[i].label, "storage") != 0);
     }
 
-    // play_id 0 is reserved for legacy/unknown ownership.
-    assert(!meta_pt_from_carve_active(&c, 0, table));
+    // play_id 0 is the launcher view: APP partitions remain, Child DATA is hidden.
+    assert(meta_pt_from_carve_active(&c, 0, table));
+    assert(meta_pt_decode(table, &t));
+    for (uint8_t i = 0; i < t.count; i++) {
+        assert(strcmp(t.e[i].label, "storage") != 0);
+    }
     printf("PASS active data materialization\n");
 }
 
