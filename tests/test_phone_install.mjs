@@ -402,6 +402,7 @@ const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
     suggestedSlot: 0,
     slot: -1,               // 兼容入口不选槽 → 设备物理确认旧流程
     slots: SLOT_LIMITS,
+    data: [],
     reason: "ok",
   });
   console.log("PASS 3: preflight happy path — offer matches §6.4 shape, slots from SLOT_GEOMETRY");
