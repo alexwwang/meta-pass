@@ -144,6 +144,7 @@ static void test_fit_reuse_remove(void)
     // storage 槽不可作为安装目标。
     c.slot[0].kind = META_CARVE_KIND_STORAGE;
     assert(meta_carve_find_fit(&c, 0x1000) == 1);
+    assert(!meta_carve_valid(&c)); // storage reservations are not boot/runtime slots
     c.slot[0].kind = META_CARVE_KIND_APP;
 
     // 删除中间项:压缩并保持 offset 升序,余下槽不动。
