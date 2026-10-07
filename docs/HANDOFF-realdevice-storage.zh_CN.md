@@ -60,35 +60,125 @@ python3 -m serial.tools.list_ports -v
 
 预期 ESP-IDF 为 5.5.3，USB 端口可见。
 
-## 3. simulator 验证
+## 3. 第一个测试任务：passport-sim 实际执行
 
-passport-sim 仓库：
+这是后续本地 agent **必须首先完成**的测试任务。在 simulator PASS 之前，不进入真机测试。
+
+### 3.1 环境
+
+passport-sim：
 
 https://github.com/VOID001/FoloToy-Passport-Simulator
 
-本环境必须使用真实 simulator，不得用 mock 冒充。
+要求：
 
-本地准备：
+- Node.js >= 20。
+- npm。
+- 本地能够 clone GitHub 仓库。
+- meta-pass 与 simulator 为相邻目录，或设置 `PASSPORT_SIM_DIR`。
+- simulator 的 `public/wasm/pkg/esp_emu_bg.wasm` 已准备好。
+
+根据 simulator 官方 package.json，准备命令是：
 
 ```bash
 git clone https://github.com/VOID001/FoloToy-Passport-Simulator.git ../passport-sim
 cd ../passport-sim
 npm install
+npm run prepare:emulator
 cd ../meta-pass
-./tools/validate.sh --firmware
-PASSPORT_SIM_DIR=../passport-sim ./tools/validate.sh --sim
 ```
 
-成功标准：
+### 3.2 先检查 simulator 测试程序
 
-- QEMU ESP32-C3 真正加载固件。
-- bootloader 正常启动。
-- partition table 无错误。
-- meta boot hook 不 panic。
-- application 启动并产生显示帧。
-- 已有 sim test 全部 PASS。
+执行：
 
-注意：当前执行环境不能访问 GitHub 网络，因此本轮只能确认 simulator 仓库结构和代码入口，不能声称 simulator 已实际执行通过。后续有本地网络环境时必须实际执行。
+```bash
+test -f tools/sim/run-sim-test.sh
+test -f tools/sim/metapass-boot.test.mjs
+test -f tools/sim/esp_emu.js
+test -f tools/sim/ai-passport-board.js
+```
+
+重点确认：
+
+- `run-sim-test.sh` 使用真实 `esp_emu_bg.wasm`，不能替换成 mock。
+- 固件必须按 simulator 要求作为 ESP32-C3 Full Flash image 从 0x0 加载。
+- `metapass-boot.test.mjs` 必须真正创建 `WasmEmulator("esp32c3")` 并 `load_firmware()`。
+- 测试必须至少检查 boot 后 CPU 继续运行、产生显示帧、屏幕尺寸正确。
+- 按键测试必须能够驱动真实固件，而不是只测试 JS board wrapper。
+
+当前程序已经满足上述条件，并已补充：
+- boot 后 CPU cycles 检查；
+- PC 有效性检查；
+- 至少产生显示帧；
+- DOWN/UP 按键后的画面/运行状态检查。
+
+### 3.3 构建并执行
+
+```bash
+cd ../meta-pass
+
+./tools/validate.sh --firmware
+
+PASSPORT_SIM_DIR=../passport-sim   ./tools/validate.sh --sim
+```
+
+或者直接：
+
+```bash
+PASSPORT_SIM_DIR=../passport-sim   tools/sim/run-sim-test.sh
+```
+
+预期：
+
+```
+meta-pass 模拟器端到端测试
+✓ node v20.x.x
+✓ passport-sim: ...
+✓ 固件镜像: ...
+...
+PASS — meta-pass 模拟器端到端测试通过
+```
+
+Node test 应全部显示 `ok`，exit code 必须为 0。
+
+### 3.4 失败时如何处理
+
+先不要修改业务代码。
+
+保存：
+
+```bash
+git rev-parse HEAD
+node --version
+cd ../passport-sim && git rev-parse HEAD
+cd ../meta-pass
+sha256sum build/FoloToy-AI-Passport-full.bin
+```
+
+并保存完整：
+
+```bash
+PASSPORT_SIM_DIR=../passport-sim   tools/sim/run-sim-test.sh 2>&1 | tee tools/sim/sim-run.log
+```
+
+归因优先级：
+
+1. 找不到 wasm / simulator checkout → ENVIRONMENT。
+2. Full Flash image 格式错误 → FIRMWARE_IMAGE。
+3. QEMU load/boot 失败 → BOOT。
+4. boot 成功但无 frame → DISPLAY/APP_BOOT。
+5. CPU cycles/PC 异常 → CPU/CRASH。
+6. DOWN/UP 不改变状态 → BUTTON/FIRMWARE_INPUT。
+7. 旧测试本身假设错误 → TEST_HARNESS。
+
+只有在证据明确属于 meta-pass 固件问题时，才修改 `feat/storage`。
+
+### 3.5 本轮验证边界
+
+当前 agent 执行环境没有可运行的本地 passport-sim checkout/WASM + Node/QEMU 运行环境，因此**不能声称已经 PASS**。
+
+这不是 GitHub CI 任务。后续 agent 必须在有 simulator 实际运行环境的本地机器完成本节，并把结果写入 handoff/report 后再进入真机测试。
 
 ## 4. 真机日志采集
 
