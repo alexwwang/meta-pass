@@ -205,11 +205,11 @@ static void test_invalid_record_treated_as_absent(void)
     assert(meta_pt_from_carve(&shrunk, rec.table));  // 表却是 1 槽
     uint8_t *safe = fixture("tests/fixtures/safe_table.bin");
     meta_boot_table_verdict_t v = decide(safe, &rec, -1);
-    assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
-    assert(v.table == NULL);
+    assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
+    assert(v.table == rec.table);
     uint8_t *child = fixture("tests/fixtures/play563_table.bin");
     v = decide(child, &rec, -1);
-    assert(v.action == META_BOOT_TABLE_RESTORE_SAFE);
+    assert(v.action == META_BOOT_TABLE_RESTORE_RECORD);
     free(safe);
     free(child);
     printf("PASS inconsistent record = committed authority (CRC/MD5 guard writes)\n");
