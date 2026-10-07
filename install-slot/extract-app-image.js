@@ -148,7 +148,7 @@ export function parseFirmwareManifest(buf) {
     const offset = u32le(buf, off + 4);
     const size = u32le(buf, off + 8);
     let label = "";
-    for (let i = 16; i < 32 && buf[off + i] !== 0; i++) label += String.fromCharCode(buf[off + i]);
+    for (let i = 12; i < 28 && buf[off + i] !== 0; i++) label += String.fromCharCode(buf[off + i]);
 
     if (type === 0x00) {
       if (subtype === 0x00) partitions.push({ kind: "app", label, type: "app", subtype, offset, size });
@@ -260,9 +260,9 @@ export function parseDataPartitions(buf) {
     if (type === 1 && (subtype === 0x81 || subtype === 0x82 || subtype === 0x83)) {
       const offset = u32le(buf, off + 4);
       const size = u32le(buf, off + 8);
-      // label 在条目末尾 16 字节
+      // label 位于分区表条目的 +12..+27 字节(16B)。
       let label = '';
-      for (let i = 16; i < 32 && buf[off + i] !== 0; i++) {
+      for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
       result.push({ offset, size, type: subtype === 0x81 ? 'fat' : subtype === 0x82 ? 'spiffs' : 'littlefs', label });
