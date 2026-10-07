@@ -684,8 +684,12 @@ static void test_place_offer(void)
             "\"data\":[{\"playId\":1,\"size\":8192,\"label\":\"rec\"},"
             "{\"playId\":1,\"size\":4096,\"label\":\"cfg\"}],", 1));
         assert(meta_install_model_parse(js, strlen(js), &m));
-        assert(meta_install_model_place_offer(&m, &with_data, &next, &idx,
-                                              &changed, label, &nf) == META_PLACE_OK);
+        const meta_install_place_verdict_t grow_verdict =
+            meta_install_model_place_offer(&m, &with_data, &next, &idx,
+                                           &changed, label, &nf);
+        printf("existing-data offer verdict=%d idx=%d changed=%d label=%s nf=%u\\n",
+               (int)grow_verdict, idx, changed, label, nf.needed);
+        assert(grow_verdict == META_PLACE_OK);
         // rec 保留原偏移/DIRTY;只有 cfg 新放。
         assert(next.count == 2 && next.data_count == 2);
         assert(meta_carve_find_data(&next, 1, "rec") >= 0);
