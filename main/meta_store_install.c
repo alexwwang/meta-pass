@@ -974,6 +974,7 @@ static esp_err_t verify_new_data_locked(void)
         if (!rec || rec->size < s_session.manifest.data[i].size) return ESP_ERR_INVALID_STATE;
 
         mbedtls_sha256_context ctx;
+        uint8_t digest[32];
         mbedtls_sha256_init(&ctx);
         mbedtls_sha256_starts(&ctx, 0);
         uint32_t off = 0;
@@ -1442,7 +1443,7 @@ static esp_err_t h_install_status(httpd_req_t *req)
     snprintf(body + off, sizeof(body) - (size_t)off, "]}");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, body, (size_t)n);
+    return httpd_resp_send(req, body, (size_t)off);
 }
 
 // POST /api/install/prepare —— 手机提交 offer(§6.4);物理确认前可被新 offer 覆盖。
