@@ -489,19 +489,6 @@ static const fixed_entry_t FIXED[] = {
 };
 #define FIXED_COUNT (sizeof(FIXED) / sizeof(FIXED[0]))
 
-// 池占位条目(仅安全表;carved 表不带 —— 未分配空隙不声明,天然不可引导)。
-static const fixed_entry_t POOL_PLACEHOLDER[2] = {
-    { 1, 0x40, META_POOL0_START, META_POOL0_END - META_POOL0_START, "pool_0" },
-    { 1, 0x40, META_POOL1_START, META_POOL1_END - META_POOL1_START, "pool_1" },
-};
-
-// legacy v1.x 固定 3 槽表条目(partitions.csv @ 9e591a2,offset 升序)。
-static const fixed_entry_t LEGACY_OTA[3] = {
-    { 0, 0x10, 0x180000u, 0x1D6000u, "ota_0" },
-    { 0, 0x11, 0x360000u, 0x200000u, "ota_1" },
-    { 0, 0x12, 0x560000u, 0x29E000u, "ota_2" },
-};
-
 static void pt_set_entry(meta_pt_t *t, uint8_t type, uint8_t subtype,
                          uint32_t offset, uint32_t size, const char *label)
 {
@@ -617,17 +604,15 @@ static void build_fixed_only(uint8_t out[META_PT_SIZE], bool with_pools)
     t.count = 0;
     for (size_t i = 0; i < FIXED_COUNT; i++) {
         const fixed_entry_t *f = &FIXED[i];
-        if (with_pools && f->subtype == 2 && f->offset == 0x356000u) {
+        if (with_pools && f->offset == 0x356000u) {
             // cardid 前插入 pool_0(升序)。
-            pt_set_entry(&t, POOL_PLACEHOLDER[0].type, POOL_PLACEHOLDER[0].subtype,
-                         POOL_PLACEHOLDER[0].offset, POOL_PLACEHOLDER[0].size,
-                         POOL_PLACEHOLDER[0].label);
+            pt_set_entry(&t, 1, 0x40, META_POOL0_START,
+                         META_POOL0_END - META_POOL0_START, "pool_0");
         }
         if (with_pools && f->offset == 0x7FE000u) {
             // otadata 前插入 pool_1(升序)。
-            pt_set_entry(&t, POOL_PLACEHOLDER[1].type, POOL_PLACEHOLDER[1].subtype,
-                         POOL_PLACEHOLDER[1].offset, POOL_PLACEHOLDER[1].size,
-                         POOL_PLACEHOLDER[1].label);
+            pt_set_entry(&t, 1, 0x40, META_POOL1_START,
+                         META_POOL1_END - META_POOL1_START, "pool_1");
         }
         pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
     }
@@ -680,22 +665,13 @@ void meta_pt_legacy(uint8_t out[META_PT_SIZE])
 {
     meta_pt_t t;
     t.count = 0;
-    static const fixed_entry_t HEAD[3] = {
-        { 1, 2, 0x9000u,   0x6000u,   "nvs" },
-        { 1, 1, 0xF000u,   0x1000u,   "phy_init" },
-        { 0, 0, 0x10000u,  0x170000u, "factory" },
-    };
-    for (size_t i = 0; i < 3; i++) {
-        pt_set_entry(&t, HEAD[i].type, HEAD[i].subtype, HEAD[i].offset,
-                     HEAD[i].size, HEAD[i].label);
-    }
-    pt_set_entry(&t, LEGACY_OTA[0].type, LEGACY_OTA[0].subtype,
-                 LEGACY_OTA[0].offset, LEGACY_OTA[0].size, LEGACY_OTA[0].label);
+    pt_set_entry(&t, 1, 2, 0x9000u, 0x6000u, "nvs");
+    pt_set_entry(&t, 1, 1, 0xF000u, 0x1000u, "phy_init");
+    pt_set_entry(&t, 0, 0, 0x10000u, 0x170000u, "factory");
+    pt_set_entry(&t, 0, 0x10, 0x180000u, 0x1D6000u, "ota_0");
     pt_set_entry(&t, 1, 2, 0x356000u, 0x4000u, "cardid");
-    pt_set_entry(&t, LEGACY_OTA[1].type, LEGACY_OTA[1].subtype,
-                 LEGACY_OTA[1].offset, LEGACY_OTA[1].size, LEGACY_OTA[1].label);
-    pt_set_entry(&t, LEGACY_OTA[2].type, LEGACY_OTA[2].subtype,
-                 LEGACY_OTA[2].offset, LEGACY_OTA[2].size, LEGACY_OTA[2].label);
+    pt_set_entry(&t, 0, 0x11, 0x360000u, 0x200000u, "ota_1");
+    pt_set_entry(&t, 0, 0x12, 0x560000u, 0x29E000u, "ota_2");
     pt_set_entry(&t, 1, 0, 0x7FE000u, 0x2000u, "otadata");
     meta_pt_encode(&t, out);
 }
