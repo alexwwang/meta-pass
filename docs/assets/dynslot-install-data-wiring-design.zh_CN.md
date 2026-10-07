@@ -55,9 +55,13 @@ M5 的**正确 pool 内 DATA 扩容迁移**（目标区先擦、复制成功后�
    静态存储防句柄指针逃逸)。OTA 写/擦与 `esp_image_verify` 只消费值
    字段,不查表。幂等重试(手机重发同一 prepare)命中 `place_offer`
    幂等分支 → 不重复物化。
-3. **成功结束**:本会话物化过表(`table_changed`)→ 响应冲刷后
-   **300ms 复位**(`esp_timer`,与删除流程同一节奏)。设备列表/启动
-   路径下一启动全一致。
+3. **成功结束**:本会话物化过表(`table_changed`)→ finalize 先返回 `done`，
+   **不在当前 HTTP 会话内立即复位**。原因是手机侧需要先轮询到 `done`，
+   若设备在响应后立即重启，会把“finalize 已接受但 status 暂时不可达”
+   误判为失败。当前实现将复位挂起(`meta_carve_flash_reboot_pending`)，
+   在退出商店页时执行复位；下一启动设备列表/启动路径读取同一份已提交
+   carve 表，保证运行时缓存与 bootloader 视图一致。**这不是降低持久化要求**：
+   carve 记录仍然先于表物化落盘，物理断电恢复仍由 boot hook 验证。
 4. **取消/拒绝/被新 offer 覆盖**:本会话**新建槽** `meta_carve_flash_remove`
    回收(槽内无用户数据:空或半截垃圾镜像);既有槽保持 INVALID 路径。
    `manifest_valid` 守卫防 boot 零态下 `carved_new_slot=0`(静态零初始化)
