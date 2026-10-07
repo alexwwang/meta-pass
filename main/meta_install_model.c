@@ -408,14 +408,21 @@ meta_install_place_verdict_t meta_install_model_place_offer(
                 return META_PLACE_REJECTED;
             }
             if (m->data[d].size > cur->data[existing].size) {
-                if (out_label) {
-                    strncpy(out_label, label, META_DATA_LABEL_MAX);
-                    out_label[META_DATA_LABEL_MAX] = '\0';
+                uint32_t move_off = 0;
+                if (!meta_carve_place_data_move(cur, (uint8_t)existing,
+                                                m->data[d].size, &move_off)) {
+                    if (out_label) {
+                        strncpy(out_label, label, META_DATA_LABEL_MAX);
+                        out_label[META_DATA_LABEL_MAX] = '\0';
+                    }
+                    fill_no_fit(out_nf, cur, m->data[d].size);
+                    return META_PLACE_NO_FIT_DATA;
                 }
-                fill_no_fit(out_nf, cur, m->data[d].size);
-                return META_PLACE_NO_FIT_DATA;
+                next.data[existing].offset = move_off;
+                next.data[existing].size = m->data[d].size;
+                changed = true;
             }
-            continue;   // 升级:保留既有记录
+            continue;   // 升级:容量足够则保留,变大则迁移
         }
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
