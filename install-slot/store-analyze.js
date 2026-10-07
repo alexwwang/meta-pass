@@ -13,7 +13,7 @@
 // 且 analyze/extracted 复用同一份缓存:按 play id 缓存 {merged, ext, storeFw, play},
 // revisionId 变化时缓存失效回源重取(方案 §1.2 缓存策略)。
 
-import { isFullImage, extractAppImage, parseDataPartitions } from "./extract-app-image.js";
+import { isFullImage, extractAppImage, parseDataPartitions, parseFirmwareManifest } from "./extract-app-image.js";
 import { unpackNameBlobTail } from "./name-blob.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
@@ -207,10 +207,17 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
 
     let ext;
     let dataPartitions = []; // M5: 数据分区声明
+    let firmwareManifest = null;
     try {
       ext = extractAppImage(got.buf, UNPACK_MAX);
       // M5: 解析数据分区(可选,失败不影响主流程)
-      try { dataPartitions = parseDataPartitions(got.buf); } catch (e) { dataPartitions = []; }
+      try {
+        firmwareManifest = parseFirmwareManifest(got.buf);
+        dataPartitions = firmwareManifest.data;
+      } catch (e) {
+        dataPartitions = [];
+        firmwareManifest = null;
+      }
     } catch (err) {
       return { error: mapExtractError(err) };
     }
@@ -247,6 +254,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       ...(partitionWarning ? { detail: partitionWarning } : {}),
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
       dataPartitions, // M5: 数据分区声明
+      manifest: firmwareManifest, // storage MVP: APP+DATA capacity model
     };
     doCache.set(cacheKey, entry);
     return { entry };
@@ -261,7 +269,18 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       store: { size: entry.storeFw.size, sha256: entry.storeFw.sha256.toLowerCase() },
       extracted: { imageLen: entry.ext.length, sha256: entry.extractedSha256 },
       // M5: 数据分区声明(升级迁移用)
-      data: entry.dataPartitions?.map(d => ({ size: d.size, label: d.label })) ?? [],
+      data: entry.dataPartitions?.map(d => ({
+        size: d.size,
+        requiredSize: d.required_size,
+        initialImageSize: d.initial_image_size,
+        label: d.label,
+        subtype: d.subtype,
+      })) ?? [],
+      storage: entry.manifest ? {
+        requiredSize: entry.manifest.required_size,
+        supported: entry.manifest.supported,
+        reason: entry.manifest.reason,
+      } : null,
       slots: entry.slots,
       suggestedSlot: entry.suggestedSlot,
       supported: entry.supported,
