@@ -1,5 +1,7 @@
 # USB Web UI Real-Device E2E Test Design
 
+English | [简体中文](usb-web-e2e-design.zh_CN.md)
+
 Date: 2026-10-08  
 Branch: `feat/storage`
 
