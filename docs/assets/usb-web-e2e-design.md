@@ -38,7 +38,7 @@ This E2E test must exercise that chain through the actual USB page. It must not 
 6. **E5 Play** — use Community Play → Fetch.
 7. **E6 Install** — click Install and let the page perform download → SHA-256 → extraction → allocation → record/table → Flash write → metadata.
 8. **E7 UI Done** — require successful UI status and expected log milestones.
-9. **E8 Device Verify** — independently read `/api/install/status` and `/api/install/slots`; verify offset, size, imageLen and VALID state.
+9. **E8 Device Verify** — independently read `/api/install/status` and `/api/install/slots`; require the HTTP installer session to remain idle (USB uses Web Serial/esptool-js, not the HTTP install flow), and verify the new slot's offset, size, imageLen and VALID state.
 10. **E9 Flash/State** — require the new slot to persist in the real device model; do not duplicate existing byte-level browser-smoke coverage.
 11. **E10 Cleanup** — prefer the UI Remove path; use device API only as recovery when the UI loses the loader.
 12. **E11 Restore** — require post-cleanup state to equal the baseline apart from expected internal sequence changes.
