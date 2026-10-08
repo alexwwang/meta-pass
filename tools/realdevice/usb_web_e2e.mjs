@@ -245,6 +245,7 @@ async function main() {
 
   // E2: actual USB page.
   await page.goto(`${BASE}/?e2e=real`, { waitUntil: "domcontentloaded" });
+  await page.locator("#lang-en").click();
   await page.waitForFunction(() => window.__installSlotReady === true, null, { timeout: 15000 });
   if (await page.locator("#mock-banner").isVisible().catch(() => false)) {
     throw new Error("real E2E page unexpectedly entered mock mode");
@@ -310,9 +311,6 @@ async function main() {
 
   // E6: explicitly select Auto (preferred) or an empty APP row; never overwrite VALID.
   const auto = page.locator('.slot-row.auto input[name="slot"]:not([disabled])');
-  const empty = page.locator('.slot-row input[name="slot"]:not([disabled])').filter({
-    has: undefined,
-  });
   if (await auto.count()) {
     await auto.first().click();
   } else {
