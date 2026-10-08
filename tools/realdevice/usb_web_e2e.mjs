@@ -334,12 +334,17 @@ async function main() {
   });
   if (!uiSlots) throw new Error("USB page did not expose slot view");
   const baselineApp = baseline.slots.slots.filter((s) => s.kind === "app");
+  if (uiSlots.length !== baselineApp.length) {
+    throw new Error(`UI/device APP slot count mismatch: UI=${uiSlots.length}, device=${baselineApp.length}`);
+  }
   for (const s of baselineApp) {
     const ui = uiSlots.find((x) => x.offset === s.offset && x.size === s.size);
     if (!ui) throw new Error(`UI missing baseline APP slot @0x${s.offset.toString(16)}`);
+    if (ui.state !== s.state) throw new Error(`UI/device state mismatch at 0x${s.offset.toString(16)}: UI=${ui.state}, device=${s.state}`);
+    if (s.name && ui.name !== s.name) throw new Error(`UI/device name mismatch at 0x${s.offset.toString(16)}: UI=${ui.name}, device=${s.name}`);
   }
   record("E4", "UI slot geometry matches device", true, `${uiSlots.length} APP rows`);
-  record("E4", "analyze slot baseline", true, `all ${baselineApp.length} baseline APP slots present in UI`);
+  record("E4", "analyze slot baseline", true, `count, offset, size, state, and name match for all ${baselineApp.length} APP slots`);
 
   // E5: actual Community Play UI.
   await page.locator('[data-tab="community"]').click();
