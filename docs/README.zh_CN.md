@@ -118,6 +118,7 @@ LICENSE                  仓库许可证
 - [`docs/hardware-design/`](hardware-design/README.zh_CN.md) — 板卡事实、约束、验收矩阵与排障。
 - [`docs/reference/`](reference/README.zh_CN.md) — 参考资料：按贡献者（`reference/<username>/`）组织可复用开发经验与已归档应用于册。
 - [`docs/`](README.zh_CN.md) 顶层 — [`CHANGELOG.zh_CN.md`](CHANGELOG.zh_CN.md)、[`fork-guide.zh_CN.md`](fork-guide.zh_CN.md)。
+- [`docs/assets/usb-web-e2e-design.zh_CN.md`](assets/usb-web-e2e-design.zh_CN.md) — 真机 USB Web UI E2E 测试设计与运行说明。
 
 GitHub 社区治理文档：[CONTRIBUTING.zh_CN.md](../.github/CONTRIBUTING.zh_CN.md)、[CODE_OF_CONDUCT.zh_CN.md](../.github/CODE_OF_CONDUCT.zh_CN.md)、[SECURITY.zh_CN.md](../.github/SECURITY.zh_CN.md)、[SUPPORT.zh_CN.md](../.github/SUPPORT.zh_CN.md)。
 
