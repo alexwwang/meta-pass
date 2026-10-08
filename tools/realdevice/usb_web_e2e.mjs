@@ -8,7 +8,7 @@
 // or any /api/install write endpoint. The page performs the installation; the runner only
 // drives UI, observes state, verifies the device independently, and cleans up its own slot.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -223,7 +223,8 @@ async function authorizeProfile() {
 async function main() {
   const metadata = {
     branch: process.env.GIT_BRANCH || null,
-    commit: process.env.GIT_COMMIT || null,
+    commit: process.env.GIT_COMMIT || (() => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim(); } catch { return null; } })(),
+    firmwareSha256: process.env.FIRMWARE_SHA256 || null,
     node: process.version,
     browserChannel: BROWSER_CHANNEL,
     device: IP,
