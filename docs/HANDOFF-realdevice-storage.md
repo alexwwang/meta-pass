@@ -18,76 +18,19 @@ Work only on branch `feat/storage`; never develop directly on `main`.
 
 A real power-loss test is separate from a soft reset. Never report soft reset as power-loss PASS.
 
-## First test: passport-sim
+## passport-sim regression (optional, not a merge blocker)
 
-This is the first mandatory local test. Do not proceed to real hardware until it passes.
+passport-sim remains a useful boot/runtime regression layer, but the final firmware has already passed real ESP32-C3 S0-S6 validation. **Do not block merge solely because simulator was not rerun on the final firmware commit.**
 
-Simulator:
-https://github.com/VOID001/FoloToy-Passport-Simulator
-
-Prerequisites:
-- Node.js >= 20 and npm.
-- Local checkout of passport-sim.
-- The simulator checkout is next to meta-pass, or `PASSPORT_SIM_DIR` is set.
-- `public/wasm/pkg/esp_emu_bg.wasm` is prepared.
-
-Prepare:
+If a local agent has the simulator environment, run:
 
 ```bash
-git clone https://github.com/VOID001/FoloToy-Passport-Simulator.git ../passport-sim
-cd ../passport-sim
-npm install
-npm run prepare:emulator
-cd ../meta-pass
-```
-
-Verify the test harness:
-
-```bash
-test -f tools/sim/run-sim-test.sh
-test -f tools/sim/metapass-boot.test.mjs
-test -f tools/sim/esp_emu.js
-test -f tools/sim/ai-passport-board.js
-```
-
-The harness must load the real `esp_emu_bg.wasm`, create `WasmEmulator("esp32c3")`, load a real ESP32-C3 Full Flash image at 0x0, and drive the real firmware through the board bridge. It must check CPU progress, a rendered 240x320 frame, and button behavior. These checks are already present in the current `feat/storage` harness.
-
-Run:
-
-```bash
-cd ../meta-pass
-./tools/validate.sh --firmware
 PASSPORT_SIM_DIR=../passport-sim ./tools/validate.sh --sim
 ```
 
-Expected:
-- all Node tests report `ok`;
-- simulator process exits 0;
-- output ends with `PASS — meta-pass simulator end-to-end test passed`.
+If it fails, classify image/boot/display/CPU/button/TEST_HARNESS first. Only change meta-pass when evidence points to a real regression relevant to this branch.
 
-On failure, first preserve:
-
-```bash
-git rev-parse HEAD
-node --version
-cd ../passport-sim && git rev-parse HEAD
-cd ../meta-pass
-sha256sum build/FoloToy-AI-Passport-full.bin
-PASSPORT_SIM_DIR=../passport-sim tools/sim/run-sim-test.sh 2>&1 | tee tools/sim/sim-run.log
-```
-
-Classify before changing code:
-- missing simulator/wasm: ENVIRONMENT
-- invalid full image: FIRMWARE_IMAGE
-- QEMU load/boot failure: BOOT
-- no display frame: DISPLAY/APP_BOOT
-- CPU progress/PC failure: CPU/CRASH
-- button failure: BUTTON/FIRMWARE_INPUT
-- incorrect test assumption: TEST_HARNESS
-
-Only modify `feat/storage` when evidence points to meta-pass.
-
-The current agent environment cannot actually execute the local Node/QEMU simulator runtime, so this task is not claimed as PASS here. It must be executed by the next local agent before real-device testing.
+Historical simulator PASS is background evidence only; unless rerun against the final firmware commit, do not report it as final-commit simulator PASS.
 
 ## Real-device prerequisites
 
@@ -199,6 +142,25 @@ ENV_MISSING, USB_PORT, USB_BUSY, FIRMWARE_FLASH, BOOT, AUTH, CAPACITY, CARVE, AP
 - Only fresh passes -> persistent state/migration/reclaim.
 
 Do not change code before collecting evidence and classifying the failure.
+
+## Final code/test audit — required local-agent work
+
+The final real-device-tested firmware corresponds to commit `5eed4b87a984a88485509a4ac2a0d577a506e55e`.
+
+Before making further changes, the local agent must:
+
+1. Review the final diff from `90c66f3` to the final commit and remove/flag unrelated changes.
+2. Audit ownership of every field in `meta_carve_slot_t` and especially `meta_carve_flash_sync_states()`. Runtime reconstruction must not zero durable record-owned fields such as `play_id`.
+3. Verify the regression test in `tests/test_meta_carve_flash.c` actually covers the `sync_states/play_id` bug.
+4. Check `docs/storage-test-report-20261008.zh_CN.md` and the English report for traceability to final commit `5eed4b8...`; do not describe the final firmware as an uncommitted working tree on an older commit.
+5. Verify the three fixes found during real-device testing: truncated HTTP status JSON, lost `play_id` during state sync, and the S6 hexadecimal flash-read length. Each must have a test or direct evidence.
+6. Verify final static and firmware CI are green.
+7. Do not rerun the entire real-device suite merely because simulator was not rerun. If the audit finds no new code issue, reuse the existing final-firmware S0-S6 evidence.
+8. Keep physical power loss separate: soft reset proves RAM-loss recovery only. If no controlled power-cut setup exists, retain `POWER_LOSS_UNTESTED` and do not claim full P0-5 durability.
+
+The audit output must answer: new defect? additional test needed? code/design change needed? final commit/firmware hash/CI/S0-S6 evidence traceable? physical power loss tested?
+
+Only if a concrete defect is found should the agent enter code-change → regression-test → affected-layer rerun.
 
 ## Report
 
