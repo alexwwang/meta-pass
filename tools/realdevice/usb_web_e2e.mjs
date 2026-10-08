@@ -58,6 +58,7 @@ if (!argv.authorize && (!IP || !TOKEN || !/^[0-9a-f]{32}$/i.test(TOKEN))) {
 
 mkdirSync(LOGDIR, { recursive: true });
 mkdirSync(PROFILE, { recursive: true });
+writeFileSync(path.join(LOGDIR, "command.txt"), process.argv.slice(2).map((arg) => arg === TOKEN ? "<redacted-token>" : arg).join(" ") + "\n");
 
 const results = [];
 const consoleLines = [];
@@ -502,6 +503,9 @@ if (argv.authorize) {
     if (baseline) {
       const final = await readSlots();
       writeJson("after-failure-slots.json", stableSlots(final));
+      const restored = sameSlotSet(baseline.slots, final);
+      results.push({ stage: "E11", name: "failure-path baseline restoration", ok: restored, detail: restored ? "baseline restored after failure" : "device state differs from baseline after recovery cleanup" });
+      if (!restored) throw new Error("failure-path cleanup did not restore device baseline");
     }
   } catch (cleanupErr) {
     console.error("cleanup/verification failed:", cleanupErr.stack || cleanupErr.message);
