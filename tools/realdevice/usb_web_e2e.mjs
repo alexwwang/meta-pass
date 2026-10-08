@@ -354,15 +354,13 @@ async function main() {
   if (!(await page.locator("#btn-install").isEnabled())) throw new Error("Install is not enabled after Community Play metadata fetch");
   record("E5", "analyze install candidate", true, "metadata, size, SHA-256 present; Install enabled");
 
-  // E6: explicitly select Auto (preferred) or an empty APP row; never overwrite VALID.
+  // E6: only use dynslot Auto. Reusing a baseline empty slot would make cleanup
+  // destructive to the pre-test state, so fail safely if Auto cannot fit this image.
   const auto = page.locator('.slot-row.auto input[name="slot"]:not([disabled])');
-  if (await auto.count()) {
-    await auto.first().click();
-  } else {
-    const emptyRows = page.locator(".slot-row:not(.auto)").filter({ has: page.locator(".slot-state.empty") });
-    if (!(await emptyRows.count())) throw new Error("no dynamic Auto slot or empty APP slot available; refusing to overwrite an existing play");
-    await emptyRows.first().locator('input[name="slot"]').click();
+  if (!(await auto.count())) {
+    throw new Error("dynslot Auto is unavailable for this image; refusing to consume or overwrite a baseline slot");
   }
+  await auto.first().click();
   const checked = await page.locator('input[name="slot"]:checked').count();
   if (checked !== 1) throw new Error("UI did not select exactly one install target");
   const selectedTarget = await page.locator('input[name="slot"]:checked').evaluate((el) => ({
@@ -370,9 +368,8 @@ async function main() {
     disabled: el.disabled,
     rowText: el.closest(".slot-row")?.textContent || "",
     isAuto: el.closest(".slot-row")?.classList.contains("auto") || false,
-    isEmpty: el.closest(".slot-row")?.querySelector(".slot-state")?.classList.contains("empty") || false,
   }));
-  if (selectedTarget.disabled || (!selectedTarget.isAuto && !selectedTarget.isEmpty)) {
+  if (selectedTarget.disabled || !selectedTarget.isAuto) {
     throw new Error(`unsafe install target selected: ${JSON.stringify(selectedTarget)}`);
   }
   record("E6", "analyze install target", true, selectedTarget.rowText.replace(/\s+/g, " ").trim());
