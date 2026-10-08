@@ -25,4 +25,7 @@ jobs:
       - name: Deploy to Cloudflare Pages
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          # Account ID 走 secret,不硬编码进 workflow(同 CF_API_TOKEN)。
+          # 需要一次性配置:Settings → Secrets and variables → Actions → CF_ACCOUNT_ID。
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: python3 tools/pages-deploy.py

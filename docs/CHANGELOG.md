@@ -6,6 +6,28 @@
 
 ## Unreleased
 
+- **Front-end module × real-device regression gate**: the phone-side install
+  path and space management were only ever exercised against a mock device
+  (`tests/test_phone_install.mjs`), so mock↔firmware drift was invisible — the
+  truncated `/api/install/status` body below would have passed the mock and
+  only surfaced on hardware. New `tools/realdevice/browser_smoke.mjs` drives
+  the real `install-slot/phone-install.js` with real `fetch` against the same
+  board: P1 `preflightMeta → prepareImage → geomFromListing → runInstall`
+  (2 MB store download, verify, extract, carve proposal, chunked upload,
+  finalize, slots readback, remove→archived), P2 the Child DATA branch via a
+  synthesised full flash image (`extent` 8192 B > initial payload 2048 B,
+  parsed by `extractDataImages`, not hand-assembled), P2.5 both browser-side
+  reject gates firing before any upload, P2.6 the record survives an esptool
+  soft reset. 20/20 PASS, exit 0. Orchestrated by `run_browser_smoke.py`
+  (restores the persisted NVS token, so no physical pairing press).
+  Evidence is redacted at the source — token, LAN IP, USB serial and host
+  home dir — and the full run output is inlined into
+  `docs/storage-test-report-20261008(.zh_CN).md` §6 instead of uploaded:
+  `realdevice-smoke.yml` dropped `upload-artifact` for `logs/**` (the raw
+  logs carry the LAN IP and host username) in favour of a redacted verdict
+  line in the run summary. `validate.sh --static` syntax-gates both harness
+  scripts, and the workflow runs the regression right after the protocol
+  smoke — still `workflow_dispatch` only, with no board flashed in cloud CI.
 - **Real-device smoke (feat/storage handoff): two firmware fixes proven on
   hardware**. S0–S6 now all PASS (evidence: `tools/realdevice/logs/
   20261008-121330/`, report `docs/storage-test-report-20261008.md`).

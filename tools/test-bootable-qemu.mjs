@@ -255,7 +255,13 @@ if (sel0Stable) {
   if (otadataOff < 0 || ota0Off < 0) throw new Error("分区表解析失败:otadata 或 ota_0 未找到");
 
   // ota_0 放入真实签名子固件(候选槽位必须可引导,否则本用例失去鉴别力)。
-  const childPath = path.resolve(repoRoot, "..", "pass-radar", "build", "pass-radar_v0.1-2-g8fcce59-signed.bin");
+  // 子固件路径由 META_PASS_CHILD_BIN 注入:该产物来自 sibling 仓库 pass-radar,
+// 文件名钉死版本-githash 且耦合兄弟 checkout 布局,不能硬编码。
+  const childArg = process.env.META_PASS_CHILD_BIN;
+  if (!childArg) {
+    throw new Error("META_PASS_CHILD_BIN 未设置:请 export 指向 pass-radar 的签名产物 bin");
+  }
+  const childPath = path.resolve(childArg);
   const child = await readFile(childPath);
   if (child.length > ota0Size) throw new Error(`子固件 ${child.length}B 超出 ota_0 容量 ${ota0Size}B`);
   child.copy(flash, ota0Off);

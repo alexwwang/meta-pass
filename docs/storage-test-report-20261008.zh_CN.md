@@ -45,9 +45,9 @@ report.json、report.md、flash/{table.bin,store.bin,recordings.bin})
 | 项 | 值 |
 |----|----|
 | 设备 | ESP32-C3 AI Passport,8 MB flash |
-| USB 口 | `/dev/cu.usbmodem142401` |
-| MAC | `4c:11:ae:2f:67:ec` |
-| LAN IP | `192.168.0.24`(AP "Hundhaus",WPA2,rssi −66/−67 dBm) |
+| USB 口 | `/dev/cu.<serial>` |
+| MAC | `<mac>` |
+| LAN IP | `<ip>`(AP `<ssid>`,WPA2,rssi −66/−67 dBm) |
 | 烧录方式 | 仅 app `write_flash 0x10000` — NVS、分区表、otadata、cardid 均未动(无 `erase-flash`) |
 | IDF | v5.5.3-dirty;宿主 Python 环境经 `IDF_PYTHON_ENV_PATH=idf5.5_py3.10_env` 固定(自动侦测的 py3.14 venv `pydantic_core` ABI 损坏 — 见 §3 问题 1) |
 | Node | `/usr/local/bin/node`(真 Node;`~/.local/bin/node` 是 bun 包装,`node -e argv` 会坏) |
@@ -180,7 +180,86 @@ kind/offset/size/state/SHA/name。`play_id` 是记录侧元数据、运行时表
 - 一致性 grep:JSON 响应构造点(问题 2)与 `read_flash` 长度实参
   (问题 4)已查姊妹副本 — 无遗漏。
 
-## 6. 最终代码/测试审计(handoff 8 项必做)
+## 6. 前端模块 × 真机回归
+
+§2 的 smoke 是 Python urllib 协议客户端 —— 从不 import 任何前端模块,因此只证明
+*设备契约*。`tests/test_phone_install.mjs` 证明模块逻辑,但对的是 mock 设备,所以
+mock 与固件的漂移看不见(问题 2 那个被截断的 `/api/install/status` 响应就能骗过
+mock,只在这里暴露)。本节补这个缺口:用真 `fetch` 驱动真实的
+`install-slot/phone-install.js` 打同一台设备。
+
+**状态**:**通过 — 20/20,100.1 s,退出码 0**
+**编排器**:`tools/realdevice/run_browser_smoke.py --ip <ip> --port <serial>`
+(复用持久化 NVS token,无需物理配对按键)
+**固件**:与 §2 逐字节一致 —— 设备 0x10000 回读与 `build/FoloToy-AI-Passport.bin`
+比对,SHA-256 `5518535173c7…`。设备身份见 §2.1;下方输出已由编排器脱敏
+(token、LAN IP、串口号、主机 home 目录)。
+
+### 6.1 各阶段证明什么
+
+| 阶段 | 路径 | 证明 |
+|------|------|------|
+| P0 | `GET /api/install/slots` + `parseSlots` | 协议 v2 门禁与形状校验,作用于真机清单 |
+| P1 | `preflightMeta → prepareImage → geomFromListing → runInstall → slots → remove` | 真实手机端安装路径:2 MB 商店下载、SHA-256 校验、解包、carve 提案、prepare(`slot >= 0` 时设备自动确认)、session、分块上传、finalize、slots 回读、remove→归档、DATA 快照与运行前逐字节一致 |
+| P2 | 合成完整 flash 镜像 → `extractDataImages → prepareImage → runInstall(data) → remove{eraseData}` | Child DATA 分支:extent 分配、`/api/install/data` 分块上传、finalize、记录落盘(`state=0`)、擦除清掉 APP + DATA 且无归档残留 |
+| P2.5 | store SHA / analyze SHA 不符时调 `prepareImage` | 两道浏览器侧闸门在**任何上传之前**判死 —— 设备没有此校验,浏览器是唯一防线 |
+| P2.6 | `esptool run` 软复位 | 记录跨软复位存活 → 落在 flash/NVS,不是 RAM 假象 |
+| cleanup | — | 状态中立:设备恢复至运行前状态 |
+
+### 6.2 完整运行输出(已脱敏)
+
+```text
+$ /usr/local/bin/node $HOME/ai-passport/meta-pass/tools/realdevice/browser_smoke.mjs --ip <ip> --port /dev/<serial> --fixture $HOME/ai-passport/meta-pass/build/FoloToy-AI-Passport.bin --token <token>
+
+##[1] 前置: device=<ip> bridge=真 fetch(零 mock) fixture=build/FoloToy-AI-Passport.bin
+##[2] ✓ [P0] 设备在线 + slots 协议 v2 — count=1 free=5640192 archivedData=1
+##[3] ✓ [P0] parseSlots 对真机清单全字段通过(含数据 carve 记录) — slots=0
+##[4] ✓ [P1] preflightMeta 可用(analyze + 商店详情,与 UI 同入口) — id=1 name=AI Passport 天气时钟固件 · 全中文界面 + 壁纸休眠屏 imageLen=1999200 store=2064736
+##[5] ✓ [P1] prepareImage 走真下载+校验+解包(与 UI continueInstall 同入口) — imageLen=1999200 sha=74c727816bcd carveOff=0x360000 carveSize=2007040 5.4s
+##[6] ✓ [P1] 提案落点/容量自洽(carveSize 由设备 meta_carve_need 复核) — off=0x360000 size=2007040 >= imageLen=1999200 (delta=7840B 尾部分区)
+##[7] ✓ [P1] runInstall 全流程(prepare→设备直确认→session→chunk→finalize→done) — slot=1 stages=[prepare→confirm→session→upload→finalize→done] offset=1999200
+##[8] ✓ [P1] 真机 slots 回读确认安装落盘 — slot=1 name=Browser Smoke state=valid len=1999200
+##[9] ✓ [P1] 已装应用 len 等于解包镜像长(非 0) — len=1999200
+##[10] ✓ [P1] bridge.remove 真机 200 + waitDeviceBack 回连 — slot=1 removed=true back=true
+##[11] ✓ [P1] 删除后 APP 槽消失(数据记录不参与 pool 占用) — count=1 free=5640192
+##[12] ✓ [P1] 删除后 DATA 记录与运行前快照一致(P1 无 Child DATA,不应新增) — data=[[1,"recordings",2]]
+##[13] ✓ [P2] 合成镜像被真实解析出 Child DATA 记录(extent > 初始镜像) — imageLen=1111408 data[1] label=recordings sub=0x82 req=8192 initial=2048B
+##[14] ✓ [P2] 合成 app 字节与仓库 build 一致(解包未损坏) — sha256=5518535173c7d335…
+##[15] ✓ [P2] prepareImage 夹具路径(真实下载 + sha256 校验 + 解包 + DATA 提取) — imageLen=1111408 dataExtent=8192B slot=1 carveOff=0x360000
+##[16] ✓ [P2] runInstall 带 Child DATA(分配 extent + /api/install/data 分块 + finalize) — slot=1 stages=[prepare→confirm→session→upload→upload data 1/1→finalize→done] data=2048/8192B
+##[17] ✓ [P2] Child DATA 记录随 finalize 落盘(设备 P1-4 占用域) — slot=1 data[play=987654321 label=recordings off=0x2b0000 size=8192 state=0]
+##[18] ✓ [P2.5] 闸门1 商店 store sha 不符 → verify 判死(未上传) — verify: store sha256 mismatch
+##[19] ✓ [P2.5] 闸门2 analyze 解包 sha 与镜像不符 → preflight 判死(未上传) — preflight: extracted mismatch vs analyze
+##[20] ✓ [P2.6] 复位后安装记录仍在(flash/NVS 持久,非 RAM 假象) — soft-reset via /dev/<serial>, persisted=1/1
+##[21] ✓ [P2] remove{eraseData:true} 擦除 APP 槽与 Child DATA(不留归档残留) — removed=true back=true dataGone=true
+##[22] 结果: 20/20 通过
+[##REPORT] 机读 JSON 从略 — 见本地证据目录 report.json
+##[23] 清理: 仅移除本测试创建的槽位/数据记录(不动既有槽位与归档)
+##[24]   - slot@0x360000 已不在清单
+##[25]   - slot@0x360000 已不在清单
+##[26] ✓ [cleanup] 测试数据记录全部清除(设备恢复到运行前状态) — cleaned=0 count=1 archivedData=1
+```
+
+P1 注记:`prepareImage` 传的是 `geomFromListing` 的提案槽位,不是 `-1`。
+`-1` 语义是"等设备物理确认",无人值守下会永久挂起。
+
+P2 注记:商店里没有既带 Child DATA 又装得下 8 MB 池的受支持玩法(play 200 是
+6.6 MB)。因此合成一个结构合法的完整 flash 镜像 —— 真分区表、`build/` 的真实
+app 字节、一条 0x82 文件系统数据分区。`data[]` 由 `extractDataImages` **解析**
+而来,非手工拼装,所以 `prepareImage` 的 verify / extract / DATA 提取三道门仍
+真实执行。`extent`(8192 B)刻意大于初始 payload(2048 B)。
+
+### 6.3 标准门禁
+
+- `tools/validate.sh --static` 对两个 harness 脚本做语法门(`py_compile` +
+  `node --check`),避免脚本提交后静默失效。
+- `.github/workflows/realdevice-smoke.yml` 新增一步:协议 smoke 之后立即在同一台
+  设备上跑 `run_browser_smoke.py`,self-hosted runner、仅 `workflow_dispatch`。
+  云端 CI 不会自动烧板。
+
+---
+
+## 7. 最终代码/测试审计(handoff 8 项必做)
 
 针对最终固件提交 `5eed4b8` 的审计结论:
 
@@ -219,16 +298,20 @@ kind/offset/size/state/SHA/name。`play_id` 是记录侧元数据、运行时表
 
 ---
 
-## 7. 结论
+## 8. 结论
 
 - **模拟器**:早期构建上通过——仅背景证据,未在最终提交 `5eed4b8` 上重跑;
   不构成合并阻塞。
 - **真机**:**通过** — 最终运行 S0–S6 全绿;DATA 字节级 flash 校验通过;
   重启恢复通过(软复位)。
-- **POWER_LOSS_UNTESTED**:未做物理断电;S5 只用 esptool 软复位。
+- **前端模块 × 真机**:**通过** — §6 回归 20/20。手机端安装路径、空间管理
+  (remove / eraseData / 持久性)与 Child DATA 分支均已对真机验证,不止 mock。
+- **POWER_LOSS_UNTESTED**:未做物理断电;S5 与 P2.6 均只用 esptool 软复位。
   不得以此报告断电耐久性。
-- **未测项**:物理按键导航(harness 已注明需人工抽验)、真实断电耐久、
-  USB 网页安装页(install-slot)针对本固件的端到端。
+- **未测项**:物理按键导航(harness 已注明需人工抽验)、真实断电耐久、以及
+  USB 网页安装页(`install-slot.html`,经 `server.mjs` 走 Web Serial +
+  esptool-js)针对本固件的端到端 —— §6 覆盖的是浏览器手机模块,与 USB 页面
+  是两套独立实现。
 
 ---
 

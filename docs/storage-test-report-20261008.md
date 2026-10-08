@@ -47,9 +47,9 @@ handoff rule (soft reset ≠ power loss). S5 exercised esptool soft reset only.
 | Item | Value |
 |------|-------|
 | Device | ESP32-C3 AI Passport, 8 MB flash |
-| USB port | `/dev/cu.usbmodem142401` |
-| MAC | `4c:11:ae:2f:67:ec` |
-| LAN IP | `192.168.0.24` (AP "Hundhaus", WPA2, rssi −66/−67 dBm) |
+| USB port | `/dev/cu.<serial>` |
+| MAC | `<mac>` |
+| LAN IP | `<ip>` (AP `<ssid>`, WPA2, rssi −66/−67 dBm) |
 | Flash procedure | app-only `write_flash 0x10000` — NVS, partition table, otadata and cardid untouched (no `erase-flash`) |
 | IDF | v5.5.3-dirty; host Python env pinned via `IDF_PYTHON_ENV_PATH=idf5.5_py3.10_env` (the auto-detected py3.14 venv has a broken `pydantic_core` ABI — see §3 issue 1) |
 | Node | `/usr/local/bin/node` (real Node; `~/.local/bin/node` is a bun wrapper that breaks `node -e argv`) |
@@ -187,7 +187,93 @@ Host verification after fixes: full `test_meta_carve_flash` suite PASS
 - Consistency greps: JSON-response builders (issue 2) and `read_flash` length
   args (issue 4) checked for sibling copies — none remaining.
 
-## 6. Final Code/Test Audit (handoff required items)
+## 6. Browser-Module × Real-Device Regression
+
+The §2 smoke is a Python urllib protocol client — it never imports a front-end
+module, so it proves the *device contract* only. `tests/test_phone_install.mjs`
+proves the module logic but against a mock device, so mock↔firmware drift is
+invisible (the truncated `/api/install/status` body in issue 2 would have passed
+the mock and only surfaced here). This section closes that gap: the real
+`install-slot/phone-install.js` driven by real `fetch` against the same device.
+
+**Status**: **PASS — 20/20, 100.1 s, exit 0**
+**Orchestrator**: `tools/realdevice/run_browser_smoke.py --ip <ip> --port <serial>`
+(restores the persisted NVS token, so no physical pairing press)
+**Firmware**: byte-identical to §2 — device flash read back at 0x10000 and
+compared against `build/FoloToy-AI-Passport.bin`, SHA-256 `5518535173c7…`.
+(Device identity is tabulated in §2.1; the output below is redacted by the
+orchestrator — token, LAN IP, serial port and host home dir.)
+
+### 6.1 What each phase proves
+
+| Phase | Path | Proves |
+|-------|------|--------|
+| P0 | `GET /api/install/slots` + `parseSlots` | protocol v2 gate and shape validation on the live device listing |
+| P1 | `preflightMeta → prepareImage → geomFromListing → runInstall → slots → remove` | the real phone-side install path: 2 MB store download, SHA-256 verify, extract, carve proposal, prepare (device auto-confirms when `slot >= 0`), session, chunked upload, finalize, slots readback, remove→archived, DATA snapshot byte-identical to pre-run |
+| P2 | synthetic full flash image → `extractDataImages → prepareImage → runInstall(data) → remove{eraseData}` | the Child DATA branch: extent allocation, `/api/install/data` chunk upload, finalize, record lands (`state=0`), erase clears APP + DATA with no archive residue |
+| P2.5 | `prepareImage` with mismatched store SHA / analyze SHA | both browser-side gates fire *before* any upload — the device has no such check, so the browser is the only line of defence |
+| P2.6 | `esptool run` soft reset | the record survives a soft reset → it is on flash/NVS, not a RAM artefact |
+| cleanup | — | state-neutral: device returns to its pre-run state |
+
+### 6.2 Full run output (redacted)
+
+```text
+$ /usr/local/bin/node $HOME/ai-passport/meta-pass/tools/realdevice/browser_smoke.mjs --ip <ip> --port /dev/<serial> --fixture $HOME/ai-passport/meta-pass/build/FoloToy-AI-Passport.bin --token <token>
+
+##[1] 前置: device=<ip> bridge=真 fetch(零 mock) fixture=build/FoloToy-AI-Passport.bin
+##[2] ✓ [P0] 设备在线 + slots 协议 v2 — count=1 free=5640192 archivedData=1
+##[3] ✓ [P0] parseSlots 对真机清单全字段通过(含数据 carve 记录) — slots=0
+##[4] ✓ [P1] preflightMeta 可用(analyze + 商店详情,与 UI 同入口) — id=1 name=AI Passport 天气时钟固件 · 全中文界面 + 壁纸休眠屏 imageLen=1999200 store=2064736
+##[5] ✓ [P1] prepareImage 走真下载+校验+解包(与 UI continueInstall 同入口) — imageLen=1999200 sha=74c727816bcd carveOff=0x360000 carveSize=2007040 5.4s
+##[6] ✓ [P1] 提案落点/容量自洽(carveSize 由设备 meta_carve_need 复核) — off=0x360000 size=2007040 >= imageLen=1999200 (delta=7840B 尾部分区)
+##[7] ✓ [P1] runInstall 全流程(prepare→设备直确认→session→chunk→finalize→done) — slot=1 stages=[prepare→confirm→session→upload→finalize→done] offset=1999200
+##[8] ✓ [P1] 真机 slots 回读确认安装落盘 — slot=1 name=Browser Smoke state=valid len=1999200
+##[9] ✓ [P1] 已装应用 len 等于解包镜像长(非 0) — len=1999200
+##[10] ✓ [P1] bridge.remove 真机 200 + waitDeviceBack 回连 — slot=1 removed=true back=true
+##[11] ✓ [P1] 删除后 APP 槽消失(数据记录不参与 pool 占用) — count=1 free=5640192
+##[12] ✓ [P1] 删除后 DATA 记录与运行前快照一致(P1 无 Child DATA,不应新增) — data=[[1,"recordings",2]]
+##[13] ✓ [P2] 合成镜像被真实解析出 Child DATA 记录(extent > 初始镜像) — imageLen=1111408 data[1] label=recordings sub=0x82 req=8192 initial=2048B
+##[14] ✓ [P2] 合成 app 字节与仓库 build 一致(解包未损坏) — sha256=5518535173c7d335…
+##[15] ✓ [P2] prepareImage 夹具路径(真实下载 + sha256 校验 + 解包 + DATA 提取) — imageLen=1111408 dataExtent=8192B slot=1 carveOff=0x360000
+##[16] ✓ [P2] runInstall 带 Child DATA(分配 extent + /api/install/data 分块 + finalize) — slot=1 stages=[prepare→confirm→session→upload→upload data 1/1→finalize→done] data=2048/8192B
+##[17] ✓ [P2] Child DATA 记录随 finalize 落盘(设备 P1-4 占用域) — slot=1 data[play=987654321 label=recordings off=0x2b0000 size=8192 state=0]
+##[18] ✓ [P2.5] 闸门1 商店 store sha 不符 → verify 判死(未上传) — verify: store sha256 mismatch
+##[19] ✓ [P2.5] 闸门2 analyze 解包 sha 与镜像不符 → preflight 判死(未上传) — preflight: extracted mismatch vs analyze
+##[20] ✓ [P2.6] 复位后安装记录仍在(flash/NVS 持久,非 RAM 假象) — soft-reset via /dev/<serial>, persisted=1/1
+##[21] ✓ [P2] remove{eraseData:true} 擦除 APP 槽与 Child DATA(不留归档残留) — removed=true back=true dataGone=true
+##[22] 结果: 20/20 通过
+[##REPORT] 机读 JSON 从略 — 见本地证据目录 report.json
+##[23] 清理: 仅移除本测试创建的槽位/数据记录(不动既有槽位与归档)
+##[24]   - slot@0x360000 已不在清单
+##[25]   - slot@0x360000 已不在清单
+##[26] ✓ [cleanup] 测试数据记录全部清除(设备恢复到运行前状态) — cleaned=0 count=1 archivedData=1
+```
+
+Note on P1: `prepareImage` is called with the `geomFromListing` proposal slot,
+not `-1`. `-1` means "wait for physical confirmation on device" and would hang
+forever unattended.
+
+Note on P2: the store has no supported play that both carries Child DATA and fits
+the 8 MB pool (play 200 is 6.6 MB). So a structurally valid full flash image is
+synthesised — a real partition table, the real app bytes from `build/`, and one
+0x82 filesystem data partition. `data[]` is then *parsed* by
+`extractDataImages`, not hand-assembled, so `prepareImage`'s verify / extract /
+DATA-extract gates still run for real. `extent` (8192 B) is deliberately larger
+than the initial payload (2048 B).
+
+### 6.3 Standard gate
+
+- `tools/validate.sh --static` syntax-gates the two harness scripts
+  (`py_compile` + `node --check`) so a submitted script cannot silently stop
+  running.
+- `.github/workflows/realdevice-smoke.yml` gained a second step that runs
+  `run_browser_smoke.py` against the same device immediately after the protocol
+  smoke, on the self-hosted runner, `workflow_dispatch` only. No board is
+  flashed automatically in cloud CI.
+
+---
+
+## 7. Final Code/Test Audit (handoff required items)
 
 Audit against final firmware commit `5eed4b8`:
 
@@ -238,17 +324,22 @@ S0–S6 evidence are all traceable; **physical power loss was not tested**.
 
 ---
 
-## 7. Conclusion
+## 8. Conclusion
 
 - **Simulator**: PASS on an earlier build — background evidence only, not
   rerun against final commit `5eed4b8`; not a merge blocker.
 - **Real device**: **PASS** — S0–S6 all green on the final run; DATA byte-level
   flash verification PASS; reboot recovery PASS (soft reset).
-- **POWER_LOSS_UNTESTED**: no physical power cut was performed; S5 used esptool
-  soft reset only. Do not report this as power-loss durability.
+- **Front-end module × real device**: **PASS** — 20/20 on the §6 regression. The
+  phone-side install path, space management (remove / eraseData / persistence)
+  and the Child DATA branch are exercised against the device, not just its mock.
+- **POWER_LOSS_UNTESTED**: no physical power cut was performed; S5 and P2.6 both
+  used esptool soft reset. Do not report this as power-loss durability.
 - **Untested items**: physical button navigation (manual check noted by the
-  harness), physical power-loss durability, USB-web install page
-  (install-slot) end-to-end against this firmware.
+  harness), physical power-loss durability, and the USB-web install page
+  (`install-slot.html`, Web Serial + esptool-js via `server.mjs`) end-to-end
+  against this firmware — §6 covers the browser phone module, which is a
+  separate implementation from the USB page.
 
 ---
 

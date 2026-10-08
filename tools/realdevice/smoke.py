@@ -3,7 +3,7 @@
 
 用法:
   python3 tools/realdevice/smoke.py --ip 192.168.x.x \
-      [--port /dev/cu.usbmodem142401] [--app build/FoloToy-AI-Passport.bin] \
+      [--port /dev/cu.XXXX] [--app build/FoloToy-AI-Passport.bin] \
       [--fresh] [--keep-monitor-log]
 
 前置(一次性,人工):
@@ -44,7 +44,19 @@ import urllib.error
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IDF = os.environ.get("IDF_PATH", os.path.expanduser("~/esp/esp-idf-v5.5.3"))
-NODE = "/usr/local/bin/node"
+# Node 路径由 NODE_BIN 注入(全仓约定);缺失时探测常见安装位置,失败即报错。
+# 不硬编码 /usr/local/bin/node,因为其他 runner 可能是 /opt/homebrew/bin/node 或 nvm。
+def _find_node():
+    cand = os.environ.get("NODE_BIN")
+    if cand:
+        return cand
+    for c in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    raise SystemExit("NODE_BIN 未设置且未探测到 node;请 export NODE_BIN=<path-to-node>。")
+
+
+NODE = _find_node()
 LOGDIR = os.path.join(REPO, "tools", "realdevice", "logs")
 CHUNK = 4096
 
@@ -376,13 +388,18 @@ def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=No
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", required=True)
-    ap.add_argument("--port", default="/dev/cu.usbmodem142401")
+    # 串口是本地硬件细节,不写默认值。运行方必须传 --port 或 export META_PASS_PORT。
+    ap.add_argument("--port", default=os.environ.get("META_PASS_PORT"),
+                    help="USB 串口;必填,可用 META_PASS_PORT 注入")
     ap.add_argument("--app", default=os.path.join(REPO, "build", "FoloToy-AI-Passport.bin"))
     ap.add_argument("--fresh", action="store_true",
                     help="全片擦除(会抹 WiFi 凭证,需重新配网)")
     ap.add_argument("--logdir", default=LOGDIR,
                     help="本次运行的日志/证据目录")
     args = ap.parse_args()
+    if not args.port:
+        ap.error("--port 缺失:传 --port /dev/cu.XXXX 或 export META_PASS_PORT=...")
+
 
     logroot = os.path.abspath(args.logdir)
     os.makedirs(logroot, exist_ok=True)

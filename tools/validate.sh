@@ -152,9 +152,109 @@ PY
     # 扫描静默校验门(r10.11/BUG-21;同上,IDF checkout 缺失时跳过源码事实检查)
     python3 tests/test_bug21_scan_silent.py
     python3 tests/test_verify_firmware.py
-    # 真机 smoke.py 是 self-hosted/USB 门禁，不在云端 static CI 自动烧板；
-    # 这里至少做 Python 语法门，避免 DATA/USB 流程提交后脚本本身不可运行。
-    python3 -m py_compile tools/realdevice/smoke.py tools/realdevice/run_smoke.py
+    # 真机门禁(self-hosted/USB)不在云端 static CI 自动烧板:smoke.py 是
+    # 协议客户端,run_browser_smoke.py 是前端模块 × 真机回归。这里只做语法门,
+    # 避免这两个脚本提交后本身不可运行。
+    python3 -m py_compile tools/realdevice/smoke.py tools/realdevice/run_smoke.py \
+        tools/realdevice/run_browser_smoke.py
+    # --check 需要真 node:$PATH 上的 node 可能是 Bun 包装器(不支持 --check,
+    # 会把脚本当程序执行 —— 表现为脚本跑起来、以 exit 2 结束)。逐个候选用
+    # 探测哪个二进制是真实的 Node,而不是无条件相信 command -v。
+    local _ck_bin="" _ck
+    # 判别标准是 --version 输出 v<数字>:真 node 是 v26.3.0,Bun 包装器直接报
+    # "Missing script to execute" 退出。不用 --check 当探针 —— Bun 对语法完整
+    # 的文件返回 0(它把脚本执行了),对坏文件返回非 0,两种情况都不可靠。
+    for _ck in "${NODE_BIN:-}" /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
+        [[ -n "$_ck" && -x "$_ck" ]] || continue
+        [[ "$($_ck --version 2>/dev/null)" == v[0-9]* ]] || continue
+        _ck_bin="$_ck"
+        break
+    done
+    if [[ -n "$_ck_bin" ]]; then
+        echo "node --check: ${_ck_bin}"
+        "$_ck_bin" --check tools/realdevice/browser_smoke.mjs
+    else
+        echo "WARNING: no real node found (only a Bun wrapper?); skipping harness syntax gate" >&2
+    fi
+
+    # 路径卫生门禁(docs/development/engineering/coding-conventions.md 的路径规则)。
+    # 扫 git 跟踪文件里的本机绝对路径、钉死的兄弟仓库产物、设备身份(MAC/SSID/IPv4/
+    # 序列号)与主机用户名。git ls-files 已天然排除 build/ attic/ logs/。
+    python3 - <<'PATHCHECK'
+import os, re, subprocess, sys
+# 从 git 输出反推仓库根,不依赖 shell 变量传入。
+files = subprocess.run(["git", "ls-files"], capture_output=True, text=True).stdout.split()
+root = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                      capture_output=True, text=True).stdout.strip()
+# 扫描器不能自我命中:规则声明在 coding-conventions.md,实现在 validate.sh。
+SELF = ("tools/validate.sh",
+        "docs/development/engineering/coding-conventions.md",
+        "docs/development/engineering/coding-conventions.zh_CN.md")
+# 历史 Bug 取证记录里钉死产物名是证据本身(「g8fcce59 那份验签通过」),不能改;
+# 约定约束的是运行时代码,不是事后报告。
+HISTORICAL_PREFIXES = (
+    "docs/BUGS.md", "docs/BUGS.zh_CN.md",
+    "docs/assets/play563-appstore-download-reverse",
+    "docs/assets/handoff-unsigned-rootcause",
+)
+# 配置文件本身:wrangler.toml 的 kv_namespaces.id 是部署契约(wrangler 二进制读取),
+# 不是运行时路径,也不能用 env var 覆盖。真正的凭证 CF_API_TOKEN 已在 secrets。
+CONFIG_FILES = ("wrangler.toml",)
+# 测试向量里的标准 MD5 常数(空串/a/b/c/d/e 与分区表/JSON 样例),不是凭证:
+#   d41d8cd98f00b204e9800998ecf8427e = md5("")
+#   0cc175b9c0f1b6a831c399e269772661 = md5("a")
+#   900150983cd24fb0d6963f7d28e17f72 = md5("b")
+#   4a7d1ed414474e4033ac29ccb8653d9b = md5("c") (未见,先不收)
+#   f96b697d7cb7938d525a2f31aaf161d0 = md5("d")
+#   c3fcd3d76192e4007dfb496cca67e13b = md5("e")
+#   01234567890123456789012345678901 = 16 字节测试填充
+#   d98a2bec... f3f5d92358... 57edf4a2... d174ab98... = 分区表/JSON 样例 MD5
+TEST_CONSTANT_SHA256_HEX = {
+    "d41d8cd98f00b204e9800998ecf8427e",  # md5("")
+    "0cc175b9c0f1b6a831c399e269772661",  # md5("a")
+    "900150983cd24fb0d6963f7d28e17f72",  # md5("b")
+    "f96b697d7cb7938d525a2f31aaf161d0",  # md5("d")
+    "c3fcd3d76192e4007dfb496cca67e13b",  # md5("e")
+    "01234567890123456789012345678901",  # 16 字节测试填充
+    "d98a2bec71be5d7d03b53d17d4b98798",  # partitions.csv 样例 MD5
+    "d174ab98d277d9f5a5611c2c9f419d9f",  # readFlash stub MD5 帧
+    "f3f5d92358b9cb356add8d36006fac78",  # JSON 契约测试样例 sha
+    "57edf4a22be3c955ac49da2e2107b67a",  # readFlash stub 校验 MD5
+}
+PATTERNS = [
+    ("本机绝对路径", r"/Users/[A-Za-z0-9_.-]+"),
+    ("钉死的兄弟仓库产物", r"pass-radar[^\n]{0,28}?g[0-9a-f]{5,}"),
+    ("设备 MAC 地址", r"\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b"),
+    ("路由器 SSID", r"\bHundhaus\b"),
+    ("本地 IPv4", r"\b(?:192\.168|10\.)\d{1,3}\.\d{1,3}\b"),
+    ("本机序列号", r"usbmodem\d{4,}"),
+    ("32-hex 凭证(Cloudflare account/KV id)", r"\b[0-9a-f]{32}\b"),
+]
+hits = []
+for f in files:
+    if f in SELF or f.startswith(HISTORICAL_PREFIXES) or f in CONFIG_FILES:
+        continue
+    try:
+        with open(os.path.join(root, f), encoding="utf-8") as h:
+            lines = h.read().split("\n")
+    except (UnicodeDecodeError, OSError):
+        continue
+    for n, line in enumerate(lines, 1):
+        for label, pat in PATTERNS:
+            m = re.search(pat, line)
+            if not m:
+                continue
+            val = m.group(0)
+            if label.startswith("32-hex") and val in TEST_CONSTANT_SHA256_HEX:
+                continue
+            hits.append((f, n, label, val))
+for f, n, label, val in hits:
+    print("路径违例 %s:%d [%s] %s" % (f, n, label, val))
+if hits:
+    print("共 %d 处;规则见 coding-conventions.md「禁止硬编码本地路径」" % len(hits))
+    sys.exit(1)
+print("路径卫生:OK")
+PATHCHECK
     # 浏览器侧(install-slot)模块与页面逻辑测试(Node ES module):
     local node_bin
     node_bin="$(command -v node || true)"

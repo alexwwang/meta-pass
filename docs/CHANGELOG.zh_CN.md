@@ -6,6 +6,23 @@
 
 ## Unreleased
 
+- **前端模块 × 真机回归门禁**:手机端安装路径与空间管理此前只在对 mock 设备
+  (`tests/test_phone_install.mjs`)上跑过,所以 mock 与固件的漂移看不见 ——
+  下方那个被截断的 `/api/install/status` 响应就能骗过 mock,只在硬件上暴露。
+  新增 `tools/realdevice/browser_smoke.mjs`,用真 `fetch` 驱动真实的
+  `install-slot/phone-install.js` 打同一台设备:P1 `preflightMeta →
+  prepareImage → geomFromListing → runInstall`(2 MB 商店下载、校验、解包、
+  carve 提案、分块上传、finalize、slots 回读、remove→归档),P2 用合成的完整
+  flash 镜像跑 Child DATA 分支(`extent` 8192 B > 初始 payload 2048 B,由
+  `extractDataImages` 解析而非手工拼装),P2.5 两道浏览器侧拒绝闸门在上传前
+  判死,P2.6 记录跨 esptool 软复位存活。20/20 PASS,退出码 0。由
+  `run_browser_smoke.py` 编排(复用持久化 NVS token,无需物理配对按键)。
+  证据在源头脱敏 —— token、LAN IP、USB 串口号、主机 home 目录 —— 完整运行
+  输出内联进 `docs/storage-test-report-20261008(.zh_CN).md` §6,不再上传:
+  `realdevice-smoke.yml` 移除了对 `logs/**` 的 `upload-artifact`(原始 log 里
+  带 LAN IP 与主机用户名),改为在 run summary 留一行脱敏判定。
+  `validate.sh --static` 对两个 harness 脚本做语法门,workflow 在协议冒烟
+  之后紧接着跑该回归 —— 仍是仅 `workflow_dispatch`,云端 CI 不自动烧板。
 - **真机冒烟(feat/storage handoff)**:两个固件修复在硬件上实锤。S0–S6 现全绿
   (证据:`tools/realdevice/logs/20261008-121330/`,报告
   `docs/storage-test-report-20261008.md`)。(1) `/api/install/status` 发出的

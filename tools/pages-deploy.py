@@ -41,8 +41,13 @@ import uuid
 
 import requests
 
-ACCOUNT = "CF_ACCOUNT_ID"
-PROJECT = "meta-pass"
+# Cloudflare account/project 由环境变量注入,不硬编码 —— 与 CF_API_TOKEN 同一注入风格。
+# CI 里由 .github/workflows/workers.yml 从 secrets 传入;本地开发从 shell 环境或 .wrangler/
+# 用户级配置读取。缺失即失败,不猜默认值。
+ACCOUNT = os.environ.get("CF_ACCOUNT_ID")
+PROJECT = os.environ.get("CF_PROJECT", "meta-pass")
+if not ACCOUNT:
+    sys.exit("CF_ACCOUNT_ID 未设置;请 export CF_ACCOUNT_ID=<account-id> 后重跑。")
 API = "https://api.cloudflare.com/client/v4"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # 仓库根
 
