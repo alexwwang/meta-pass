@@ -37,8 +37,8 @@ function parseArgs(argv) {
 }
 
 const argv = parseArgs(process.argv.slice(2));
-if (!argv["real-device"]) {
-  console.error("Refusing to touch hardware: pass --real-device explicitly.");
+if (!argv["real-device"] && !argv.authorize) {
+  console.error("Refusing to touch hardware: pass --real-device or --authorize explicitly.");
   process.exit(2);
 }
 
@@ -191,6 +191,32 @@ async function recoveryCleanup() {
   } catch (e) {
     console.error("[E10] recovery cleanup failed:", e.message);
     results.push({ stage: "E10", name: "recovery cleanup", ok: false, detail: e.message });
+  }
+}
+
+async function authorizeProfile() {
+  const server = spawn(process.execPath, [SERVER], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(PORT), META_PASS_DEV: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    await waitServer();
+    const browser = await chromium.launchPersistentContext(PROFILE, {
+      headless: false,
+      channel: BROWSER_CHANNEL,
+      viewport: { width: 1280, height: 1000 },
+    });
+    const p = await browser.newPage();
+    await p.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
+    console.log("Authorization setup: click Connect and select the target ESP32-C3 in the Web Serial chooser.");
+    await waitFor(async () => /ESP32-C3/i.test((await p.locator("#chip-status").textContent()) || ""), 120000, "manual Web Serial authorization");
+    await p.screenshot({ path: path.join(LOGROOT, "usb-e2e-authorized.png"), fullPage: true });
+    console.log(`Web Serial authorization ready. Re-run with --real-device using profile ${PROFILE}`);
+    await p.close();
+    await browser.close();
+  } finally {
+    server.kill("SIGTERM");
   }
 }
 
@@ -427,7 +453,12 @@ process.on("SIGINT", async () => {
   process.exitCode = 130;
 });
 
-try {
+if (argv.authorize) {
+  await authorizeProfile().catch((err) => {
+    console.error("USB E2E authorization setup failed:", err.stack || err.message);
+    process.exitCode = 1;
+  });
+} else try {
   await main();
 } catch (err) {
   console.error("USB Web UI E2E FAILED:", err.stack || err.message);
