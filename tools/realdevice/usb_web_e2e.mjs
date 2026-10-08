@@ -281,7 +281,10 @@ async function main() {
   };
   writeJson("baseline-slots.json", stableSlots(baseline.slots));
   writeJson("baseline-status.json", baseline.status);
-  record("E1", "device baseline readable", true, `${baseline.slots.slots.length} slots`);
+  if (baseline.status.protocol !== 1 || baseline.status.active || baseline.status.session) {
+    throw new Error(`device HTTP installer is not idle at baseline: ${JSON.stringify({ protocol: baseline.status.protocol, active: baseline.status.active, session: baseline.status.session, state: baseline.status.state })}`);
+  }
+  record("E1", "device baseline readable and installer idle", true, `${baseline.slots.slots.length} slots; protocol=${baseline.status.protocol}`);
 
   // E2: actual USB page.
   await page.goto(`${BASE}/?e2e=real`, { waitUntil: "domcontentloaded" });
@@ -414,16 +417,12 @@ async function main() {
   writeJson("after-install-slots.json", stableSlots(afterInstall));
   const afterInstallStatus = await readStatus();
   writeJson("after-install-status.json", afterInstallStatus);
-  if (afterInstallStatus.protocol !== 1 || afterInstallStatus.state !== "done") {
-    throw new Error(`unexpected install status protocol/state: ${JSON.stringify({ protocol: afterInstallStatus.protocol, state: afterInstallStatus.state })}`);
-  }
-  if (afterInstallStatus.name !== displayName || Number(afterInstallStatus.expected) !== testSlot.len ||
-      Number(afterInstallStatus.offset) !== testSlot.len) {
-    throw new Error(`install status does not match new slot image: ${JSON.stringify({ name: afterInstallStatus.name, expected: afterInstallStatus.expected, offset: afterInstallStatus.offset, imageLen: testSlot.len })}`);
+  if (afterInstallStatus.protocol !== 1 || afterInstallStatus.active || afterInstallStatus.session) {
+    throw new Error(`unexpected HTTP installer state during USB UI E2E: ${JSON.stringify({ protocol: afterInstallStatus.protocol, active: afterInstallStatus.active, session: afterInstallStatus.session, state: afterInstallStatus.state })}`);
   }
   record("E8", "device API confirms new VALID APP slot", true,
     `slot=${testSlot.slot} offset=0x${testSlot.offset.toString(16)} size=0x${testSlot.size.toString(16)} imageLen=${testSlot.len}`);
-  record("E8", "analyze final install status", true, `protocol=${afterInstallStatus.protocol}; state=done; offset=expected=imageLen=${testSlot.len}`);
+  record("E8", "analyze HTTP installer isolation", true, `protocol=${afterInstallStatus.protocol}; state=${afterInstallStatus.state}; active/session=false; USB success is proven by UI + slot table`);
   record("E9", "Flash-backed slot state persists in device model", true);
 
   // E10: analyze ownership, then cleanup through the actual USB page Remove path.
