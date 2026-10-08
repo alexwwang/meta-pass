@@ -309,7 +309,7 @@ offset + size + play/name/test marker
 | 发生位置 | 逻辑分析内容 | 失败时的行为 |
 |---|---|---|
 | Connect 后（E3/E4） | 协议/芯片识别、dynslot 模式、slot model 已加载；UI 槽位与设备 API baseline 对齐 | 停止安装，不写 Flash |
-| Fetch 后、Install 前（E5/E6） | play 元数据、镜像大小与 SHA-256 可见；安装目标唯一；优先 Auto/空槽，绝不覆盖已有 VALID 槽；候选目标有可用容量 | 停止安装，不写 Flash |
+| Fetch 后、Install 前（E5/E6） | play 元数据、镜像大小与 SHA-256 可见；安装目标唯一；本 E2E 只选择 dynslot Auto（其启用状态证明容量规划可行），不复用 baseline 中已有的空槽，也不覆盖已有槽 | 停止安装，不写 Flash |
 | Install 后（E7–E9） | UI 成功状态、下载校验/提取/写入日志；设备 API 中出现唯一新增 VALID APP 槽，imageLen/offset/size 合理 | 进入受身份约束的清理流程，并判定失败 |
 | Remove 前后（E10/E11） | 删除目标必须与本次运行登记的 offset、size、name 一致；删除后资源集合与 baseline 等价 | 不确定归属时禁止删除；恢复失败则整体 FAIL |
 
