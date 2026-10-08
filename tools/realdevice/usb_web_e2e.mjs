@@ -4,8 +4,8 @@
 // Real-device USB Web UI E2E:
 // Chromium -> install-slot.html -> Web Serial -> esptool-js -> ESP32-C3 Flash.
 //
-// This is intentionally a thin browser harness. It never calls runInstall(), prepareImage(),
-// or any /api/install write endpoint. The page performs the installation; the runner only
+// This is intentionally a thin browser harness. It never calls the direct phone-side
+// installation functions or any /api/install write endpoint. The page performs the installation; the runner only
 // drives UI, observes state, verifies the device independently, and cleans up its own slot.
 
 import { execFileSync, spawn } from "node:child_process";
