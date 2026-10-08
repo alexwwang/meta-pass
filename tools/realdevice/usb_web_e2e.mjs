@@ -168,14 +168,27 @@ let context = null;
 let page = null;
 let baseline = null;
 let created = null;
+let testDisplayName = null;
 let cleaned = false;
 
 async function recoveryCleanup() {
-  if (cleaned || !created) return;
-  cleaned = true;
-  console.log(`[E10] recovery cleanup candidate slot=${created.slot} offset=0x${created.offset.toString(16)} size=0x${created.size.toString(16)}`);
+  if (cleaned) return;
   try {
     const now = await readSlots();
+    if (!created && baseline && testDisplayName) {
+      const oldKeys = new Set(baseline.slots.slots.map((s) => `${s.offset}:${s.size}`));
+      const owned = now.slots.filter((s) =>
+        !oldKeys.has(`${s.offset}:${s.size}`) && s.name === testDisplayName);
+      if (owned.length === 1) {
+        const s = owned[0];
+        created = { slot: s.slot, offset: s.offset, size: s.size, name: s.name };
+      } else if (owned.length > 1) {
+        throw new Error(`multiple possible test-owned slots found; refusing deletion: ${owned.length}`);
+      }
+    }
+    if (!created) return;
+    cleaned = true;
+    console.log(`[E10] recovery cleanup candidate slot=${created.slot} offset=0x${created.offset.toString(16)} size=0x${created.size.toString(16)}`);
     const candidate = now.slots.find((s) =>
       s.offset === created.offset && s.size === created.size &&
       (s.name === created.name || s.name.toLowerCase().includes("usb-e2e")));
@@ -334,6 +347,7 @@ async function main() {
   }, 30000, `Community Play #${PLAY} metadata`);
   const playInfo = await page.locator("#play-info").textContent();
   const displayName = `USB-E2E-${Date.now()}`;
+  testDisplayName = displayName;
   await page.locator("#disp-name").fill(displayName);
   record("E5", "Community Play selected through UI", true, `play=${PLAY}; ${playInfo.replace(/\s+/g, " ").trim()}`);
   if (!(await page.locator("#btn-install").isEnabled())) throw new Error("Install is not enabled after Community Play metadata fetch");
