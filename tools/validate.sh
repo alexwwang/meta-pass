@@ -153,7 +153,8 @@ PY
     python3 tests/test_bug21_scan_silent.py
     python3 tests/test_verify_firmware.py
     # 真机门禁(self-hosted/USB)不在云端 static CI 自动烧板:smoke.py 是
-    # 协议客户端,run_browser_smoke.py 是前端模块 × 真机回归。这里只做语法门,
+    # 协议客户端,run_browser_smoke.py 是前端模块 × 真机回归,usb_web_e2e.mjs 是
+    # USB Web UI × Web Serial × 真机回归。这里只做语法门,
     # 避免这两个脚本提交后本身不可运行。
     python3 -m py_compile tools/realdevice/smoke.py tools/realdevice/run_smoke.py \
         tools/realdevice/run_browser_smoke.py
@@ -173,6 +174,7 @@ PY
     if [[ -n "$_ck_bin" ]]; then
         echo "node --check: ${_ck_bin}"
         "$_ck_bin" --check tools/realdevice/browser_smoke.mjs
+        "$_ck_bin" --check tools/realdevice/usb_web_e2e.mjs
     else
         echo "WARNING: no real node found (only a Bun wrapper?); skipping harness syntax gate" >&2
     fi
