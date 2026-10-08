@@ -9,7 +9,6 @@
 // drives UI, observes state, verifies the device independently, and cleans up its own slot.
 
 import { execFileSync, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,7 +51,7 @@ const LOGDIR = path.join(LOGROOT, "usb-web-e2e-" + new Date().toISOString().repl
 const BASE = `http://localhost:${PORT}`;
 const DEVICE = `http://${IP || ""}`;
 
-if (!IP || !TOKEN || !/^[0-9a-f]{32}$/i.test(TOKEN)) {
+if (!argv.authorize && (!IP || !TOKEN || !/^[0-9a-f]{32}$/i.test(TOKEN))) {
   console.error("usage: node tools/realdevice/usb_web_e2e.mjs --real-device --ip <device-ip> --token <32hex> [--port 4191] [--play 1]");
   process.exit(2);
 }
@@ -307,6 +306,7 @@ async function main() {
     throw new Error(`storage E2E requires dynslot device mode, got ${uiModel.debug.mode}`);
   }
   record("E3", "real Web Serial + esptool connection", true, `mode=${uiModel.debug.mode}`);
+  record("E3", "analyze connected device", Boolean(uiModel.debug.loaded && String(uiModel.debug.mode).startsWith("DYN_")), `dynslot mode=${uiModel.debug.mode}; slot model loaded`);
 
   // E4: UI slot model versus independent device baseline.
   const uiSlots = await page.evaluate(() => {
@@ -322,6 +322,7 @@ async function main() {
     if (!ui) throw new Error(`UI missing baseline APP slot @0x${s.offset.toString(16)}`);
   }
   record("E4", "UI slot geometry matches device", true, `${uiSlots.length} APP rows`);
+  record("E4", "analyze slot baseline", true, `all ${baselineApp.length} baseline APP slots present in UI`);
 
   // E5: actual Community Play UI.
   await page.locator('[data-tab="community"]').click();
@@ -335,6 +336,8 @@ async function main() {
   const displayName = `USB-E2E-${Date.now()}`;
   await page.locator("#disp-name").fill(displayName);
   record("E5", "Community Play selected through UI", true, `play=${PLAY}; ${playInfo.replace(/\s+/g, " ").trim()}`);
+  if (!(await page.locator("#btn-install").isEnabled())) throw new Error("Install is not enabled after Community Play metadata fetch");
+  record("E5", "analyze install candidate", true, "metadata, size, SHA-256 present; Install enabled");
 
   // E6: explicitly select Auto (preferred) or an empty APP row; never overwrite VALID.
   const auto = page.locator('.slot-row.auto input[name="slot"]:not([disabled])');
@@ -347,6 +350,15 @@ async function main() {
   }
   const checked = await page.locator('input[name="slot"]:checked').count();
   if (checked !== 1) throw new Error("UI did not select exactly one install target");
+  const selectedTarget = await page.locator('input[name="slot"]:checked').evaluate((el) => ({
+    value: el.value,
+    disabled: el.disabled,
+    rowText: el.closest(".slot-row")?.textContent || "",
+  }));
+  if (selectedTarget.disabled || (/VALID/i.test(selectedTarget.rowText) && !/auto/i.test(selectedTarget.rowText))) {
+    throw new Error(`unsafe install target selected: ${JSON.stringify(selectedTarget)}`);
+  }
+  record("E6", "analyze install target", true, selectedTarget.rowText.replace(/\s+/g, " ").trim());
   await page.screenshot({ path: path.join(LOGDIR, "screenshot-install.png"), fullPage: true });
   await page.locator("#btn-install").click();
 
@@ -378,13 +390,13 @@ async function main() {
     throw new Error(`expected exactly one new slot, found ${newSlots.length}`);
   }
   const testSlot = newSlots[0];
+  created = { slot: testSlot.slot, offset: testSlot.offset, size: testSlot.size, name: testSlot.name };
   if (testSlot.state !== "valid" || testSlot.len <= 0 || testSlot.size <= 0) {
     throw new Error(`new slot is not valid: ${JSON.stringify(testSlot)}`);
   }
   if (testSlot.name !== displayName) {
     throw new Error(`device name mismatch: expected ${displayName}, got ${testSlot.name}`);
   }
-  created = { slot: testSlot.slot, offset: testSlot.offset, size: testSlot.size, name: testSlot.name };
   writeJson("after-install-slots.json", stableSlots(afterInstall));
   const afterInstallStatus = await readStatus();
   writeJson("after-install-status.json", afterInstallStatus);
@@ -392,7 +404,10 @@ async function main() {
     `slot=${testSlot.slot} offset=0x${testSlot.offset.toString(16)} size=0x${testSlot.size.toString(16)} imageLen=${testSlot.len}`);
   record("E9", "Flash-backed slot state persists in device model", true);
 
-  // E10: cleanup through the actual USB page Remove path.
+  // E10: analyze ownership, then cleanup through the actual USB page Remove path.
+  const cleanupIdentityMatches = testSlot.offset === created.offset && testSlot.size === created.size && testSlot.name === created.name;
+  if (!cleanupIdentityMatches) throw new Error("cleanup identity does not match the registered test slot");
+  record("E10", "analyze deletion target ownership", true, `offset=0x${created.offset.toString(16)} size=0x${created.size.toString(16)} name=${created.name}`);
   page.once("dialog", async (dialog) => {
     await dialog.accept();
   });
@@ -405,6 +420,11 @@ async function main() {
   }, 30000, "USB UI removal");
   cleaned = true;
   record("E10", "test slot removed through USB UI", true);
+  const afterUiRemove = await readSlots();
+  if (afterUiRemove.slots.some((s) => s.offset === created.offset && s.size === created.size)) {
+    throw new Error("device API still reports the test slot after UI Remove");
+  }
+  record("E10", "analyze deletion result", true, "device API no longer reports the test slot");
 
   // E11: restoration.
   const afterCleanup = await readSlots();
