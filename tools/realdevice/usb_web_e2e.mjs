@@ -58,7 +58,7 @@ if (!argv.authorize && (!IP || !TOKEN || !/^[0-9a-f]{32}$/i.test(TOKEN))) {
 
 mkdirSync(LOGDIR, { recursive: true });
 mkdirSync(PROFILE, { recursive: true });
-writeFileSync(path.join(LOGDIR, "command.txt"), process.argv.slice(2).map((arg) => arg === TOKEN ? "<redacted-token>" : arg).join(" ") + "\n");
+writeFileSync(path.join(LOGDIR, "command.txt"), process.argv.slice(2).map((arg) => arg === TOKEN ? "<redacted-token>" : arg.startsWith("--token=") ? "--token=<redacted-token>" : arg).join(" ") + "\n");
 
 const results = [];
 const consoleLines = [];
@@ -288,8 +288,8 @@ async function main() {
 
   // E2: actual USB page.
   await page.goto(`${BASE}/?e2e=real`, { waitUntil: "domcontentloaded" });
-  await page.locator("#lang-en").click();
   await page.waitForFunction(() => window.__installSlotReady === true, null, { timeout: 15000 });
+  await page.locator("#lang-en").click();
   if (await page.locator("#mock-banner").isVisible().catch(() => false)) {
     throw new Error("real E2E page unexpectedly entered mock mode");
   }
