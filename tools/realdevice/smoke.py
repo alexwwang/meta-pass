@@ -600,7 +600,7 @@ def main():
     esptool(args.port, f"read_flash 0x35A000 0x2000 {evid}/store.bin", timeout=60)
     data_dump = os.path.join(evid, "recordings.bin")
     data_off = int(rec["offset"])
-    esptool(args.port, f"read_flash 0x{data_off:x} {len(data_bytes):x} {data_dump}", timeout=60)
+    esptool(args.port, f"read_flash 0x{data_off:x} 0x{len(data_bytes):x} {data_dump}", timeout=60)
     actual = open(data_dump, "rb").read()
     if actual != data_bytes:
         die("DATA 首传镜像字节回读不一致", mon)

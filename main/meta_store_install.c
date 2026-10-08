@@ -1499,7 +1499,9 @@ static esp_err_t h_install_status(httpd_req_t *req)
     snprintf(body + off, sizeof(body) - (size_t)off, "]}");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, body, (size_t)off);
+    // sendstr(strlen) — off 未计入 "]}" 尾巴(与 h_install_session 同款);
+    // 用 send(req, body, off) 会丢最后 2 字节,JSON 在 data[] 收尾处截断。
+    return httpd_resp_sendstr(req, body);
 }
 
 // POST /api/install/prepare —— 手机提交 offer(§6.4);物理确认前可被新 offer 覆盖。

@@ -6,7 +6,19 @@
 
 ## Unreleased
 
-- **测试套件：清理 d4209a0（v2.0 开发，"survive controlled reboot"）遗留的失效断言**。
+- **真机冒烟(feat/storage handoff)**:两个固件修复在硬件上实锤。S0–S6 现全绿
+  (证据:`tools/realdevice/logs/20261008-121330/`,报告
+  `docs/storage-test-report-20261008.md`)。(1) `/api/install/status` 发出的
+  body 缺最后 `]}` —— `h_install_status` 的 snprintf 尾巴既没计入 `off` 也没计入
+  发送长度;现改用与 `h_install_session` 同款的 `httpd_resp_sendstr`(S2 时 harness
+  崩在 `JSONDecodeError: column 283`,恰差 2 字节)。(2)
+  `meta_carve_flash_sync_states` 用 memset 从运行时表重建槽位条目时丢了记录侧
+  `play_id`;每次安装的回填提交都把它清零,`archive_slot_and_data` 随后撞
+  `ESP_ERR_INVALID_STATE`,卸载永不归档 DATA(S4 实锤)。回填现保留 `play_id`;
+  `test_meta_carve_flash.c::test_sync_states` 加回归断言。另修 realdevice smoke
+  S6 的 flash 读长(`{len:x}` 把 4096 渲染成十进制 1000),并记录 py3.14 IDF venv
+  损坏的规避(`IDF_PYTHON_ENV_PATH`)。真实断电仍未测(仅软复位)。
+- **测试套件:清理 d4209a0(v2.0 开发,"survive controlled reboot")遗留的失效断言**。
   该 commit 改了行为没同步改 host 测试，导致 `test_phone_install.mjs` 自 10 月 4 日起
   一直红（首个失败遮蔽了后续）：(1) bridge GET 调用对网络错误退避重试，单次
   `status()` 现在透明跨删除后复位窗口而非报 `status 0` —— 9b 重写为断言"透明吸收"

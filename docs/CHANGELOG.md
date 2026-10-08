@@ -6,6 +6,22 @@
 
 ## Unreleased
 
+- **Real-device smoke (feat/storage handoff): two firmware fixes proven on
+  hardware**. S0–S6 now all PASS (evidence: `tools/realdevice/logs/
+  20261008-121330/`, report `docs/storage-test-report-20261008.md`).
+  (1) `/api/install/status` sent a body missing its final `]}` —
+  `h_install_status` counted the snprintf tail in neither `off` nor the send
+  length; now uses `httpd_resp_sendstr` like `h_install_session` (S2 crashed
+  the harness with `JSONDecodeError: column 283` = 2 bytes short).
+  (2) `meta_carve_flash_sync_states` rebuilt slot entries from the runtime
+  table with memset and dropped record-side `play_id`; every install's
+  backfill commit zeroed it, and `archive_slot_and_data` then died with
+  `ESP_ERR_INVALID_STATE`, so uninstall never archived DATA (S4). Backfill
+  now preserves `play_id`; regression assertion added to
+  `test_meta_carve_flash.c::test_sync_states`. Also fixed the realdevice
+  smoke's S6 flash-read length (`{len:x}` rendered 4096 as decimal 1000) and
+  documented the broken py3.14 IDF venv workaround (`IDF_PYTHON_ENV_PATH`).
+  Physical power loss remains UNTESTED (soft reset only).
 - **Test suite: close out stale phone/pool contract assertions left by
   d4209a0** ("survive controlled reboot", v2.0 dev). That commit changed two
   behaviors without updating the host tests, leaving `test_phone_install.mjs`

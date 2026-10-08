@@ -416,6 +416,9 @@ esp_err_t meta_carve_flash_sync_states(const meta_slot_info_t *slots, int count)
         built.kind = next.slot[i].kind;
         built.offset = next.slot[i].offset;
         built.size = next.slot[i].size;
+        built.play_id = next.slot[i].play_id;   // 记录侧元数据,运行时表无此字段;
+                                                // 丢失则卸载归档链 INVALID_STATE
+                                                // (真机 S4 实锤:seq=6 同步后 play_id=0)
         built.state = (uint8_t)info->state;
         if (info->state == META_SLOT_VALID) {
             built.image_len = info->size;

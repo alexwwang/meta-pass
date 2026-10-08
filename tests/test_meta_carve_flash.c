@@ -305,6 +305,16 @@ static void test_sync_states(void)
     assert(after.carve.slot[0].name[0] == 'p');
     assert(after.carve.slot[1].state == META_SLOT_VALID);
 
+    // 回归(真机 2026-10-08 S4 实锤):sync_states 从运行时表重建槽位条目时
+    // 必须保留记录侧 play_id —— 它被 memset 清零会导致卸载归档链
+    // archive_slot_and_data 命中 play_id==0 → INVALID_STATE,DATA 永不 ARCHIVED。
+    meta_carve_t with_pid = *meta_carve_flash_carve();
+    with_pid.slot[0].play_id = 42;
+    assert(meta_carve_flash_commit(&with_pid, false) == ESP_OK);
+    assert(meta_carve_flash_sync_states(slots, 3) == ESP_OK);
+    assert(read_best(&after));
+    assert(after.carve.slot[0].play_id == 42);
+
     // 无变化 → 不重写(seq 不再前进;磨损友好)。
     meta_carve_rec_t cur = after;
     assert(meta_carve_flash_sync_states(slots, 3) == ESP_OK);
