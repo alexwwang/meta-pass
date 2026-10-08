@@ -414,8 +414,16 @@ async function main() {
   writeJson("after-install-slots.json", stableSlots(afterInstall));
   const afterInstallStatus = await readStatus();
   writeJson("after-install-status.json", afterInstallStatus);
+  if (afterInstallStatus.protocol !== 1 || afterInstallStatus.state !== "done") {
+    throw new Error(`unexpected install status protocol/state: ${JSON.stringify({ protocol: afterInstallStatus.protocol, state: afterInstallStatus.state })}`);
+  }
+  if (afterInstallStatus.name !== displayName || Number(afterInstallStatus.expected) !== testSlot.len ||
+      Number(afterInstallStatus.offset) !== testSlot.len) {
+    throw new Error(`install status does not match new slot image: ${JSON.stringify({ name: afterInstallStatus.name, expected: afterInstallStatus.expected, offset: afterInstallStatus.offset, imageLen: testSlot.len })}`);
+  }
   record("E8", "device API confirms new VALID APP slot", true,
     `slot=${testSlot.slot} offset=0x${testSlot.offset.toString(16)} size=0x${testSlot.size.toString(16)} imageLen=${testSlot.len}`);
+  record("E8", "analyze final install status", true, `protocol=${afterInstallStatus.protocol}; state=done; offset=expected=imageLen=${testSlot.len}`);
   record("E9", "Flash-backed slot state persists in device model", true);
 
   // E10: analyze ownership, then cleanup through the actual USB page Remove path.
