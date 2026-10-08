@@ -1308,6 +1308,10 @@ let playDetail = null;   // 社区玩法详情
 // mock 模式(?mock=1 / ?mock=fresh / ?mock=legacy / #mock):页面模拟设备。
 // 横幅自加载起常显 —— mock 会话绝不能被误当成真机会话(设计 §10)。
 const MOCK_PROFILE = mockProfileFromLocation(location);
+// Real-browser E2E mode: use exactly one previously-authorized real Web Serial port.
+// Production/default mode still uses requestPort() so the user controls port selection.
+const E2E_REAL = new URLSearchParams(location.search).get("e2e") === "real";
+if (E2E_REAL && MOCK_PROFILE) throw new Error("e2e=real cannot be combined with mock mode");
 if (MOCK_PROFILE) {
   const banner = $("mock-banner");
   banner.hidden = false;
@@ -1511,7 +1515,17 @@ $("btn-connect").addEventListener("click", async () => {
     log(t("msg_requesting_port"));
     $("chip-status").textContent = t("msg_connecting");   // 立即反馈,连接失败时状态行不过期
     $("chip-status").className = "";
-    const port = await navigator.serial.requestPort();
+    let port;
+    if (E2E_REAL) {
+      const ports = await navigator.serial.getPorts();
+      if (ports.length !== 1) {
+        throw new Error(`E2E real mode requires exactly one authorized Web Serial port; found ${ports.length}. Open the page normally once, click Connect, select the ESP32-C3, then rerun with ?e2e=real.`);
+      }
+      port = ports[0];
+      log("E2E real mode: using one previously-authorized Web Serial port.", "warn");
+    } else {
+      port = await navigator.serial.requestPort();
+    }
     newTransport = new Transport(port, false);
     // 连接期即监听系统级断开(拔线/休眠/设备重启):状态行同步刷新,按钮即时锁定。
     port.addEventListener("disconnect", () => { if (transport?.device === port) markDisconnected(); });
