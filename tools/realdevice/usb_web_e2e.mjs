@@ -359,7 +359,7 @@ async function main() {
   if (await auto.count()) {
     await auto.first().click();
   } else {
-    const emptyRows = page.locator(".slot-row").filter({ hasText: "(empty)" });
+    const emptyRows = page.locator(".slot-row:not(.auto)").filter({ has: page.locator(".slot-state.empty") });
     if (!(await emptyRows.count())) throw new Error("no dynamic Auto slot or empty APP slot available; refusing to overwrite an existing play");
     await emptyRows.first().locator('input[name="slot"]').click();
   }
@@ -369,8 +369,10 @@ async function main() {
     value: el.value,
     disabled: el.disabled,
     rowText: el.closest(".slot-row")?.textContent || "",
+    isAuto: el.closest(".slot-row")?.classList.contains("auto") || false,
+    isEmpty: el.closest(".slot-row")?.querySelector(".slot-state")?.classList.contains("empty") || false,
   }));
-  if (selectedTarget.disabled || (/VALID/i.test(selectedTarget.rowText) && !/auto/i.test(selectedTarget.rowText))) {
+  if (selectedTarget.disabled || (!selectedTarget.isAuto && !selectedTarget.isEmpty)) {
     throw new Error(`unsafe install target selected: ${JSON.stringify(selectedTarget)}`);
   }
   record("E6", "analyze install target", true, selectedTarget.rowText.replace(/\s+/g, " ").trim());
