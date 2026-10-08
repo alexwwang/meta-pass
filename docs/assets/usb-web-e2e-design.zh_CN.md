@@ -300,6 +300,21 @@ offset + size + play/name/test marker
 
 比较 APP slot 数、offset/size/state/imageLen/playId/name 和 DATA records。允许内部 seq 变化，但不能留下测试创建的资源。
 
+## 8.1 Analyze 是逻辑断言，不是独立 UI 步骤
+
+本测试**不增加 Analyze 按钮，也不要求操作者在每个动作前手动点击 Analyze**。测试的目标是验证真实产品流程，而不是为了测试制造额外 UI 流程。
+
+“Analyze”表示对当前动作前后的状态做结构化检查，并附着在真实动作上：
+
+| 发生位置 | 逻辑分析内容 | 失败时的行为 |
+|---|---|---|
+| Connect 后（E3/E4） | 协议/芯片识别、dynslot 模式、slot model 已加载；UI 槽位与设备 API baseline 对齐 | 停止安装，不写 Flash |
+| Fetch 后、Install 前（E5/E6） | play 元数据、镜像大小与 SHA-256 可见；安装目标唯一；优先 Auto/空槽，绝不覆盖已有 VALID 槽；候选目标有可用容量 | 停止安装，不写 Flash |
+| Install 后（E7–E9） | UI 成功状态、下载校验/提取/写入日志；设备 API 中出现唯一新增 VALID APP 槽，imageLen/offset/size 合理 | 进入受身份约束的清理流程，并判定失败 |
+| Remove 前后（E10/E11） | 删除目标必须与本次运行登记的 offset、size、name 一致；删除后资源集合与 baseline 等价 | 不确定归属时禁止删除；恢复失败则整体 FAIL |
+
+这些分析不应被报告成独立的 UI 操作阶段。报告仍保留 E0–E11 真实用户动作/验证阶段，但可在相应阶段的 check 名称和 detail 中记录分析结果。测试不得通过调试桥替页面做安装决策或写 Flash。
+
 ## 9. 失败与清理策略
 
 采用：
