@@ -1,5 +1,7 @@
 # USB Web UI 真机 E2E 测试设计
 
+[English](usb-web-e2e-design.md) | 简体中文
+
 日期：2026-10-08  
 分支：`feat/storage`  
 状态：设计审查通过后实施
@@ -396,6 +398,32 @@ physical power loss                        : NOT TESTED
 真实 E2E 必须显式 `--real-device)，并要求 self-hosted runner、Chromium、Web Serial、已授权 ESP32-C3、USB 串口、当前 firmware 和 LAN API。
 
 GitHub CI 默认不碰真实硬件。
+
+## 12.1 本地运行
+
+安装浏览器依赖：
+
+```bash
+npm install --prefix tools/realdevice
+npx --prefix tools/realdevice playwright install chromium
+```
+
+首次授权真实串口（只做一次）：
+
+```bash
+node tools/realdevice/usb_web_e2e.mjs --authorize --port 4191
+```
+
+按提示在打开的 Chromium 页面点击 **Connect** 并选择目标 ESP32-C3。授权完成后关闭浏览器。
+
+正式真机 E2E：
+
+```bash
+node tools/realdevice/usb_web_e2e.mjs --real-device \\
+  --ip <device-ip> --token <32hex> --play 1 --port 4191
+```
+
+`--real-device` 是硬件触碰门禁；不带该参数时 runner 不执行安装。E2E 使用固定独立 profile，授权必须与正式运行使用同一个 profile。
 
 ## 13. 实施顺序
 
