@@ -43,6 +43,21 @@ This E2E test must exercise that chain through the actual USB page. It must not 
 11. **E10 Cleanup** — prefer the UI Remove path; use device API only as recovery when the UI loses the loader.
 12. **E11 Restore** — require post-cleanup state to equal the baseline apart from expected internal sequence changes.
 
+## Analyze is a logical assertion, not a separate UI step
+
+Do **not** add an Analyze button or require a manual Analyze click before every action. The goal is to test the real product flow, not to invent a test-only interaction.
+
+“Analyze” means structured checks attached to the real action and its resulting state:
+
+| Where | Logical analysis | Failure behavior |
+|---|---|---|
+| After Connect (E3/E4) | Chip/protocol recognition, dynslot mode, loaded slot model, and UI slot geometry reconciled with device API baseline | Stop before installation; no Flash write |
+| After Fetch, before Install (E5/E6) | Play metadata, image size and SHA-256 visible; exactly one target selected; Auto/empty target preferred; never overwrite an existing VALID slot; target capacity is feasible | Stop before installation; no Flash write |
+| After Install (E7–E9) | UI success and download/verification/extraction/write log milestones; exactly one new VALID APP slot in device API with plausible imageLen/offset/size | Run identity-constrained cleanup and fail the test |
+| Before/after Remove (E10/E11) | Removal target matches this run's registered offset, size and name; resource set returns to baseline | Never delete uncertain ownership; restoration failure fails the test |
+
+These checks must not be reported as independent UI actions. Keep E0–E11 for actual user actions and verification stages; record analysis outcomes in the relevant stage check names/details. The runner must not use the debug bridge to make installation decisions for the page or write Flash itself.
+
 ## Cleanup safety
 
 Every test-created slot is registered immediately. Deletion requires matching offset + size + test identity (play/name marker). Objects whose ownership cannot be proven are never deleted.
