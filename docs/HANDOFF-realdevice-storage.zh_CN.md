@@ -60,125 +60,19 @@ python3 -m serial.tools.list_ports -v
 
 预期 ESP-IDF 为 5.5.3，USB 端口可见。
 
-## 3. 第一个测试任务：passport-sim 实际执行
+## 3. passport-sim 回归测试（可选，不再作为当前合并阻塞）
 
-这是后续本地 agent **必须首先完成**的测试任务。在 simulator PASS 之前，不进入真机测试。
+passport-sim 仍然是有价值的 boot/runtime 回归层，但本轮最终固件已经完成真实 ESP32-C3 真机 S0-S6 验证，因此**不得因为未在最终固件提交上重跑 simulator 就阻塞合并**。
 
-### 3.1 环境
-
-passport-sim：
-
-https://github.com/VOID001/FoloToy-Passport-Simulator
-
-要求：
-
-- Node.js >= 20。
-- npm。
-- 本地能够 clone GitHub 仓库。
-- meta-pass 与 simulator 为相邻目录，或设置 `PASSPORT_SIM_DIR`。
-- simulator 的 `public/wasm/pkg/esp_emu_bg.wasm` 已准备好。
-
-根据 simulator 官方 package.json，准备命令是：
+如果本地 agent 具备 simulator 环境，仍建议执行：
 
 ```bash
-git clone https://github.com/VOID001/FoloToy-Passport-Simulator.git ../passport-sim
-cd ../passport-sim
-npm install
-npm run prepare:emulator
-cd ../meta-pass
+PASSPORT_SIM_DIR=../passport-sim ./tools/validate.sh --sim
 ```
 
-### 3.2 先检查 simulator 测试程序
+若执行失败，按 image / boot / display / CPU / button / TEST_HARNESS 分类并保留日志；只有证据指向 meta-pass 且影响本轮改动时才修改代码。
 
-执行：
-
-```bash
-test -f tools/sim/run-sim-test.sh
-test -f tools/sim/metapass-boot.test.mjs
-test -f tools/sim/esp_emu.js
-test -f tools/sim/ai-passport-board.js
-```
-
-重点确认：
-
-- `run-sim-test.sh` 使用真实 `esp_emu_bg.wasm`，不能替换成 mock。
-- 固件必须按 simulator 要求作为 ESP32-C3 Full Flash image 从 0x0 加载。
-- `metapass-boot.test.mjs` 必须真正创建 `WasmEmulator("esp32c3")` 并 `load_firmware()`。
-- 测试必须至少检查 boot 后 CPU 继续运行、产生显示帧、屏幕尺寸正确。
-- 按键测试必须能够驱动真实固件，而不是只测试 JS board wrapper。
-
-当前程序已经满足上述条件，并已补充：
-- boot 后 CPU cycles 检查；
-- PC 有效性检查；
-- 至少产生显示帧；
-- DOWN/UP 按键后的画面/运行状态检查。
-
-### 3.3 构建并执行
-
-```bash
-cd ../meta-pass
-
-./tools/validate.sh --firmware
-
-PASSPORT_SIM_DIR=../passport-sim   ./tools/validate.sh --sim
-```
-
-或者直接：
-
-```bash
-PASSPORT_SIM_DIR=../passport-sim   tools/sim/run-sim-test.sh
-```
-
-预期：
-
-```
-meta-pass 模拟器端到端测试
-✓ node v20.x.x
-✓ passport-sim: ...
-✓ 固件镜像: ...
-...
-PASS — meta-pass 模拟器端到端测试通过
-```
-
-Node test 应全部显示 `ok`，exit code 必须为 0。
-
-### 3.4 失败时如何处理
-
-先不要修改业务代码。
-
-保存：
-
-```bash
-git rev-parse HEAD
-node --version
-cd ../passport-sim && git rev-parse HEAD
-cd ../meta-pass
-sha256sum build/FoloToy-AI-Passport-full.bin
-```
-
-并保存完整：
-
-```bash
-PASSPORT_SIM_DIR=../passport-sim   tools/sim/run-sim-test.sh 2>&1 | tee tools/sim/sim-run.log
-```
-
-归因优先级：
-
-1. 找不到 wasm / simulator checkout → ENVIRONMENT。
-2. Full Flash image 格式错误 → FIRMWARE_IMAGE。
-3. QEMU load/boot 失败 → BOOT。
-4. boot 成功但无 frame → DISPLAY/APP_BOOT。
-5. CPU cycles/PC 异常 → CPU/CRASH。
-6. DOWN/UP 不改变状态 → BUTTON/FIRMWARE_INPUT。
-7. 旧测试本身假设错误 → TEST_HARNESS。
-
-只有在证据明确属于 meta-pass 固件问题时，才修改 `feat/storage`。
-
-### 3.5 本轮验证边界
-
-当前 agent 执行环境没有可运行的本地 passport-sim checkout/WASM + Node/QEMU 运行环境，因此**不能声称已经 PASS**。
-
-这不是 GitHub CI 任务。后续 agent 必须在有 simulator 实际运行环境的本地机器完成本节，并把结果写入 handoff/report 后再进入真机测试。
+本轮已知事实：历史 simulator PASS 可以作为背景证据，但如果不是针对最终固件提交重新执行，不得写成“最终提交 simulator PASS”。
 
 ## 4. 真机日志采集
 
@@ -461,7 +355,34 @@ smoke 失败后不得只输出“FAIL”。
 - 不得把 soft reset 写成 power-loss PASS。
 - 最终输出必须包含真实执行过的命令、结果、报告路径和未完成项。
 
-## 11. 当前代码状态
+## 11. 最终代码与测试结果审核——本地 Agent 必做
+
+当前最终真机验证对应提交：
+
+`5eed4b87a984a88485509a4ac2a0d577a506e55e`
+
+本地 agent 在继续修改前必须先完成以下审核：
+
+1. **检查最终 diff**：比较 `90c66f3` 与最终提交，确认所有修改都与 storage 设计目标或测试可靠性直接相关，没有无关改动。
+2. **检查 carve slot 字段所有权**：重点审计 `meta_carve_slot_t` 以及 `meta_carve_flash_sync_states()`。runtime table 重建只能重新计算 runtime 派生字段；`play_id` 等 durable record-owned 字段必须从持久化 carve state 保留。不得再次出现“重建 runtime state 把 durable metadata 清零”的问题。
+3. **检查回归测试**：确认 `tests/test_meta_carve_flash.c` 中的 `sync_states/play_id` 回归测试确实覆盖该 bug，而不是只验证正常路径。
+4. **检查报告可追溯性**：`docs/storage-test-report-20261008.zh_CN.md` 应以最终实际测试提交 `5eed4b8...` 作为 firmware/git commit；不能把最终固件描述成仅仅“在旧 commit 工作树上测试”。这是证据链问题，不是功能问题。
+5. **检查三处已修复问题**：HTTP status JSON 截断、`sync_states` 丢失 `play_id`、S6 esptool read length 十六进制参数。确认每一处都有对应测试或真实证据，并没有回归。
+6. **检查最终 CI**：最终提交的 static/firmware workflow 应为成功状态。
+7. **不要重复无价值的整套真机测试**：如果审核没有发现新的代码问题，不需要因为 simulator 未重跑而重新执行 S0-S6；已有最终固件真机证据应直接复用。
+8. **真正未完成的 P0-5 证据是 physical power loss**：soft reset 只证明 RAM loss 后持久化状态恢复，不能替代物理断电。若本地没有可控断电设备，明确保留 `POWER_LOSS_UNTESTED`，不要修改代码伪造 PASS。
+
+审核输出必须回答：
+
+- 是否发现新的代码缺陷？
+- 是否需要补测试？
+- 是否需要修改设计/实现？
+- 最终提交、firmware SHA-256、CI、真机 S0-S6 是否一致可追溯？
+- physical power loss 是否仍未测试？
+
+只有发现具体缺陷时才进入“改代码 → 补测试 → 重跑受影响层”；否则进入 merge recommendation。
+
+## 12. 当前代码状态
 
 `tools/realdevice/smoke.py` 已覆盖：
 
@@ -481,14 +402,15 @@ smoke 失败后不得只输出“FAIL”。
 5. 失败时输出 failure category，并保留诊断证据。
 6. 明确区分 soft reset 与真实 physical power loss。
 
-当前仍有两个**有意保留在本地 agent 环境完成**的验证项：
+当前已完成的最终固件真机证据包括 S0-S6、DATA Flash byte comparison 和 soft-reset recovery；最终提交为 `5eed4b87...`。
 
-- passport-sim 的真实 Node/QEMU 执行：当前 agent 环境没有可运行的 simulator/WASM runtime，因此不能在这里声称 PASS。
-- 真实 physical power-loss：需要真实断电能力；soft reset 不能替代它。
+仍需区分两类证据：
+- passport-sim：可作为可选回归测试；未针对最终固件提交重跑时，不得声称最终提交 simulator PASS。
+- physical power-loss：仍未执行则必须标记 `POWER_LOSS_UNTESTED`。
 
-因此，当前代码与测试工具已经达到“交给本地 agent 执行验证”的状态，但尚未达到“功能已真机验收完成”的状态。
+因此，当前本地 agent 的重点从“继续盲目跑测试”转为“完成最终 diff / 字段所有权 / 回归测试 / 报告可追溯性审核”；只有发现具体问题才继续改代码。
 
-## 12. 最终完成定义
+## 13. 最终完成定义
 
 只有以下条件全部满足，才能说本轮真机验收完成：
 
