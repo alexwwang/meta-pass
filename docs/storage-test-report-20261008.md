@@ -6,17 +6,19 @@
 
 **Date**: 2026-10-08
 **Branch**: `feat/storage`
-**Base commit**: `90c66f3` — docs(storage): clarify deferred reboot terminology
-**Tested firmware commit**: working tree on top of `90c66f3` with two
-real-device-driven fixes (see §4): firmware SHA-256
-`5518535173c7d3352400a134f1f05f5b17d3b92b840af5a3a21edcb07b14f36e`
+**Final commit**: `5eed4b87a984a88485509a4ac2a0d577a506e55e` (`feat/storage`) —
+contains the two real-device-driven fixes from §3, so the flashed image is
+byte-identical to the committed tree
+**Firmware SHA-256**: `5518535173c7d3352400a134f1f05f5b17d3b92b840af5a3a21edcb07b14f36e`
 (1,111,408 bytes, app image at 0x10000)
 
 ---
 
 ## 1. Simulator Test (passport-sim)
 
-**Status**: PASSED (carried over from the first run of this report; unchanged)
+**Status**: PASSED on an earlier firmware build — **background evidence only,
+not rerun against final commit `5eed4b8`**. Per the handoff, do not report this
+as final-commit simulator PASS, and do not block merge on it.
 
 ```
 ✔ meta-pass full image boots in QEMU and renders the 240x320 screen
@@ -185,9 +187,61 @@ Host verification after fixes: full `test_meta_carve_flash` suite PASS
 - Consistency greps: JSON-response builders (issue 2) and `read_flash` length
   args (issue 4) checked for sibling copies — none remaining.
 
-## 6. Conclusion
+## 6. Final Code/Test Audit (handoff required items)
 
-- **Simulator**: PASS (unchanged from first run).
+Audit against final firmware commit `5eed4b8`:
+
+1. **Final diff scope**: `90c66f3..5eed4b8` touches 8 files (+443/−3), all
+   belonging to this validation round — 2 firmware fixes, 1 regression test,
+   1 harness fix, 2 test reports, 2 changelog entries. No unrelated changes;
+   nothing to revert or flag.
+2. **Slot field ownership**: `meta_carve_slot_t` has 7 fields. `state`,
+   `image_len`, `image_sha256` and `name` come from the runtime table (runtime
+   is the source of truth); `kind`, `offset`, `size` and `play_id` are
+   record-side metadata that must be copied from the existing record on
+   reconstruction. `sync_states` is the only place in the repository that
+   rebuilds a slot entry from scratch (`memset` then `memcmp` to detect
+   change); the other `memset` calls are tail zeroing or new data-record
+   allocation, so they carry no equivalent risk. All 7 fields now have a
+   defined source.
+3. **Regression test validity**: mutation-verified — temporarily removing the
+   `built.play_id` line makes `test_meta_carve_flash` abort (SIGABRT / exit 134
+   on the assertion); with the fix restored all 15 scenarios PASS. The
+   assertion genuinely covers the defect.
+4. **Evidence coverage for the three fixes**:
+   - Truncated HTTP status JSON → direct device evidence (282 bytes, exactly 2
+     short) plus all-green status polling in the final S2 run. Worst-case
+     payload computed at 857 B against the 1024 B buffer (167 B slack), so no
+     secondary truncation path exists.
+   - Lost `play_id` on state sync → `test_sync_states` regression assertion +
+     the mutation check above + real-device S4 archive PASS.
+   - S6 hex read length → direct device evidence (1000-byte readback, 0 diffs
+     in the bytes that were read) + final-run S6 byte-level PASS;
+     `py_compile` is in static CI.
+5. **Report traceability**: corrected — this report no longer describes the
+   tested firmware as an uncommitted working tree on `90c66f3`; it points at
+   final commit `5eed4b8`. The historical simulator PASS is also relabelled as
+   background evidence not rerun on the final commit.
+6. **CI**: `Static checks` and `Firmware checks` are both success on `5eed4b8`
+   and on the follow-up docs commit `8b2b363`; local
+   `tools/validate.sh --static` is green too.
+7. **No real-device rerun**: the audit found no new defect, so the suite was
+   not rerun; the existing `5eed4b8` S0–S6 evidence (`20261008-121330`) is
+   reused.
+8. **Power loss kept separate**: S5 used a soft reset, which proves RAM-loss
+   recovery only. No controlled power cut was performed; POWER_LOSS_UNTESTED is
+   retained and full P0-5 durability is not claimed.
+
+Audit answers: **no new defect; no additional test needed; no code or design
+change needed**. Final commit `5eed4b8`, firmware SHA-256, green CI and the
+S0–S6 evidence are all traceable; **physical power loss was not tested**.
+
+---
+
+## 7. Conclusion
+
+- **Simulator**: PASS on an earlier build — background evidence only, not
+  rerun against final commit `5eed4b8`; not a merge blocker.
 - **Real device**: **PASS** — S0–S6 all green on the final run; DATA byte-level
   flash verification PASS; reboot recovery PASS (soft reset).
 - **POWER_LOSS_UNTESTED**: no physical power cut was performed; S5 used esptool
