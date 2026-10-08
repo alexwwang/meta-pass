@@ -25,6 +25,11 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 # Hardware-touch gate: a real run cannot happen accidentally.
 require(runner, 'if (!argv["real-device"] && !argv.authorize)', "runner hardware gate")
+require(runner, 'if (!argv.authorize && (!IP || !TOKEN', "authorization setup does not require device API credentials")
+require(runner, "dynslot Auto is unavailable for this image", "baseline-safe target selection")
+require(runner, '"analyze connected device"', "action-bound device analysis")
+require(runner, '"analyze install candidate"', "action-bound candidate analysis")
+require(runner, '"analyze deletion target ownership"', "action-bound cleanup analysis")
 
 # The browser must drive the page; direct install protocol paths are forbidden.
 forbidden_direct = (
