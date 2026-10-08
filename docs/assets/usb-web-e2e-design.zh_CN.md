@@ -259,7 +259,7 @@ download → size check → SHA-256 → extractAppImage
 
 独立读取 `GET /api/install/status` 和 `GET /api/install/slots`。
 
-断言 protocol 正确、最终状态正确、新 slot 出现、offset/size/image_len 有效、state = VALID、play/name 与 UI 一致，且没有覆盖 baseline 已有 slot。
+断言 protocol 正确，HTTP 安装会话保持 idle（USB 页面走 Web Serial/esptool-js，不应伪装成 HTTP 安装）；新 slot 出现，offset/size/image_len 有效，state = VALID、name 与 UI 一致，且没有覆盖 baseline 已有 slot。
 
 这是第二条证据链：
 
