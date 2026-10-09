@@ -16,7 +16,7 @@ The UI runner controls a Chromium instance directly through the Chrome DevTools 
 
 1. **Real ESP32 device** running the launcher firmware under test and serving the phone page.
 2. **Direct CDP browser UI automation** in one persistent mobile viewport session. Create/install/delete actions must be triggered through page controls.
-3. **Dedicated test child firmware A/B**: both images must boot on the target hardware and implement deterministic DATA-partition read/write tests. Arbitrary marketplace firmware cannot be assumed to expose test markers or DATA behavior.
+3. **Layered test targets**: `tests/realdevice/data-child/` is an infrastructure fixture for protocol/allocator regression; Recorder Play 28 (`recordings` FAT partition) is the real marketplace business-DATA acceptance target. Its capacity reduction and recording-UI automation are not complete; see [real marketplace firmware selection](assets/mobile-page-data-e2e-market-firmware.md). Until that path is complete, fixture PASS is not marketplace business E2E PASS.
 4. **Hardware runtime driver**: use actual device control and device-side observations to boot a slot, wait for test firmware execution, return to the launcher, and collect evidence. Mock API responses are not acceptable. Supply it with `--runtime-driver`; contract below.
 5. **DATA support**: both A and B must declare and actually access supported DATA partitions. The full lifecycle test must fail rather than silently skip read/write assertions if they do not.
 
