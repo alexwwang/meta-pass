@@ -64,5 +64,6 @@ require(pkg, '"playwright": "1.64.0"', "Playwright version pin")
 
 # Static validation must syntax-check the new runner.
 require(validate, '"$_ck_bin" --check tools/realdevice/usb_web_e2e.mjs', "static syntax gate")
+require(validate, '"$_ck_bin" --check tools/realdevice/usb_web_e2e_multi.mjs', "multi-round runner syntax gate")
 
 print("USB Web UI E2E contract: PASS")
