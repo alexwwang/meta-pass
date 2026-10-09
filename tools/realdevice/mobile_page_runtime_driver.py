@@ -64,6 +64,16 @@ def reopen_port(port):
         return False
 
 
+def expect_rejection(port, command, expected_error, timeout):
+    port.write((command + "\\n").encode("ascii"))
+    port.flush()
+    response = read_json(port, time.monotonic() + timeout,
+                         lambda x: x.get("ok") is False)
+    if response.get("error") != expected_error:
+        raise RuntimeError(f"expected {expected_error} for {command}, got {response}")
+    return response
+
+
 def wait_event(port, event, timeout):
     deadline = time.monotonic() + timeout
     last = None
@@ -222,12 +232,14 @@ def action_verify_deleted(port, args):
     remaining_play = [s for s in slots if int(s.get("playId", -1)) == args.play_id]
     remaining_name = [s for s in slots if s.get("name") == args.slot_name]
     remaining_data = [d for d in data if int(d.get("playId", -1)) == args.play_id]
-    # The only boot operation exposed by this channel resolves a currently
-    # registered, valid slot index; no raw offset or stale slot address is accepted.
+    # Ask the launcher to resolve this deleted play ID through its current
+    # registry. It must reject the request, not fall back to a stale slot address.
+    rejected = expect_rejection(port, f"E2E BOOT_PLAY {args.play_id}",
+                                "SLOT_NOT_BOOTABLE", args.timeout_s)
     return {
-        "deletedSlotNotBootable": not remaining_play and not remaining_name,
+        "deletedSlotNotBootable": not remaining_play and not remaining_name and rejected.get("error") == "SLOT_NOT_BOOTABLE",
         "dataPartitionReleased": not remaining_data,
-        "serialEvidence": json.dumps(listing, separators=(",", ":")),
+        "serialEvidence": json.dumps({"listing": listing, "bootRejected": rejected}, separators=(",", ":")),
         "playId": args.play_id,
         "slotName": args.slot_name,
     }
