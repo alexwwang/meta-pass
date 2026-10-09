@@ -41,7 +41,7 @@ The protocol is test-only and must never be enabled in production firmware. USB 
 
 1. Capture the baseline launcher slot/data listing.
 2. Install the test image as A and B through the actual mobile page. The install manifest must declare `e2edata` and its size; the device must allocate one DATA record per play ID.
-3. Launch A through the real launcher/bootloader path. Record `INFO`, issue `WRITE <nonce-A>`, then `READ`; require exact nonce and SHA-256 match.
+3. Launch A through the real launcher/bootloader path. Record `INFO`, issue `ERASE` and require an empty read to return `DATA_INVALID`, then issue `WRITE <nonce-A>` and `READ`; require exact nonce, SHA-256, and CRC32 match.
 4. Return to launcher, launch B, repeat with a different nonce. Confirm B's DATA offset differs from A's and the record is independent.
 5. Return to launcher, reboot/relaunch A and require nonce-A to persist; repeat for B. A host acknowledgement or launcher listing is not persistence evidence.
 6. Remove A through the page. Verify A's slot is absent/non-bootable and its DATA record is released/archived according to the current removal policy; launch B and prove nonce-B still reads correctly.
