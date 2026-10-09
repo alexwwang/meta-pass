@@ -20,6 +20,7 @@
 //   确定  长按   返回上一级(LONG,1.5s);例外:删除确认页 OK 长按=确认删除
 //   注意:切换子固件靠 Power 关机重启,meta-pass 不干预子固件的按键行为
 #include <stdio.h>
+#include "sdkconfig.h"
 #include <string.h>
 
 #include "bsp_battery.h"
@@ -44,6 +45,10 @@
 #include "ui_pixel.h"
 
 static const char *TAG = "meta-pass";
+
+#if CONFIG_META_E2E_TEST_CONTROL
+void meta_e2e_control_start(meta_slot_info_t slots[META_SLOT_COUNT]);
+#endif
 
 // 页面枚举:每个页面独立 build/teardown(沿用基线 demo 的建删屏纪律)。
 typedef enum {
@@ -1325,6 +1330,11 @@ void app_main(void)
     }
 
     meta_store_scan(s_slots);
+    // Test-only USB Serial/JTAG control is compiled out of production builds.
+    // It starts only after carve ensure + slot scan, and only boots validated slots.
+#if CONFIG_META_E2E_TEST_CONTROL
+    meta_e2e_control_start(s_slots);
+#endif
     // 派生态回填进 carve 记录(无变化不写;全新设备无记录 → no-op)。scan 是
     // 记录状态缓存的事实源:迁移种子 EMPTY、安装后 VALID 都在此落盘(§4.3)。
     {
