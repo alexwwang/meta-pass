@@ -15,7 +15,7 @@
 ## 2. 必需组件
 
 1. **真实 ESP32 设备**：运行当前待测启动器固件，网页服务来自该设备。
-2. **浏览器 UI 自动化**：一个持续的移动视口浏览器会话，所有创建、安装和删除动作都由页面控件触发。
+2. **CDP CDP 浏览器 UI 自动化**：一个持续的移动视口浏览器会话，所有创建、安装和删除动作都由页面控件触发。
 3. **专用测试子固件 A/B**：必须是可在该硬件上启动的测试镜像，且实现确定性的 DATA 分区读写协议。普通商店固件不能保证包含测试标记或 DATA 行为。
 4. **硬件运行驱动**：通过真实的设备控制/串口观测链路启动指定槽位、等待测试子固件执行、触发其返回启动器，并收集设备侧证据。不能用模拟的 API 响应代替。驱动通过 `--runtime-driver` 提供，接口见下文。
 5. **DATA 分区支持**：本轮 A/B 测试固件都必须声明并实际访问受支持的 DATA 分区；否则本次完整生命周期测试应失败，而不是跳过读写测试。
@@ -91,3 +91,11 @@ node tools/realdevice/mobile_page_e2e.mjs \
 
 静态契约测试和 JavaScript 语法检查只能证明测试工具结构满足约束。没有连接真机、没有实际硬件运行驱动、没有专用测试子固件并成功采集设备侧证据时，设备 E2E 必须报告为 NOT RUN/FAIL，不能以只读 API 检查通过代替。
 
+
+
+CDP 端点示例：
+
+```bash
+chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-e2e
+node tools/realdevice/mobile_page_e2e.mjs --real-device --cdp-url http://127.0.0.1:9222 --url http://<device-ip>/ --token <32-hex-session> --play-a <test-id-a> --play-b <test-id-b> --runtime-driver /path/to/device-runtime-driver
+```
