@@ -62,6 +62,7 @@ export class CdpMobilePage {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
+    clearTimeout(pending.timer);
     if (message.error) pending.reject(new Error("CDP " + pending.method + ": " + message.error.message));
     else pending.resolve(message.result || {});
   }
@@ -81,14 +82,14 @@ export class CdpMobilePage {
   send(method, params = {}, sessionId = undefined) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, method });
-      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           reject(new Error("CDP command timeout: " + method));
         }
       }, this.timeout);
+      this.pending.set(id, { resolve, reject, method, timer });
+      this.ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
   }
   command(method, params = {}) { return this.send(method, params, this.sessionId); }
