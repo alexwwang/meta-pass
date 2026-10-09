@@ -432,8 +432,9 @@ async function runInstallRound(roundLabel, playId, displayName, baselineSlots) {
 
   // Disconnect + USB hard reset
   await uiDisconnect();
-  await usbHardReset();
-  record(roundLabel, "USB hard reset done", true);
+  const bootLog = await usbHardReset();
+  writeText(`${roundLabel}-boot-log.txt`, bootLog);
+  record(roundLabel, "USB hard reset done", true, bootLog.trim().slice(0, 240));
 
   // Wait for LAN recovery
   const lanUp = await waitLan(300000);
@@ -479,8 +480,9 @@ async function runRemoveRound(roundLabel, displayName, baselineSlots) {
 
   // Disconnect + USB hard reset
   await uiDisconnect();
-  await usbHardReset();
-  record(roundLabel, "USB hard reset done", true);
+  const bootLog = await usbHardReset();
+  writeText(`${roundLabel}-boot-log.txt`, bootLog);
+  record(roundLabel, "USB hard reset done", true, bootLog.trim().slice(0, 240));
 
   // Wait for LAN recovery
   const lanUp = await waitLan(300000);
