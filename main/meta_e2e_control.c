@@ -4,6 +4,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +35,14 @@ static void response_error(const char *code)
 {
     printf("{\"ok\":false,\"error\":\"%s\"}\n", code);
     fflush(stdout);
+}
+
+static void print_safe_name(const char *name)
+{
+    for (size_t i = 0; name && name[i] && i < 40; i++) {
+        const unsigned char ch = (unsigned char)name[i];
+        putchar((isalnum(ch) || ch == '-' || ch == '_' || ch == '.') ? ch : '_');
+    }
 }
 
 static void response_slots(void)
