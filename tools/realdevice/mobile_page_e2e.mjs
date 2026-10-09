@@ -102,10 +102,19 @@ function record(name, ok, detail = "") {
   if (!ok) throw new Error(`${name}${detail ? ": " + redact(detail) : ""}`);
 }
 async function getDevice(route) {
-  const r = await fetch(device + route, { headers: { "X-Meta-Session": token }, signal: AbortSignal.timeout(45000) });
-  const body = await r.text();
-  if (!r.ok) throw new Error(`GET ${route} HTTP ${r.status}: ${body.slice(0, 160)}`);
-  return body;
+  // Execute through the actual page origin and Chromium request stack, matching
+  // phone-install.js rather than using a host-side HTTP client.
+  const result = await page.evaluate(async ({ route, token }) => {
+    const response = await fetch(route, {
+      headers: token ? { "X-Meta-Session": token } : {},
+      signal: AbortSignal.timeout(45000),
+    });
+    return { status: response.status, body: await response.text() };
+  }, { route, token });
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error("GET " + route + " HTTP " + result.status + ": " + result.body.slice(0, 160));
+  }
+  return result.body;
 }
 async function readSlots() {
   const parsed = parseSlots(await getDevice("/api/install/slots"));
