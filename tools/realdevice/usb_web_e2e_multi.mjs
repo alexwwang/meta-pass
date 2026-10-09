@@ -528,6 +528,9 @@ async function main() {
   if (!slotAStillThere) throw new Error("Play A slot disappeared after R2 install");
   record("R2", "Play A + Play B coexist", true,
     `slots=${r2.slots.count} (${displayNameA} + ${displayNameB})`);
+  if (r2.slots.free >= r1.slots.free) {
+    throw new Error(`R2 install did not further reduce free space: ${r1.slots.free} → ${r2.slots.free}`);
+  }
   record("R2", "free space decreased further", true,
     `free: ${r1.slots.free} → ${r2.slots.free} (delta ${r1.slots.free - r2.slots.free})`);
 
