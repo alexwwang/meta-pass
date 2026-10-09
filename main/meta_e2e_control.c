@@ -57,9 +57,11 @@ static void response_slots(void)
             first = false;
             printf("{\"slot\":%u,\"playId\":%" PRIu32
                    ",\"offset\":%" PRIu32 ",\"size\":%" PRIu32
-                   ",\"state\":\"%s\",\"name\":\"%.40s\"}",
+                   ",\"state\":\"%s\",\"name\":\"",
                    (unsigned)i, slot->play_id, slot->offset, slot->size,
-                   slot_state_name(s_slots[i].state), s_slots[i].name);
+                   slot_state_name(s_slots[i].state));
+            print_safe_name(s_slots[i].name);
+            printf("\"}");
         }
     }
     printf("],\"data\":[");
