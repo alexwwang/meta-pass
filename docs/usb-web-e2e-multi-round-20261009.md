@@ -103,7 +103,7 @@ Both false positives came from driver scripts in `/tmp/` that were never committ
 
 ## Server-side Finding (Unrelated)
 
-`tools/install-slot/server.mjs` 的开发服务器曾设置 `content-security-policy: default-src 'self'; script-src 'self'`，会阻止 `install-slot.html` 的 3 个 inline `<script>` 执行。生产环境（Cloudflare Pages）未设置该 CSP，因此此前未暴露。该问题已在提交 `1d262e6` 中修复：移除 CSP 响应头，保留 `nosniff` 和 `DENY`。
+`tools/install-slot/server.mjs` previously set `content-security-policy: default-src 'self'; script-src 'self'`, which blocked the three inline `<script>` blocks in `install-slot.html`. Production (Cloudflare Pages) does not set this CSP, so the issue did not affect the deployed page. Commit `1d262e6` fixed the development-server issue by removing the CSP response header while retaining `nosniff` and `DENY`.
 
 ## Files
 
