@@ -275,6 +275,24 @@ function runRuntimeDriver(slot, playId, name, phase) {
   if (missing.length) throw new Error("runtime evidence failed for " + phase + ": " + missing.join(", "));
   return evidence;
 }
+function verifyDeletedRuntime(name, playId, phase) {
+  const evidenceFile = path.join(logDir, "runtime-" + phase.toLowerCase() + "-delete-evidence.json");
+  const result = spawnSync(runtimeDriver, ["--action", "verify-deleted", "--slot-name", name,
+    "--play-id", String(playId), "--timeout-ms", String(runtimeTimeout), "--evidence-file", evidenceFile],
+    { encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024 });
+  if (result.error || result.status !== 0) {
+    throw new Error("runtime driver delete verification " + phase + " failed: " +
+      (result.error?.message || result.stderr || result.status));
+  }
+  let evidence;
+  try { evidence = JSON.parse(fs.readFileSync(evidenceFile, "utf8")); }
+  catch (e) { throw new Error("invalid delete evidence " + phase + ": " + e.message); }
+  saveJson("runtime-" + phase.toLowerCase() + "-delete-evidence.json", evidence);
+  const ok = evidence.deletedSlotNotBootable === true && evidence.dataPartitionReleased === true;
+  record(phase + ": deleted firmware cannot boot and DATA is released", ok,
+    "slotNotBootable=" + evidence.deletedSlotNotBootable + "; dataReleased=" + evidence.dataPartitionReleased);
+  if (!ok) throw new Error("delete postcondition failed for " + phase);
+}
 async function cleanupOwned() {
   if (!baseline || !page) return;
   for (const name of installAttempted) {
@@ -372,6 +390,7 @@ try {
   saveJson("after-install-data-reservations.json", dataReservations(afterB));
 
   await removeByName(nameA, "M06");
+  verifyDeletedRuntime(nameA, playA, "M07A");
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
   runRuntimeDriver(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
@@ -389,16 +408,7 @@ try {
   assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
   assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
-  const deletionEvidenceFile = path.join(logDir, "runtime-M07A-delete-evidence.json");
-  const deletion = spawnSync(runtimeDriver, ["--action", "verify-deleted", "--slot-name", nameA,
-    "--play-id", playA, "--timeout-ms", String(runtimeTimeout), "--evidence-file", deletionEvidenceFile],
-    { encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024 });
-  if (deletion.error || deletion.status !== 0) throw new Error("runtime driver delete verification failed: " + (deletion.error?.message || deletion.stderr || deletion.status));
-  const deletionEvidence = JSON.parse(fs.readFileSync(deletionEvidenceFile, "utf8"));
-  saveJson("runtime-M07A-delete-evidence.json", deletionEvidence);
-  record("M07 deleted A is no longer bootable and DATA is released",
-    deletionEvidence.deletedSlotNotBootable === true && deletionEvidence.dataPartitionReleased === true,
-    "slotNotBootable=" + deletionEvidence.deletedSlotNotBootable + "; dataReleased=" + deletionEvidence.dataPartitionReleased);
+  verifyDeletedRuntime(nameB, playB, "M08B");
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
