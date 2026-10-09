@@ -99,8 +99,28 @@ static void handle_command(char *line)
         response_slots();
         return;
     }
-    int slot = -1;
+    uint32_t play_id = 0;
     char extra = '\0';
+    if (sscanf(line, "E2E BOOT_PLAY %" SCNu32 " %c", &play_id, &extra) == 1) {
+        const meta_carve_t *carve = meta_carve_flash_carve();
+        int found = -1;
+        if (carve) {
+            for (uint8_t i = 0; i < carve->count; i++) {
+                if (carve->slot[i].play_id == play_id) {
+                    found = (int)i;
+                    break;
+                }
+            }
+        }
+        if (found < 0) {
+            response_error("SLOT_NOT_BOOTABLE");
+            return;
+        }
+        (void)snprintf(line, 96, "E2E BOOT_SLOT %d", found);
+        handle_command(line);
+        return;
+    }
+    int slot = -1;
     if (sscanf(line, "E2E BOOT_SLOT %d %c", &slot, &extra) == 1) {
         const meta_carve_t *carve = meta_carve_flash_carve();
         if (slot < 0 || slot >= META_SLOT_COUNT || !carve ||
