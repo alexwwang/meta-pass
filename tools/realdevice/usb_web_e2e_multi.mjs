@@ -519,6 +519,9 @@ async function main() {
 
   // R1: install Play A
   const r1 = await runInstallRound("R1", PLAY_A, displayNameA, baselineSlots);
+  if (r1.slots.free >= baselineSlots.free) {
+    throw new Error(`R1 install did not reduce free space: ${baselineSlots.free} → ${r1.slots.free}`);
+  }
   record("R1", "free space decreased", true,
     `free: ${baselineSlots.free} → ${r1.slots.free} (delta ${baselineSlots.free - r1.slots.free})`);
 
