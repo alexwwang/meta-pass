@@ -210,6 +210,18 @@ async function runScenario(scenario) {
     record("document title assertion", pass, `expected includes ${scenario.assertions.titleIncludes}`);
     if (!pass) throw new Error("document title assertion failed");
   }
+  if (scenario.assertions?.bodyTextMinLength !== undefined) {
+    const length = await execute("return (document.body?.innerText || '').trim().length");
+    const pass = Number(length) >= Number(scenario.assertions.bodyTextMinLength);
+    record("document body has visible text", pass, `length=${length}`);
+    if (!pass) throw new Error("document body text is empty or shorter than expected");
+  }
+  if (scenario.assertions?.interactiveElementCountAtLeast !== undefined) {
+    const count = await execute("return document.querySelectorAll('button, input, select, textarea, [role=button]').length");
+    const pass = Number(count) >= Number(scenario.assertions.interactiveElementCountAtLeast);
+    record("interactive controls present", pass, `count=${count}`);
+    if (!pass) throw new Error("no expected interactive controls found");
+  }
   if (scenario.assertions?.readySelector) {
     await waitSelector(scenario.assertions.readySelector, "page ready selector");
     record("page ready selector visible", true, scenario.assertions.readySelector);
