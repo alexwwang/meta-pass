@@ -116,7 +116,15 @@ function saveJson(file, value) { fs.writeFileSync(path.join(logDir, file), JSON.
 function record(name, ok, detail = "", evidence = "automated") {
   report.results.push({ name, ok, evidence, detail: redact(detail), at: new Date().toISOString() });
   console.log(`[${ok ? "PASS" : "FAIL"}] ${name}${detail ? " — " + redact(detail) : ""}`);
-  if (!ok) throw new Error(`${name}${detail ? ": " + redact(detail) : ""}`);
+}
+async function runCase(name, fn) {
+  try { return { ok: true, value: await fn() }; }
+  catch (error) {
+    const detail = redact(error?.stack || error?.message || String(error));
+    report.results.push({ name: name + " (uncaught case error)", ok: false, evidence: "automated", detail, at: new Date().toISOString() });
+    console.error("[FAIL] " + name + " — " + redact(error?.message || String(error)));
+    return { ok: false, value: null };
+  }
 }
 async function getDevice(route) {
   // Execute through the actual page origin and Chromium request stack, matching
@@ -383,44 +391,54 @@ try {
   page.setDefaultTimeout(15000);
   page.on("pageerror", (e) => pageErrors.push(redact(e.message)));
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(redact(m.text())); });
-  page.on("requestfailed", (r) => failedRequests.push(redact(`${r.method()} ${r.url()} :: ${r.failure()?.errorText || "failed"}`)));
+  page.on("requestfailed", (r) => failedRequests.push(redact(r.method() + " " + r.url() + " :: " + (r.failure()?.errorText || "failed"))));
 
   await page.goto(target.toString(), { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.locator("#mp-install-root").waitFor({ state: "attached", timeout: 60000 });
   await page.locator("#mp-q").waitFor({ state: "visible", timeout: 15000 });
   await waitFor(async () => {
-    const s = (await page.locator("#mp-status").textContent().catch(() => "")) || "";
-    return s.length > 0 && !s.includes("正在加载玩法目录");
+    const status = (await page.locator("#mp-status").textContent().catch(() => "")) || "";
+    return status.length > 0 && !status.includes("正在加载玩法目录");
   }, "phone page initialization", 90000);
+
+  // Generic embedded-WebView checks retained from the previous runner.
   const layout = await page.evaluate(() => ({
     width: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth,
     rootWidth: document.querySelector("#mp-install-root")?.getBoundingClientRect().width || 0,
-    title: document.title, touch: navigator.maxTouchPoints, mobileUA: /Android|Mobile/i.test(navigator.userAgent),
+    title: document.title, bodyTextLength: (document.body?.innerText || "").trim().length,
+    interactiveCount: document.querySelectorAll("button,input,select,textarea,[role=button]").length,
+    touch: navigator.maxTouchPoints, mobileUA: /Android|Mobile/i.test(navigator.userAgent),
+    readyState: document.readyState,
+    controls: ["#mp-q", "#mp-go", "#mp-mgmt"].map((selector) => {
+      const el = document.querySelector(selector);
+      return { selector, exists: Boolean(el), visible: Boolean(el && el.getBoundingClientRect().width && el.getBoundingClientRect().height) };
+    }),
   }));
+  record("M01 document ready and meaningful content", ["interactive", "complete"].includes(layout.readyState) && layout.bodyTextLength > 0 && layout.interactiveCount > 0,
+    "readyState=" + layout.readyState + "; bodyTextLength=" + layout.bodyTextLength + "; interactiveCount=" + layout.interactiveCount);
+  record("M01 required search and management controls visible", layout.controls.every((c) => c.exists && c.visible), JSON.stringify(layout.controls));
   record("M01 mobile viewport page loaded", layout.mobileUA && layout.touch > 0,
-    `viewport=${layout.width}x${layout.height}; rootWidth=${layout.rootWidth}; title=${layout.title}; touch=${layout.touch}`);
+    "viewport=" + layout.width + "x" + layout.height + "; rootWidth=" + layout.rootWidth + "; title=" + layout.title + "; touch=" + layout.touch);
   record("M01 no horizontal page overflow", layout.documentWidth <= layout.width + 1,
-    `documentWidth=${layout.documentWidth}; viewportWidth=${layout.width}`);
-  // Exercise responsive breakpoints in the same browser/page session before
-  // mutating device state. Restore the configured functional-test viewport.
+    "documentWidth=" + layout.documentWidth + "; viewportWidth=" + layout.width);
   for (const size of viewportMatrix) {
     await page.setViewportSize(size);
     await page.waitForTimeout(100);
     const responsive = await page.evaluate(() => ({
-      width: innerWidth,
-      height: innerHeight,
-      documentWidth: document.documentElement.scrollWidth,
+      width: innerWidth, height: innerHeight, documentWidth: document.documentElement.scrollWidth,
       rootWidth: document.querySelector("#mp-install-root")?.getBoundingClientRect().width || 0,
     }));
-    record(`M01 responsive layout ${size.width}x${size.height}`,
-      responsive.width === size.width &&
-      responsive.documentWidth <= responsive.width + 1 &&
+    record("M01 responsive layout " + size.width + "x" + size.height,
+      responsive.width === size.width && responsive.documentWidth <= responsive.width + 1 &&
       responsive.rootWidth > 0 && responsive.rootWidth <= responsive.width + 1,
-      `inner=${responsive.width}x${responsive.height}; documentWidth=${responsive.documentWidth}; rootWidth=${responsive.rootWidth}`);
+      "inner=" + responsive.width + "x" + responsive.height + "; documentWidth=" + responsive.documentWidth + "; rootWidth=" + responsive.rootWidth);
   }
   await page.setViewportSize(viewport);
-  if (pageErrors.length) throw new Error("page JavaScript error: " + pageErrors[0]);
+  record("M01 no unhandled page errors after initial load", pageErrors.length === 0, "count=" + pageErrors.length);
+  record("M01 no console errors after initial load", consoleErrors.length === 0, "count=" + consoleErrors.length);
+  record("M01 no failed network requests after initial load", failedRequests.length === 0, "count=" + failedRequests.length);
 
+  // Baseline is a safety gate: never mutate unless the device is readable and idle.
   baseline = await readSlots();
   const baselineStatus = await readStatus();
   saveJson("baseline-slots.json", stableSlots(baseline));
@@ -428,80 +446,105 @@ try {
   assertIdle(baselineStatus, "M02 baseline");
   assertDynamicSlotGeometry(baseline, "M02 baseline");
   saveJson("baseline-data-reservations.json", dataReservations(baseline));
-  record("M02 baseline slots read", true, `slots=${baseline.slots.length}; free=${baseline.free}`);
-  if (baseline.slots.some((s) => ownedNames.has(s.name))) throw new Error("test-name collision with existing slot");
+  record("M02 baseline slots read", true, "slots=" + baseline.slots.length + "; free=" + baseline.free);
+  if (baseline.slots.some((slot) => ownedNames.has(slot.name))) throw new Error("test-name collision with existing slot; refusing to mutate device");
 
-  const a = await installPlay(playA, nameA, "M04 install A");
-  const afterA = await readSlots();
-  saveJson("after-install-a.json", stableSlots(afterA));
-  record("M04 install A independently verified", afterA.slots.some((s) => s.name === nameA && s.state === "valid"));
-  assertDynamicSlotGeometry(afterA, "M04 after install A");
-  assertBaselineDataPreserved(afterA, "M04 after install A");
-  if (requireDataReservation) {
-    const baselineData = dataReservations(baseline);
-    const newForA = dataReservations(afterA).filter((d) => d.play_id === Number(playA) &&
-      !baselineData.some((x) => x.offset === d.offset && x.size === d.size &&
-        x.play_id === d.play_id && x.label === d.label));
-    record("M04 child-firmware A DATA reservation created", newForA.length > 0,
-      "playId=" + playA + "; newReservations=" + newForA.length);
-  }
-  // The hardware driver must boot the child, verify DATA write/read/checksum and persistence, then return to launcher.
-  await runChildRuntime(a, playA, nameA, "M04A");
-  const b = await installPlay(playB, nameB, "M05 install B");
-  await runChildRuntime(b, playB, nameB, "M05B");
-  const afterB = await readSlots();
-  saveJson("after-install-b.json", stableSlots(afterB));
-  if (requireDataReservation) {
-    const baselineData = dataReservations(baseline);
-    const installedData = dataReservations(afterB);
-    const newData = installedData.filter((d) => !baselineData.some((x) =>
-      x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
-    record("M05 child-firmware DATA reservation created", newData.length > 0,
-      "newReservations=" + newData.length + "; labels=" + newData.map((d) => d.label).join(","));
-  }
-  record("M05 both plays coexist", afterB.slots.some((s) => s.name === nameA && s.state === "valid") &&
-    afterB.slots.some((s) => s.name === nameB && s.state === "valid"), `slotA=${a.slot}; slotB=${b.slot}`);
-  assertDynamicSlotGeometry(afterB, "M05 after install B");
-  assertBaselineDataPreserved(afterB, "M05 after install B");
-  saveJson("after-install-data-reservations.json", dataReservations(afterB));
+  // Each phase is isolated. A failure is recorded and later independent cases still run.
+  let a = null, b = null, afterA = null, afterB = null, afterRemoveA = null;
+  const installA = await runCase("M04 install A", async () => {
+    const slot = await installPlay(playA, nameA, "M04 install A");
+    const listing = await readSlots();
+    saveJson("after-install-a.json", stableSlots(listing));
+    record("M04 install A independently verified", listing.slots.some((x) => x.name === nameA && x.state === "valid"));
+    assertDynamicSlotGeometry(listing, "M04 after install A");
+    assertBaselineDataPreserved(listing, "M04 after install A");
+    if (requireDataReservation) {
+      const oldData = dataReservations(baseline);
+      const fresh = dataReservations(listing).filter((d) => d.play_id === Number(playA) &&
+        !oldData.some((x) => x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+      record("M04 child-firmware A DATA reservation created", fresh.length > 0, "newReservations=" + fresh.length);
+    }
+    return { slot, listing };
+  });
+  if (installA.ok) { a = installA.value.slot; afterA = installA.value.listing; }
+  if (a) await runCase("M04A runtime A", () => runChildRuntime(a, playA, nameA, "M04A"));
+  else record("M04A runtime A", false, "blocked: install A did not complete");
 
-  await removeByName(nameA, "M06");
-  if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");
-  else { report.notCovered.push({ scenario: "M07A deleted firmware non-bootability", status: "NOT_COVERED", reason: "UI and read-only slot state cannot prove flash image non-bootability." }); console.log("[NOT COVERED] M07A deleted firmware non-bootability"); }
-  const afterRemoveA = await readSlots();
-  record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
-  await runChildRuntime(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
-  if (requireDataReservation) {
-    const beforeDeleteA = dataReservations(afterB);
-    const remaining = dataReservations(afterRemoveA);
-    const baselineData = dataReservations(baseline);
-    const created = beforeDeleteA.filter((d) => d.play_id === Number(playA) && !baselineData.some((x) =>
-      x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
-    const released = created.filter((d) => !remaining.some((x) =>
-      x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
-    record("M06 UI delete releases test-created DATA reservations", released.length > 0,
-      "released=" + released.length + "; created=" + created.length);
-  }
-  assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
-  assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
-  await removeByName(nameB, "M07");
-  if (!manualAssist) verifyDeletedRuntime(nameB, playB, "M08B");
-  else { report.notCovered.push({ scenario: "M08B deleted firmware non-bootability", status: "NOT_COVERED", reason: "UI and read-only slot state cannot prove flash image non-bootability." }); console.log("[NOT COVERED] M08B deleted firmware non-bootability"); }
-  const finalSlots = await readSlots();
-  const finalStatus = await readStatus();
-  saveJson("final-slots.json", stableSlots(finalSlots));
-  saveJson("final-status.json", finalStatus);
-  assertIdle(finalStatus, "M08 final");
-  assertDynamicSlotGeometry(finalSlots, "M08 final");
-  record("M08 data reservations restored to baseline",
-    JSON.stringify(dataReservations(finalSlots)) === JSON.stringify(dataReservations(baseline)),
-    "baseline=" + dataReservations(baseline).length + "; final=" + dataReservations(finalSlots).length);
-  saveJson("final-data-reservations.json", dataReservations(finalSlots));
-  const restored = JSON.stringify(stableSlots(finalSlots)) === JSON.stringify(stableSlots(baseline));
-  record("M08 device state restored to baseline", restored,
-    `baselineSlots=${baseline.slots.length}; finalSlots=${finalSlots.slots.length}; baselineFree=${baseline.free}; finalFree=${finalSlots.free}`);
-  record("M09 no unhandled page errors", pageErrors.length === 0, `count=${pageErrors.length}`);
-  report.verdict = report.results.every((r) => r.ok) ? (manualAssist ? "PASS_WITH_MANUAL_STEPS" : "PASS") : "FAIL";
+  const installB = await runCase("M05 install B", async () => {
+    const slot = await installPlay(playB, nameB, "M05 install B");
+    const listing = await readSlots();
+    saveJson("after-install-b.json", stableSlots(listing));
+    record("M05 both plays coexist", listing.slots.some((x) => x.name === nameA && x.state === "valid") &&
+      listing.slots.some((x) => x.name === nameB && x.state === "valid"), "slotA=" + (a ? a.slot : "missing") + "; slotB=" + slot.slot);
+    assertDynamicSlotGeometry(listing, "M05 after install B");
+    assertBaselineDataPreserved(listing, "M05 after install B");
+    if (requireDataReservation) {
+      const oldData = dataReservations(baseline);
+      const fresh = dataReservations(listing).filter((d) => !oldData.some((x) =>
+        x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+      record("M05 child-firmware DATA reservation created", fresh.length > 0, "newReservations=" + fresh.length);
+    }
+    saveJson("after-install-data-reservations.json", dataReservations(listing));
+    return { slot, listing };
+  });
+  if (installB.ok) { b = installB.value.slot; afterB = installB.value.listing; }
+  if (b) await runCase("M05B runtime B", () => runChildRuntime(b, playB, nameB, "M05B"));
+  else record("M05B runtime B", false, "blocked: install B did not complete");
+
+  if (a) {
+    await runCase("M06 remove A and verify B isolation", async () => {
+      await removeByName(nameA, "M06");
+      if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");
+      else {
+        report.notCovered.push({ scenario: "M07A deleted firmware non-bootability", status: "NOT_COVERED", reason: "UI and read-only slot state cannot prove flash image non-bootability." });
+        console.log("[NOT COVERED] M07A deleted firmware non-bootability");
+      }
+      afterRemoveA = await readSlots();
+      record("M06 B remains valid after removing A", Boolean(b) && afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid"));
+      if (b) await runChildRuntime(afterRemoveA.slots.find((x) => x.name === nameB), playB, nameB, "M06B");
+      if (requireDataReservation) {
+        const prior = dataReservations(afterB || afterRemoveA), remaining = dataReservations(afterRemoveA), oldData = dataReservations(baseline);
+        const created = prior.filter((d) => d.play_id === Number(playA) && !oldData.some((x) =>
+          x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+        const released = created.filter((d) => !remaining.some((x) =>
+          x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+        record("M06 UI delete releases test-created DATA reservations", released.length > 0, "released=" + released.length + "; created=" + created.length);
+      }
+      assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
+      assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
+    });
+  } else record("M06 remove A and verify B isolation", false, "blocked: install A did not complete");
+
+  if (b) {
+    await runCase("M07 remove B", async () => {
+      await removeByName(nameB, "M07");
+      if (!manualAssist) verifyDeletedRuntime(nameB, playB, "M08B");
+      else {
+        report.notCovered.push({ scenario: "M08B deleted firmware non-bootability", status: "NOT_COVERED", reason: "UI and read-only slot state cannot prove flash image non-bootability." });
+        console.log("[NOT COVERED] M08B deleted firmware non-bootability");
+      }
+    });
+  } else record("M07 remove B", false, "blocked: install B did not complete");
+
+  await runCase("M08 final baseline restoration", async () => {
+    const finalSlots = await readSlots(), finalStatus = await readStatus();
+    saveJson("final-slots.json", stableSlots(finalSlots));
+    saveJson("final-status.json", finalStatus);
+    assertIdle(finalStatus, "M08 final");
+    assertDynamicSlotGeometry(finalSlots, "M08 final");
+    record("M08 data reservations restored to baseline",
+      JSON.stringify(dataReservations(finalSlots)) === JSON.stringify(dataReservations(baseline)),
+      "baseline=" + dataReservations(baseline).length + "; final=" + dataReservations(finalSlots).length);
+    saveJson("final-data-reservations.json", dataReservations(finalSlots));
+    const restored = JSON.stringify(stableSlots(finalSlots)) === JSON.stringify(stableSlots(baseline));
+    record("M08 device state restored to baseline", restored,
+      "baselineSlots=" + baseline.slots.length + "; finalSlots=" + finalSlots.slots.length +
+      "; baselineFree=" + baseline.free + "; finalFree=" + finalSlots.free);
+  });
+  record("M09 no unhandled page errors", pageErrors.length === 0, "count=" + pageErrors.length);
+  record("M09 no console errors", consoleErrors.length === 0, "count=" + consoleErrors.length);
+  record("M09 no failed network requests", failedRequests.length === 0, "count=" + failedRequests.length);
+  report.verdict = report.results.every((x) => x.ok) ? (manualAssist ? "PASS_WITH_MANUAL_STEPS" : "PASS") : "FAIL";
 } catch (e) {
   report.results.push({ name: "fatal", ok: false, detail: redact(e?.stack || e?.message || String(e)), at: new Date().toISOString() });
   console.error("[FAIL] fatal — " + redact(e?.message || String(e)));
