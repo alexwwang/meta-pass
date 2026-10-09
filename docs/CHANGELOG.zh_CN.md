@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **真实市场 DATA E2E 目标已选定**：依据市场固件存储调研，选择录音笔 Play 28（`recordings` FAT，subtype `0x81`）作为业务级持久化验收目标，要求通过 WAV 文件哈希验证运行时录音在重启后仍存在，并验证删除行为。`e2edata` fixture 明确降级为基础设施回归测试。Play 28 原始 DATA 声明超出当前池容量，约 4 MiB 的受控缩容和真实录音 UI 自动化尚未实现，因此目标状态仍为 BLOCKED/NOT RUN，不能以 fixture PASS 代替。
+
 - **手机内嵌页面 DATA E2E 专用子固件基线**：新增独立 ESP-IDF 5.5.3 测试应用，使用 USB Serial/JTAG 命令协议，按 `e2edata` 标签通过真实 `esp_partition_*` API 写入、读回并校验确定性记录；新增主机串口客户端和静态契约门禁。文档明确 A/B 不同 play ID 的隔离、跨重启读回和卸载验证流程，同时记录验证边界：现已增加默认关闭的 `CONFIG_META_E2E_TEST_CONTROL` 启动器控制通道和匹配现有 runner 的 runtime driver；它们尚未在 ESP-IDF 环境构建或真机验证，因此仍不得宣称全自动 E2E 通过。
 
 - **前端模块 × 真机回归门禁**:手机端安装路径与空间管理此前只在对 mock 设备
