@@ -31,6 +31,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+    def test_cancelled_uninstall_must_leave_state_unchanged(self):
+        for token in ("cancelRemoveByName", "cancel uninstall is a no-op",
+                      "slotsUnchanged", "installerIdle", "#mp-mgmt-x"):
+            with self.subTest(token=token):
+                self.assertIn(token, RUNNER)
+
     def test_runtime_evidence_cannot_be_replaced_by_ui_toast(self):
         for token in ("childBooted", "dataEraseOk", "dataWriteOk", "dataReadOk",
                       "dataChecksumOk", "dataPersistedAfterReboot", "returnedToLauncher",
