@@ -37,8 +37,8 @@ require(runner, '"analyze deletion target ownership"', "action-bound cleanup ana
 require(multi, "execFileSync", "multi-round commit metadata")
 require(multi, '"/api/install/remove"', "multi-round failure cleanup")
 require(multi, '"after-failure-slots.json"', "multi-round post-cleanup evidence")
-require(multi, '"device: \"redacted\""', "multi-round report redacts device address")
-require(multi, '"serialPort: \"redacted\""', "multi-round report redacts serial path")
+require(multi, 'device: "redacted"', "multi-round report redacts device address")
+require(multi, 'serialPort: "redacted"', "multi-round report redacts serial path")
 require(multi, '"- serial port: redacted"', "multi-round markdown redacts serial path")
 require(multi, 'baseline fully restored', "multi-round baseline restoration assertion")
 
