@@ -57,6 +57,9 @@ Supported actions:
 - `fill`: `selector`, `value` or `valueFrom` (`deviceIp`, `deviceUrl`)
 - `waitText` / `assertText`: `selector`, `text`
 - `assertJs`: `script`, optional `equals`
+- `snapshotSlots`: `snapshot` name; records a device-state snapshot at that point in the UI flow
+- `assertSlotPresent` / `assertSlotAbsent`: `snapshot` plus `slotName` or `playId`
+- `assertInstallerIdle`: assert the phone install service has no active session
 - `sleep`: `ms`
 
 Example step:
