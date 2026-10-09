@@ -4,9 +4,11 @@
 
 # 手机内嵌页面 E2E 自动化测试框架
 
-## 目标
+## 定位
 
-本框架通过真实 Android 自动化会话驱动手机端页面。它与 `usb_web_e2e_multi.mjs` 分离：后者验证桌面 USB/Web Serial 页面，不能作为手机 UI 的测试证据。
+**本文件只说明可选的原生 Android WebView 集成测试**，用于验证宿主 App、真实 WebView 上下文、原生桥接或容器生命周期。常规手机网页业务 E2E 的主方案是 [`mobile-page-e2e.zh_CN.md`](mobile-page-e2e.zh_CN.md)：用 Playwright 手机视口仿真直接测试真实设备页面，不要求 Android 模拟器、Appium 或原生宿主 App。
+
+本框架与 `usb_web_e2e_multi.mjs` 分离：后者验证桌面 USB/Web Serial 页面，不能作为手机网页业务 E2E 的通过证据。
 
 ## 架构
 
