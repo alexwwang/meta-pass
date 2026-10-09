@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools/realdevice/mobile_page_e2e.mjs"
-source = RUNNER.read_text(encoding="utf-8")
+source = RUNNER.read_text(encoding="utf-8") + "\n" + (ROOT / "tools/realdevice/cdp_mobile_page.mjs").read_text(encoding="utf-8")
 
 def require(value, label):
     assert value in source, f"missing mobile page E2E contract: {label} ({value})"
