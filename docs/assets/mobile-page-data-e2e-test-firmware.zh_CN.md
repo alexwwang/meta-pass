@@ -69,6 +69,25 @@ idf.py build
 
 生成的 `build/data_child.bin` 是普通子固件 app 镜像，走现有 meta-pass 安装/提取流程，不是全 Flash 镜像。需确认 marketplace/analyze manifest 声明 `e2edata`；app 二进制本身不携带 DATA 内容。
 
+## 接入手机页面 E2E runner
+
+先在测试启动器上启用上面的 test overlay，并用仓库受保护布局的既有流程部署；不要把测试配置用于发布，也不要用全盘烧录覆盖设备身份分区。把同一测试子固件作为两个不同 play ID 的测试条目发布/提供，且两个条目的 analyze manifest 都必须包含 `e2edata`。
+
+```bash
+python3 -m pip install pyserial
+export META_PASS_E2E_SERIAL_PORT=/dev/cu.usbmodemXXXX  # 按本机实际端口填写
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device \
+  --cdp-url http://127.0.0.1:9222 \
+  --url 'http://<device-ip>/' \
+  --token '<32-hex-session>' \
+  --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \
+  --require-data-reservation \
+  --play-a <test-play-id-a> --play-b <test-play-id-b>
+```
+
+该命令会在真实手机页面安装/删除玩法，并通过 USB 串口驱动启动子固件、写入/读回、复位后重新启动并验证 DATA。只有设备端控制通道、子固件协议、页面操作和最终基线恢复全部通过，才可能得到完整 E2E PASS。当前仍需在实际 ESP-IDF 5.5.3 环境构建并在板卡上验证此链路。
+
 ## 证据与限制
 
 - 固件响应返回真实分区 offset/size，以及子固件读回的字节证据。
