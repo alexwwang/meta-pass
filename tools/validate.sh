@@ -322,6 +322,17 @@ run_firmware_checks() (
     SDKCONFIG_DEFAULTS="${repo_root}/sdkconfig.defaults" \
         idf.py -B "${validation_build_dir}" \
         -D "SDKCONFIG=${validation_build_dir}/sdkconfig" build
+    # Compile the opt-in launcher control path separately; the release/default
+    # build above remains CONFIG_META_E2E_TEST_CONTROL=n.
+    SDKCONFIG_DEFAULTS="${repo_root}/sdkconfig.defaults;${repo_root}/sdkconfig.e2e-test.defaults" \
+        idf.py -B "${validation_build_dir}/e2e-launcher" \
+        -D "SDKCONFIG=${validation_build_dir}/e2e-launcher/sdkconfig" build
+    # Compile the dedicated child app independently so ESP-IDF API/config drift
+    # is caught in CI even though hardware lifecycle tests remain manual-dispatch.
+    SDKCONFIG_DEFAULTS="${repo_root}/tests/realdevice/data-child/sdkconfig.defaults" \
+        idf.py -C "${repo_root}/tests/realdevice/data-child" \
+        -B "${validation_build_dir}/data-child" \
+        -D "SDKCONFIG=${validation_build_dir}/data-child/sdkconfig" build
     idf.py -B "${validation_build_dir}" merge-bin \
         -o "${validation_build_dir}/FoloToy-AI-Passport-full.bin"
     # 单文件混合格式产物(与 tools/build-firmware.sh 同一契约:
