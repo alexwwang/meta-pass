@@ -465,7 +465,8 @@ try {
   saveJson("after-install-data-reservations.json", dataReservations(afterB));
 
   await removeByName(nameA, "M06");
-  if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");\n  else record("M07A deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
+  if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");
+  else record("M07A deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
   await runChildRuntime(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
@@ -483,7 +484,8 @@ try {
   assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
   assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
-  if (!manualAssist) verifyDeletedRuntime(nameB, playB, "M08B");\n  else record("M08B deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
+  if (!manualAssist) verifyDeletedRuntime(nameB, playB, "M08B");
+  else record("M08B deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
@@ -518,7 +520,8 @@ try {
   fs.writeFileSync(path.join(logDir, "report.txt"),
     [`Mobile page E2E: ${report.verdict}`, `viewport: ${viewport.width}x${viewport.height}`,
       ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | ${r.name} | ${r.detail || ""}`),
-      `coverage gaps: ${(report.coverageGaps || []).join("; ")}`,\n      `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
+      `coverage gaps: ${(report.coverageGaps || []).join("; ")}`,
+      `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
       `failed requests: ${failedRequests.length}`].join("\n") + "\n");
   try { await page?.close(); } catch {}
   console.log(`REPORT_DIR=${logDir}`);
