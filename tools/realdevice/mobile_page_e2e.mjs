@@ -253,7 +253,7 @@ async function installPlay(playId, name, label) {
   await dismissPanel();
   return slot;
 }
-function runRuntimeDriver(slot, playId, name, phase) {
+async function runRuntimeDriver(slot, playId, name, phase) {
   const safePhase = phase.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
   const evidenceFile = path.join(logDir, "runtime-" + safePhase + ".json");
   const driverArgs = ["--action", "boot-test-and-return", "--slot", String(slot.slot),
@@ -273,6 +273,15 @@ function runRuntimeDriver(slot, playId, name, phase) {
     missing.length ? "missing/false evidence: " + missing.join(",") :
       "slot=" + slot.slot + "; playId=" + playId + "; DATA label=" + (evidence.dataLabel || "reported by driver") + "; serial evidence=" + Boolean(evidence.serialEvidence));
   if (missing.length) throw new Error("runtime evidence failed for " + phase + ": " + missing.join(", "));
+  // Child execution/reboot takes the device HTTP service down temporarily.
+  // Re-navigate the same CDP tab only after the driver proves launcher recovery.
+  await page.goto(target.toString(), { timeout: 90000 });
+  await page.locator("#mp-install-root").waitFor({ state: "attached", timeout: 90000 });
+  await page.locator("#mp-q").waitFor({ state: "visible", timeout: 30000 });
+  await waitFor(async () => {
+    const status = (await page.locator("#mp-status").textContent().catch(() => "")) || "";
+    return status.length > 0 && !status.includes("正在加载玩法目录");
+  }, phase + " launcher page recovered", 90000);
   return evidence;
 }
 function verifyDeletedRuntime(name, playId, phase) {
@@ -370,9 +379,9 @@ try {
       "playId=" + playA + "; newReservations=" + newForA.length);
   }
   // The hardware driver must boot the child, verify DATA write/read/checksum and persistence, then return to launcher.
-  runRuntimeDriver(a, playA, nameA, "M04A");
+  await runRuntimeDriver(a, playA, nameA, "M04A");
   const b = await installPlay(playB, nameB, "M05 install B");
-  runRuntimeDriver(b, playB, nameB, "M05B");
+  await runRuntimeDriver(b, playB, nameB, "M05B");
   const afterB = await readSlots();
   saveJson("after-install-b.json", stableSlots(afterB));
   if (requireDataReservation) {
@@ -393,7 +402,7 @@ try {
   verifyDeletedRuntime(nameA, playA, "M07A");
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
-  runRuntimeDriver(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
+  await runRuntimeDriver(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
   if (requireDataReservation) {
     const beforeDeleteA = dataReservations(afterB);
     const remaining = dataReservations(afterRemoveA);
