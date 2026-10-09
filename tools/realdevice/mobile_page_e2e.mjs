@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { chromium } from "playwright";
 import { parseSlots } from "../../install-slot/phone-install.js";
 
@@ -28,6 +29,8 @@ if (!args["real-device"]) {
 const playA = String(args["play-a"] || process.env.MOBILE_E2E_PLAY_A || "1");
 const playB = String(args["play-b"] || process.env.MOBILE_E2E_PLAY_B || "2");
 const requireDataReservation = Boolean(args["require-data-reservation"]);
+const runtimeDriver = String(args["runtime-driver"] || process.env.MOBILE_E2E_RUNTIME_DRIVER || "");
+const runtimeTimeout = Number(args["runtime-timeout"] || process.env.MOBILE_E2E_RUNTIME_TIMEOUT_MS || 180000);
 const tokenArg = String(args.token || process.env.META_PASS_SESSION || "");
 const urlArg = String(args.url || process.env.MOBILE_E2E_URL || "");
 const viewport = { width: Number(args.width || 390), height: Number(args.height || 844) };
@@ -42,6 +45,10 @@ const viewportMatrix = String(args.viewports || "320x720,360x800,390x844,430x932
   });
 const timeout = Number(args.timeout || process.env.MOBILE_E2E_TIMEOUT_MS || 600000);
 const logDir = path.resolve(String(args.logdir || path.join(LOGROOT, "mobile-page-e2e-" + new Date().toISOString().replace(/[:.]/g, "-"))));
+if (!runtimeDriver) {
+  console.error("A hardware runtime driver is required: --runtime-driver <executable>. UI/API-only checks cannot prove child execution or DATA read/write.");
+  process.exit(2);
+}
 if (!urlArg || !/^\d+$/.test(playA) || !/^\d+$/.test(playB) || playA === playB) {
   console.error("Usage: node tools/realdevice/mobile_page_e2e.mjs --real-device --url http://<device-ip>/ [--token <32hex>] [--play-a 1] [--play-b 2]");
   process.exit(2);
@@ -67,7 +74,8 @@ const installAttempted = new Set();
 fs.mkdirSync(logDir, { recursive: true });
 
 const report = {
-  test: "Real-device phone-install page E2E (Playwright mobile emulation)",
+  test: "Real-device phone-install + child runtime + DATA lifecycle E2E",
+  runtimeDriver: path.basename(runtimeDriver),
   startedAt: new Date().toISOString(),
   browser: "Chromium",
   mobileEmulation: { ...viewport, viewportMatrix, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
@@ -243,6 +251,27 @@ async function installPlay(playId, name, label) {
   await dismissPanel();
   return slot;
 }
+function runRuntimeDriver(slot, playId, name, phase) {
+  const safePhase = phase.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+  const evidenceFile = path.join(logDir, "runtime-" + safePhase + ".json");
+  const driverArgs = ["--action", "boot-test-and-return", "--slot", String(slot.slot),
+    "--play-id", String(playId), "--slot-name", name, "--phase", phase,
+    "--timeout-ms", String(runtimeTimeout), "--evidence-file", evidenceFile];
+  const result = spawnSync(runtimeDriver, driverArgs, { encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024 });
+  if (result.error) throw new Error("runtime driver " + phase + " failed to start: " + result.error.message);
+  if (result.status !== 0) throw new Error("runtime driver " + phase + " exit=" + result.status + "; stderr=" + redact(result.stderr || "").slice(0, 500));
+  let evidence;
+  try { evidence = JSON.parse(fs.readFileSync(evidenceFile, "utf8")); }
+  catch (e) { throw new Error("runtime driver " + phase + " did not provide valid JSON evidence: " + e.message); }
+  const required = ["childBooted", "dataWriteOk", "dataReadOk", "dataChecksumOk", "dataPersistedAfterReboot", "returnedToLauncher"];
+  const missing = required.filter((key) => evidence[key] !== true);
+  saveJson("runtime-" + safePhase + "-evidence.json", evidence);
+  record(phase + ": child firmware executed and DATA verified", missing.length === 0,
+    missing.length ? "missing/false evidence: " + missing.join(",") :
+      "slot=" + slot.slot + "; playId=" + playId + "; DATA label=" + (evidence.dataLabel || "reported by driver") + "; serial evidence=" + Boolean(evidence.serialEvidence));
+  if (missing.length) throw new Error("runtime evidence failed for " + phase + ": " + missing.join(", "));
+  return evidence;
+}
 async function cleanupOwned() {
   if (!baseline || !page) return;
   for (const name of installAttempted) {
@@ -326,7 +355,10 @@ try {
     record("M04 child-firmware A DATA reservation created", newForA.length > 0,
       "playId=" + playA + "; newReservations=" + newForA.length);
   }
+  // The hardware driver must boot the child, verify DATA write/read/checksum and persistence, then return to launcher.
+  runRuntimeDriver(a, playA, nameA, "M04A");
   const b = await installPlay(playB, nameB, "M05 install B");
+  runRuntimeDriver(b, playB, nameB, "M05B");
   const afterB = await readSlots();
   saveJson("after-install-b.json", stableSlots(afterB));
   if (requireDataReservation) {
@@ -346,6 +378,7 @@ try {
   await removeByName(nameA, "M06");
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
+  runRuntimeDriver(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
   if (requireDataReservation) {
     const beforeDeleteA = dataReservations(afterB);
     const remaining = dataReservations(afterRemoveA);
@@ -360,6 +393,16 @@ try {
   assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
   assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
+  const deletionEvidenceFile = path.join(logDir, "runtime-M07A-delete-evidence.json");
+  const deletion = spawnSync(runtimeDriver, ["--action", "verify-deleted", "--slot-name", nameA,
+    "--play-id", playA, "--timeout-ms", String(runtimeTimeout), "--evidence-file", deletionEvidenceFile],
+    { encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024 });
+  if (deletion.error || deletion.status !== 0) throw new Error("runtime driver delete verification failed: " + (deletion.error?.message || deletion.stderr || deletion.status));
+  const deletionEvidence = JSON.parse(fs.readFileSync(deletionEvidenceFile, "utf8"));
+  saveJson("runtime-M07A-delete-evidence.json", deletionEvidence);
+  record("M07 deleted A is no longer bootable and DATA is released",
+    deletionEvidence.deletedSlotNotBootable === true && deletionEvidence.dataPartitionReleased === true,
+    "slotNotBootable=" + deletionEvidence.deletedSlotNotBootable + "; dataReleased=" + deletionEvidence.dataPartitionReleased);
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
