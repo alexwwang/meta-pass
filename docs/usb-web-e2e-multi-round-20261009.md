@@ -1,6 +1,6 @@
 # Multi-round USB Web UI E2E Test Report — 2026-10-09
 
-**Repo**: `meta-pass` @ `feat/storage` (post `e08b0b1`)
+**Repo**: `meta-pass` @ `feat/storage` (report committed after the test run)
 **Device**: ESP32-C3 Passport, one USB-JTAG port
 **Browser**: Chrome 154.0.8037.99 (single persistent session, Web Serial authorized)
 **Result**: **4 of 4 rounds PASS**
@@ -101,7 +101,7 @@ Both false positives came from driver scripts in `/tmp/` that were never committ
 
 ## Server-side Finding (Unrelated)
 
-`tools/install-slot/server.mjs:154` dev server sets `content-security-policy: default-src 'self'; script-src 'self'` which blocks the 3 inline `<script>` blocks in `install-slot.html`. In prod (Cloudflare Pages) CSP is not set so the bug never surfaced. Removed CSP header, kept `nosniff` + `DENY`. **Uncommitted** — separate commit needed.
+`tools/install-slot/server.mjs` 的开发服务器曾设置 `content-security-policy: default-src 'self'; script-src 'self'`，会阻止 `install-slot.html` 的 3 个 inline `<script>` 执行。生产环境（Cloudflare Pages）未设置该 CSP，因此此前未暴露。该问题已在提交 `1d262e6` 中修复：移除 CSP 响应头，保留 `nosniff` 和 `DENY`。
 
 ## Files
 
@@ -122,4 +122,4 @@ Both false positives came from driver scripts in `/tmp/` that were never committ
 - Chrome session kept single throughout (per directive). Web Serial authorized once at first run.
 - No flash erase occurred at any point; device identity partition never touched.
 - Device IP, MAC, session token, WiFi SSID, USB serial path, and local filesystem paths have been redacted from this report.
-- This report and logdir are uncommitted — awaiting directive.
+- This sanitized report is committed. Raw device logs and screenshots remain local test evidence and are not required for the source-level CI run.
