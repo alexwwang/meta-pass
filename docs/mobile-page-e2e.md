@@ -90,3 +90,38 @@ Its evidence must include `deletedSlotNotBootable: true` and `dataPartitionRelea
 ## 6. Verification boundary
 
 Static contract tests and JavaScript syntax checks validate the test harness, not the device behavior. Without a connected device, real hardware driver, dedicated test firmware and collected device-side evidence, device E2E must remain NOT RUN/FAIL; passing read-only API checks is not a substitute.
+
+## 7. Coverage tiers and manual-assisted mode
+
+| Scenario | CDP/UI automation | Manual-assisted mode | Full hardware-driver mode |
+|---|---|---|---|
+| Responsive layout, JS and network errors | Automated | Automated | Automated |
+| Install A/B and delete A/B through the page | Automated | Automated | Automated |
+| Slot state, allocation range/alignment/overlap and free-space checks | Read-only cross-check | Read-only cross-check | Read-only cross-check |
+| Physical UP/DOWN/OK to launch a child and return to launcher | Not covered | Human action and confirmation | Real driver action with device-side evidence |
+| Child DATA write/read/checksum/persistence after reboot | Not covered | **Not verified** unless a separately auditable device-side test protocol exists | Evidence required from test firmware and driver |
+| Prove deleted image cannot boot | Not covered | **Not covered**; absence from slot listing does not prove flash contents cannot boot | Device-side non-destructive verification required |
+| DATA reservation release and baseline restoration | Allocation records checked | Allocation records checked, but not proof old DATA contents are inaccessible | Allocation records plus device-side evidence |
+
+### Running with human assistance
+
+When no hardware runtime driver is available, use manual-assisted mode for the UI lifecycle and physical-button checkpoints:
+
+```bash
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device --manual-assist \
+  --url 'http://<device-ip>/' --token '<32-hex-session>' \
+  --play-a <test-play-id-a> --play-b <test-play-id-b>
+```
+
+This mode requires an interactive terminal and refuses non-TTY execution so unattended runs cannot silently skip physical actions. At each checkpoint:
+
+1. Use the device's physical UP/DOWN buttons to select the newly installed test play, then press physical OK.
+2. Confirm the device actually entered the play, rather than remaining in the launcher. Seeing a title alone does not prove DATA behavior.
+3. Use the device's supported exit/return action to get back to the launcher.
+4. Wait for the USB page to recover, then enter `PASS` in the terminal. Enter `FAIL` if launch/return fails, the display is ambiguous, or the device stops responding.
+5. Repeat for A, B, and B again after deleting A.
+
+Human input is recorded as `manual-confirmed`, not as device evidence collected over serial or from firmware. The verdict is `PASS_WITH_MANUAL_STEPS`, **not a full E2E PASS**. The report explicitly lists DATA write/read/checksum/reboot persistence and deleted-image non-bootability as uncovered. These require a real runtime driver and dedicated test firmware; neither manual confirmation nor slot-list API output may be substituted for evidence.
+
+Use `--runtime-driver` for hardware-driver mode. Do not combine it with `--manual-assist`. See section 4 for the hardware-driver contract and evidence requirements.
