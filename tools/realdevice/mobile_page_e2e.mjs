@@ -116,8 +116,17 @@ async function waitFor(fn, label, ms = timeout) {
   }
   throw new Error(`timeout waiting for ${label}${last ? ": " + last.message : ""}`);
 }
+async function dismissPanel() {
+  const overlay = page.locator("#mp-overlay");
+  if (await overlay.count()) {
+    // The page itself closes the sheet when its backdrop receives a click.
+    await overlay.evaluate((el) => el.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await page.locator("#mp-overlay").waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+  }
+}
 async function openManagement() {
   if (await page.locator("#mp-mgmt-re").isVisible().catch(() => false)) return;
+  await dismissPanel();
   await page.locator("#mp-mgmt").click();
   await page.locator("#mp-mgmt-re").waitFor({ state: "visible", timeout: 15000 });
 }
@@ -164,6 +173,7 @@ async function installPlay(playId, name, label) {
   record(label + ": UI reports install complete", true, `playId=${playId}; name=${name}`);
   const slot = await waitFor(async () => (await readSlots()).slots.find((s) => s.name === name && s.state === "valid"), label + " device slot commit", 120000);
   assertIdle(await readStatus(), label);
+  await dismissPanel();
   return slot;
 }
 async function cleanupOwned() {
