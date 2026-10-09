@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **Dedicated DATA E2E child firmware baseline for the mobile page**: adds a standalone ESP-IDF 5.5.3 test app with a USB Serial/JTAG command protocol. It writes, reads, and validates a deterministic record through the real `esp_partition_*` API resolved by the `e2edata` label; a host serial client and static contract gate are included. The runbook specifies A/B isolation by distinct play IDs, post-reboot reads, and uninstall checks. It also explicitly records the remaining blocker: the launcher has no test-only slot-select/reboot control channel yet, so the serial client is not a complete runtime driver and full automated E2E must not be claimed before hardware validation.
+
 - **Front-end module × real-device regression gate**: the phone-side install
   path and space management were only ever exercised against a mock device
   (`tests/test_phone_install.mjs`), so mock↔firmware drift was invisible — the
