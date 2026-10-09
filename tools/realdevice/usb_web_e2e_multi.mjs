@@ -99,6 +99,8 @@ writeFileSync(
     arg.startsWith("--ip=") ? "--ip=<redacted-ip>" :
     arg === SERIAL_PORT ? "<redacted-serial-port>" :
     arg.startsWith("--serial-port=") ? "--serial-port=<redacted-serial-port>" :
+    arg === PROFILE ? "<redacted-profile-path>" :
+    arg.startsWith("--profile=") ? "--profile=<redacted-profile-path>" :
     arg
   ).join(" ") + "\n"
 );
