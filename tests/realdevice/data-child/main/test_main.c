@@ -257,7 +257,7 @@ static void handle_line(char *line)
 
 void app_main(void)
 {
-    const usb_serial_jtag_driver_config_t cfg = {
+    usb_serial_jtag_driver_config_t cfg = {
         .tx_buffer_size = 2048,
         .rx_buffer_size = 1024,
     };
