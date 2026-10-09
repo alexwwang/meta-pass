@@ -11,6 +11,8 @@ Status: the target has been selected; install-time size reduction and play-UI au
 **Use Recorder (Play 28) as the real business-DATA acceptance target. Its DATA partition is `recordings`, FAT subtype `0x81`.** Keep the custom `e2edata` child as a protocol, launcher-control, and allocator-regression fixture only. A passing fixture run must not be reported as a passing marketplace-play DATA lifecycle test.
 
 ## Why Play 28
+Cross-check: see the [voice and e-book DATA storage comparison](mobile-page-data-e2e-market-comparison.md), including public FoloToy AI Passport / DeepSeek voice source and an open-source e-reader reference, with the binary-download verification gap explicitly stated.
+
 
 Based on `docs/assets/dynslot-data-unification-research.md` (2026-10-02 byte-level analysis of marketplace binaries):
 
