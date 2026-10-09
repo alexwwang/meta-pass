@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="mobile-embedded-page-e2e.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
 # Mobile Embedded-Page E2E Framework
 
 ## Purpose
