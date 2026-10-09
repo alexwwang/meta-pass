@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- **Install/uninstall E2E safety hardening**: fixed the ESP-IDF 5.5.3 compile error caused by a mismatched `const` qualifier in the USB Serial/JTAG driver config. Hardened the mobile-page runner so device API must confirm a VALID slot after install; invalid geometry or loss of baseline DATA reservations blocks subsequent writes; and failure of A's runtime verification prevents installing B. Added static contract coverage. Firmware CI for the fix is still pending; no real-device E2E has run.
+
+
 - **Voice and e-book DATA storage comparison**: source-audited the public XiaoZhi AI Passport configuration and its 8 MiB partition table; the DeepSeek-configurable voice firmware uses shared NVS plus an `assets` resource partition, with no equivalent dedicated FAT recording archive found. Also reviewed the open-source Ebook project's FAT `userdata`, read-only LittleFS `assets`, and TF-card paths. The open-source e-reader is not confirmed to be the marketplace play, and the release ZIP could not be downloaded in this runtime, so no binary-level verification is claimed. Play 28 remains the preferred real DATA E2E target; a static contract test was added.
 
 - **Mobile embedded-page storage management and child-firmware E2E gate**: added bilingual design docs and a static contract test for the M01–M08 real-device path: mobile viewport/page health, baseline safety gate, A/B coexistence, allocator geometry, physical DATA isolation, UI uninstall, reservation release, and baseline restoration. Device-side serial evidence is required for erase/write/readback/checksum/reboot persistence and deleted-image non-bootability. The static contract is registered in `tools/validate.sh --static`. No real-device E2E was run in this turn; a static gate is not a hardware pass.
