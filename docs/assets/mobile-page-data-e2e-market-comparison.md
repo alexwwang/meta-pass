@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="mobile-page-data-e2e-market-comparison.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
 # Marketplace Voice and E-book Firmware: DATA Storage Comparison
 
 Date: 2026-10-09
