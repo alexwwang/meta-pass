@@ -113,6 +113,61 @@ function stableSlots(v) {
     data: (v.data || []).map((d) => ({ offset: d.offset, size: d.size, state: d.state, play_id: d.play_id, label: d.label })),
   };
 }
+
+// Independent storage oracle: slots and child DATA reservations must fit inside
+// allocator pools and must never overlap one another.
+const POOL_SEGMENTS = [{ start: 0x180000, end: 0x356000 }, { start: 0x360000, end: 0x7fe000 }];
+const POOL_BYTES = POOL_SEGMENTS.reduce((n, p) => n + p.end - p.start, 0);
+function assertDynamicSlotGeometry(listing, label) {
+  if (listing.protocolVersion !== 2) {
+    record(label + ": dynamic-slot protocol", false, "expected protocol_version=2");
+    return;
+  }
+  const occupied = [
+    ...listing.slots.map((s) => ({ type: "slot", id: s.slot, offset: s.offset, size: s.size })),
+    ...(listing.data || []).map((d, i) => ({ type: "data", id: d.play_id || i, offset: d.offset, size: d.size })),
+  ].sort((a, b) => a.offset - b.offset);
+  let ok = true;
+  const errors = [];
+  for (const item of occupied) {
+    if (!POOL_SEGMENTS.some((p) => item.offset >= p.start && item.offset + item.size <= p.end)) {
+      ok = false; errors.push(item.type + "[" + item.id + "] outside pool");
+    }
+    if (!Number.isInteger(item.offset) || item.offset % 0x10000 !== 0) {
+      ok = false; errors.push(item.type + "[" + item.id + "] offset alignment");
+    }
+    if (!Number.isInteger(item.size) || item.size <= 0 || item.size % 0x1000 !== 0) {
+      ok = false; errors.push(item.type + "[" + item.id + "] size granularity");
+    }
+  }
+  for (let i = 1; i < occupied.length; i++) {
+    if (occupied[i - 1].offset + occupied[i - 1].size > occupied[i].offset) {
+      ok = false; errors.push(occupied[i - 1].type + "[" + occupied[i - 1].id + "] overlaps " +
+        occupied[i].type + "[" + occupied[i].id + "]");
+    }
+  }
+  const expectedFree = POOL_BYTES - occupied.reduce((n, x) => n + x.size, 0);
+  if (listing.free !== expectedFree) {
+    ok = false; errors.push("free mismatch: device=" + listing.free + "; calculated=" + expectedFree);
+  }
+  record(label + ": dynamic slot geometry", ok,
+    "slots=" + listing.slots.length + "; dataReservations=" + (listing.data || []).length +
+    "; free=" + listing.free + "; " + errors.join("; "));
+}
+function dataReservations(listing) {
+  return (listing.data || []).map((d) => ({
+    offset: d.offset, size: d.size, state: d.state, play_id: d.play_id, label: d.label,
+  })).sort((a, b) => a.offset - b.offset || a.size - b.size);
+}
+function assertBaselineDataPreserved(listing, label) {
+  const expected = dataReservations(baseline);
+  const actual = dataReservations(listing);
+  const missing = expected.filter((d) => !actual.some((x) =>
+    x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+  record(label + ": baseline data reservations preserved", missing.length === 0,
+    missing.length ? JSON.stringify(missing) : "baseline=" + expected.length + "; current=" + actual.length);
+}
+
 function assertIdle(status, label) {
   const ok = status.protocol === 1 && !status.active && !status.session && !status.offer && !status.confirmed;
   record(label + ": installer idle", ok, `protocol=${status.protocol}; active=${Boolean(status.active)}; session=${Boolean(status.session)}`);
@@ -251,6 +306,8 @@ try {
   saveJson("baseline-slots.json", stableSlots(baseline));
   saveJson("baseline-status.json", baselineStatus);
   assertIdle(baselineStatus, "M02 baseline");
+  assertDynamicSlotGeometry(baseline, "M02 baseline");
+  saveJson("baseline-data-reservations.json", dataReservations(baseline));
   record("M02 baseline slots read", true, `slots=${baseline.slots.length}; free=${baseline.free}`);
   if (baseline.slots.some((s) => ownedNames.has(s.name))) throw new Error("test-name collision with existing slot");
 
@@ -258,20 +315,33 @@ try {
   const afterA = await readSlots();
   saveJson("after-install-a.json", stableSlots(afterA));
   record("M04 install A independently verified", afterA.slots.some((s) => s.name === nameA && s.state === "valid"));
+  assertDynamicSlotGeometry(afterA, "M04 after install A");
+  assertBaselineDataPreserved(afterA, "M04 after install A");
   const b = await installPlay(playB, nameB, "M05 install B");
   const afterB = await readSlots();
   saveJson("after-install-b.json", stableSlots(afterB));
   record("M05 both plays coexist", afterB.slots.some((s) => s.name === nameA && s.state === "valid") &&
     afterB.slots.some((s) => s.name === nameB && s.state === "valid"), `slotA=${a.slot}; slotB=${b.slot}`);
+  assertDynamicSlotGeometry(afterB, "M05 after install B");
+  assertBaselineDataPreserved(afterB, "M05 after install B");
+  saveJson("after-install-data-reservations.json", dataReservations(afterB));
 
   await removeByName(nameA, "M06");
-  record("M06 B remains valid after removing A", (await readSlots()).slots.some((s) => s.name === nameB && s.state === "valid"));
+  const afterRemoveA = await readSlots();
+  record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
+  assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
+  assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
   saveJson("final-status.json", finalStatus);
   assertIdle(finalStatus, "M08 final");
+  assertDynamicSlotGeometry(finalSlots, "M08 final");
+  record("M08 data reservations restored to baseline",
+    JSON.stringify(dataReservations(finalSlots)) === JSON.stringify(dataReservations(baseline)),
+    "baseline=" + dataReservations(baseline).length + "; final=" + dataReservations(finalSlots).length);
+  saveJson("final-data-reservations.json", dataReservations(finalSlots));
   const restored = JSON.stringify(stableSlots(finalSlots)) === JSON.stringify(stableSlots(baseline));
   record("M08 device state restored to baseline", restored,
     `baselineSlots=${baseline.slots.length}; finalSlots=${finalSlots.slots.length}; baselineFree=${baseline.free}; finalFree=${finalSlots.free}`);
