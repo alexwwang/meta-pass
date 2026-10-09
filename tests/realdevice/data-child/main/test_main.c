@@ -23,14 +23,14 @@
 typedef struct {
     uint32_t magic;
     uint32_t version;
-    char nonce[16];
+    char nonce[32];
     uint32_t sequence;
     uint8_t payload[RECORD_PAYLOAD_SIZE];
     uint8_t sha256[32];
     uint32_t crc32;
 } data_record_t;
 
-_Static_assert(sizeof(data_record_t) == 256, "DATA record must remain 256 bytes");
+_Static_assert(sizeof(data_record_t) == 272, "DATA record must remain 272 bytes");
 
 static const esp_partition_t *s_data;
 static uint32_t s_sequence;
@@ -128,7 +128,7 @@ static void command_write(const char *nonce)
         send_error("DATA_NOT_FOUND", TAG_LABEL);
         return;
     }
-    if (s_data->size < SPI_FLASH_SEC_SIZE) {
+    if (s_data->size < 4096u) {
         send_error("DATA_TOO_SMALL", "DATA partition is smaller than one erase sector");
         return;
     }
@@ -137,9 +137,7 @@ static void command_write(const char *nonce)
     memset(&record, 0, sizeof(record));
     record.magic = RECORD_MAGIC;
     record.version = RECORD_VERSION;
-    for (size_t i = 0; i < sizeof(record.nonce) * 2; i++) {
-        record.nonce[i / 2] = (char)((i & 1u) ? nonce[i] : nonce[i]);
-    }
+    memcpy(record.nonce, nonce, sizeof(record.nonce));
     /* Store a compact, deterministic nonce-derived payload, not user data. */
     for (size_t i = 0; i < sizeof(record.payload); i++) {
         record.payload[i] = (uint8_t)(nonce[i % 32] ^ (uint8_t)(i * 31u));
@@ -147,7 +145,7 @@ static void command_write(const char *nonce)
     record.sequence = ++s_sequence;
     hash_record(&record);
 
-    esp_err_t err = esp_partition_erase_range(s_data, 0, SPI_FLASH_SEC_SIZE);
+    esp_err_t err = esp_partition_erase_range(s_data, 0, 4096u);
     if (err == ESP_OK) err = esp_partition_write(s_data, 0, &record, sizeof(record));
     if (err != ESP_OK) {
         send_error("DATA_WRITE_FAILED", esp_err_to_name(err));
@@ -228,7 +226,7 @@ static void command_erase(void)
         send_error("DATA_NOT_FOUND", TAG_LABEL);
         return;
     }
-    const esp_err_t err = esp_partition_erase_range(s_data, 0, SPI_FLASH_SEC_SIZE);
+    const esp_err_t err = esp_partition_erase_range(s_data, 0, 4096u);
     if (err != ESP_OK) {
         send_error("DATA_ERASE_FAILED", esp_err_to_name(err));
         return;
@@ -239,8 +237,7 @@ static void command_erase(void)
 static void handle_line(char *line)
 {
     while (*line == ' ' || *line == '\t') line++;
-    const size_t n = strlen(line);
-    while (n && (line[strlen(line) - 1] == '\r' || line[strlen(line) - 1] == '\n')) {
+    while (*line && (line[strlen(line) - 1] == '\r' || line[strlen(line) - 1] == '\n')) {
         line[strlen(line) - 1] = '\0';
     }
     if (strcmp(line, "HELLO") == 0) command_hello();
