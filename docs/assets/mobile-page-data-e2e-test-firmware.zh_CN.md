@@ -4,7 +4,7 @@
 
 # 手机内嵌页面 DATA E2E 专用子固件
 
-状态：已在 `feat/storage` 建立实现基线；真机集成尚未完成。
+状态：基础设施 fixture；不是市场业务 DATA 验收固件。真实市场目标与容量门槛见 [真实市场固件选择](mobile-page-data-e2e-market-firmware.zh_CN.md)。
 
 ## 目标
 
