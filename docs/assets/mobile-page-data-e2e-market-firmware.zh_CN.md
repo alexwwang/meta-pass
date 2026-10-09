@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="mobile-page-data-e2e-market-firmware.md">English</a> · <strong>简体中文</strong>
+</p>
+
 # 手机内嵌页 DATA E2E：真实市场固件选择
 
 状态：测试对象已选定；安装缩容与玩法 UI 自动化适配尚未完成。
