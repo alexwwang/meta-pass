@@ -38,6 +38,7 @@ assert "expected_digest" in driver and "hashlib.sha256" in driver, "host indepen
 assert "does not select/boot launcher slots" in driver, "serial client must not claim full runtime-driver coverage"
 assert "CONFIG_META_E2E_TEST_CONTROL" in control and "default n" in config, "launcher control must be opt-in"
 assert "meta_store_boot_slot(slot)" in control, "test control must reuse the validated production boot path"
+assert "E2E BOOT_PLAY" in control and "expect_rejection" in runtime, "deleted play ID must be rejected by launcher boot policy"
 assert "esp_partition_write" not in control and "esp_flash_write" not in control, "launcher control must not expose flash writes"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
