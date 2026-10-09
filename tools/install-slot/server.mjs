@@ -150,8 +150,12 @@ const server = http.createServer((req, res) => {
       // 页面与模块迭代期禁用缓存:浏览器缓存可能比仓库代码旧(ES 模块同样受限),
       // 曾导致"改了但页面没体现"。生产环境(Cloudflare Pages)发自己的缓存策略,不受影响。
       "cache-control": "no-store",
-      // N6: 安全头 — CSP 限制脚本来源,防 MIME 嗅探与 clickjacking
-      "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+      // N6: 安全头 — 与生产(CF Pages)行为对齐:x-content-type-options 防 MIME
+      // 嗅探,x-frame-options 防 clickjacking。
+      // 注意:CSP 只限 source,不限制 inline —— 页面本身有 3 段 inline <script>
+      // (顶部 fallback 检测、页面主模块、page-fail 提示),script-src 'self' 会让它们
+      // 在本地 dev 完全被浏览器拒绝执行(Chrome 154 Log.enable 实证),整个页面瘫痪。
+      // 生产环境不注入 CSP(Cloudflare Pages 只发 nosniff),保持行为一致。
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
     });
