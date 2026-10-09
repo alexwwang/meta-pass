@@ -31,7 +31,7 @@ def read_json_line(port, deadline):
             item = json.loads(raw.decode("utf-8", errors="strict").strip())
         except (UnicodeDecodeError, json.JSONDecodeError):
             continue  # Ignore boot log noise; accept only protocol JSON.
-        if isinstance(item, dict) and ("ok" in item or "event" in item):
+        if isinstance(item, dict) and "ok" in item:
             return item
     raise TimeoutError("timed out waiting for child firmware JSON response")
 
@@ -88,10 +88,10 @@ def main():
                 evidence["nonceMatched"] = result.get("nonce", "") == args.nonce
                 evidence["deviceReadbackOk"] = result.get("readback") is True
             elif args.command == "read":
-                if args.nonce:
-                    digest, crc = expected_digest(args.nonce.lower(), int(result["sequence"]))
-                    evidence["hostChecksumOk"] = result.get("sha256") == digest and result.get("crc32") == crc
-                    evidence["nonceMatched"] = result.get("nonce", "").lower() == args.nonce.lower()
+                nonce_to_check = args.nonce or str(result.get("nonce", ""))
+                digest, crc = expected_digest(nonce_to_check, int(result["sequence"]))
+                evidence["hostChecksumOk"] = result.get("sha256") == digest and result.get("crc32") == crc
+                evidence["nonceMatched"] = bool(re.fullmatch(r"[0-9a-fA-F]{32}", nonce_to_check)) and result.get("nonce", "") == nonce_to_check
                 evidence["deviceReadbackOk"] = result.get("readback") is True
             evidence["ok"] = all(v is True for k, v in evidence.items()
                                  if k in ("hostChecksumOk", "nonceMatched", "deviceReadbackOk"))
