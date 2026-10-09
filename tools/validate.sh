@@ -176,6 +176,7 @@ PY
         echo "node --check: ${_ck_bin}"
         "$_ck_bin" --check tools/realdevice/browser_smoke.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e.mjs
+        "$_ck_bin" --check tools/realdevice/usb_web_e2e_multi.mjs
     else
         echo "WARNING: no real node found (only a Bun wrapper?); skipping harness syntax gate" >&2
     fi
