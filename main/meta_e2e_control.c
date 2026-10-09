@@ -71,11 +71,12 @@ static void response_slots(void)
             const meta_carve_data_t *data = &carve->data[i];
             if (!first) printf(",");
             first = false;
-            printf("{\"playId\":%" PRIu32 ",\"label\":\"%.16s\","
-                   "\"offset\":%" PRIu32 ",\"size\":%" PRIu32
+            printf("{\"playId\":%" PRIu32 ",\"label\":\"",
+                   data->play_id);
+            print_safe_name(data->label);
+            printf("\",\"offset\":%" PRIu32 ",\"size\":%" PRIu32
                    ",\"state\":%u}",
-                   data->play_id, data->label, data->offset, data->size,
-                   (unsigned)data->state);
+                   data->offset, data->size, (unsigned)data->state);
         }
     }
     printf("]}\n");
