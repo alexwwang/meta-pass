@@ -352,7 +352,7 @@ async function runRuntimeDriver(slot, playId, name, phase) {
   let evidence;
   try { evidence = JSON.parse(fs.readFileSync(evidenceFile, "utf8")); }
   catch (e) { throw new Error("runtime driver " + phase + " did not provide valid JSON evidence: " + e.message); }
-  const required = ["childBooted", "dataWriteOk", "dataReadOk", "dataChecksumOk", "dataPersistedAfterReboot", "returnedToLauncher"];
+  const required = ["childBooted", "dataEraseOk", "dataWriteOk", "dataReadOk", "dataChecksumOk", "dataPersistedAfterReboot", "returnedToLauncher"];
   const missing = required.filter((key) => evidence[key] !== true);
   if (typeof evidence.serialEvidence !== "string" || !evidence.serialEvidence.trim()) missing.push("serialEvidence");
   saveJson("runtime-" + safePhase + "-evidence.json", evidence);
