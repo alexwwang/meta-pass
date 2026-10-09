@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+"""Static contract for the Playwright mobile viewport E2E runner."""
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = ROOT / "tools/realdevice/mobile_page_e2e.mjs"
+source = RUNNER.read_text(encoding="utf-8")
+
+def require(value, label):
+    assert value in source, f"missing mobile page E2E contract: {label} ({value})"
+
+def forbid(value, label):
+    assert value not in source, f"forbidden direct mutation API: {label} ({value})"
+
+require('from "playwright"', "reuse existing Playwright stack")
+require('isMobile: true', "mobile browser metrics")
+require('hasTouch: true', "touch emulation")
+require('deviceScaleFactor: 3', "mobile DPR")
+require('viewport', "configurable mobile viewport")
+require('if (!args["real-device"])', "explicit real-device safety gate")
+require('chromium.launch(', "one browser session")
+assert source.count("chromium.launch(") == 1, "browser must launch once per scenario"
+require('#mp-install-root', "actual device phone-install page")
+require('#mp-q', "play search UI")
+require('#mp-confirm', "install confirmation UI")
+require('#mp-mgmt', "slot management UI")
+require('#mp-mgmt-confirm', "delete confirmation UI")
+require('M04 install A', "first install round")
+require('M05 install B', "second install and coexistence")
+require('M06 B remains valid after removing A', "delete isolation")
+require('M08 device state restored to baseline', "baseline restore assertion")
+require('/api/install/slots', "read-only independent slot verification")
+require('/api/install/status', "read-only installer status verification")
+require('X-Meta-Session', "session-authenticated read-only API")
+require('cleanupOwned', "test-owned slot cleanup")
+require('final-page.png', "failure evidence screenshot")
+require('page-source.html', "page source evidence")
+require('report.json', "machine-readable report")
+require('redact(', "sensitive value redaction")
+for endpoint in ('/api/install/prepare', '/api/install/session', '/api/install/chunk',
+                 '/api/install/finalize', '/api/install/remove', '/api/install/cancel'):
+    forbid(endpoint, "UI must perform all writes")
+print("Mobile viewport device-page E2E contract: PASS")
