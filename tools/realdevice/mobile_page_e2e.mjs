@@ -131,7 +131,7 @@ async function openManagement() {
   await page.locator("#mp-mgmt").click();
   await page.locator("#mp-mgmt-re").waitFor({ state: "visible", timeout: 15000 });
 }
-async function removeByName(name) {
+async function removeByName(name, stage = "UI") {
   const now = await readSlots();
   const current = now.slots.find((s) => s.name === name);
   if (!current) return;
@@ -147,7 +147,7 @@ async function removeByName(name) {
   await page.locator("#mp-mgmt-confirm").click();
   await waitFor(async () => !(await readSlots()).slots.some((s) => s.name === name),
     "device API confirms UI removal of " + name, 90000);
-  record("UI removed test slot", true, `name=${name}; originalSlot=${current.slot}`);
+  record(`${stage}: UI removed test slot`, true, `name=${name}; originalSlot=${current.slot}`);
 }
 async function installPlay(playId, name, label) {
   await page.locator("#mp-q").fill(String(playId));
@@ -181,7 +181,7 @@ async function installPlay(playId, name, label) {
 async function cleanupOwned() {
   if (!baseline || !page) return;
   for (const name of installAttempted) {
-    try { await removeByName(name); }
+    try { await removeByName(name, "recovery cleanup"); }
     catch (e) { report.results.push({ name: "cleanup incomplete: " + name, ok: false, detail: redact(e.message) }); }
   }
 }
@@ -237,9 +237,9 @@ try {
   record("M05 both plays coexist", afterB.slots.some((s) => s.name === nameA && s.state === "valid") &&
     afterB.slots.some((s) => s.name === nameB && s.state === "valid"), `slotA=${a.slot}; slotB=${b.slot}`);
 
-  await removeByName(nameA);
+  await removeByName(nameA, "M06");
   record("M06 B remains valid after removing A", (await readSlots()).slots.some((s) => s.name === nameB && s.state === "valid"));
-  await removeByName(nameB);
+  await removeByName(nameB, "M07");
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
