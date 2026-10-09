@@ -44,3 +44,13 @@ for endpoint in ('/api/install/prepare', '/api/install/session', '/api/install/c
                  '/api/install/finalize', '/api/install/remove', '/api/install/cancel'):
     forbid(endpoint, "UI must perform all writes")
 print("Mobile viewport device-page E2E contract: PASS")
+
+require('assertDynamicSlotGeometry', "dynamic slot and DATA pool geometry assertions")
+require('M02 baseline: dynamic slot geometry', "baseline allocation invariants")
+require('M04 after install A: dynamic slot geometry', "first install allocation invariants")
+require('M05 after install B: dynamic slot geometry', "second install allocation invariants")
+require('M06 after removing A: dynamic slot geometry', "slot deletion allocation invariants")
+require('M08 final: dynamic slot geometry', "final allocation invariants")
+require('data reservations restored to baseline', "DATA reservation restoration")
+require('baseline-data-reservations.json', "baseline DATA evidence")
+require('final-data-reservations.json', "final DATA evidence")
