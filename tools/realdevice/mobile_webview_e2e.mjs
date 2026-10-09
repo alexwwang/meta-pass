@@ -33,7 +33,6 @@ const APPIUM = String(argv.appium || process.env.APPIUM_URL || "http://127.0.0.1
 const DEVICE = String(argv.device || process.env.MOBILE_E2E_DEVICE || "Android");
 const URL = String(argv.url || process.env.MOBILE_E2E_URL || "");
 const IP = String(argv.ip || process.env.META_PASS_IP || "");
-const TOKEN = String(argv.token || process.env.META_PASS_TOKEN || "");
 const PACKAGE = String(argv["app-package"] || process.env.MOBILE_APP_PACKAGE || "");
 const ACTIVITY = String(argv["app-activity"] || process.env.MOBILE_APP_ACTIVITY || "");
 const SCENARIO_FILE = argv.scenario ? path.resolve(String(argv.scenario)) : path.join(ROOT, "tools/realdevice/mobile-webview-scenario.json");
@@ -51,10 +50,6 @@ if (!["webview", "browser"].includes(MODE) || !URL || (MODE === "webview" && (!P
 }
 if (IP && !/^\d{1,3}(\.\d{1,3}){3}$/.test(IP)) {
   console.error("--ip must be an IPv4 address");
-  process.exit(2);
-}
-if (TOKEN && !/^[a-f0-9]{32}$/i.test(TOKEN)) {
-  console.error("--token must be 32 hex characters");
   process.exit(2);
 }
 fs.mkdirSync(LOGDIR, { recursive: true });
