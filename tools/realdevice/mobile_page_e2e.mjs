@@ -326,6 +326,16 @@ async function manualRuntimeCheckpoint(slot, playId, name, phase) {
     return status.length > 0 && !status.includes("正在加载玩法目录");
   }, phase + " launcher page recovered after manual checkpoint", 90000);
 }
+function spawnRuntimeDriver(driverArgs) {
+  if (runtimeDriver.toLowerCase().endsWith(".py")) {
+    return spawnSync(process.env.PYTHON || "python3", [path.resolve(runtimeDriver), ...driverArgs], {
+      encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024,
+    });
+  }
+  return spawnSync(runtimeDriver, driverArgs, {
+    encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024,
+  });
+}
 async function runChildRuntime(slot, playId, name, phase) {
   if (manualAssist) return manualRuntimeCheckpoint(slot, playId, name, phase);
   return runRuntimeDriver(slot, playId, name, phase);
@@ -336,7 +346,7 @@ async function runRuntimeDriver(slot, playId, name, phase) {
   const driverArgs = ["--action", "boot-test-and-return", "--slot", String(slot.slot),
     "--play-id", String(playId), "--slot-name", name, "--phase", phase,
     "--timeout-ms", String(runtimeTimeout), "--evidence-file", evidenceFile];
-  const result = spawnSync(runtimeDriver, driverArgs, { encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024 });
+  const result = spawnRuntimeDriver(driverArgs);
   if (result.error) throw new Error("runtime driver " + phase + " failed to start: " + result.error.message);
   if (result.status !== 0) throw new Error("runtime driver " + phase + " exit=" + result.status + "; stderr=" + redact(result.stderr || "").slice(0, 500));
   let evidence;
@@ -363,9 +373,8 @@ async function runRuntimeDriver(slot, playId, name, phase) {
 }
 function verifyDeletedRuntime(name, playId, phase) {
   const evidenceFile = path.join(logDir, "runtime-" + phase.toLowerCase() + "-delete-evidence.json");
-  const result = spawnSync(runtimeDriver, ["--action", "verify-deleted", "--slot-name", name,
-    "--play-id", String(playId), "--timeout-ms", String(runtimeTimeout), "--evidence-file", evidenceFile],
-    { encoding: "utf8", timeout: runtimeTimeout + 15000, maxBuffer: 2 * 1024 * 1024 });
+  const result = spawnRuntimeDriver(["--action", "verify-deleted", "--slot-name", name,
+    "--play-id", String(playId), "--timeout-ms", String(runtimeTimeout), "--evidence-file", evidenceFile]);
   if (result.error || result.status !== 0) {
     throw new Error("runtime driver delete verification " + phase + " failed: " +
       (result.error?.message || result.stderr || result.status));
