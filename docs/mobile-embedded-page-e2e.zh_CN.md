@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>简体中文</strong> · <a href="mobile-embedded-page-e2e.md">English</a>
+</p>
+
 # 手机内嵌页面 E2E 自动化测试框架
 
 ## 目标
