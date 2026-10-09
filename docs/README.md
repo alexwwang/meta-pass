@@ -115,6 +115,7 @@ LICENSE                  Repository license
 
 Repository documentation is organized by function area. `authoritative` documents define development or collaboration requirements; `reference` documents provide background or an index.
 
+- [`mobile-page-data-e2e-test-firmware.md`](assets/mobile-page-data-e2e-test-firmware.md) — dedicated child firmware for mobile-page DATA lifecycle testing, USB Serial/JTAG protocol, and current automation boundary.
 - [`docs/development/`](development/README.md) — engineering rules and reusable workflows: the `ai-guide.md`, `engineering/`, `ci/`, and `release/` areas. Its README lists them.
 - [`docs/contribution/`](contribution/README.md) — collaboration, documentation, and commit/PR conventions.
 - [`docs/hardware-design/`](hardware-design/README.md) — board facts, constraints, acceptance matrix, and troubleshooting.
