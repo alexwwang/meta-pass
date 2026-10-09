@@ -22,7 +22,8 @@ Child-firmware serial client: `tools/realdevice/data_child_serial.py`
 | M01 page and viewport | Open the real device page; check content, controls and touch; test 320×720, 360×800, 390×844 and 430×932 | Usable page, visible controls, no horizontal overflow, no page/console/request errors |
 | M02 baseline safety gate | Read slots, DATA reservations and installer status | Installer idle; pool bounds, alignment, granularity, overlap and free-byte accounting agree; otherwise refuse mutation |
 | M04 install A | Search the marketplace by play ID, select a slot and install; independently read device state | UI completion plus VALID slot in device API; valid geometry; existing DATA reservations preserved |
-| M04A child A | Run the device-side runtime driver | Child actually boots; erase, write, readback, checksum and reboot persistence have serial evidence |
+| M04A cancel-uninstall guard | After installing A, enter management and cancel the delete confirmation | Slot table, DATA reservations and installer state remain unchanged; otherwise fail before further destructive operations |
+| M04B child A | Run the device-side runtime driver | Child actually boots; erase, write, readback, checksum and reboot persistence have serial evidence |
 | M05 install B | Install a second play ID | A and B coexist; no overlap; baseline DATA reservations preserved |
 | M05C isolation | Compare DATA physical addresses reported by the device driver | A/B DATA extents differ; different play IDs alone do not prove isolation |
 | M06 remove A | Delete through management UI with confirmation; run B after deletion | A absent; B remains VALID and boots; A DATA reservation released; geometry remains valid |
