@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real-device phone-install page E2E using direct CDP mobile emulation and a hardware runtime driver.
+// Real-device phone-install page E2E using direct CDP; supports a hardware runtime driver or explicit manual-assisted checkpoints.
 // UI mutations go through the page; direct device API access is GET-only.
 import fs from "node:fs";
 import path from "node:path";
@@ -62,7 +62,7 @@ const timeout = Number(args.timeout || process.env.MOBILE_E2E_TIMEOUT_MS || 6000
 const cdpUrl = String(args["cdp-url"] || process.env.MOBILE_E2E_CDP_URL || "http://127.0.0.1:9222");
 const logDir = path.resolve(String(args.logdir || path.join(LOGROOT, "mobile-page-e2e-" + new Date().toISOString().replace(/[:.]/g, "-"))));
 if (!urlArg || !/^\d+$/.test(playA) || !/^\d+$/.test(playB) || playA === playB) {
-  console.error("Usage: node tools/realdevice/mobile_page_e2e.mjs --real-device --url http://<device-ip>/ [--token <32hex>] [--play-a 1] [--play-b 2]");
+  console.error("Usage: node tools/realdevice/mobile_page_e2e.mjs --real-device --url http://<device-ip>/ (--runtime-driver <path> | --manual-assist) [--token <32hex>] [--play-a 1] [--play-b 2]");
   process.exit(2);
 }
 let target;
