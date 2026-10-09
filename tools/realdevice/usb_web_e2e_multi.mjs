@@ -177,6 +177,23 @@ async function readSlots() {
   return parsed;
 }
 
+async function readStatus() {
+  const r = await deviceCall("/api/install/status");
+  if (!r.ok) throw new Error(`GET /api/install/status HTTP ${r.status}: ${r.text}`);
+  try { return JSON.parse(r.text); }
+  catch { throw new Error(`invalid /api/install/status JSON: ${r.text}`); }
+}
+
+function assertInstallerIdle(status, where) {
+  if (status.protocol !== 1 || status.active || status.session) {
+    throw new Error(`HTTP installer is not idle at ${where}: ${JSON.stringify({
+      protocol: status.protocol, active: status.active, session: status.session, state: status.state,
+    })}`);
+  }
+  record(where, "HTTP installer idle / USB path isolated", true,
+    `protocol=${status.protocol}; state=${status.state}; active/session=false`);
+}
+
 function stableSlots(v) {
   return {
     count: v.count,
@@ -426,6 +443,9 @@ async function runInstallRound(roundLabel, playId, displayName, baselineSlots) {
   // Verify via device API
   const afterSlots = await readSlots();
   writeJson(`${roundLabel}-after-reset-slots.json`, stableSlots(afterSlots));
+  const afterStatus = await readStatus();
+  writeJson(`${roundLabel}-after-reset-status.json`, afterStatus);
+  assertInstallerIdle(afterStatus, roundLabel);
 
   const newSlots = afterSlots.slots.filter((s) =>
     !baselineSlots.slots.some((b) => b.offset === s.offset && b.size === s.size)
@@ -470,6 +490,9 @@ async function runRemoveRound(roundLabel, displayName, baselineSlots) {
   // Verify via device API
   const afterSlots = await readSlots();
   writeJson(`${roundLabel}-after-reset-slots.json`, stableSlots(afterSlots));
+  const afterStatus = await readStatus();
+  writeJson(`${roundLabel}-after-reset-status.json`, afterStatus);
+  assertInstallerIdle(afterStatus, roundLabel);
 
   const stillThere = afterSlots.slots.some((s) => s.name === displayName);
   if (stillThere) throw new Error(`slot "${displayName}" still present after remove + reset`);
@@ -520,6 +543,9 @@ async function main() {
   // E1: baseline (before any USB connection — LAN only)
   baselineSlots = await readSlots();
   writeJson("baseline-slots.json", stableSlots(baselineSlots));
+  const baselineStatus = await readStatus();
+  writeJson("baseline-status.json", baselineStatus);
+  assertInstallerIdle(baselineStatus, "E1");
   record("E1", "device baseline readable", true,
     `${baselineSlots.count} slots; free=${baselineSlots.free}`);
 
