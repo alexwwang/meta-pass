@@ -60,6 +60,8 @@ node tools/realdevice/mobile_page_e2e.mjs --real-device \
 
 也可通过环境变量提供 `META_PASS_IP`、`META_PASS_SESSION`、`MOBILE_E2E_PLAY_A`、`MOBILE_E2E_PLAY_B`。推荐优先使用环境变量传入 token，URL 只传设备地址；运行器会在导航前把 token 加入 fragment，避免 token 进入命令行参数与报告。
 
+默认在同一个浏览器页面、同一个会话内先检查 `320×720`、`360×800`、`390×844`、`430×932` 四种手机视口是否出现横向溢出，再恢复默认 `390×844` 视口执行安装/删除业务流程。可通过 `--viewports 320x720,375x812,430x932` 自定义矩阵；视口检查阶段不修改设备状态，也不重启浏览器。
+
 本地需要 Node.js、仓库现有 Playwright 依赖及可启动的 Chromium/Chrome。此真机 E2E 不在没有设备的普通 CI 中运行；CI 运行静态契约测试与脚本语法检查。
 
 ## 6. 验收标准
