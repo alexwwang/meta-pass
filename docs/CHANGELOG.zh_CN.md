@@ -6,7 +6,7 @@
 
 ## Unreleased
 
-- **手机内嵌页面 DATA E2E 专用子固件基线**：新增独立 ESP-IDF 5.5.3 测试应用，使用 USB Serial/JTAG 命令协议，按 `e2edata` 标签通过真实 `esp_partition_*` API 写入、读回并校验确定性记录；新增主机串口客户端和静态契约门禁。文档明确 A/B 不同 play ID 的隔离、跨重启读回和卸载验证流程，同时标出尚未完成的关键边界：启动器还没有 test-only 槽位选择/重启控制通道，因此当前串口客户端不是完整 runtime driver，未完成真机验证前不宣称全自动 E2E 通过。
+- **手机内嵌页面 DATA E2E 专用子固件基线**：新增独立 ESP-IDF 5.5.3 测试应用，使用 USB Serial/JTAG 命令协议，按 `e2edata` 标签通过真实 `esp_partition_*` API 写入、读回并校验确定性记录；新增主机串口客户端和静态契约门禁。文档明确 A/B 不同 play ID 的隔离、跨重启读回和卸载验证流程，同时标出尚未完成的关键边界：现已增加默认关闭的 `CONFIG_META_E2E_TEST_CONTROL` 启动器控制通道和匹配现有 runner 的 runtime driver；它们尚未在 ESP-IDF 环境构建或真机验证，因此仍不得宣称全自动 E2E 通过。
 
 - **前端模块 × 真机回归门禁**:手机端安装路径与空间管理此前只在对 mock 设备
   (`tests/test_phone_install.mjs`)上跑过,所以 mock 与固件的漂移看不见 ——
