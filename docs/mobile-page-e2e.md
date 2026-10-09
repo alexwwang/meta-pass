@@ -10,12 +10,12 @@ Target branch: `feat/storage`.
 
 This is not merely a page-rendering or read-only API test. It must install and delete firmware through the real device's web UI, boot the installed child firmware on hardware, access its DATA partition, verify write/read/checksum behavior and persistence across reboot.
 
-The current UI runner uses Playwright mobile viewport emulation. It does not require an Android emulator, but it is not a native WebView-container test. Device GET APIs are independent verification only; install/delete write APIs must never bypass the UI.
+The UI runner controls a Chromium instance directly through the Chrome DevTools Protocol (CDP), applying mobile viewport, DPR, touch and mobile User-Agent settings without a Playwright dependency. It does not require an Android emulator, but it is not a native WebView-container test. Device GET APIs are independent verification only; install/delete write APIs must never bypass the UI.
 
 ## 2. Required components
 
 1. **Real ESP32 device** running the launcher firmware under test and serving the phone page.
-2. **Browser UI automation** in one persistent mobile viewport session. Create/install/delete actions must be triggered through page controls.
+2. **Direct CDP browser UI automation** in one persistent mobile viewport session. Create/install/delete actions must be triggered through page controls.
 3. **Dedicated test child firmware A/B**: both images must boot on the target hardware and implement deterministic DATA-partition read/write tests. Arbitrary marketplace firmware cannot be assumed to expose test markers or DATA behavior.
 4. **Hardware runtime driver**: use actual device control and device-side observations to boot a slot, wait for test firmware execution, return to the launcher, and collect evidence. Mock API responses are not acceptable. Supply it with `--runtime-driver`; contract below.
 5. **DATA support**: both A and B must declare and actually access supported DATA partitions. The full lifecycle test must fail rather than silently skip read/write assertions if they do not.
@@ -76,7 +76,7 @@ It should also include `dataLabel`, `serialEvidence` (a path or digest for devic
 
 Its evidence must include `deletedSlotNotBootable: true` and `dataPartitionReleased: true`. The driver's `verify-deleted` action may observe and attempt non-destructive verification only; it must not delete a slot or modify allocator records on behalf of the runner.
 
-**Important: this repository currently defines and invokes the driver contract but does not include a generic implementation for any specific UART/relay/button-control hardware.** Until an actual hardware driver and dedicated test firmware A/B are provided, this test cannot be reported as a complete E2E PASS. If the setup lacks automated button/reset hardware, the real control mechanism must be identified explicitly rather than guessed.
+**Important: this repository currently defines and invokes the driver contract but does not include a generic implementation for any specific UART/relay/button-control hardware.** Run Chromium with remote debugging enabled (for example `--remote-debugging-port=9222`) and pass `--cdp-url http://127.0.0.1:9222`. Node.js 22+ is recommended for the built-in WebSocket API. Until an actual hardware driver and dedicated test firmware A/B are provided, this test cannot be reported as a complete E2E PASS. If the setup lacks automated button/reset hardware, the real control mechanism must be identified explicitly rather than guessed.
 
 ## 5. Safety constraints
 
