@@ -89,9 +89,10 @@ const report = {
   test: "Real-device phone-install + child runtime + DATA lifecycle E2E",
   runtimeMode: manualAssist ? "manual-assisted" : "hardware-driver",
   coverageGaps: manualAssist ? [
-    "DATA write/read/checksum and persistence are not independently verified without a dedicated test firmware protocol and runtime driver.",
-    "Deleted firmware non-bootability is not proven by slot absence alone."
+    { scenario: "child DATA write/read/checksum/reboot persistence", status: "NOT_COVERED", reason: "No dedicated test firmware protocol/runtime driver." },
+    { scenario: "deleted firmware non-bootability", status: "NOT_COVERED", reason: "Slot absence does not prove the flash image cannot boot." }
   ] : [],
+  notCovered: [],
   runtimeDriver: runtimeDriver ? path.basename(runtimeDriver) : null,
   startedAt: new Date().toISOString(),
   browser: "Chromium via direct CDP",
@@ -112,8 +113,8 @@ function redact(value) {
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "<device-ip>");
 }
 function saveJson(file, value) { fs.writeFileSync(path.join(logDir, file), JSON.stringify(value, null, 2) + "\n"); }
-function record(name, ok, detail = "") {
-  report.results.push({ name, ok, detail: redact(detail), at: new Date().toISOString() });
+function record(name, ok, detail = "", evidence = "automated") {
+  report.results.push({ name, ok, evidence, detail: redact(detail), at: new Date().toISOString() });
   console.log(`[${ok ? "PASS" : "FAIL"}] ${name}${detail ? " — " + redact(detail) : ""}`);
   if (!ok) throw new Error(`${name}${detail ? ": " + redact(detail) : ""}`);
 }
@@ -466,7 +467,7 @@ try {
 
   await removeByName(nameA, "M06");
   if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");
-  else record("M07A deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
+  else { report.notCovered.push({ scenario: "M07A deleted firmware non-bootability", status: "NOT_COVERED", reason: "UI and read-only slot state cannot prove flash image non-bootability." }); console.log("[NOT COVERED] M07A deleted firmware non-bootability"); }
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
   await runChildRuntime(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
@@ -485,7 +486,7 @@ try {
   assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
   if (!manualAssist) verifyDeletedRuntime(nameB, playB, "M08B");
-  else record("M08B deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
+  else { report.notCovered.push({ scenario: "M08B deleted firmware non-bootability", status: "NOT_COVERED", reason: "UI and read-only slot state cannot prove flash image non-bootability." }); console.log("[NOT COVERED] M08B deleted firmware non-bootability"); }
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
@@ -520,7 +521,8 @@ try {
   fs.writeFileSync(path.join(logDir, "report.txt"),
     [`Mobile page E2E: ${report.verdict}`, `viewport: ${viewport.width}x${viewport.height}`,
       ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | ${r.name} | ${r.detail || ""}`),
-      `coverage gaps: ${(report.coverageGaps || []).join("; ")}`,
+      `coverage gaps: ${JSON.stringify(report.coverageGaps || [])}`,
+      `not covered: ${JSON.stringify(report.notCovered || [])}`,
       `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
       `failed requests: ${failedRequests.length}`].join("\n") + "\n");
   try { await page?.close(); } catch {}
