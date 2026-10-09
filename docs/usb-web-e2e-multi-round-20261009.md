@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Multi-round E2E test (install → reboot → install → reboot → remove → reboot → remove → reboot) on a real device. All four rounds passed. Baseline fully restored at end. No flash erasure at any point.
+Multi-round E2E test (install → reboot → install → reboot → remove → reboot → remove → reboot) on a real device. All four rounds passed. Baseline fully restored at end. No flash erasure at any point. **Evidence provenance:** the 4/4 run described here was driven by temporary local scripts; the committed `tools/realdevice/usb_web_e2e_multi.mjs` harness was added afterward and has not yet been executed end-to-end as the committed artifact. CI validates source/host contracts only; it does not claim a real-device run.
 
 | Round | Action | Result |
 |-------|--------|--------|
@@ -113,7 +113,7 @@ Both false positives came from driver scripts in `/tmp/` that were never committ
   - `pre-r3-slots.json`, `R3-after-reset-slots.json`, `R4-after-reset-slots.json` — device state snapshots
   - `report-r3-r4.json` — summary
   - `R3-pre.png`, `R3-after-remove.png`, `R4-pre.png` — screenshots
-- Driver scripts (not committed, in `/tmp/`):
+- Driver scripts used for the recorded hardware run (not committed, local temporary files):
   - `repro-r2.mjs` — R1+R2 repro with tracing
   - `e2e-r3-r4.mjs` — R3+R4 remove driver
 
