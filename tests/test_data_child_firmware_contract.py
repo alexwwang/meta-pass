@@ -6,11 +6,17 @@ ROOT = Path(__file__).resolve().parents[1]
 FIRMWARE = ROOT / "tests/realdevice/data-child/main/test_main.c"
 PARTITIONS = ROOT / "tests/realdevice/data-child/partitions.csv"
 DRIVER = ROOT / "tools/realdevice/data_child_serial.py"
+RUNTIME = ROOT / "tools/realdevice/mobile_page_runtime_driver.py"
+CONTROL = ROOT / "main/meta_e2e_control.c"
+CONFIG = ROOT / "main/Kconfig.projbuild"
 DOC = ROOT / "docs/assets/mobile-page-data-e2e-test-firmware.zh_CN.md"
 
 c = FIRMWARE.read_text(encoding="utf-8")
 partitions = PARTITIONS.read_text(encoding="utf-8")
 driver = DRIVER.read_text(encoding="utf-8")
+runtime = RUNTIME.read_text(encoding="utf-8")
+control = CONTROL.read_text(encoding="utf-8")
+config = CONFIG.read_text(encoding="utf-8")
 doc = DOC.read_text(encoding="utf-8")
 
 for token, label in [
@@ -30,5 +36,10 @@ assert "0x10000" in partitions, "DATA reservation must be 64 KiB in template"
 assert "esp_partition_write(" not in driver, "host client must not write flash directly"
 assert "expected_digest" in driver and "hashlib.sha256" in driver, "host independently checks digest"
 assert "does not select/boot launcher slots" in driver, "serial client must not claim full runtime-driver coverage"
+assert "CONFIG_META_E2E_TEST_CONTROL" in control and "default n" in config, "launcher control must be opt-in"
+assert "meta_store_boot_slot(slot)" in control, "test control must reuse the validated production boot path"
+assert "esp_partition_write" not in control and "esp_flash_write" not in control, "launcher control must not expose flash writes"
+assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
+assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
 assert "USB Serial/JTAG" in doc and "not" in doc.lower(), "document control-path limitation"
 print("DATA child firmware + serial protocol contract: PASS")
