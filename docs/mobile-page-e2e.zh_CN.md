@@ -99,3 +99,40 @@ CDP 端点示例：
 chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-e2e
 node tools/realdevice/mobile_page_e2e.mjs --real-device --cdp-url http://127.0.0.1:9222 --url http://<device-ip>/ --token <32-hex-session> --play-a <test-id-a> --play-b <test-id-b> --runtime-driver /path/to/device-runtime-driver
 ```
+
+## 7. 覆盖分级与人工辅助模式
+
+### 覆盖边界
+
+| 场景 | CDP/网页自动化 | 人工辅助模式 | 完整硬件驱动模式 |
+|---|---|---|---|
+| 页面响应式布局、JS/网络错误 | 自动 | 自动 | 自动 |
+| 通过网页安装 A/B、删除 A/B | 自动 | 自动 | 自动 |
+| 槽位状态、分配范围/对齐/重叠、剩余空间 | 只读交叉核验 | 只读交叉核验 | 只读交叉核验 |
+| 实体 UP/DOWN/OK 启动玩法、返回启动器 | 不覆盖 | 人工操作并确认 | 由实际硬件驱动操作并采集设备证据 |
+| 子固件 DATA 写入/读回/校验和/重启持久性 | 不覆盖 | **不作为已验证项**；除非另有可审计的设备侧测试协议 | 必须由测试固件和驱动提供证据 |
+| 删除后固件确实不可启动 | 不覆盖 | **不覆盖**；槽位列表中不存在不能证明闪存中的镜像不可启动 | 必须有设备侧非破坏性验证证据 |
+| DATA 预留释放与基线恢复 | 自动检查分配记录 | 自动检查分配记录，但不能独立证明物理 DATA 内容不可访问 | 分配记录 + 设备侧证据 |
+
+### 人工辅助运行
+
+没有专用硬件运行驱动时，可使用人工辅助模式执行可自动化的网页生命周期，并在实体按键步骤暂停：
+
+```bash
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device --manual-assist \
+  --url 'http://<device-ip>/' --token '<32-hex-session>' \
+  --play-a <test-play-id-a> --play-b <test-play-id-b>
+```
+
+此模式要求交互式终端；非 TTY 环境会拒绝运行，避免无人值守时误把人工步骤当成通过。暂停时按终端说明操作：
+
+1. 在设备上用实体 UP/DOWN 选择本轮新安装的测试玩法，再按 OK 启动。
+2. 观察设备确实进入玩法，而非仍停留在启动器。仅看到标题不代表 DATA 测试通过。
+3. 使用设备实际支持的退出/返回操作回到启动器。
+4. 等待设备 USB 页面恢复后，在终端输入 `PASS`；无法启动、无法返回、画面不确定或设备无响应时输入 `FAIL`。
+5. 对 A、B 以及删除 A 后再次启动 B，分别执行上述步骤。
+
+人工输入只记录为 `manual-confirmed`，不是串口/固件自动采集的设备证据。此模式的最终状态是 `PASS_WITH_MANUAL_STEPS`，**不等价于完整 E2E PASS**。报告会明确列出未覆盖项：DATA 写入/读回/校验和/重启持久性，以及删除后镜像不可启动。若要验收这些项目，必须接入真实运行驱动和专用测试固件；不得通过人工点选或 API 列表结果伪造证据。
+
+若提供 `--runtime-driver`，则使用硬件驱动模式；不可同时传入 `--manual-assist`。完整硬件模式的协议和证据要求见第 4 节。
