@@ -493,6 +493,19 @@ try {
   if (installB.ok) { b = installB.value.slot; afterB = installB.value.listing; }
   if (b) await runCase("M05B runtime B", () => runChildRuntime(b, playB, nameB, "M05B"));
   else record("M05B runtime B", false, "blocked: install B did not complete");
+  if (b && !manualAssist && requireDataReservation) {
+    try {
+      const runtimeA = JSON.parse(fs.readFileSync(path.join(logDir, "runtime-m04a-evidence.json"), "utf8"));
+      const runtimeB = JSON.parse(fs.readFileSync(path.join(logDir, "runtime-m05b-evidence.json"), "utf8"));
+      const isolated = runtimeA.ok === true && runtimeB.ok === true &&
+        Number.isInteger(runtimeA.dataAddress) && Number.isInteger(runtimeB.dataAddress) &&
+        runtimeA.dataAddress !== runtimeB.dataAddress;
+      record("M05C A/B DATA physical extents isolated", isolated,
+        "A=" + runtimeA.dataAddress + "; B=" + runtimeB.dataAddress);
+    } catch (error) {
+      record("M05C A/B DATA physical extents isolated", false, error.message);
+    }
+  }
 
   if (a) {
     await runCase("M06 remove A and verify B isolation", async () => {
