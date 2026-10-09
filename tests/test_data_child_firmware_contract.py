@@ -41,5 +41,5 @@ assert "meta_store_boot_slot(slot)" in control, "test control must reuse the val
 assert "esp_partition_write" not in control and "esp_flash_write" not in control, "launcher control must not expose flash writes"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
-assert "USB Serial/JTAG" in doc and "not" in doc.lower(), "document control-path limitation"
+assert "USB Serial/JTAG" in doc and "尚未在 ESP-IDF 环境编译" in doc, "document hardware validation limitation"
 print("DATA child firmware + serial protocol contract: PASS")
