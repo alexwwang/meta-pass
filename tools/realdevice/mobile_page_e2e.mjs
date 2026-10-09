@@ -178,7 +178,7 @@ const POOL_BYTES = POOL_SEGMENTS.reduce((n, p) => n + p.end - p.start, 0);
 function assertDynamicSlotGeometry(listing, label) {
   if (listing.protocolVersion !== 2) {
     record(label + ": dynamic-slot protocol", false, "expected protocol_version=2");
-    return;
+    return false;
   }
   const occupied = [
     ...listing.slots.map((s) => ({ type: "slot", id: s.slot, offset: s.offset, size: s.size })),
@@ -210,6 +210,7 @@ function assertDynamicSlotGeometry(listing, label) {
   record(label + ": dynamic slot geometry", ok,
     "slots=" + listing.slots.length + "; dataReservations=" + (listing.data || []).length +
     "; free=" + listing.free + "; " + errors.join("; "));
+  return ok;
 }
 function dataReservations(listing) {
   return (listing.data || []).map((d) => ({
@@ -228,6 +229,7 @@ function assertBaselineDataPreserved(listing, label) {
 function assertIdle(status, label) {
   const ok = status.protocol === 1 && !status.active && !status.session && !status.offer && !status.confirmed;
   record(label + ": installer idle", ok, `protocol=${status.protocol}; active=${Boolean(status.active)}; session=${Boolean(status.session)}`);
+  return ok;
 }
 async function waitFor(fn, label, ms = timeout) {
   const end = Date.now() + ms;
@@ -443,8 +445,9 @@ try {
   const baselineStatus = await readStatus();
   saveJson("baseline-slots.json", stableSlots(baseline));
   saveJson("baseline-status.json", baselineStatus);
-  assertIdle(baselineStatus, "M02 baseline");
-  assertDynamicSlotGeometry(baseline, "M02 baseline");
+  const baselineIdle = assertIdle(baselineStatus, "M02 baseline");
+  const baselineGeometry = assertDynamicSlotGeometry(baseline, "M02 baseline");
+  if (!baselineIdle || !baselineGeometry) throw new Error("baseline safety checks failed; refusing to mutate device");
   saveJson("baseline-data-reservations.json", dataReservations(baseline));
   record("M02 baseline slots read", true, "slots=" + baseline.slots.length + "; free=" + baseline.free);
   if (baseline.slots.some((slot) => ownedNames.has(slot.name))) throw new Error("test-name collision with existing slot; refusing to mutate device");
