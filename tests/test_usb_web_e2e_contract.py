@@ -5,11 +5,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "tools/realdevice/usb_web_e2e.mjs"
+MULTI = ROOT / "tools/realdevice/usb_web_e2e_multi.mjs"
 PAGE = ROOT / "install-slot/install-slot.html"
 PKG = ROOT / "tools/realdevice/package.json"
 VALIDATE = ROOT / "tools/validate.sh"
 
 runner = RUNNER.read_text(encoding="utf-8")
+multi = MULTI.read_text(encoding="utf-8")
 page = PAGE.read_text(encoding="utf-8")
 pkg = PKG.read_text(encoding="utf-8")
 validate = VALIDATE.read_text(encoding="utf-8")
@@ -30,6 +32,15 @@ require(runner, "dynslot Auto is unavailable for this image", "baseline-safe tar
 require(runner, '"analyze connected device"', "action-bound device analysis")
 require(runner, '"analyze install candidate"', "action-bound candidate analysis")
 require(runner, '"analyze deletion target ownership"', "action-bound cleanup analysis")
+
+# Multi-round harness must preserve its own cleanup and evidence privacy contracts.
+require(multi, "execFileSync", "multi-round commit metadata")
+require(multi, '"/api/install/remove"', "multi-round failure cleanup")
+require(multi, '"after-failure-slots.json"', "multi-round post-cleanup evidence")
+require(multi, '"device: \"redacted\""', "multi-round report redacts device address")
+require(multi, '"serialPort: \"redacted\""', "multi-round report redacts serial path")
+require(multi, '"- serial port: redacted"', "multi-round markdown redacts serial path")
+require(multi, 'baseline fully restored', "multi-round baseline restoration assertion")
 
 # The browser must drive the page; direct install protocol paths are forbidden.
 forbidden_direct = (
