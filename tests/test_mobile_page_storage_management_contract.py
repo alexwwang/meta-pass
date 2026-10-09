@@ -31,6 +31,14 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+    def test_storage_invariant_failures_block_follow_on_mutations(self):
+        for token in ("requireSafeStorageState", "refusing subsequent mutations",
+                      "runtimeAResult?.ok", "A/B install and runtime safety gates did not pass",
+                      "required DATA reservation for child A was not created",
+                      "device API did not confirm install A as VALID"):
+            with self.subTest(token=token):
+                self.assertIn(token, RUNNER)
+
     def test_cancelled_uninstall_must_leave_state_unchanged(self):
         for token in ("cancelRemoveByName", "cancel uninstall is a no-op",
                       "slotsUnchanged", "installerIdle", "#mp-mgmt-x"):
