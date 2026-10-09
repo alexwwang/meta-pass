@@ -111,6 +111,11 @@ export class CdpMobilePage {
     throw new Error("CDP navigation timed out");
   }
   locator(selector) { return new CdpLocator(this, selector); }
+  async evaluateExpression(expression) {
+    const result = await this.command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || "page evaluation failed");
+    return result.result?.value;
+  }
   setDefaultTimeout(ms) { this.timeout = ms; }
   async setViewportSize(size) {
     this.viewport = size;
@@ -184,10 +189,7 @@ class CdpLocator {
   }
   async evaluate(fn) {
     const source = typeof fn === "function" ? fn.toString() : String(fn);
-    return this.page.evaluate((args) => {
-      const fn = (0, eval)("(" + args.fn + ")");
-      return fn(document.querySelector(args.selector));
-    }, { fn: source, selector: this.selector });
+    return this.page.evaluateExpression("(" + source + ")(document.querySelector(" + JSON.stringify(this.selector) + "))");
   }
   async waitFor({ state = "visible", timeout = this.page.timeout } = {}) {
     const end = Date.now() + timeout;
