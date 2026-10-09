@@ -5,6 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import readline from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
 import { CdpMobilePage } from "./cdp_mobile_page.mjs";
 import { parseSlots } from "../../install-slot/phone-install.js";
 
@@ -76,7 +78,7 @@ fs.mkdirSync(logDir, { recursive: true });
 
 const report = {
   test: "Real-device phone-install + child runtime + DATA lifecycle E2E",
-  runtimeDriver: path.basename(runtimeDriver),
+  runtimeMode: manualAssist ? "manual-assisted" : "hardware-driver",\n  coverageGaps: manualAssist ? [\n    "DATA write/read/checksum and persistence are not independently verified without a dedicated test firmware protocol and runtime driver.",\n    "Deleted firmware non-bootability is not proven by slot absence alone."\n  ] : [],\n  runtimeDriver: runtimeDriver ? path.basename(runtimeDriver) : null,
   startedAt: new Date().toISOString(),
   browser: "Chromium via direct CDP",
   cdpEndpoint: cdpUrl.replace(/:\/\/[^/]+/, "://<redacted-host>"),
@@ -274,6 +276,35 @@ async function installPlay(playId, name, label) {
   await dismissPanel();
   return slot;
 }
+async function manualRuntimeCheckpoint(slot, playId, name, phase) {
+  const rl = readline.createInterface({ input, output });
+  try {
+    console.log("\\n[MANUAL ACTION REQUIRED] " + phase);
+    console.log("设备：FoloToy AI Passport；测试槽位名称：" + name + "；玩法 ID：" + playId + "；槽位：" + slot.slot);
+    console.log("1. 查看设备屏幕，使用实体 UP/DOWN 键选择本轮刚安装的玩法；按实体 OK 键启动。");
+    console.log("2. 确认屏幕确实进入该玩法，而不是仍停留在启动器。若测试固件有自检页，记录其显示结果；不要把仅显示玩法名称当成 DATA 验证通过。");
+    console.log("3. 使用设备当前支持的返回/退出方式回到启动器。不要通过网页 API 或安装写接口代替设备操作。");
+    console.log("4. 等待设备重新提供 USB 服务页面，然后在下方输入 PASS；若无法启动、无法返回或结果不明确，输入 FAIL。");
+    const answer = (await rl.question("人工检查结果 [PASS/FAIL]: ")).trim().toUpperCase();
+    if (answer !== "PASS") throw new Error("manual checkpoint failed or was not confirmed: " + phase);
+  } finally {
+    rl.close();
+  }
+  record(phase + ": human confirmed physical-button launch and return", true,
+    "slot=" + slot.slot + "; playId=" + playId + "; human confirmation; DATA behavior not claimed",
+    "manual-confirmed");
+  await page.goto(target.toString(), { timeout: 90000 });
+  await page.locator("#mp-install-root").waitFor({ state: "attached", timeout: 90000 });
+  await page.locator("#mp-q").waitFor({ state: "visible", timeout: 30000 });
+  await waitFor(async () => {
+    const status = (await page.locator("#mp-status").textContent().catch(() => "")) || "";
+    return status.length > 0 && !status.includes("正在加载玩法目录");
+  }, phase + " launcher page recovered after manual checkpoint", 90000);
+}
+async function runChildRuntime(slot, playId, name, phase) {
+  if (manualAssist) return manualRuntimeCheckpoint(slot, playId, name, phase);
+  return runRuntimeDriver(slot, playId, name, phase);
+}
 async function runRuntimeDriver(slot, playId, name, phase) {
   const safePhase = phase.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
   const evidenceFile = path.join(logDir, "runtime-" + safePhase + ".json");
@@ -400,9 +431,9 @@ try {
       "playId=" + playA + "; newReservations=" + newForA.length);
   }
   // The hardware driver must boot the child, verify DATA write/read/checksum and persistence, then return to launcher.
-  await runRuntimeDriver(a, playA, nameA, "M04A");
+  await runChildRuntime(a, playA, nameA, "M04A");
   const b = await installPlay(playB, nameB, "M05 install B");
-  await runRuntimeDriver(b, playB, nameB, "M05B");
+  await runChildRuntime(b, playB, nameB, "M05B");
   const afterB = await readSlots();
   saveJson("after-install-b.json", stableSlots(afterB));
   if (requireDataReservation) {
@@ -420,10 +451,10 @@ try {
   saveJson("after-install-data-reservations.json", dataReservations(afterB));
 
   await removeByName(nameA, "M06");
-  verifyDeletedRuntime(nameA, playA, "M07A");
+  if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");\n  else record("M07A deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
-  await runRuntimeDriver(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
+  await runChildRuntime(afterRemoveA.slots.find((s) => s.name === nameB), playB, nameB, "M06B");
   if (requireDataReservation) {
     const beforeDeleteA = dataReservations(afterB);
     const remaining = dataReservations(afterRemoveA);
@@ -438,7 +469,7 @@ try {
   assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
   assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
-  verifyDeletedRuntime(nameB, playB, "M08B");
+  if (!manualAssist) verifyDeletedRuntime(nameB, playB, "M08B");\n  else record("M08B deleted firmware non-bootability", true, "NOT VERIFIED: slot removal is checked through UI/read-only state only", "not-covered");
   const finalSlots = await readSlots();
   const finalStatus = await readStatus();
   saveJson("final-slots.json", stableSlots(finalSlots));
@@ -453,12 +484,12 @@ try {
   record("M08 device state restored to baseline", restored,
     `baselineSlots=${baseline.slots.length}; finalSlots=${finalSlots.slots.length}; baselineFree=${baseline.free}; finalFree=${finalSlots.free}`);
   record("M09 no unhandled page errors", pageErrors.length === 0, `count=${pageErrors.length}`);
-  report.verdict = report.results.every((r) => r.ok) ? "PASS" : "FAIL";
+  report.verdict = report.results.every((r) => r.ok) ? (manualAssist ? "PASS_WITH_MANUAL_STEPS" : "PASS") : "FAIL";
 } catch (e) {
   report.results.push({ name: "fatal", ok: false, detail: redact(e?.stack || e?.message || String(e)), at: new Date().toISOString() });
   console.error("[FAIL] fatal — " + redact(e?.message || String(e)));
 } finally {
-  if (report.verdict !== "PASS") await cleanupOwned();
+  if (!["PASS", "PASS_WITH_MANUAL_STEPS"].includes(report.verdict)) await cleanupOwned();
   report.finishedAt = new Date().toISOString();
   report.browserErrors = pageErrors;
   report.consoleErrors = consoleErrors.slice(0, 100);
@@ -473,10 +504,10 @@ try {
   fs.writeFileSync(path.join(logDir, "report.txt"),
     [`Mobile page E2E: ${report.verdict}`, `viewport: ${viewport.width}x${viewport.height}`,
       ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | ${r.name} | ${r.detail || ""}`),
-      `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
+      `coverage gaps: ${(report.coverageGaps || []).join("; ")}`,\n      `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
       `failed requests: ${failedRequests.length}`].join("\n") + "\n");
   try { await page?.close(); } catch {}
   console.log(`REPORT_DIR=${logDir}`);
   console.log(`VERDICT=${report.verdict}`);
 }
-if (report.verdict !== "PASS") process.exitCode = 1;
+if (!["PASS", "PASS_WITH_MANUAL_STEPS"].includes(report.verdict)) process.exitCode = 1;
