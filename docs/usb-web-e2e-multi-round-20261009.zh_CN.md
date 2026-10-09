@@ -1,5 +1,7 @@
 # 多轮 USB Web UI 真机 E2E 测试报告 — 2026-10-09
 
+[English](usb-web-e2e-multi-round-20261009.md)
+
 **仓库**：`meta-pass`，分支 `feat/storage`
 **设备**：ESP32-C3 AI Passport，单个 USB-JTAG 端口
 **浏览器**：Chrome 154.0.8037.99；单一持久会话，Web Serial 仅授权一次
