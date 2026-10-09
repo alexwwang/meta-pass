@@ -11,6 +11,8 @@
 **正式的真实业务 DATA 验收目标选择录音笔（Play 28），DATA 标签为 `recordings`，分区类型为 FAT（subtype `0x81`）。** 自制 `e2edata` 子固件仅保留为协议、启动器控制通道和分配器回归测试 fixture，不得把它的通过结果记为市场玩法 DATA 生命周期通过。
 
 ## 为什么选 Play 28
+横向比较：参见[语音与电子书固件 DATA 存储机制对比](mobile-page-data-e2e-market-comparison.zh_CN.md)，其中包含公开 FoloToy AI Passport / DeepSeek 语音源码与开源电子书参考实现的分析，并明确标记尚未完成二进制下载校验的边界。
+
 
 依据 `docs/assets/dynslot-data-unification-research.zh_CN.md`（2026-10-02，对市场玩法二进制做字节级分析）：
 
