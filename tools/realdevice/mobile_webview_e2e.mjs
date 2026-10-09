@@ -179,7 +179,7 @@ async function snapshot() {
   } catch {}
 }
 async function verifyDeviceApi() {
-  if (!IP) return;
+  if (!IP) throw new Error("device-state assertions require --ip");
   // Read back from inside the actual mobile page origin: preserve the phone
   // WebView's UA/origin/request defaults and send no invented auth headers.
   const result = await executeAsync(
@@ -194,8 +194,24 @@ async function verifyDeviceApi() {
   saveJson("device-slots.json", data);
   return data;
 }
+async function verifyDeviceStatus() {
+  const result = await executeAsync(
+    "const done = arguments[arguments.length - 1]; fetch('/api/install/status').then(async r => ({status:r.status, body:await r.text()})).then(done).catch(e => done({error:String(e)}));"
+  );
+  if (result?.error) throw new Error(`device status API fetch failed: ${result.error}`);
+  if (result?.status !== 200) throw new Error(`device status API HTTP ${result?.status}: ${String(result?.body || "").slice(0, 160)}`);
+  const status = JSON.parse(result.body);
+  saveJson("device-status.json", status);
+  return status;
+}
+function slotList(data) {
+  const list = data?.slots || data?.slot;
+  if (!Array.isArray(list)) throw new Error("device slots response has no slots array");
+  return list;
+}
 
 async function runScenario(scenario) {
+  const slotSnapshots = new Map();
   if (scenario.navigate !== false) {
     await wd("POST", "/url", { url: URL });
     record("open target URL in mobile context", true, URL);
@@ -245,6 +261,26 @@ async function runScenario(scenario) {
       const pass = actual.includes(step.text);
       record(label, pass, `expected text includes ${step.text}`);
       if (!pass) throw new Error(`assertText failed: ${label}`);
+    } else if (step.action === "snapshotSlots") {
+      const data = await verifyDeviceApi();
+      slotSnapshots.set(step.snapshot, data);
+      saveJson(`slots-${String(step.snapshot).replace(/[^a-z0-9_-]/gi, "_")}.json`, data);
+      record(label, true, `snapshot=${step.snapshot}; slots=${slotList(data).length}`);
+    } else if (step.action === "assertSlotPresent" || step.action === "assertSlotAbsent") {
+      const data = slotSnapshots.get(step.snapshot);
+      if (!data) throw new Error(`unknown slot snapshot: ${step.snapshot}`);
+      const present = slotList(data).some((slot) =>
+        step.slotName !== undefined ? slot.name === step.slotName :
+        step.playId !== undefined ? Number(slot.play_id ?? slot.playId) === Number(step.playId) : false
+      );
+      const pass = step.action === "assertSlotPresent" ? present : !present;
+      record(label, pass, `snapshot=${step.snapshot}; present=${present}`);
+      if (!pass) throw new Error(`${step.action} failed: ${label}`);
+    } else if (step.action === "assertInstallerIdle") {
+      const status = await verifyDeviceStatus();
+      const pass = status.protocol === 1 && !status.active && !status.session;
+      record(label, pass, `protocol=${status.protocol}; active=${status.active}; session=${Boolean(status.session)}`);
+      if (!pass) throw new Error(`installer is not idle: ${label}`);
     } else if (step.action === "sleep") {
       await sleep(Number(step.ms || 500));
     } else if (step.action === "assertJs") {
