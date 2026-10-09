@@ -87,7 +87,12 @@ fs.mkdirSync(logDir, { recursive: true });
 
 const report = {
   test: "Real-device phone-install + child runtime + DATA lifecycle E2E",
-  runtimeMode: manualAssist ? "manual-assisted" : "hardware-driver",\n  coverageGaps: manualAssist ? [\n    "DATA write/read/checksum and persistence are not independently verified without a dedicated test firmware protocol and runtime driver.",\n    "Deleted firmware non-bootability is not proven by slot absence alone."\n  ] : [],\n  runtimeDriver: runtimeDriver ? path.basename(runtimeDriver) : null,
+  runtimeMode: manualAssist ? "manual-assisted" : "hardware-driver",
+  coverageGaps: manualAssist ? [
+    "DATA write/read/checksum and persistence are not independently verified without a dedicated test firmware protocol and runtime driver.",
+    "Deleted firmware non-bootability is not proven by slot absence alone."
+  ] : [],
+  runtimeDriver: runtimeDriver ? path.basename(runtimeDriver) : null,
   startedAt: new Date().toISOString(),
   browser: "Chromium via direct CDP",
   cdpEndpoint: cdpUrl.replace(/:\/\/[^/]+/, "://<redacted-host>"),
