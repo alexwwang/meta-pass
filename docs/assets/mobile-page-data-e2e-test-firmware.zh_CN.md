@@ -41,7 +41,7 @@ USB Serial/JTAG 使用逐行 ASCII 命令，每个响应为一个 JSON 对象。
 
 1. 读取并保存启动器基线槽位/DATA 清单。
 2. 通过真实手机内嵌页面安装 A、B。安装 manifest 必须声明 `e2edata` 及大小；设备端应按 play ID 分别分配 DATA 记录。
-3. 通过真实启动器/bootloader 路径启动 A。记录 `INFO`，发送 `WRITE <nonce-A>`，再发 `READ`；必须精确匹配 nonce 和 SHA-256。
+3. 通过真实启动器/bootloader 路径启动 A。记录 `INFO`，先发送 `ERASE` 并确认空记录读取返回 `DATA_INVALID`，再发送 `WRITE <nonce-A>` 和 `READ`；必须精确匹配 nonce、SHA-256 和 CRC32。
 4. 返回启动器并启动 B，使用不同 nonce 重复。确认 B 的 DATA offset 与 A 不同且数据相互独立。
 5. 返回启动器，重启/重新启动 A，要求 nonce-A 仍然存在；B 同理。主机收到 ACK 或启动器清单都不能证明持久性。
 6. 通过页面删除 A。验证 A 的槽位已不存在/不可启动，DATA 记录按当前卸载策略释放或归档；再启动 B 并确认 nonce-B 仍可读取。
