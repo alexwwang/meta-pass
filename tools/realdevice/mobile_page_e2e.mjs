@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { chromium } from "playwright";
+import { CdpMobilePage } from "./cdp_mobile_page.mjs";
 import { parseSlots } from "../../install-slot/phone-install.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -44,6 +44,7 @@ const viewportMatrix = String(args.viewports || "320x720,360x800,390x844,430x932
     return { width: Number(match[1]), height: Number(match[2]) };
   });
 const timeout = Number(args.timeout || process.env.MOBILE_E2E_TIMEOUT_MS || 600000);
+const cdpUrl = String(args["cdp-url"] || process.env.MOBILE_E2E_CDP_URL || "http://127.0.0.1:9222");
 const logDir = path.resolve(String(args.logdir || path.join(LOGROOT, "mobile-page-e2e-" + new Date().toISOString().replace(/[:.]/g, "-"))));
 if (!runtimeDriver) {
   console.error("A hardware runtime driver is required: --runtime-driver <executable>. UI/API-only checks cannot prove child execution or DATA read/write.");
@@ -77,7 +78,8 @@ const report = {
   test: "Real-device phone-install + child runtime + DATA lifecycle E2E",
   runtimeDriver: path.basename(runtimeDriver),
   startedAt: new Date().toISOString(),
-  browser: "Chromium",
+  browser: "Chromium via direct CDP",
+  cdpEndpoint: cdpUrl.replace(/:\/\/[^/]+/, "://<redacted-host>"),
   mobileEmulation: { ...viewport, viewportMatrix, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
   device: "redacted",
   playIds: [Number(playA), Number(playB)],
@@ -85,7 +87,7 @@ const report = {
   verdict: "FAIL",
   results: [],
 };
-let browser, context, page, baseline;
+let page, baseline;
 const pageErrors = [], consoleErrors = [], failedRequests = [];
 function redact(value) {
   return String(value)
@@ -282,15 +284,8 @@ async function cleanupOwned() {
 }
 
 try {
-  browser = await chromium.launch({
-    headless: args.headless === "false" ? false : true,
-    ...(args["browser-channel"] ? { channel: String(args["browser-channel"]) } : {}),
-  });
-  context = await browser.newContext({
-    viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true,
-    userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-  });
-  page = await context.newPage();
+  page = new CdpMobilePage({ endpoint: cdpUrl, viewport, timeout: 15000 });
+  await page.connect();
   page.setDefaultTimeout(15000);
   page.on("pageerror", (e) => pageErrors.push(redact(e.message)));
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(redact(m.text())); });
@@ -440,8 +435,7 @@ try {
       ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | ${r.name} | ${r.detail || ""}`),
       `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
       `failed requests: ${failedRequests.length}`].join("\n") + "\n");
-  try { await context?.close(); } catch {}
-  try { await browser?.close(); } catch {}
+  try { await page?.close(); } catch {}
   console.log(`REPORT_DIR=${logDir}`);
   console.log(`VERDICT=${report.verdict}`);
 }
