@@ -222,8 +222,17 @@ function assertBaselineDataPreserved(listing, label) {
   const actual = dataReservations(listing);
   const missing = expected.filter((d) => !actual.some((x) =>
     x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
-  record(label + ": baseline data reservations preserved", missing.length === 0,
+  const ok = missing.length === 0;
+  record(label + ": baseline data reservations preserved", ok,
     missing.length ? JSON.stringify(missing) : "baseline=" + expected.length + "; current=" + actual.length);
+  return ok;
+}
+function requireSafeStorageState(listing, label) {
+  const geometryOk = assertDynamicSlotGeometry(listing, label);
+  const baselineDataOk = assertBaselineDataPreserved(listing, label);
+  if (!geometryOk || !baselineDataOk) {
+    throw new Error(label + ": storage safety invariant failed; refusing subsequent mutations");
+  }
 }
 
 function assertIdle(status, label) {
@@ -493,40 +502,49 @@ try {
     await cancelRemoveByName(nameA, "M04A");
     const listing = await readSlots();
     saveJson("after-install-a.json", stableSlots(listing));
-    record("M04 install A independently verified", listing.slots.some((x) => x.name === nameA && x.state === "valid"));
-    assertDynamicSlotGeometry(listing, "M04 after install A");
-    assertBaselineDataPreserved(listing, "M04 after install A");
+    const aValid = listing.slots.some((x) => x.name === nameA && x.state === "valid");
+    record("M04 install A independently verified", aValid);
+    if (!aValid) throw new Error("device API did not confirm install A as VALID");
+    requireSafeStorageState(listing, "M04 after install A");
     if (requireDataReservation) {
       const oldData = dataReservations(baseline);
       const fresh = dataReservations(listing).filter((d) => d.play_id === Number(playA) &&
         !oldData.some((x) => x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
       record("M04 child-firmware A DATA reservation created", fresh.length > 0, "newReservations=" + fresh.length);
+      if (fresh.length === 0) throw new Error("required DATA reservation for child A was not created");
     }
     return { slot, listing };
   });
   if (installA.ok) { a = installA.value.slot; afterA = installA.value.listing; }
-  if (a) await runCase("M04A runtime A", () => runChildRuntime(a, playA, nameA, "M04A"));
+  let runtimeAResult = null;
+  if (a) runtimeAResult = await runCase("M04A runtime A", () => runChildRuntime(a, playA, nameA, "M04A"));
   else record("M04A runtime A", false, "blocked: install A did not complete");
 
-  const installB = await runCase("M05 install B", async () => {
+  const installB = a && runtimeAResult?.ok
+    ? await runCase("M05 install B", async () => {
     const slot = await installPlay(playB, nameB, "M05 install B");
     const listing = await readSlots();
     saveJson("after-install-b.json", stableSlots(listing));
-    record("M05 both plays coexist", listing.slots.some((x) => x.name === nameA && x.state === "valid") &&
-      listing.slots.some((x) => x.name === nameB && x.state === "valid"), "slotA=" + (a ? a.slot : "missing") + "; slotB=" + slot.slot);
-    assertDynamicSlotGeometry(listing, "M05 after install B");
-    assertBaselineDataPreserved(listing, "M05 after install B");
+    const coexist = listing.slots.some((x) => x.name === nameA && x.state === "valid") &&
+      listing.slots.some((x) => x.name === nameB && x.state === "valid");
+    record("M05 both plays coexist", coexist, "slotA=" + (a ? a.slot : "missing") + "; slotB=" + slot.slot);
+    if (!coexist) throw new Error("device API did not confirm A/B coexistence");
+    requireSafeStorageState(listing, "M05 after install B");
     if (requireDataReservation) {
       const oldData = dataReservations(baseline);
       const fresh = dataReservations(listing).filter((d) => !oldData.some((x) =>
         x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
       record("M05 child-firmware DATA reservation created", fresh.length > 0, "newReservations=" + fresh.length);
+      if (fresh.length === 0) throw new Error("required DATA reservation for child firmware was not created");
     }
     saveJson("after-install-data-reservations.json", dataReservations(listing));
     return { slot, listing };
-  });
+  })
+    : { ok: false, value: null };
   if (installB.ok) { b = installB.value.slot; afterB = installB.value.listing; }
-  if (b) await runCase("M05B runtime B", () => runChildRuntime(b, playB, nameB, "M05B"));
+  else record("M05 install B", false, "blocked: install A or runtime A did not pass safety gates");
+  let runtimeBResult = null;
+  if (b) runtimeBResult = await runCase("M05B runtime B", () => runChildRuntime(b, playB, nameB, "M05B"));
   else record("M05B runtime B", false, "blocked: install B did not complete");
   if (b && !manualAssist && requireDataReservation) {
     try {
@@ -542,7 +560,7 @@ try {
     }
   }
 
-  if (a) {
+  if (a && b && runtimeBResult?.ok) {
     await runCase("M06 remove A and verify B isolation", async () => {
       await removeByName(nameA, "M06");
       if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");
@@ -561,10 +579,9 @@ try {
           x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
         record("M06 UI delete releases test-created DATA reservations", released.length > 0, "released=" + released.length + "; created=" + created.length);
       }
-      assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
-      assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
+      requireSafeStorageState(afterRemoveA, "M06 after removing A");
     });
-  } else record("M06 remove A and verify B isolation", false, "blocked: install A did not complete");
+  } else record("M06 remove A and verify B isolation", false, "blocked: A/B install and runtime safety gates did not pass");
 
   if (b) {
     await runCase("M07 remove B", async () => {
@@ -582,7 +599,7 @@ try {
     saveJson("final-slots.json", stableSlots(finalSlots));
     saveJson("final-status.json", finalStatus);
     assertIdle(finalStatus, "M08 final");
-    assertDynamicSlotGeometry(finalSlots, "M08 final");
+    requireSafeStorageState(finalSlots, "M08 final");
     record("M08 data reservations restored to baseline",
       JSON.stringify(dataReservations(finalSlots)) === JSON.stringify(dataReservations(baseline)),
       "baseline=" + dataReservations(baseline).length + "; final=" + dataReservations(finalSlots).length);
