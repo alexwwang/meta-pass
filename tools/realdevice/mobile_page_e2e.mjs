@@ -53,6 +53,7 @@ const suffix = Date.now().toString(36).slice(-6);
 const nameA = ("MOB-A-" + suffix).slice(0, 32);
 const nameB = ("MOB-B-" + suffix).slice(0, 32);
 const ownedNames = new Set([nameA, nameB]);
+const installAttempted = new Set();
 fs.mkdirSync(logDir, { recursive: true });
 
 const report = {
@@ -152,7 +153,7 @@ async function installPlay(playId, name, label) {
   await page.locator("#mp-q").fill(String(playId));
   await page.locator("#mp-go").click();
   await page.locator("#mp-install").waitFor({ state: "visible", timeout: 60000 });
-  record(label + ": play details loaded", true, `playId=${playId}`);
+  record(label + ": M03 search by ID and load detail", true, `playId=${playId}`);
   await page.locator("#mp-install").click();
   await page.locator("#mp-name").waitFor({ state: "visible", timeout: 60000 });
   await page.locator("#mp-name").fill(name);
@@ -160,6 +161,7 @@ async function installPlay(playId, name, label) {
   const fitCount = await page.locator(".mp-slot:not([disabled])").count();
   if (fitCount < 1 || await page.locator("#mp-confirm").isDisabled()) throw new Error("no installable slot or disabled confirmation");
   record(label + ": slot and name selected", true, `fitChoices=${fitCount}; name=${name}`);
+  installAttempted.add(name);
   await page.locator("#mp-confirm").click();
   const outcome = await waitFor(async () => {
     const stage = (await page.locator("#mp-stage").textContent().catch(() => "")) || "";
@@ -178,7 +180,7 @@ async function installPlay(playId, name, label) {
 }
 async function cleanupOwned() {
   if (!baseline || !page) return;
-  for (const name of ownedNames) {
+  for (const name of installAttempted) {
     try { await removeByName(name); }
     catch (e) { report.results.push({ name: "cleanup incomplete: " + name, ok: false, detail: redact(e.message) }); }
   }
@@ -246,6 +248,7 @@ try {
   const restored = JSON.stringify(stableSlots(finalSlots)) === JSON.stringify(stableSlots(baseline));
   record("M08 device state restored to baseline", restored,
     `baselineSlots=${baseline.slots.length}; finalSlots=${finalSlots.slots.length}; baselineFree=${baseline.free}; finalFree=${finalSlots.free}`);
+  record("M09 no unhandled page errors", pageErrors.length === 0, `count=${pageErrors.length}`);
   report.verdict = report.results.every((r) => r.ok) ? "PASS" : "FAIL";
 } catch (e) {
   report.results.push({ name: "fatal", ok: false, detail: redact(e?.stack || e?.message || String(e)), at: new Date().toISOString() });
