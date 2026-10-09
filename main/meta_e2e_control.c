@@ -2,6 +2,8 @@
 
 #if CONFIG_META_E2E_TEST_CONTROL
 
+#include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,6 +118,8 @@ static void control_task(void *arg)
     (void)arg;
     char line[96];
     ESP_LOGW(TAG, "test-only USB control enabled; do not ship this build");
+    printf("{\\"event\\":\\"E2E_READY\\",\\"protocol\\":1}\\n");
+    fflush(stdout);
     for (;;) {
         if (!fgets(line, sizeof(line), stdin)) {
             vTaskDelay(pdMS_TO_TICKS(20));
