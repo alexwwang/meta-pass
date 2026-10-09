@@ -557,6 +557,15 @@ try {
   report.browserErrors = pageErrors;
   report.consoleErrors = consoleErrors.slice(0, 100);
   report.failedRequests = failedRequests.slice(0, 100);
+  report.summary = {
+    total: report.results.length,
+    passed: report.results.filter((r) => r.ok).length,
+    failed: report.results.filter((r) => !r.ok).length,
+    notCovered: report.notCovered.length,
+    pageErrors: pageErrors.length,
+    consoleErrors: consoleErrors.length,
+    failedRequests: failedRequests.length,
+  };
   try {
     if (page) {
       await page.screenshot({ path: path.join(logDir, "final-page.png"), fullPage: true, timeout: 15000 });
@@ -566,6 +575,7 @@ try {
   saveJson("report.json", report);
   fs.writeFileSync(path.join(logDir, "report.txt"),
     [`Mobile page E2E: ${report.verdict}`, `viewport: ${viewport.width}x${viewport.height}`,
+      `summary: total=${report.summary.total}; passed=${report.summary.passed}; failed=${report.summary.failed}; notCovered=${report.summary.notCovered}`,
       ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | evidence=${r.evidence || "automated"} | ${r.name} | ${r.detail || ""}`),
       `coverage gaps: ${JSON.stringify(report.coverageGaps || [])}`,
       `not covered: ${JSON.stringify(report.notCovered || [])}`,
