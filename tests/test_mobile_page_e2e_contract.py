@@ -24,7 +24,7 @@ require('/json/version', "CDP endpoint discovery")
 require('Target.attachToTarget', "direct CDP target attachment")
 require('Emulation.setDeviceMetricsOverride', "mobile viewport through CDP")
 require('Emulation.setTouchEmulationEnabled', "touch emulation through CDP")
-require('--cdp-url', "configurable remote debugging endpoint")
+require('args["cdp-url"]', "configurable remote debugging endpoint")
 require('if (!args["real-device"])', "explicit real-device safety gate")
 require('new CdpMobilePage', "single CDP-controlled page session")
 assert "playwright" not in source, "mobile E2E runner must not depend on Playwright"
