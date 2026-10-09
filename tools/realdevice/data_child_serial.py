@@ -83,9 +83,9 @@ def main():
             result = request(port, command, args.timeout)
             evidence["response"] = result
             if args.command == "write":
-                digest, crc = expected_digest(args.nonce.lower(), int(result["sequence"]))
+                digest, crc = expected_digest(args.nonce, int(result["sequence"]))
                 evidence["hostChecksumOk"] = result.get("sha256") == digest and result.get("crc32") == crc
-                evidence["nonceMatched"] = result.get("nonce", "").lower() == args.nonce.lower()
+                evidence["nonceMatched"] = result.get("nonce", "") == args.nonce
                 evidence["deviceReadbackOk"] = result.get("readback") is True
             elif args.command == "read":
                 if args.nonce:
