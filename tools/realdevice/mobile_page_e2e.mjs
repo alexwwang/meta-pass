@@ -318,6 +318,14 @@ try {
   record("M04 install A independently verified", afterA.slots.some((s) => s.name === nameA && s.state === "valid"));
   assertDynamicSlotGeometry(afterA, "M04 after install A");
   assertBaselineDataPreserved(afterA, "M04 after install A");
+  if (requireDataReservation) {
+    const baselineData = dataReservations(baseline);
+    const newForA = dataReservations(afterA).filter((d) => d.play_id === Number(playA) &&
+      !baselineData.some((x) => x.offset === d.offset && x.size === d.size &&
+        x.play_id === d.play_id && x.label === d.label));
+    record("M04 child-firmware A DATA reservation created", newForA.length > 0,
+      "playId=" + playA + "; newReservations=" + newForA.length);
+  }
   const b = await installPlay(playB, nameB, "M05 install B");
   const afterB = await readSlots();
   saveJson("after-install-b.json", stableSlots(afterB));
@@ -342,7 +350,7 @@ try {
     const beforeDeleteA = dataReservations(afterB);
     const remaining = dataReservations(afterRemoveA);
     const baselineData = dataReservations(baseline);
-    const created = beforeDeleteA.filter((d) => !baselineData.some((x) =>
+    const created = beforeDeleteA.filter((d) => d.play_id === Number(playA) && !baselineData.some((x) =>
       x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
     const released = created.filter((d) => !remaining.some((x) =>
       x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
