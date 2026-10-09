@@ -54,3 +54,7 @@ require('M08 final: dynamic slot geometry', "final allocation invariants")
 require('data reservations restored to baseline', "DATA reservation restoration")
 require('baseline-data-reservations.json', "baseline DATA evidence")
 require('final-data-reservations.json', "final DATA evidence")
+
+require('requireDataReservation', "opt-in child firmware DATA reservation lifecycle scenario")
+require('M05 child-firmware DATA reservation created', "verify DATA reservation creation")
+require('M06 UI delete releases test-created DATA reservations', "verify DATA reservation deletion")
