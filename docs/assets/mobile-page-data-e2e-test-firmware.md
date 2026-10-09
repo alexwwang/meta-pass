@@ -47,11 +47,19 @@ The protocol is test-only and must never be enabled in production firmware. USB 
 
 ## Current integration boundary
 
-The test firmware exercises DATA access once it is running. It does not itself make the launcher select a slot. The existing `mobile_page_e2e.mjs` runtime-driver contract requires `boot-test-and-return` and `verify-deleted` actions; a serial client alone cannot safely perform these actions because the current launcher exposes no authenticated test-only command to select a slot and reboot, and GPIO buttons are not emulated by USB Serial/JTAG. Do not claim fully automated hardware E2E until that control path is implemented and tested.
+The test firmware exercises DATA access once it is running. It does not itself make the launcher select a slot. The existing `mobile_page_e2e.mjs` runtime-driver contract requires `boot-test-and-return` and `verify-deleted` actions; a serial client alone cannot safely perform these actions because this branch now includes a `CONFIG_META_E2E_TEST_CONTROL`-gated launcher USB control channel and `mobile_page_runtime_driver.py`. The channel accepts only an existing, scanned bootable slot index, reuses `meta_store_boot_slot()`, and exposes read-only slot/DATA listings. It defaults to `n` and must remain disabled in production builds. Neither the firmware nor the control channel has yet been built with ESP-IDF or validated on hardware, so full hardware E2E is not accepted yet.
 
-Next integration work is to add an explicitly gated, test-build-only launcher control channel that accepts only a slot index already present in the current carve registry, verifies it is bootable, calls the existing `meta_store_boot_slot()`, and restarts. It must not accept raw offsets, arbitrary partition labels, or flash-write commands. Production builds must compile the channel out. The driver must also distinguish the expected child-to-launcher reboot window from a serial timeout.
+Build the test launcher with the overlay below; never use this overlay for release images. Real-device acceptance must still confirm that child reboot returns to launcher and that USB Serial/JTAG console input works with the target IDF configuration.
 
 ## Build
+
+Launcher test-control overlay (only for a dedicated test build):
+
+```bash
+idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults' reconfigure
+idf.py build
+```
+
 
 Use an ESP-IDF 5.5.3 environment and build from this directory:
 
