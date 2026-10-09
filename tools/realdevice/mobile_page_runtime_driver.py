@@ -143,6 +143,8 @@ def action_boot_test(port, args):
     if not slot_entry:
         raise RuntimeError(f"launcher registry does not contain requested valid slot/play: {args.slot}/{args.play_id}")
     info = boot_child(port, args.slot, args.timeout_s, evidence_lines)
+    evidence["dataAddress"] = int(info["address"])
+    evidence["dataSize"] = int(info["size"])
     evidence["childBooted"] = True
     nonce = hashlib.sha256(f"{args.play_id}:{args.phase}:{time.time_ns()}".encode()).hexdigest()[:32]
     written = child_request(port, f"WRITE {nonce}", "WRITE", args.timeout_s)
