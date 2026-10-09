@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **Real marketplace DATA E2E target selected**: based on the marketplace firmware storage research, Recorder Play 28 (`recordings` FAT, subtype `0x81`) is the business-level persistence target. Acceptance must compare WAV file hashes before and after reboot and verify deletion. The `e2edata` fixture is infrastructure regression coverage only. Play 28's declared DATA extent exceeds the current pool; a controlled ~4 MiB carve override and recording-UI automation are not implemented yet, so the target remains BLOCKED/NOT RUN and fixture PASS cannot substitute for it.
+
 - **Dedicated DATA E2E child firmware baseline for the mobile page**: adds a standalone ESP-IDF 5.5.3 test app with a USB Serial/JTAG command protocol. It writes, reads, and validates a deterministic record through the real `esp_partition_*` API resolved by the `e2edata` label; a host serial client and static contract gate are included. The runbook specifies A/B isolation by distinct play IDs, post-reboot reads, and uninstall checks. It also explicitly records the remaining blocker: a default-off `CONFIG_META_E2E_TEST_CONTROL` launcher channel and a runtime driver matching the existing runner are now included. They have not yet been built in ESP-IDF or validated on hardware, so full automated E2E must not be claimed.
 
 - **Front-end module × real-device regression gate**: the phone-side install
