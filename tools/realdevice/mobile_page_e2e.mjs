@@ -32,7 +32,7 @@ const urlArg = String(args.url || process.env.MOBILE_E2E_URL || "");
 const viewport = { width: Number(args.width || 390), height: Number(args.height || 844) };
 const viewportMatrix = String(args.viewports || "320x720,360x800,390x844,430x932")
   .split(",").map((item) => {
-    const match = item.trim().match(/^(\\d+)x(\\d+)$/);
+    const match = item.trim().match(/^(\d+)x(\d+)$/);
     if (!match || Number(match[1]) < 240 || Number(match[2]) < 320) {
       console.error(`Invalid --viewports item: ${item}; expected widthxheight with width>=240 and height>=320`);
       process.exit(2);
