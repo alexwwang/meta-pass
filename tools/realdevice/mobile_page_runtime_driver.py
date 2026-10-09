@@ -51,8 +51,33 @@ def send(port, command, expected_command, timeout):
     return response
 
 
+def reopen_port(port):
+    try:
+        port.close()
+    except OSError:
+        pass
+    time.sleep(0.25)
+    try:
+        port.open()
+        return True
+    except OSError:
+        return False
+
+
 def wait_event(port, event, timeout):
-    return read_json(port, time.monotonic() + timeout, lambda x: x.get("event") == event)
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            return read_json(port, min(deadline, time.monotonic() + 1.0),
+                             lambda x: x.get("event") == event)
+        except TimeoutError as exc:
+            last = str(exc)
+        except OSError as exc:
+            last = str(exc)
+            reopen_port(port)
+        time.sleep(0.1)
+    raise TimeoutError(f"timed out waiting for device event {event}: {last or 'no event'}")
 
 
 def launcher_hello(port, timeout):
@@ -65,8 +90,10 @@ def wait_launcher(port, timeout):
     while time.monotonic() < deadline:
         try:
             return launcher_hello(port, min(1.5, max(0.2, deadline - time.monotonic())))
-        except (TimeoutError, RuntimeError) as exc:
+        except (TimeoutError, RuntimeError, OSError) as exc:
             last = str(exc)
+            if isinstance(exc, OSError):
+                reopen_port(port)
             time.sleep(0.2)
     raise TimeoutError("launcher test control did not recover" + (": " + last if last else ""))
 
