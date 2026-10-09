@@ -118,7 +118,7 @@ static void control_task(void *arg)
     (void)arg;
     char line[96];
     ESP_LOGW(TAG, "test-only USB control enabled; do not ship this build");
-    printf("{\\"event\\":\\"E2E_READY\\",\\"protocol\\":1}\\n");
+    printf("{\"event\":\"E2E_READY\",\"protocol\":1}\n");
     fflush(stdout);
     for (;;) {
         if (!fgets(line, sizeof(line), stdin)) {
