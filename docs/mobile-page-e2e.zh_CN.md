@@ -1,4 +1,4 @@
-# 手机端设备内嵌网页 E2E 自动化测试方案
+<p align="right">\n  <strong>简体中文</strong> · <a href="mobile-page-e2e.md">English</a>\n</p>\n\n# 手机端设备内嵌网页 E2E 自动化测试方案
 
 状态：方案已确定，按本文实施。目标分支：`feat/storage`。
 
