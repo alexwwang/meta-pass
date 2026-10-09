@@ -70,6 +70,25 @@ idf.py build
 
 The generated `build/data_child.bin` is an app image for the normal meta-pass install/extract path, not a full-flash image. Confirm that the marketplace/analyze manifest declares `e2edata`; the app binary alone does not carry DATA contents.
 
+## Use with the mobile-page E2E runner
+
+Enable the test overlay on a dedicated launcher build and deploy it using the repository's protected-layout workflow. Never use the test configuration for releases or overwrite the protected device-identity partition with a full-flash image. Publish/provide the same test child binary under two distinct test play IDs; both analyze manifests must declare `e2edata`.
+
+```bash
+python3 -m pip install pyserial
+export META_PASS_E2E_SERIAL_PORT=/dev/cu.usbmodemXXXX  # replace with the actual local port
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device \
+  --cdp-url http://127.0.0.1:9222 \
+  --url 'http://<device-ip>/' \
+  --token '<32-hex-session>' \
+  --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \
+  --require-data-reservation \
+  --play-a <test-play-id-a> --play-b <test-play-id-b>
+```
+
+This run installs/removes the plays through the real mobile page and uses the USB serial driver to launch the child, write/read DATA, reboot, relaunch, and verify persistence. A full E2E PASS is possible only if the device control channel, child protocol, page operations, and final baseline restoration all pass. The chain still needs an ESP-IDF 5.5.3 build and physical-board validation.
+
 ## Evidence / limitations
 
 - Firmware responses report actual partition address/size and bytes read back by the child.
