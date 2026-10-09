@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>简体中文</strong> · <a href="mobile-page-data-e2e-market-comparison.md">English</a>
+</p>
+
 # 市场语音与电子书固件：DATA 存储机制对比
 
 日期：2026-10-09
