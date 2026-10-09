@@ -10,6 +10,8 @@ Status: implementation baseline on `feat/storage`; hardware integration still pe
 
 Prove the real child-firmware DATA path rather than infer it from installer HTTP responses. The test image is a small ESP-IDF 5.5.3 application that accesses its declared DATA partition through `esp_partition_find_first()` and `esp_partition_*` APIs. It does not write arbitrary flash offsets.
 
+Scope: this is a repeatable storage-contract fixture, not a clone of any specific marketplace play's business logic. It reproduces the shared production pattern—declare a DATA partition, resolve it by label, and persist application state through ESP-IDF partition APIs—plus a test-build-only serial observation layer. Marketplace play source is not included in this repository. To prove a specific play's business state machine, add the same test-only observation layer to that play's existing storage code instead of treating this fixture as proof of its business behavior.
+
 The same binary may be installed as test play A and test play B under different play IDs. The launcher materializes DATA partitions for the active play ID, so identical labels can resolve to different physical extents. Tests must use distinct nonces and record each play's reported DATA offset/size to prove isolation.
 
 ## Repository layout
