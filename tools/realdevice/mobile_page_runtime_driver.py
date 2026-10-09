@@ -113,6 +113,16 @@ def wait_child(port, timeout):
     return wait_event(port, "READY", timeout)
 
 
+def child_expect_error(port, command, expected_error, timeout):
+    port.write((command + "\\n").encode("ascii"))
+    port.flush()
+    response = read_json(port, time.monotonic() + timeout,
+                         lambda x: x.get("ok") is False)
+    if response.get("error") != expected_error:
+        raise RuntimeError(f"expected child error {expected_error} for {command}, got {response}")
+    return response
+
+
 def child_request(port, command, expected, timeout):
     port.write((command + "\n").encode("ascii"))
     port.flush()
@@ -166,7 +176,7 @@ def reboot_to_launcher(port, timeout, evidence_lines):
 def action_boot_test(port, args):
     evidence_lines = []
     evidence = {
-        "childBooted": False, "dataWriteOk": False, "dataReadOk": False,
+        "childBooted": False, "dataEraseOk": False, "dataWriteOk": False, "dataReadOk": False,
         "dataChecksumOk": False, "dataPersistedAfterReboot": False,
         "returnedToLauncher": False, "serialEvidence": "",
         "dataLabel": "e2edata", "slot": args.slot, "playId": args.play_id,
@@ -189,6 +199,10 @@ def action_boot_test(port, args):
     evidence["dataAddress"] = int(info["address"])
     evidence["dataSize"] = int(info["size"])
     evidence["childBooted"] = True
+    erased = child_request(port, "ERASE", "ERASE", args.timeout_s)
+    blank_read = child_expect_error(port, "READ", "DATA_INVALID", args.timeout_s)
+    evidence_lines.extend([erased, blank_read])
+    evidence["dataEraseOk"] = erased.get("erasedBytes") == 4096 and blank_read.get("error") == "DATA_INVALID"
     nonce = hashlib.sha256(f"{args.play_id}:{args.phase}:{time.time_ns()}".encode()).hexdigest()[:32]
     written = child_request(port, f"WRITE {nonce}", "WRITE", args.timeout_s)
     evidence_lines.append(written)
@@ -269,7 +283,7 @@ def main():
             time.sleep(0.15)
             evidence = (action_boot_test(port, args) if args.action == "boot-test-and-return"
                         else action_verify_deleted(port, args))
-        required = ["childBooted", "dataWriteOk", "dataReadOk", "dataChecksumOk",
+        required = ["childBooted", "dataEraseOk", "dataWriteOk", "dataReadOk", "dataChecksumOk",
                     "dataPersistedAfterReboot", "returnedToLauncher"]
         if args.action == "boot-test-and-return":
             evidence["ok"] = all(evidence.get(key) is True for key in required) and bool(evidence.get("serialEvidence"))
