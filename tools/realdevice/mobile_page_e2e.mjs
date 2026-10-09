@@ -294,7 +294,7 @@ async function installPlay(playId, name, label) {
 async function manualRuntimeCheckpoint(slot, playId, name, phase) {
   const rl = readline.createInterface({ input, output });
   try {
-    console.log("\\n[MANUAL ACTION REQUIRED] " + phase);
+    console.log("\n[MANUAL ACTION REQUIRED] " + phase);
     console.log("设备：FoloToy AI Passport；测试槽位名称：" + name + "；玩法 ID：" + playId + "；槽位：" + slot.slot);
     console.log("1. 查看设备屏幕，使用实体 UP/DOWN 键选择本轮刚安装的玩法；按实体 OK 键启动。");
     console.log("2. 确认屏幕确实进入该玩法，而不是仍停留在启动器。若测试固件有自检页，记录其显示结果；不要把仅显示玩法名称当成 DATA 验证通过。");
