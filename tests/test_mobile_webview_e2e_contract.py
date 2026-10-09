@@ -30,7 +30,7 @@ require('scenario.steps', "scenario-driven UI actions")
 require('"assertJs"', "assert app page runtime state")
 require('report.json', "machine-readable report")
 require('finally', "session cleanup in finally")
-require('"/api/install/slots"', "read-only device state verification")
+require("'/api/install/slots'", "read-only device state verification")
 for endpoint in ('"/api/install/prepare"', '"/api/install/session"',
                  '"/api/install/chunk"', '"/api/install/finalize"',
                  '"/api/install/data"', '"/api/install/remove"'):
