@@ -100,7 +100,41 @@ chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-e2e
 node tools/realdevice/mobile_page_e2e.mjs --real-device --cdp-url http://127.0.0.1:9222 --url http://<device-ip>/ --token <32-hex-session> --play-a <test-id-a> --play-b <test-id-b> --runtime-driver /path/to/device-runtime-driver
 ```
 
-## 7. 覆盖分级与人工辅助模式
+## 7. 一次运行覆盖矩阵与问题汇总
+
+运行器按阶段记录结果；单个安装、运行时或删除用例失败后，会继续执行后续仍具备前置条件的独立用例，而不是在第一个错误处结束。只有页面无法打开、设备基线不可读、安装器不空闲或基线分配几何不合法时，才会停止所有写操作，以免在未知设备状态下继续破坏性测试。最终报告汇总所有已执行失败项、被依赖阻塞的用例、未覆盖项和清理结果。
+
+| 手机内嵌页用例 | 对应旧 WebView / USB 服务页覆盖 | 本运行器实际检查 |
+|---|---|---|
+| M01 页面与移动端兼容性 | 旧版 document ready、标题/正文、交互控件；USB E2 页面加载 | DOM ready、正文/控件存在、搜索/管理控件可见、触摸能力、移动 UA、无横向溢出、多组视口断点、JS/console/网络失败 |
+| M02 设备基线与协议 | 旧版 slots/status 快照、USB E1/E4 | 只读 slots/status、安装器空闲、动态槽位协议、分配池范围、偏移/大小对齐、APP/DATA 不重叠、free-space 计算、基线 DATA 保留 |
+| M03 搜索与候选详情 | USB E5 获取玩法元数据与安装候选 | 通过内嵌页输入玩法 ID、点击搜索、等待详情和安装面板；校验有可安装槽位且确认控件可用 |
+| M04 安装 A | USB E6/E7/E8 | 通过内嵌页完成安装；只读 API 独立确认 VALID 槽位；记录 DATA 预留与几何 |
+| M04A 运行 A | 旧版设备运行阶段 | 硬件驱动模式验证子固件启动、DATA 写入/读回/校验和/复位持久性、返回启动器；人工模式仅记录人工启动/返回确认 |
+| M05 安装 B / 共存 | USB R2 双槽共存与剩余空间变化 | 通过内嵌页安装 B，核验 A/B 同时有效、分配不重叠、free-space 一致 |
+| M05B 运行 B | 旧版设备运行阶段 | 与 A 相同的运行时证据要求 |
+| M06 删除 A / 保留 B | USB R3 选择性删除与隔离 | 通过管理 UI 删除 A，确认 B 仍有效；再次运行 B；检查 A 的 DATA 预留释放 |
+| M07 删除 B | USB R4 删除第二槽 | 通过管理 UI 删除 B；硬件驱动模式额外验证已删除固件不可启动、DATA 分区已释放 |
+| M08 恢复基线 | USB E11/R4 基线恢复 | 最终槽位、DATA 预留、free-space 与起始状态对比 |
+| M09 问题汇总 | USB runner 的失败日志与证据归档 | 汇总页面异常、console errors、失败请求；保存 JSON/文本报告、截图、HTML、基线/中间/最终设备快照及运行时证据 |
+
+**执行语义：**FAIL 用于任何已执行失败项或因前置失败而被阻塞的必要用例；人工辅助模式最多为 PASS_WITH_MANUAL_STEPS；只有硬件驱动与专用测试子固件提供完整设备侧证据，才可能得到完整 PASS。USB Web Serial 的桌面 Chrome、DTR/RTS 硬复位专属步骤仍由 usb_web_e2e_multi.mjs 覆盖；手机内嵌页测试不会伪称自己验证了桌面 Web Serial 权限或 USB 线路电气行为。
+
+### 一次性执行
+
+在仓库根目录运行以下命令。该模式会尝试完成 A/B 生命周期并在同一份报告里汇集问题；建议使用专用测试玩法 ID，并保留自动生成的报告目录：
+
+~~~bash
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device --manual-assist \
+  --cdp-url http://127.0.0.1:9222 \
+  --url 'http://<device-ip>/' --token '<32-hex-session>' \
+  --play-a <test-play-id-a> --play-b <test-play-id-b>
+~~~
+
+若已配置真实硬件运行驱动，将 --manual-assist 替换为 --runtime-driver /absolute/path/to/device-runtime-driver。运行结束查看终端打印的 REPORT_DIR，其中 report.json 与 report.txt 是总结果；baseline-*.json、after-install-*.json、final-*.json、截图、页面源码和运行时证据用于定位各项问题。测试会尽力清理本轮唯一命名的 A/B 槽位，不触碰其他槽位。
+
+## 8. 覆盖分级与人工辅助模式
 
 ### 覆盖边界
 
