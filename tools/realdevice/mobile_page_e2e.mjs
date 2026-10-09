@@ -272,6 +272,31 @@ async function removeByName(name, stage = "UI") {
     "device API confirms UI removal of " + name, 90000);
   record(`${stage}: UI removed test slot`, true, `name=${name}; originalSlot=${current.slot}`);
 }
+async function cancelRemoveByName(name, stage = "UI") {
+  // A cancelled uninstall must be a strict no-op across both slot metadata and
+  // DATA reservations. This guards the UI's destructive-confirmation boundary.
+  const beforeSlots = stableSlots(await readSlots());
+  const beforeStatus = await readStatus();
+  const current = beforeSlots.slots.find((s) => s.name === name);
+  if (!current) throw new Error("cannot test delete cancellation: slot not found: " + name);
+  await openManagement();
+  const button = page.locator(`[data-rm="${current.slot}"]`);
+  await button.waitFor({ state: "visible", timeout: 10000 });
+  await button.click();
+  await button.click(); // enter the page's deliberate two-step delete confirmation
+  await page.locator("#mp-mgmt-confirm").waitFor({ state: "visible", timeout: 10000 });
+  await page.locator("#mp-mgmt-x").click();
+  await page.locator("#mp-mgmt-confirm").waitFor({ state: "detached", timeout: 10000 });
+  const afterSlots = stableSlots(await readSlots());
+  const afterStatus = await readStatus();
+  const unchanged = JSON.stringify(afterSlots) === JSON.stringify(beforeSlots);
+  const idle = beforeStatus.protocol === afterStatus.protocol &&
+    !afterStatus.active && !afterStatus.session && !afterStatus.offer && !afterStatus.confirmed;
+  record(stage + ": cancel uninstall is a no-op", unchanged && idle,
+    "slot=" + current.slot + "; slotsUnchanged=" + unchanged + "; installerIdle=" + idle);
+  if (!unchanged || !idle) throw new Error("cancelled uninstall mutated device state");
+}
+
 async function installPlay(playId, name, label) {
   await page.locator("#mp-q").fill(String(playId));
   await page.locator("#mp-go").click();
@@ -465,6 +490,7 @@ try {
   let a = null, b = null, afterA = null, afterB = null, afterRemoveA = null;
   const installA = await runCase("M04 install A", async () => {
     const slot = await installPlay(playA, nameA, "M04 install A");
+    await cancelRemoveByName(nameA, "M04A");
     const listing = await readSlots();
     saveJson("after-install-a.json", stableSlots(listing));
     record("M04 install A independently verified", listing.slots.some((x) => x.name === nameA && x.state === "valid"));
