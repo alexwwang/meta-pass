@@ -6,6 +6,9 @@
 
 ## Unreleased
 
+- **安装/卸载 E2E 安全门加固**：依据 ESP-IDF 5.5.3 固件 CI 的真实编译错误，修正 USB Serial/JTAG 驱动配置参数的 `const` 限定符不匹配；并加固手机页 E2E：安装后必须由设备 API 确认槽位为 VALID，空间几何和原有 DATA reservation 任一不满足即阻断后续写操作，A 的运行时验证失败也不会继续安装 B。新增静态契约测试。修复后的固件 CI 仍需等待结果；尚未运行真机 E2E。
+
+
 - **语音与电子书 DATA 存储横向分析**：基于公开小智 AI Passport 源码/8 MiB 分区表，确认 DeepSeek 语音配置主要使用共享 NVS 与 `assets` 资源分区，未发现等同 Play 28 的独立 FAT 录音档案分区；另分析开源 Ebook 的 `userdata` FAT、只读 `assets` LittleFS 和 TF 卡路径。明确开源 Ebook 不是已确认的市场电子书固件，且当前运行环境无法下载发布 ZIP，因此没有虚报二进制级验证。保留 Play 28 为首选真实 DATA E2E 目标，并增加静态契约测试。
 
 - **手机内嵌页面空间管理与子固件生命周期 E2E 门禁**：新增中英双语设计文档和静态契约测试，明确 M01–M08 真实设备流程：手机视口与页面健康、基线安全门、A/B 安装共存、分配器几何、DATA 物理隔离、UI 卸载、DATA reservation 释放及基线恢复。测试要求设备侧串口证据覆盖擦除/写入/读回/checksum/重启持久性与删除后不可启动；静态契约测试已注册到 `tools/validate.sh --static`。本次未运行真机 E2E，不能把静态门禁通过等同设备测试通过。
