@@ -265,6 +265,7 @@ function runRuntimeDriver(slot, playId, name, phase) {
   catch (e) { throw new Error("runtime driver " + phase + " did not provide valid JSON evidence: " + e.message); }
   const required = ["childBooted", "dataWriteOk", "dataReadOk", "dataChecksumOk", "dataPersistedAfterReboot", "returnedToLauncher"];
   const missing = required.filter((key) => evidence[key] !== true);
+  if (typeof evidence.serialEvidence !== "string" || !evidence.serialEvidence.trim()) missing.push("serialEvidence");
   saveJson("runtime-" + safePhase + "-evidence.json", evidence);
   record(phase + ": child firmware executed and DATA verified", missing.length === 0,
     missing.length ? "missing/false evidence: " + missing.join(",") :
