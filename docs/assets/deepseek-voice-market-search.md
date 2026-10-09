@@ -13,7 +13,7 @@ Status: **Exact listing not yet confirmed**
 - Official product page: [AI Passport](https://ai-passport.folotoy.cn/)
 - Public source candidate: [FoloToy/folo-ai-passport-xiaozhi](https://github.com/FoloToy/folo-ai-passport-xiaozhi)
 
-The marketplace's public index shows 596 plays and lists “小智 AI 对话机器人” by FOLOTOY in its download ranking. The indexed page excerpt does not show a play whose title or description contains the exact keyword “DeepSeek语音”. Exact-phrase searches of publicly indexed pages have not surfaced a verifiable marketplace detail page with that phrase.
+The marketplace's public index shows 596 plays and lists the XiaoZhi AI chatbot by FOLOTOY in its download ranking. The indexed page excerpt does not show a play whose title or description contains the exact Chinese keyword. Exact-phrase searches of publicly indexed pages have not surfaced a verifiable marketplace detail page with that phrase.
 
 This does **not** prove the play does not exist: community search is dynamically loaded, and the current public index is insufficient to confirm all results. The correct status is “not confirmed in indexed results,” not “confirmed absent.”
 
@@ -35,7 +35,7 @@ These are source-candidate findings, not a final conclusion about the marketplac
 
 ## Hard completion criteria
 
-- Search the official community UI for the exact phrase “deepseek语音”; record matching title, detail URL, creator, version/update time and downloads.
+- Search the official community UI for the exact Chinese keyword; record matching title, detail URL, creator, version/update time and downloads.
 - Follow the detail page's source-repository link if available; otherwise record that source is not published.
 - Download the actual firmware from the detail page and record original URL, size, SHA-256 and acquisition time.
 - Use the matching source version to inspect partition tables, mount APIs, NVS keys, file create/delete paths and reboot recovery.
