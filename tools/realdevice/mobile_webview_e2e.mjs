@@ -145,6 +145,9 @@ async function chooseWebContext() {
 async function execute(script, args = []) {
   return wd("POST", "/execute/sync", { script, args });
 }
+async function executeAsync(script, args = []) {
+  return wd("POST", "/execute/async", { script, args });
+}
 async function find(selector, strategy = "css selector") {
   const found = await wd("POST", "/element", { using: strategy, value: selector });
   return found.ELEMENT || found["element-6066-11e4-a52e-4f735466cecf"];
@@ -182,10 +185,14 @@ async function snapshot() {
 }
 async function verifyDeviceApi() {
   if (!IP) return;
-  const response = await fetch(`http://${IP}/api/install/slots`, { headers: TOKEN ? { "x-install-token": TOKEN } : {} });
-  const body = await response.text();
-  if (!response.ok) throw new Error(`device slots API HTTP ${response.status}: ${body.slice(0, 160)}`);
-  const data = JSON.parse(body);
+  // Read back from inside the actual mobile page origin: preserve the phone
+  // WebView's UA/origin/request defaults and send no invented auth headers.
+  const result = await executeAsync(
+    "const done = arguments[arguments.length - 1]; fetch('/api/install/slots').then(async r => ({status:r.status, body:await r.text()})).then(done).catch(e => done({error:String(e)}));"
+  );
+  if (result?.error) throw new Error(`device slots API fetch failed: ${result.error}`);
+  if (result?.status !== 200) throw new Error(`device slots API HTTP ${result?.status}: ${String(result?.body || "").slice(0, 160)}`);
+  const data = JSON.parse(result.body);
   if (!Array.isArray(data.slots) && !Array.isArray(data.slot)) {
     throw new Error("device slots API response has no slots array");
   }
