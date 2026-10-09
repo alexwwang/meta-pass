@@ -47,9 +47,16 @@ USB Serial/JTAG 使用逐行 ASCII 命令，每个响应为一个 JSON 对象。
 
 ## 当前集成边界
 
-专用子固件能在运行后测试 DATA 访问，但它本身不能让启动器选择某个槽位。现有 `mobile_page_e2e.mjs` 的 runtime-driver 契约要求 `boot-test-and-return` 和 `verify-deleted`；单独的串口客户端无法安全完成这些动作，因为当前启动器没有经过认证的 test-only 槽位选择/重启命令，USB Serial/JTAG 也不能模拟 GPIO 按键。控制路径实现并经真机验证前，不得宣称完整硬件 E2E 已自动化。
+专用子固件能在运行后测试 DATA 访问，但它本身不能让启动器选择某个槽位。现有 `mobile_page_e2e.mjs` 的 runtime-driver 契约要求 `boot-test-and-return` 和 `verify-deleted`；单独的串口客户端无法安全完成这些动作，因为当前分支已新增 `CONFIG_META_E2E_TEST_CONTROL` 门控的启动器 USB 控制通道及 `mobile_page_runtime_driver.py`：仅接受当前 carve registry 中已存在且经扫描验证可启动的槽位下标，复用 `meta_store_boot_slot()`，并只读返回槽位/DATA 清单。默认 `n`，生产构建必须保持关闭。它们尚未在 ESP-IDF 环境编译，也未在真机验证，因此完整硬件 E2E 仍未验收。
 
-下一步是在测试构建中增加显式门控的启动器控制通道：仅接受当前 carve registry 中已存在的槽位下标，验证槽位可启动后调用既有 `meta_store_boot_slot()` 并重启。不得接受裸偏移、任意分区标签或 Flash 写命令。生产构建必须将该通道编译掉。driver 还需区分预期的子固件重启窗口与串口超时。
+测试启动器构建方式：
+
+```bash
+idf.py -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults' reconfigure
+idf.py build
+```
+
+该 overlay 仅开启测试控制通道，不可用于发布。真机验收仍需确认子固件重启后确实回到 launcher，以及 USB Serial/JTAG 的控制台输入在目标 IDF 配置下可用。
 
 ## 构建
 
