@@ -30,6 +30,15 @@ const playB = String(args["play-b"] || process.env.MOBILE_E2E_PLAY_B || "2");
 const tokenArg = String(args.token || process.env.META_PASS_SESSION || "");
 const urlArg = String(args.url || process.env.MOBILE_E2E_URL || "");
 const viewport = { width: Number(args.width || 390), height: Number(args.height || 844) };
+const viewportMatrix = String(args.viewports || "320x720,360x800,390x844,430x932")
+  .split(",").map((item) => {
+    const match = item.trim().match(/^(\\d+)x(\\d+)$/);
+    if (!match || Number(match[1]) < 240 || Number(match[2]) < 320) {
+      console.error(`Invalid --viewports item: ${item}; expected widthxheight with width>=240 and height>=320`);
+      process.exit(2);
+    }
+    return { width: Number(match[1]), height: Number(match[2]) };
+  });
 const timeout = Number(args.timeout || process.env.MOBILE_E2E_TIMEOUT_MS || 600000);
 const logDir = path.resolve(String(args.logdir || path.join(LOGROOT, "mobile-page-e2e-" + new Date().toISOString().replace(/[:.]/g, "-"))));
 if (!urlArg || !/^\d+$/.test(playA) || !/^\d+$/.test(playB) || playA === playB) {
@@ -60,7 +69,7 @@ const report = {
   test: "Real-device phone-install page E2E (Playwright mobile emulation)",
   startedAt: new Date().toISOString(),
   browser: "Chromium",
-  mobileEmulation: { ...viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
+  mobileEmulation: { ...viewport, viewportMatrix, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
   device: "redacted",
   playIds: [Number(playA), Number(playB)],
   testNames: [nameA, nameB],
@@ -217,6 +226,24 @@ try {
     `viewport=${layout.width}x${layout.height}; rootWidth=${layout.rootWidth}; title=${layout.title}; touch=${layout.touch}`);
   record("M01 no horizontal page overflow", layout.documentWidth <= layout.width + 1,
     `documentWidth=${layout.documentWidth}; viewportWidth=${layout.width}`);
+  // Exercise responsive breakpoints in the same browser/page session before
+  // mutating device state. Restore the configured functional-test viewport.
+  for (const size of viewportMatrix) {
+    await page.setViewportSize(size);
+    await page.waitForTimeout(100);
+    const responsive = await page.evaluate(() => ({
+      width: innerWidth,
+      height: innerHeight,
+      documentWidth: document.documentElement.scrollWidth,
+      rootWidth: document.querySelector("#mp-install-root")?.getBoundingClientRect().width || 0,
+    }));
+    record(`M01 responsive layout ${size.width}x${size.height}`,
+      responsive.width === size.width &&
+      responsive.documentWidth <= responsive.width + 1 &&
+      responsive.rootWidth > 0 && responsive.rootWidth <= responsive.width + 1,
+      `inner=${responsive.width}x${responsive.height}; documentWidth=${responsive.documentWidth}; rootWidth=${responsive.rootWidth}`);
+  }
+  await page.setViewportSize(viewport);
   if (pageErrors.length) throw new Error("page JavaScript error: " + pageErrors[0]);
 
   baseline = await readSlots();
