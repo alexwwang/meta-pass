@@ -4,7 +4,7 @@
 
 # Dedicated child firmware for mobile-page DATA E2E
 
-Status: implementation baseline on `feat/storage`; hardware integration still pending.
+Status: infrastructure fixture, not the marketplace business-DATA acceptance firmware. See [real marketplace firmware selection](mobile-page-data-e2e-market-firmware.md) for the target and capacity gate.
 
 ## Goal
 
