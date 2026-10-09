@@ -143,6 +143,12 @@ def action_boot_test(port, args):
     if not slot_entry:
         raise RuntimeError(f"launcher registry does not contain requested valid slot/play: {args.slot}/{args.play_id}")
     info = boot_child(port, args.slot, args.timeout_s, evidence_lines)
+    data_entries = [d for d in before.get("data", [])
+                    if int(d.get("playId", -1)) == args.play_id and d.get("label") == "e2edata"]
+    if (len(data_entries) != 1 or
+            int(data_entries[0].get("offset", -1)) != int(info["address"]) or
+            int(data_entries[0].get("size", -1)) != int(info["size"])):
+        raise RuntimeError("child DATA partition does not match launcher carve registry")
     evidence["dataAddress"] = int(info["address"])
     evidence["dataSize"] = int(info["size"])
     evidence["childBooted"] = True
