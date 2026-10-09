@@ -12,7 +12,7 @@ def require(value, label):
 def forbid(value, label):
     assert value not in source, f"forbidden direct mutation API: {label} ({value})"
 
-require('from "playwright"', "mobile browser UI automation dependency")
+require('from "./cdp_mobile_page.mjs"', "direct CDP controller; no Playwright dependency")
 require('isMobile: true', "mobile browser metrics")
 require('hasTouch: true', "touch emulation")
 require('deviceScaleFactor: 3', "mobile DPR")
@@ -20,9 +20,14 @@ require('viewport', "configurable mobile viewport")
 require('viewportMatrix', "responsive viewport matrix")
 require('M01 responsive layout', "layout check at multiple phone sizes")
 require('page.setViewportSize(size)', "same-session responsive viewport changes")
+require('/json/version', "CDP endpoint discovery")
+require('Target.attachToTarget', "direct CDP target attachment")
+require('Emulation.setDeviceMetricsOverride', "mobile viewport through CDP")
+require('Emulation.setTouchEmulationEnabled', "touch emulation through CDP")
+require('--cdp-url', "configurable remote debugging endpoint")
 require('if (!args["real-device"])', "explicit real-device safety gate")
-require('chromium.launch(', "one browser session")
-assert source.count("chromium.launch(") == 1, "browser must launch once per scenario"
+require('new CdpMobilePage', "single CDP-controlled page session")
+assert "playwright" not in source, "mobile E2E runner must not depend on Playwright"
 require('#mp-install-root', "actual device phone-install page")
 require('#mp-q', "play search UI")
 require('#mp-confirm', "install confirmation UI")
