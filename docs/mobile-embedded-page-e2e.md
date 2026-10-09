@@ -44,7 +44,7 @@ APPIUM_URL=http://127.0.0.1:4723 MOBILE_E2E_TIMEOUT_MS=45000 \
   --app-package <package.id> --app-activity <activity> --url 'http://<device-ip>/'
 ```
 
-Use `--token` only when the device API itself requires it. Keep tokens out of shell history where possible; prefer a protected environment variable.
+The URL fragment is not sent in the HTTP request, but can still appear in shell history. Avoid copying it into committed scenario files or logs.
 
 ## Scenario format
 
