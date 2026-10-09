@@ -246,6 +246,7 @@ async function runScenario(scenario) {
   }
   for (const [index, step] of (scenario.steps || []).entries()) {
     const label = step.name || `step ${index + 1}`;
+    let recorded = false;
     if (step.action === "waitVisible") {
       await waitSelector(step.selector, label, step.timeout || TIMEOUT);
     } else if (step.action === "click") {
@@ -260,12 +261,14 @@ async function runScenario(scenario) {
       const actual = await textOf(step.selector);
       const pass = actual.includes(step.text);
       record(label, pass, `expected text includes ${step.text}`);
+      recorded = true;
       if (!pass) throw new Error(`assertText failed: ${label}`);
     } else if (step.action === "snapshotSlots") {
       const data = await verifyDeviceApi();
       slotSnapshots.set(step.snapshot, data);
       saveJson(`slots-${String(step.snapshot).replace(/[^a-z0-9_-]/gi, "_")}.json`, data);
       record(label, true, `snapshot=${step.snapshot}; slots=${slotList(data).length}`);
+      recorded = true;
     } else if (step.action === "assertSlotPresent" || step.action === "assertSlotAbsent") {
       const data = slotSnapshots.get(step.snapshot);
       if (!data) throw new Error(`unknown slot snapshot: ${step.snapshot}`);
@@ -275,11 +278,13 @@ async function runScenario(scenario) {
       );
       const pass = step.action === "assertSlotPresent" ? present : !present;
       record(label, pass, `snapshot=${step.snapshot}; present=${present}`);
+      recorded = true;
       if (!pass) throw new Error(`${step.action} failed: ${label}`);
     } else if (step.action === "assertInstallerIdle") {
       const status = await verifyDeviceStatus();
       const pass = status.protocol === 1 && !status.active && !status.session;
       record(label, pass, `protocol=${status.protocol}; active=${status.active}; session=${Boolean(status.session)}`);
+      recorded = true;
       if (!pass) throw new Error(`installer is not idle: ${label}`);
     } else if (step.action === "sleep") {
       await sleep(Number(step.ms || 500));
@@ -287,11 +292,12 @@ async function runScenario(scenario) {
       const actual = await execute(step.script);
       const pass = step.equals === undefined ? Boolean(actual) : JSON.stringify(actual) === JSON.stringify(step.equals);
       record(label, pass, `actual=${JSON.stringify(actual)}`);
+      recorded = true;
       if (!pass) throw new Error(`assertJs failed: ${label}`);
     } else {
       throw new Error(`unsupported scenario action: ${step.action}`);
     }
-    record(label, true, step.action);
+    if (!recorded) record(label, true, step.action);
   }
   if (scenario.deviceAssertions?.slotsCountAtLeast !== undefined) {
     const slots = await verifyDeviceApi();
