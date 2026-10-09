@@ -4,9 +4,11 @@
 
 # Mobile Embedded-Page E2E Framework
 
-## Purpose
+## Scope
 
-This runner drives the phone-side page through an actual Android automation session. It is separate from `usb_web_e2e_multi.mjs`: the latter tests the desktop USB/Web Serial page and must not be treated as evidence for the phone UI.
+**This document covers only optional native Android WebView integration testing**: host-app launch, actual WebView context, native bridges, and container lifecycle. The primary full business E2E for the phone page is [`mobile-page-e2e.md`](mobile-page-e2e.md), which uses Playwright mobile viewport emulation against the real device page and does not require an Android emulator, Appium, or a native host app.
+
+This runner is separate from `usb_web_e2e_multi.mjs`: that runner validates the desktop USB/Web Serial page and is not evidence that the mobile page business E2E passed.
 
 ## Architecture
 
