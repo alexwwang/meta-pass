@@ -520,7 +520,7 @@ try {
   saveJson("report.json", report);
   fs.writeFileSync(path.join(logDir, "report.txt"),
     [`Mobile page E2E: ${report.verdict}`, `viewport: ${viewport.width}x${viewport.height}`,
-      ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | ${r.name} | ${r.detail || ""}`),
+      ...report.results.map((r) => `${r.ok ? "PASS" : "FAIL"} | evidence=${r.evidence || "automated"} | ${r.name} | ${r.detail || ""}`),
       `coverage gaps: ${JSON.stringify(report.coverageGaps || [])}`,
       `not covered: ${JSON.stringify(report.notCovered || [])}`,
       `page errors: ${pageErrors.length}`, `console errors: ${consoleErrors.length}`,
