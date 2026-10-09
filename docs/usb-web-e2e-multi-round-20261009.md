@@ -1,5 +1,7 @@
 # Multi-round USB Web UI E2E Test Report — 2026-10-09
 
+[简体中文](usb-web-e2e-multi-round-20261009.zh_CN.md)
+
 **Repo**: `meta-pass` @ `feat/storage` (report committed after the test run)
 **Device**: ESP32-C3 Passport, one USB-JTAG port
 **Browser**: Chrome 154.0.8037.99 (single persistent session, Web Serial authorized)
