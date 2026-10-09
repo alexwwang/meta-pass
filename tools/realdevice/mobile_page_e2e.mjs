@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Real-device phone-install page E2E using Playwright mobile viewport emulation.
+// Real-device phone-install page E2E using direct CDP mobile emulation and a hardware runtime driver.
 // UI mutations go through the page; direct device API access is GET-only.
 import fs from "node:fs";
 import path from "node:path";
