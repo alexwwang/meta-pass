@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="mobile-page-data-e2e-market-firmware.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
 # Mobile-page DATA E2E: selecting a real marketplace firmware
 
 Status: the target has been selected; install-time size reduction and play-UI automation are not implemented yet.
