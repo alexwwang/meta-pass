@@ -31,6 +31,10 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+    def test_child_b_reservation_is_attributed_to_b_play_id(self):
+        self.assertIn("d.play_id === Number(playB)", RUNNER)
+        self.assertIn('"playId=" + Number(playB)', RUNNER)
+
     def test_storage_invariant_failures_block_follow_on_mutations(self):
         for token in ("requireSafeStorageState", "refusing subsequent mutations",
                       "runtimeAResult?.ok", "A/B install and runtime safety gates did not pass",
