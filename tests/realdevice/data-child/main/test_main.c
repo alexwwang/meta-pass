@@ -202,7 +202,7 @@ static void command_read(void)
     char out[256];
     (void)snprintf(out, sizeof(out),
                    "{\"ok\":true,\"command\":\"READ\",\"label\":\"%s\","
-                   "\"sequence\":%" PRIu32 ",\"nonce\":\"%.16s\","
+                   "\"sequence\":%" PRIu32 ",\"nonce\":\"%.32s\","
                    "\"sha256\":\"%02x%02x%02x%02x%02x%02x%02x%02x"
                    "%02x%02x%02x%02x%02x%02x%02x%02x"
                    "%02x%02x%02x%02x%02x%02x%02x%02x"
