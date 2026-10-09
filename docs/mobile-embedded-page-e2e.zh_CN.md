@@ -50,6 +50,9 @@ node tools/realdevice/mobile_webview_e2e.mjs \
 - `fill`：填写元素，支持固定值或 `deviceIp` / `deviceUrl`
 - `waitText` / `assertText`：等待或断言元素文本
 - `assertJs`：执行只读页面断言
+- `snapshotSlots`：在流程中保存设备槽位快照
+- `assertSlotPresent` / `assertSlotAbsent`：对命名快照断言槽位存在性
+- `assertInstallerIdle`：核验安装服务未残留活动会话
 - `sleep`：等待指定毫秒数
 
 完整的安装→进度→完成→删除→恢复基线测试，需要提供与实际手机内嵌页面一致的场景选择器。默认场景不会冒充完整业务 E2E。
