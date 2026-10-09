@@ -21,7 +21,7 @@
 //
 // Usage:
 //   node tools/realdevice/usb_web_e2e_multi.mjs --real-device \
-//     --ip <device-ip> --token <32hex> --serial-port /dev/cu.XXXX \
+//     --ip <device-ip> --token <32hex> --serial-port <serial-port> \
 //     --play-a 1 --play-b 2 --port 4191
 //
 // Environment variables (fallbacks):
@@ -63,7 +63,7 @@ function parseArgs(argv) {
 const argv = parseArgs(process.argv.slice(2));
 if (!argv["real-device"]) {
   console.error("Refusing to touch hardware: pass --real-device explicitly.");
-  console.error("Usage: node usb_web_e2e_multi.mjs --real-device --ip <ip> --token <32hex> --serial-port /dev/cu.XXXX [--play-a 1] [--play-b 2] [--port 4191]");
+  console.error("Usage: node usb_web_e2e_multi.mjs --real-device --ip <ip> --token <32hex> --serial-port <serial-port> [--play-a 1] [--play-b 2] [--port 4191]");
   process.exit(2);
 }
 
@@ -80,11 +80,11 @@ const BASE = `http://localhost:${PORT}`;
 const DEVICE = `http://${IP || ""}`;
 
 if (!IP || !TOKEN || !/^[0-9a-f]{32}$/i.test(TOKEN)) {
-  console.error("usage: node usb_web_e2e_multi.mjs --real-device --ip <device-ip> --token <32hex> --serial-port /dev/cu.XXXX [--play-a 1] [--play-b 2]");
+  console.error("usage: node usb_web_e2e_multi.mjs --real-device --ip <device-ip> --token <32hex> --serial-port <serial-port> [--play-a 1] [--play-b 2]");
   process.exit(2);
 }
 if (!SERIAL_PORT) {
-  console.error("error: --serial-port is required (e.g. /dev/cu.usbmodem142401)");
+  console.error("error: --serial-port is required (e.g. <serial-port>)");
   process.exit(2);
 }
 
