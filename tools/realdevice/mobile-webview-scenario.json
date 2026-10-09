@@ -1,0 +1,17 @@
+{
+  "navigate": true,
+  "assertions": {
+    "bodyTextMinLength": 1,
+    "interactiveElementCountAtLeast": 1
+  },
+  "steps": [
+    {
+      "action": "assertJs",
+      "name": "mobile document is not an empty shell",
+      "script": "return document.body && document.body.innerText.trim().length > 0"
+    }
+  ],
+  "deviceAssertions": {
+    "slotsCountAtLeast": 1
+  }
+}
