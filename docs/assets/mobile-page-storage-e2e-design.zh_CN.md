@@ -22,7 +22,8 @@
 | M01 页面与视口 | 打开真实设备页面；检查内容、交互控件、触控能力；测试 320×720、360×800、390×844、430×932 | 页面可用、关键控件可见、无横向溢出、无页面/控制台/请求错误 |
 | M02 基线与安全门 | 读取 slots、DATA reservations、installer status | 安装器空闲；分区池范围、对齐、大小粒度、重叠和 free 字节计算一致；否则拒绝写设备 |
 | M04 安装 A | 从市场按 play ID 查找、选择槽位并安装；独立读取设备状态 | UI 显示完成且设备 API 出现 VALID 槽；空间几何正确；原有 DATA reservation 不丢失 |
-| M04A 子固件 A | 运行设备侧 runtime driver | 子固件确实启动；DATA 擦除、写入、读回、校验和、重启持久性全部有串口证据 |
+| M04A 删除取消保护 | 安装 A 后进入管理页并触发删除确认，再取消 | 槽表、DATA reservations 与安装器状态完全不变；否则失败并停止后续破坏性操作 |
+| M04B 子固件 A | 运行设备侧 runtime driver | 子固件确实启动；DATA 擦除、写入、读回、校验和、重启持久性全部有串口证据 |
 | M05 安装 B | 安装第二个 play ID | A/B 可同时存在；无重叠；原有 DATA reservation 保留 |
 | M05C A/B 隔离 | 比较设备侧报告的 DATA 物理地址 | A/B DATA extent 不同，不能仅凭 play ID 不同就判定隔离成立 |
 | M06 卸载 A | 在管理 UI 中双击删除、确认；卸载后运行 B | A 从槽表消失；B 仍 VALID 且可启动；A 的 DATA reservation 被释放；池几何仍正确 |
