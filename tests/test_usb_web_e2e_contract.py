@@ -36,6 +36,9 @@ require(runner, '"analyze deletion target ownership"', "action-bound cleanup ana
 # Multi-round harness must preserve its own cleanup and evidence privacy contracts.
 require(multi, "execFileSync", "multi-round commit metadata")
 require(multi, '"/api/install/remove"', "multi-round failure cleanup")
+require(multi, '"/api/install/status"', "multi-round installer status verification")
+require(multi, "assertInstallerIdle", "multi-round installer isolation assertions")
+require(multi, '"baseline-status.json"', "multi-round baseline installer status evidence")
 require(multi, '"after-failure-slots.json"', "multi-round post-cleanup evidence")
 require(multi, 'device: "redacted"', "multi-round report redacts device address")
 require(multi, 'serialPort: "redacted"', "multi-round report redacts serial path")
