@@ -47,7 +47,7 @@ USB Serial/JTAG 使用逐行 ASCII 命令，每个响应为一个 JSON 对象。
 
 ## 当前集成边界
 
-专用子固件能在运行后测试 DATA 访问，但它本身不能让启动器选择某个槽位。现有 `mobile_page_e2e.mjs` 的 runtime-driver 契约要求 `boot-test-and-return` 和 `verify-deleted`；单独的串口客户端无法安全完成这些动作，因为当前分支已新增 `CONFIG_META_E2E_TEST_CONTROL` 门控的启动器 USB 控制通道及 `mobile_page_runtime_driver.py`：仅接受当前 carve registry 中已存在且经扫描验证可启动的槽位下标，复用 `meta_store_boot_slot()`，并只读返回槽位/DATA 清单。默认 `n`，生产构建必须保持关闭。它们尚未在 ESP-IDF 环境编译，也未在真机验证，因此完整硬件 E2E 仍未验收。
+专用子固件能在运行后测试 DATA 访问，但它本身不能让启动器选择某个槽位。现有 `mobile_page_e2e.mjs` 的 runtime-driver 契约要求 `boot-test-and-return` 和 `verify-deleted`；单独的串口客户端无法安全完成这些动作，因为当前分支已新增 `CONFIG_META_E2E_TEST_CONTROL` 门控的启动器 USB 控制通道及 `mobile_page_runtime_driver.py`：仅接受当前 carve registry 中已存在且经扫描验证可启动的槽位下标，复用 `meta_store_boot_slot()`，并只读返回槽位/DATA 清单；删除后还可通过旧 play ID 请求验证启动器确实拒绝启动。默认 `n`，生产构建必须保持关闭。它们尚未在 ESP-IDF 环境编译，也未在真机验证，因此完整硬件 E2E 仍未验收。
 
 测试启动器构建方式：
 
