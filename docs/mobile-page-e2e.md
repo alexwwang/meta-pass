@@ -1,4 +1,4 @@
-# Mobile Viewport E2E for the Device Phone-Install Page
+<p align="right">\n  <a href="mobile-page-e2e.zh_CN.md">简体中文</a> · <strong>English</strong>\n</p>\n\n# Mobile Viewport E2E for the Device Phone-Install Page
 
 Status: implementation in progress on `feat/storage`.
 
