@@ -27,6 +27,7 @@ if (!args["real-device"]) {
 }
 const playA = String(args["play-a"] || process.env.MOBILE_E2E_PLAY_A || "1");
 const playB = String(args["play-b"] || process.env.MOBILE_E2E_PLAY_B || "2");
+const requireDataReservation = Boolean(args["require-data-reservation"]);
 const tokenArg = String(args.token || process.env.META_PASS_SESSION || "");
 const urlArg = String(args.url || process.env.MOBILE_E2E_URL || "");
 const viewport = { width: Number(args.width || 390), height: Number(args.height || 844) };
@@ -320,6 +321,14 @@ try {
   const b = await installPlay(playB, nameB, "M05 install B");
   const afterB = await readSlots();
   saveJson("after-install-b.json", stableSlots(afterB));
+  if (requireDataReservation) {
+    const baselineData = dataReservations(baseline);
+    const installedData = dataReservations(afterB);
+    const newData = installedData.filter((d) => !baselineData.some((x) =>
+      x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+    record("M05 child-firmware DATA reservation created", newData.length > 0,
+      "newReservations=" + newData.length + "; labels=" + newData.map((d) => d.label).join(","));
+  }
   record("M05 both plays coexist", afterB.slots.some((s) => s.name === nameA && s.state === "valid") &&
     afterB.slots.some((s) => s.name === nameB && s.state === "valid"), `slotA=${a.slot}; slotB=${b.slot}`);
   assertDynamicSlotGeometry(afterB, "M05 after install B");
@@ -329,6 +338,17 @@ try {
   await removeByName(nameA, "M06");
   const afterRemoveA = await readSlots();
   record("M06 B remains valid after removing A", afterRemoveA.slots.some((s) => s.name === nameB && s.state === "valid"));
+  if (requireDataReservation) {
+    const beforeDeleteA = dataReservations(afterB);
+    const remaining = dataReservations(afterRemoveA);
+    const baselineData = dataReservations(baseline);
+    const created = beforeDeleteA.filter((d) => !baselineData.some((x) =>
+      x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+    const released = created.filter((d) => !remaining.some((x) =>
+      x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+    record("M06 UI delete releases test-created DATA reservations", released.length > 0,
+      "released=" + released.length + "; created=" + created.length);
+  }
   assertDynamicSlotGeometry(afterRemoveA, "M06 after removing A");
   assertBaselineDataPreserved(afterRemoveA, "M06 after removing A");
   await removeByName(nameB, "M07");
