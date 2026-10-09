@@ -113,6 +113,7 @@ LICENSE                  仓库许可证
 
 本仓库文档按功能域组织。`authoritative` 指对开发与协作有约束力的文档；`参考` 指提供背景或索引的文档。
 
+- [`mobile-page-data-e2e-test-firmware.zh_CN.md`](assets/mobile-page-data-e2e-test-firmware.zh_CN.md) — 手机内嵌页面真实 DATA 生命周期测试固件、USB Serial/JTAG 协议与当前自动化边界。
 - [`docs/development/`](development/README.zh_CN.md) — 工程规则与可复用工作流：`ai-guide.md`、`engineering/`、`ci/`、`release/` 区。其 README 列明它们。
 - [`docs/contribution/`](contribution/README.zh_CN.md) — 协作、文档与提交/PR 约定。
 - [`docs/hardware-design/`](hardware-design/README.zh_CN.md) — 板卡事实、约束、验收矩阵与排障。
