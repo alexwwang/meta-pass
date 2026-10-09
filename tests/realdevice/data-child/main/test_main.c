@@ -265,7 +265,6 @@ void app_main(void)
         /* USB is the only control channel in this test image. */
         return;
     }
-    (void)usb_serial_jtag_vfs_use_driver();
     send_json("{\"ok\":true,\"event\":\"READY\",\"protocol\":1}");
 
     char line[RX_LINE_SIZE];
