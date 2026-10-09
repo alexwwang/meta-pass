@@ -7,8 +7,6 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import readline from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
 import { CdpMobilePage } from "./cdp_mobile_page.mjs";
 import { parseSlots } from "../../install-slot/phone-install.js";
 
