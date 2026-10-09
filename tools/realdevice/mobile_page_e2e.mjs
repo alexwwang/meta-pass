@@ -532,9 +532,11 @@ try {
     requireSafeStorageState(listing, "M05 after install B");
     if (requireDataReservation) {
       const oldData = dataReservations(baseline);
-      const fresh = dataReservations(listing).filter((d) => !oldData.some((x) =>
-        x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
-      record("M05 child-firmware DATA reservation created", fresh.length > 0, "newReservations=" + fresh.length);
+      const fresh = dataReservations(listing).filter((d) => d.play_id === Number(playB) &&
+        !oldData.some((x) => x.offset === d.offset && x.size === d.size &&
+          x.play_id === d.play_id && x.label === d.label));
+      record("M05 child-firmware DATA reservation created", fresh.length > 0,
+        "playId=" + Number(playB) + "; newReservations=" + fresh.length);
       if (fresh.length === 0) throw new Error("required DATA reservation for child firmware was not created");
     }
     saveJson("after-install-data-reservations.json", dataReservations(listing));
