@@ -153,6 +153,7 @@ PY
     python3 tests/test_bug21_scan_silent.py
     python3 tests/test_verify_firmware.py
     python3 tests/test_usb_web_e2e_contract.py
+    python3 tests/test_mobile_webview_e2e_contract.py
     # 真机门禁(self-hosted/USB)不在云端 static CI 自动烧板:smoke.py 是
     # 协议客户端,run_browser_smoke.py 是前端模块 × 真机回归,usb_web_e2e.mjs 是
     # USB Web UI × Web Serial × 真机回归。这里只做语法门,
@@ -177,6 +178,7 @@ PY
         "$_ck_bin" --check tools/realdevice/browser_smoke.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e_multi.mjs
+        "$_ck_bin" --check tools/realdevice/mobile_webview_e2e.mjs
     else
         echo "WARNING: no real node found (only a Bun wrapper?); skipping harness syntax gate" >&2
     fi
