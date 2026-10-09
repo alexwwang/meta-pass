@@ -31,7 +31,7 @@
 //   USB_E2E_PLAY_B     — second play id (default "2")
 //   USB_SERIAL_PORT    — serial port path (e.g. /dev/cu.usbmodemXXXX)
 
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,6 +95,10 @@ writeFileSync(
   process.argv.slice(2).map((arg) =>
     arg === TOKEN ? "<redacted-token>" :
     arg.startsWith("--token=") ? "--token=<redacted-token>" :
+    arg === IP ? "<redacted-ip>" :
+    arg.startsWith("--ip=") ? "--ip=<redacted-ip>" :
+    arg === SERIAL_PORT ? "<redacted-serial-port>" :
+    arg.startsWith("--serial-port=") ? "--serial-port=<redacted-serial-port>" :
     arg
   ).join(" ") + "\n"
 );
@@ -102,17 +106,20 @@ writeFileSync(
 // ── Test state ────────────────────────────────────────────────────
 
 const results = [];
+let baselineSlots = null;
+let displayNameA = null;
+let displayNameB = null;
 const consoleLines = [];
 const pageErrors = [];
 const report = {
   test: "Multi-round USB Web UI E2E: install→reset→install→reset→remove→reset→remove→reset",
   startedAt: new Date().toISOString(),
-  device: IP,
+  device: "redacted",
   playA: Number(PLAY_A),
   playB: Number(PLAY_B),
   server: BASE,
-  profile: PROFILE,
-  serialPort: SERIAL_PORT,
+  profile: "persistent Chrome profile (path redacted)",
+  serialPort: "redacted",
   stages: results,
   verdict: "FAIL",
 };
@@ -479,11 +486,11 @@ async function main() {
     commit: (() => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim(); } catch { return null; } })(),
     node: process.version,
     browserChannel: BROWSER_CHANNEL,
-    device: IP,
+    device: "redacted",
     playA: Number(PLAY_A),
     playB: Number(PLAY_B),
     server: BASE,
-    serialPort: SERIAL_PORT,
+    serialPort: "redacted",
     startedAt: report.startedAt,
   };
   writeJson("metadata.json", metadata);
@@ -509,13 +516,13 @@ async function main() {
   page.on("pageerror", (err) => pageErrors.push(err.stack || err.message));
 
   // E1: baseline (before any USB connection — LAN only)
-  const baselineSlots = await readSlots();
+  baselineSlots = await readSlots();
   writeJson("baseline-slots.json", stableSlots(baselineSlots));
   record("E1", "device baseline readable", true,
     `${baselineSlots.count} slots; free=${baselineSlots.free}`);
 
-  const displayNameA = `USB-E2E-MULTI-A-${Date.now()}`;
-  const displayNameB = `USB-E2E-MULTI-B-${Date.now()}`;
+  displayNameA = `USB-E2E-MULTI-A-${Date.now()}`;
+  displayNameB = `USB-E2E-MULTI-B-${Date.now()}`;
 
   // R1: install Play A
   const r1 = await runInstallRound("R1", PLAY_A, displayNameA, baselineSlots);
@@ -567,10 +574,10 @@ async function finish() {
     "# Multi-round USB Web UI Real-Device E2E",
     "",
     `- verdict: **${report.verdict}**`,
-    `- device: ${IP}`,
+    "- device: redacted",
     `- play A: ${PLAY_A}`,
     `- play B: ${PLAY_B}`,
-    `- serial port: ${SERIAL_PORT}`,
+    "- serial port: redacted",
     `- duration: ${report.durationSec.toFixed(1)}s`,
     "",
     "| stage | check | result | detail |",
@@ -608,6 +615,38 @@ try {
   console.error("Multi-round USB E2E FAILED:", err.stack || err.message);
   report.verdict = "FAIL";
   process.exitCode = 1;
+  // Best-effort rollback only for uniquely identifiable slots created by this run.
+  // Never delete a baseline slot or an ambiguously owned slot.
+  try {
+    if (baselineSlots) {
+      let current = await readSlots();
+      const baselineKeys = new Set(baselineSlots.slots.map((s) => `${s.offset}:${s.size}`));
+      const ownedNames = new Set([displayNameA, displayNameB].filter(Boolean));
+      let candidates = current.slots.filter((s) =>
+        !baselineKeys.has(`${s.offset}:${s.size}`) && ownedNames.has(s.name));
+      if (candidates.length > 2) throw new Error(`cleanup ownership ambiguous: ${candidates.length} candidates`);
+      for (const candidate of [...candidates].sort((a, b) => b.offset - a.offset)) {
+        current = await readSlots();
+        const live = current.slots.find((s) =>
+          s.offset === candidate.offset && s.size === candidate.size && s.name === candidate.name);
+        if (!live) continue;
+        const removed = await deviceCall("/api/install/remove", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slot: live.slot }),
+        });
+        if (!removed.ok) throw new Error(`recovery remove HTTP ${removed.status}: ${removed.text}`);
+      }
+      const finalSlots = await readSlots();
+      writeJson("after-failure-slots.json", stableSlots(finalSlots));
+      const restored = sameSlotSet(baselineSlots, finalSlots);
+      record("E11", "failure-path baseline restoration", restored,
+        restored ? "baseline restored after recovery cleanup" : "device state differs from baseline");
+    }
+  } catch (cleanupErr) {
+    console.error("failure-path cleanup/verification failed:", cleanupErr.stack || cleanupErr.message);
+    results.push({ stage: "E11", name: "failure-path cleanup", ok: false, detail: cleanupErr.message });
+  }
 } finally {
   await finish();
   if (page) await page.close().catch(() => {});
