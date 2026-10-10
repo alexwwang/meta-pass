@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **Play 28 DATA 缩容测试配置**：新增默认关闭的 `play28-recordings-4m` profile，仅在显式 `?mp_test_data_profile=play28-recordings-4m` 下允许 Play ID 28 的单一 `recordings` FAT 分区由原声明大小按 4 MiB 分配；只接受出厂 DATA 全空（`initial_image_size=0`）的镜像，任何 ID/标签/类型/容量不匹配均 fail closed。服务端 analyze、手机预检与安装 offer 使用同一容量规则；新增 profile 单元和 analyzer 集成测试。真实市场镜像/真机验证仍未完成，默认安装行为不变。
+
 - **安装/卸载 E2E 安全门加固**：依据 ESP-IDF 5.5.3 固件 CI 的真实编译错误，修正 USB Serial/JTAG 驱动配置参数的 `const` 限定符不匹配；并加固手机页 E2E：安装后必须由设备 API 确认槽位为 VALID，空间几何和原有 DATA reservation 任一不满足即阻断后续写操作，A 的运行时验证失败也不会继续安装 B。新增静态契约测试。修复后的固件 CI 仍需等待结果；尚未运行真机 E2E。
 
 
