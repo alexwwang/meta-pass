@@ -251,10 +251,23 @@ function assertBaselineDataPreserved(listing, label) {
     missing.length ? JSON.stringify(missing) : "baseline=" + expected.length + "; current=" + actual.length);
   return ok;
 }
+function assertBaselineAppSlotsPreserved(listing, label) {
+  const expected = baseline.slots.filter((slot) => slot.state === "valid");
+  const missing = expected.filter((slot) => !listing.slots.some((current) =>
+    current.slot === slot.slot && current.state === slot.state && current.name === slot.name &&
+    current.offset === slot.offset && current.size === slot.size));
+  const ok = missing.length === 0;
+  record(label + ": baseline APP slots preserved", ok,
+    missing.length ? JSON.stringify(missing.map((slot) => ({
+      slot: slot.slot, name: slot.name, offset: slot.offset, size: slot.size,
+    }))) : "baselineValidSlots=" + expected.length);
+  return ok;
+}
 function requireSafeStorageState(listing, label) {
   const geometryOk = assertDynamicSlotGeometry(listing, label);
+  const baselineSlotsOk = assertBaselineAppSlotsPreserved(listing, label);
   const baselineDataOk = assertBaselineDataPreserved(listing, label);
-  if (!geometryOk || !baselineDataOk) {
+  if (!geometryOk || !baselineSlotsOk || !baselineDataOk) {
     throw new Error(label + ": storage safety invariant failed; refusing subsequent mutations");
   }
 }
