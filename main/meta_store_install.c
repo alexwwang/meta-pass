@@ -2234,6 +2234,10 @@ esp_err_t meta_install_net_start(void)
     const esp_err_t recovery = remove_recover_pending(&recovered);
     if (recovery != ESP_OK) {
         ESP_LOGE(TAG, "pending uninstall recovery failed: %s", esp_err_to_name(recovery));
+        /* Fail closed: do not expose install/remove APIs while a destructive
+         * transaction is unresolved. A new install could otherwise change the
+         * carve before the persisted uninstall target can be recovered. */
+        return recovery;
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
