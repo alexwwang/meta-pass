@@ -1979,6 +1979,15 @@ esp_err_t meta_install_net_start(void)
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
 
+    /* Resume any uninstall interrupted by reset before exposing the management API.
+     * If Flash I/O still fails, keep the durable intent and start the service so a
+     * later user retry can re-enter the same idempotent recovery path. */
+    const esp_err_t remove_recovery = remove_recover_pending();
+    if (remove_recovery != ESP_OK) {
+        ESP_LOGE(TAG, "pending uninstall recovery failed: %s",
+                 esp_err_to_name(remove_recovery));
+    }
+
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
     hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
     hcfg.max_open_sockets = 3;
