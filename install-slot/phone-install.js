@@ -1455,17 +1455,18 @@ export function boot(opts = {}) {
   function showSlotPicker(meta, p, geom = null) {
     const a = meta.analyze;
     const imageLen = a?.extracted?.imageLen;
-    // dynslot(§4.5):设备 carve 派生表(current)+ 可放新槽提案(isNew,
-    // 下标 = 插入位,可能与既有下标同号 —— 洞位插入);不可达回退 legacy 三槽。
-    const opts = geom
-      ? geom.current.map((s) => ({ slot: s.slot, limit: s.limit, fit: s.fit, isNew: false }))
-        .concat(geom.proposal
-          ? [{ slot: geom.proposal.slot, limit: geom.proposal.limit, fit: true, isNew: true }]
-          : [])
-      : SLOT_GEOMETRY.map(({ slot, partSize }) => {
-          const limit = partSize - TAIL_SECTOR;
-          return { slot, limit, fit: Number.isFinite(imageLen) && imageLen <= limit, isNew: false };
-        });
+    // 新安装必须从动态回收池分配新的 APP carve。不得把已有 empty 槽、
+    // 已分配槽或 legacy 固定槽当作可复用目标；删除后的空间由池分配器重新分配。
+    // 无法读取动态槽位清单时 fail closed，避免悄悄回退到旧的原位覆盖语义。
+    if (!geom?.listing) {
+      const msg = "设备未提供动态回收池能力，无法安全创建新的 APP 槽位。请更新设备固件后重试。";
+      log(`✗ ${msg}`, "err");
+      failSheet("无法安装", `${p.name}\\n${msg}`);
+      return;
+    }
+    const opts = geom.proposal
+      ? [{ slot: geom.proposal.slot, limit: geom.proposal.limit, fit: true, isNew: true }]
+      : [];
     const requiresDataCarve = Array.isArray(a?.data) && a.data.length > 0;
     const missingDataAllocation = requiresDataCarve && (!geom?.listing ||
       a.data.some((d) => !geom.listing.data.some((x) =>
@@ -1487,13 +1488,8 @@ export function boot(opts = {}) {
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
-    const suggestedNum = geom
-      ? geom.suggestedSlot
-      : (fit.some((o) => o.slot === a?.suggestedSlot) ? a.suggestedSlot : fit[0].slot);
-    // 建议项按 (slot, isNew) 定位:洞位提案可与既有下标同号。
-    const suggestedOpt = (missingDataAllocation ? fit.find((o) => o.isNew) : null)
-      ?? fit.find((o) => o.slot === suggestedNum && !o.isNew)
-      ?? fit.find((o) => o.slot === suggestedNum && o.isNew) ?? fit[0];
+    // 动态设备只展示池分配器生成的新槽提案，不提供既有槽位复用选项。
+    const suggestedOpt = fit.find((o) => o.isNew) ?? fit[0];
     let chosen = { slot: suggestedOpt.slot, isNew: suggestedOpt.isNew };
     const isChosen = (o) => o.slot === chosen.slot && o.isNew === chosen.isNew;
     let nameVal = displayNameFor(a?.name, p);   // 重选槽位重渲染时保留用户已改名
@@ -1553,7 +1549,7 @@ export function boot(opts = {}) {
           requestAnimationFrame(() => { const n=$("mp-name"); if(n){n.focus(); n.setSelectionRange(n.value.length,n.value.length);} }); };
       });
       const confirm = $("mp-confirm");
-      confirm.disabled = false;
+      confirm.disabled = !chosen.isNew;
       confirm.onclick = () => {
         nameVal = cleanName(nameEl.value);           // 确认时再滤一次(防漏网)
         continueInstall(meta, chosen, nameVal.trim(), geom);
