@@ -266,6 +266,9 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
                                            uint8_t *out_n)
 {
     uint8_t n = 0;
+    uint8_t grow_n = 0;
+    uint32_t grow_offset[META_DATA_MAX];
+    uint32_t grow_size[META_DATA_MAX];
     if (out_n) *out_n = 0;
     if (!before || !after || !moves || !s_session.manifest_valid) {
         return ESP_ERR_INVALID_ARG;
@@ -288,10 +291,31 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
 
         const meta_carve_data_t *old = &before->data[old_idx];
         const meta_carve_data_t *now = &after->data[new_idx];
-        if (old->offset == now->offset) continue;
-        if (now->size < old->size || n >= META_DATA_MAX) {
-            return ESP_ERR_INVALID_STATE;
+        if (now->size < old->size) return ESP_ERR_INVALID_STATE;
+
+        if (old->offset == now->offset) {
+            /* In-place growth preserves the old filesystem bytes. Erase only
+             * the newly acquired tail, and prove that tail was not owned by
+             * any old DATA extent before touching flash. */
+            if (now->size > old->size) {
+                const uint32_t tail_offset = old->offset + old->size;
+                const uint32_t tail_size = now->size - old->size;
+                for (uint8_t j = 0; j < before->data_count; j++) {
+                    const meta_carve_data_t *source = &before->data[j];
+                    if (data_ranges_overlap(tail_offset, tail_size,
+                                            source->offset, source->size)) {
+                        ESP_LOGE(TAG, "in-place DATA growth tail overlaps existing DATA source");
+                        return ESP_ERR_INVALID_STATE;
+                    }
+                }
+                if (grow_n >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+                grow_offset[grow_n] = tail_offset;
+                grow_size[grow_n] = tail_size;
+                grow_n++;
+            }
+            continue;
         }
+        if (n >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
 
         for (uint8_t j = 0; j < before->data_count; j++) {
             const meta_carve_data_t *source = &before->data[j];
@@ -316,7 +340,17 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
         n++;
     }
 
-    /* All destructive operations start only after the full preflight passes. */
+    /* All destructive operations start only after the full preflight passes.
+     * In-place growth tails are unowned by the old carve; erasing them cannot
+     * damage the rollback source if a later moved-DATA copy fails. */
+    for (uint8_t i = 0; i < grow_n; i++) {
+        esp_err_t e = esp_flash_erase_region(NULL, grow_offset[i], grow_size[i]);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "in-place DATA growth tail erase failed @0x%08lx: %s",
+                     (unsigned long)grow_offset[i], esp_err_to_name(e));
+            return e;
+        }
+    }
     for (uint8_t i = 0; i < n; i++) {
         esp_err_t e = esp_flash_erase_region(NULL, moves[i].new_offset,
                                              moves[i].new_size);
