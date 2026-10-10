@@ -1624,7 +1624,7 @@ export function boot(opts = {}) {
           const opts = options[i].values.map((v) =>
             `<option value="${v}" ${v === selections[i] ? "selected" : ""}>${(v / (1024 * 1024)).toFixed(v % (1024 * 1024) ? 3 : 0)} MiB</option>`
           ).join("");
-          const note = options[i].existing ? " · 已有分区，保留当前容量" : ` · 最小 ${(options[i].min / (1024 * 1024)).toFixed(3)} MiB`;
+          const note = options[i].existing ? " · 已有分区，保留当前容量" : ` · 范围 ${(options[i].min / (1024 * 1024)).toFixed(3)}–${(options[i].max / (1024 * 1024)).toFixed(3)} MiB · 步进 1 MiB`;
           return `<label style="display:block;margin:12px 0 4px">${esc(label)}${note}</label>
             <select data-data-size="${i}" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)" ${options[i].existing || options[i].values.length <= 1 ? "disabled" : ""}>${opts}</select>`;
         }).join("");
