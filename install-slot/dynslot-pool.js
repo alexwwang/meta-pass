@@ -215,12 +215,22 @@ export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_
     return { min: DATA_SIZE_MIN, max: 0, step: DATA_SIZE_STEP, available: 0 };
   }
   const min = Math.ceil(minRaw / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-  const sorted = occupancy.filter((r) => Number.isSafeInteger(r.offset) &&
-    Number.isSafeInteger(r.size) && r.offset >= 0 && r.size > 0)
-    .sort((a, b) => a.offset - b.offset);
-  // Reject malformed, overlapping or out-of-pool existing geometry.
-  for (let si = 0; si < POOL.seg.length; si++) {
-    const seg = POOL.seg[si];
+  // Do not silently drop malformed occupancy records: a bad record could
+  // otherwise be interpreted as free flash and authorize an overlapping carve.
+  if (occupancy.some((r) => !Number.isSafeInteger(r.offset) ||
+      !Number.isSafeInteger(r.size) || r.offset < 0 || r.size <= 0 ||
+      !Number.isSafeInteger(r.offset + r.size))) {
+    return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+  const sorted = occupancy.slice().sort((a, b) => a.offset - b.offset);
+  // Every occupied extent must be wholly contained by exactly one pool segment;
+  // reject cross-segment/out-of-pool geometry as well as overlaps.
+  for (const r of sorted) {
+    const rEnd = r.offset + r.size;
+    const seg = POOL.seg.find((s) => r.offset >= s.start && rEnd <= s.end);
+    if (!seg) return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+  for (const seg of POOL.seg) {
     let end = seg.start;
     for (const r of sorted) {
       const rEnd = r.offset + r.size;
