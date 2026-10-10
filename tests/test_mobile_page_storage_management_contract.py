@@ -51,7 +51,9 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         end = device.index("static void cleanup_migrated_sources", start)
         migration = device[start:end]
         self.assertIn("if (now->size > old->size)", migration)
-        self.assertIn("const uint32_t tail_offset = old->offset + old->size;", migration)
+        self.assertIn("const uint64_t tail_start64 = (uint64_t)old->offset + old->size;", migration)
+        self.assertIn("if (tail_start64 > UINT32_MAX) return ESP_ERR_INVALID_STATE;", migration)
+        self.assertIn("const uint32_t tail_offset = (uint32_t)tail_start64;", migration)
         self.assertIn("in-place DATA growth tail overlaps existing DATA source", migration)
         self.assertIn("esp_flash_erase_region(NULL, grow_offset[i], grow_size[i])", migration)
         self.assertLess(migration.index("All destructive operations start only after the full preflight passes"),
