@@ -171,3 +171,40 @@ export function geomFromListing(listing, imageLen) {
   const suggestedSlot = current.find((s) => s.fit)?.slot ?? proposal?.slot ?? -1;
   return { current, proposal, placed, suggestedSlot, maxGap, totalFree };
 }
+
+// DATA capacity planning shared by the installer UI and Node tests.
+// Sizes are bytes. The returned maximum is conservative: it is the largest
+// aligned single extent after reserving a new APP proposal, not aggregate free
+// bytes. Existing DATA records remain occupied and are never resized implicitly.
+export const DATA_SIZE_GRANULE = 0x1000;
+export const DATA_SIZE_MIN = DATA_SIZE_GRANULE;
+export const DATA_SIZE_STEP = 1024 * 1024;
+
+export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_SIZE_MIN) {
+  const slots = Array.isArray(listing?.slots) ? listing.slots : [];
+  const data = Array.isArray(listing?.data) ? listing.data : [];
+  const occupancy = slots.map((s) => ({ offset: s.offset, size: s.size }))
+    .concat(data.map((d) => ({ offset: d.offset, size: d.size })));
+  if (appProposal && Number.isInteger(appProposal.carveOffset) &&
+      Number.isInteger(appProposal.carveSize) && appProposal.carveSize > 0) {
+    occupancy.push({ offset: appProposal.carveOffset, size: appProposal.carveSize });
+  }
+  const minRaw = Number(requestedMin);
+  if (!Number.isSafeInteger(minRaw) || minRaw < DATA_SIZE_MIN) {
+    return { min: DATA_SIZE_MIN, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+  const min = Math.ceil(minRaw / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+  const spans = freeSpans(occupancy);
+  // freeSpans.max is an upper bound when the proposed APP is placed at an
+  // earlier first-fit location. Recompute the actual largest free span after
+  // adding the proposal, which keeps the selector from advertising impossible
+  // aggregate capacity.
+  const max = Math.floor(spans.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+  return { min, max, step: DATA_SIZE_STEP, available: spans.total };
+}
+
+export function normalizeDataSize(value, bounds) {
+  if (!bounds || !Number.isSafeInteger(value) || value < bounds.min ||
+      value > bounds.max || value % DATA_SIZE_GRANULE !== 0) return null;
+  return value;
+}
