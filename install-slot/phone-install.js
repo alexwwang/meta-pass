@@ -187,8 +187,8 @@ export function createBridge(deviceOrigin, token) {
     // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
     // 记录+物化表、200 后 150ms 复位 —— 重启窗口内 status 不可达)。
     slots: () => call("/api/install/slots"),
-    remove: (slot, opts) => call("/api/install/remove", { method: "POST",
-      json: opts?.eraseData ? { slot, eraseData: true } : { slot } }),
+    remove: (slot) => call("/api/install/remove", { method: "POST",
+      json: { slot } }),
   };
 }
 
@@ -1339,36 +1339,21 @@ export function boot(opts = {}) {
   }
 
   async function doRemove(slot) {
-    const slotsData = await bridge.slots();
-    let arcCount = 0;
-    try {
-      const listing = parseSlots(slotsData.text);
-      const s = listing?.slots?.find(x => x.slot === slot);
-      arcCount = s?.arc || 0;
-    } catch {}
-    const arcMsg = arcCount > 0
-      ? `<p class="mp-sub">⚠️ ${arcCount} 条归档数据将保留。仅删除槽位记录。</p>`
-      : `<p class="mp-sub">确认删除槽位 ${slot}?数据已归档可恢复。</p>`;
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>${arcMsg}
-      ${arcCount ? `<label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px">
-        <input type=checkbox id=mp-rm-erase style="margin-top:3px">
-        <span>同时删除数据(擦除后不可恢复;不勾 = 数据归档保留,可日后导出恢复)</span>
-      </label>` : ""}
-      <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>确认删除</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>
+      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部数据。当前版本不能提供完整的字节级备份；如需保留数据，请先取消卸载。此操作不可恢复。</p>
+      <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>删除 APP 及全部数据</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
-      $("mp-mgmt-confirm").textContent = "删除中...";
-      const erase = !!$("mp-rm-erase")?.checked;
-      await doRemoveCommit(slot, erase);
+      $("mp-mgmt-confirm").textContent = "正在删除 APP 和数据...";
+      await doRemoveCommit(slot);
     };
     $("mp-mgmt-x").onclick = clearPanel;
   }
-
   let s_remove_seq = 0;   // 删除尝试代际:过期请求的失败不得盖掉较新的结果
-  async function doRemoveCommit(slot, eraseData = false) {
+  async function doRemoveCommit(slot) {
     const my = ++s_remove_seq;
     try {
-      return await doRemoveCommitInner(slot, eraseData);
+      return await doRemoveCommitInner(slot);
     } catch (e) {
       // 设备重启会使在途请求挂到 AbortSignal 超时(45s)才抛 —— 期间用户
       // 可能已重试并成功。这种迟到失败只记日志,不盖当前页面(真机 2026-10-04:
@@ -1380,16 +1365,16 @@ export function boot(opts = {}) {
       failSheet("删除失败", `设备未正常应答(${e && e.message ? e.message : e})—— 请开串口日志重试`);
     }
   }
-  async function doRemoveCommitInner(slot, eraseData = false) {
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>${eraseData ? "正在擦除数据并删除…" : "正在归档数据并删除…"}</p></section>`);
-    const r = await bridge.remove(slot, { eraseData });
+  async function doRemoveCommitInner(slot) {
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在擦除 APP 和全部关联数据…</p></section>`);
+    const r = await bridge.remove(slot);
     if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
     if (r.status === 409) { failSheet("无法删除", "安装进行中 —— 请先完成或取消安装"); return; }
     if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
     if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
     if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
     // 200 = 记录已提交。复位推迟到退出商店页:这里设备原地不动,会话保持。
-    log(`✓ 槽位 ${slot} 已删除(${eraseData ? "数据已擦除" : "数据已归档"})`, "ok");
+    log(`✓ 槽位 ${slot} 及其全部关联数据已删除`, "ok");
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>删除完成,刷新列表…</p></section>`);
     const back = await waitDeviceBack(bridge, { tries: 25, delayMs: 1200 });
     if (back) {
