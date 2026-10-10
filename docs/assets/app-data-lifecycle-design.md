@@ -24,6 +24,8 @@ Association should point to the installation instance. If the current persistent
 
 ## 3. Uninstall flow
 
+Before erasing anything, persist the target APP's play_id, offset, and size as a committed NVS deletion intent. Erase DATA bytes and the APP image header, then remove the APP and all associated DATA records in one A/B carve commit; extents return to the pool only after that commit succeeds. When the local management service starts, it checks for pending intents and resumes idempotently by matching play_id + offset + size, never by trusting a stale slot index. If a legacy APP has play_id=0 while any DATA records exist, uninstall is rejected because ownership cannot be established safely.
+
 Uninstall is irreversible cascade deletion. The UI exposes one action: “Delete APP and all its data.” It must not offer standalone DATA deletion or an option to retain DATA.
 
 Recommended state machine:
