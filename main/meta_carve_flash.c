@@ -398,6 +398,8 @@ esp_err_t meta_carve_flash_remove_app_and_data(int slot)
     }
     const uint32_t play_id = s_carve.slot[slot].play_id;
     s_work = s_carve;
+    /* A legacy APP without play_id cannot be safely associated with DATA. */
+    if (play_id == 0 && s_work.data_count > 0) return ESP_ERR_INVALID_STATE;
     if (play_id != 0) {
         uint8_t i = 0;
         while (i < s_work.data_count) {
