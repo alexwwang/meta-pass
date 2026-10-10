@@ -156,6 +156,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+    def test_data_cleanup_or_survivor_failure_blocks_follow_on_mutations(self):
+        for token in ("bPreservedAfterA", "removing A affected B APP slot; refusing further device mutations",
+                      "removing A did not release its test-created DATA reservation; refusing further device mutations"):
+            with self.subTest(token=token):
+                self.assertIn(token, RUNNER)
+
     def test_cancelled_uninstall_must_leave_state_unchanged(self):
         for token in ("cancelRemoveByName", "cancel uninstall is a no-op",
                       "slotsUnchanged", "installerIdle", "#mp-mgmt-x"):
