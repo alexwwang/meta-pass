@@ -27,6 +27,7 @@
 | M05 安装 B | 安装第二个 play ID | A/B 可同时存在；无重叠；原有 DATA reservation 保留 |
 | M05C A/B 隔离 | 比较设备侧报告的 DATA 物理地址 | A/B DATA extent 不同，不能仅凭 play ID 不同就判定隔离成立 |
 | M06 卸载 A | 在管理 UI 中双击删除、确认；卸载后运行 B | A 从槽表消失；B 仍 VALID 且可启动；A 的 DATA reservation 被释放；池几何仍正确 |
+| M06C 删除后重新安装 | A 删除后，用 A 的 play ID、不同随机名称 C 重新安装；运行并卸载 C | C 必须获得独立于仍存活 B 的新 APP 槽位；旧 A 名称不能复活；按要求创建新的 DATA reservation；删除 C 不影响 B |
 | M07 卸载 B | 同样从 UI 删除并验证 | B 从槽表消失；设备侧证明已删除镜像不可启动且 DATA 已释放 |
 | M08 恢复基线 | 再读 slots、reservations 和 status | 安装器空闲；槽表、DATA reservations 和 free bytes 与测试前完全一致 |
 
@@ -53,6 +54,6 @@
 
 ## 当前证据边界
 
-主执行器已经包含 M01–M08 的 UI + 设备 API + runtime driver 测试流程，并在 `--require-data-reservation` 模式下检查 DATA reservation、A/B 物理隔离、卸载释放和基线恢复。本次新增静态契约测试，防止后续改动意外删除这些门禁。
+主执行器已经包含 M01–M09（含 M06C 删除后重新安装）的 UI + 设备 API + runtime driver 测试流程，并在 `--require-data-reservation` 模式下检查 DATA reservation、A/B 物理隔离、卸载释放和基线恢复。本次新增静态契约测试，防止后续改动意外删除这些门禁。
 
 这不代表本轮已经连接真机运行了 E2E。真实设备结果必须以 `tools/realdevice/logs/<run>/report.json` 及其脱敏证据为准。市场固件的 DATA 行为分析也不能由测试子固件的成功代替。
