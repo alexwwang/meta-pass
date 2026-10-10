@@ -27,6 +27,8 @@ console.log("PASS 1: worker exposes analyze/extracted + legacy proxy endpoints")
 //    而不是内联第二份解包实现。
 assert.ok(workerSrc.includes('from "./store-analyze.js"'), "worker must import ./store-analyze.js");
 assert.ok(workerSrc.includes("createStoreAnalyzer"), "worker must use createStoreAnalyzer");
+assert.ok(workerSrc.includes("dataProfile") && workerSrc.includes("PLAY28_RECORDINGS_4M_PROFILE"),
+  "worker must expose only the explicitly named Play 28 test DATA profile");
 console.log("PASS 2: worker analyze path uses the shared store-analyze module");
 
 // 3. id 校验口径与设备/本地 dev 一致(1~7 位数字;8 位拒绝)。
