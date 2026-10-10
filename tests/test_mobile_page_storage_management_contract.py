@@ -55,7 +55,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("data migration targets overlap", migration)
         self.assertLess(migration.index("All destructive operations start only after the full preflight passes"),
                         migration.index("esp_flash_erase_region(NULL, moves[i].new_offset"))
-        self.assertIn("uint64_t a_end", migration)
+        self.assertIn("uint64_t a_end", device[device.index("static bool data_ranges_overlap"):start])
 
     def test_every_new_install_requires_a_fresh_dynamic_app_carve(self):
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
