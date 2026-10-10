@@ -67,6 +67,7 @@ const STATIC_FILES = new Map([
   ["/store-analyze.js", { file: "store-analyze.js", type: "text/javascript; charset=utf-8" }],
   ["/dynslot-pool.js", { file: "dynslot-pool.js", type: "text/javascript; charset=utf-8" }],
   ["/phone-install.js", { file: "phone-install.js", type: "text/javascript; charset=utf-8" }],
+  ["/data-size-profile.js", { file: "data-size-profile.js", type: "text/javascript; charset=utf-8" }],
   ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   ["/launcher-upgrade.js", { file: "launcher-upgrade.js", type: "text/javascript; charset=utf-8" }],
   // dynslot 槽位模型(USB 安装页动态槽位;设计 §4)
