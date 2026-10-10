@@ -56,7 +56,11 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertNotIn("mp-rm-erase", installer)
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
         model = (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
-        self.assertIn("cascade data deletion required", device)
+        self.assertIn("REMOVE_NVS_NS", device)
+        self.assertIn("remove_intent_write", device)
+        self.assertIn("remove_recover_pending", device)
+        self.assertIn("remove_app_bytes_and_commit", device)
+        self.assertIn("meta_carve_flash_remove_app_and_data", device)
         self.assertIn("out->erase_data = true", model)
 
     def test_child_b_reservation_is_attributed_to_b_play_id(self):
