@@ -92,6 +92,16 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("fresh APP carve required", device)
         self.assertIn("每次安装都必须从动态回收池创建新的 APP carve", design)
 
+    def test_realdevice_e2e_reinstalls_after_delete_using_a_fresh_app_carve(self):
+        for token in ("const nameC =", "M06C fresh install after deletion",
+                      "new APP carve, no stale A slot revival",
+                      "M06C fresh DATA reservation for reinstalled play",
+                      "M06C remove C and verify B isolation"):
+            with self.subTest(token=token):
+                self.assertIn(token, RUNNER)
+        self.assertIn("const ownedNames = new Set([nameA, nameB, nameC])", RUNNER)
+        self.assertIn("M06C", RUNNER[RUNNER.index("if (afterRemoveA && b"):RUNNER.index('if (b) {\n    await runCase("M07 remove B"')])
+
     def test_app_uninstall_cascades_data_and_ui_has_no_standalone_data_delete(self):
         for token in ("卸载 APP 必须同时删除该 APP 关联的全部 DATA",
                       "不提供单独删除 DATA 的用户操作",
