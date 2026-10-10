@@ -2076,6 +2076,9 @@ static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
     if (target->play_id != pid || target->offset != offset || target->size != size) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* Legacy APPs with unknown play_id cannot safely claim or delete DATA.
+     * Fail closed rather than create orphan DATA or erase another APP's data. */
+    if (pid == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
     for (uint8_t i = 0; i < carve->data_count; i++) {
         const meta_carve_data_t *data = &carve->data[i];
         if (pid == 0 || data->play_id != pid) continue;
@@ -2147,6 +2150,10 @@ static esp_err_t h_install_remove(httpd_req_t *req)
         return reply(req, "404 Not Found", "no such slot");
     }
     const meta_carve_slot_t target = carve->slot[rm.slot];
+    if (target.play_id == 0 && carve->data_count > 0) {
+        return reply(req, "409 Conflict",
+                     "DATA ownership is unknown for this legacy APP; refusing unsafe uninstall");
+    }
     if (remove_intent_write(rm.slot, &target) != ESP_OK) {
         return reply(req, "500 Internal Server Error", "cannot persist uninstall intent");
     }
