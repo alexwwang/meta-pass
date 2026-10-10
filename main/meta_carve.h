@@ -108,7 +108,7 @@ typedef struct {
 
 // 数据记录生命周期(M5):PRISTINE = 刚 carve、运行时未碰;
 // DIRTY = 玩法启动过(启动器在 OK 启动时落标,隐式信号);
-// ARCHIVED = 卸载时默认归档(用户数据保留,可被回收阶梯回收)。
+// ARCHIVED = 旧版本遗留的归档记录状态;新版本卸载不再创建该状态。
 typedef enum {
     META_DATA_PRISTINE = 0,
     META_DATA_DIRTY    = 1,
@@ -117,7 +117,7 @@ typedef enum {
 
 // 子固件声明的数据分区在池内的一条 carve 记录(M1 别名 + M5 生命周期)。
 typedef struct {
-    uint32_t play_id;   // 归属玩法 id(>0;卸载归档/升级保留按它匹配)
+    uint32_t play_id;   // 归属玩法 id(>0;卸载级联删除/升级保留按它匹配)
     uint32_t offset;    // 池内 64KB 对齐(与槽位同一分配器语义)
     uint32_t size;      // 4KB 粒度且 ≥ META_CARVE_MIN_DATA;无尾扇区
     uint8_t  state;     // meta_data_state_t
