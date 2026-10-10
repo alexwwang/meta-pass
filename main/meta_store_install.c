@@ -2015,6 +2015,7 @@ static esp_err_t h_install_slots(httpd_req_t *req)
 
 static esp_err_t h_install_remove(httpd_req_t *req);
 static esp_err_t h_backup_import(httpd_req_t *req);
+static esp_err_t remove_recover_pending(bool *did_recover);
 
 /* Durable uninstall intent lives in NVS and is committed before any erase.
  * The full APP identity is re-found after reboot; stale intent cleanup must never
