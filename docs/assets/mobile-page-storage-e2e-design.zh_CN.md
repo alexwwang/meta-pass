@@ -50,9 +50,9 @@
 2. 将专用 DATA 测试子固件发布为两个不同的 marketplace play ID；两个 ID 必须不同，且通过 `--play-a` / `--play-b` 显式传入。
 3. 在本机启动仅监听回环地址的 Chromium/Chrome CDP，例如 Linux 上使用独立测试 profile：`google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-cdp`。不要把 CDP 端口暴露到局域网。
 4. 安装串口依赖：`python3 -m pip install pyserial`。确认 `node` 支持内置 `fetch` 和 `WebSocket`（建议 Node.js 22 或更新版本）。
-5. 设置设备网页地址、session token 和 launcher 的 USB Serial/JTAG 端口。token 只放在环境变量中，不要写进命令行参数或提交到仓库：
+5. 在 Bash 或 Zsh 中设置设备网页地址、session token 和 launcher 的 USB Serial/JTAG 端口。token 只放在环境变量中，不要写进命令行参数或提交到仓库：
 
-```sh
+```bash
 export MOBILE_E2E_URL='http://<device-host>/'
 read -rsp 'Session token (32 hex): ' META_PASS_SESSION; echo
 export META_PASS_SESSION
