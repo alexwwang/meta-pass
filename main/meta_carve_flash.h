@@ -84,8 +84,8 @@ typedef struct {
 esp_err_t meta_carve_flash_mark_dirty_selected(const meta_carve_data_key_t *keys,
                                                uint8_t n_keys);
 
-// 卸载归档:将指定槽位对应的所有数据记录翻为 ARCHIVED(默认策略,不擦字节)。
-// 调用 meta_carve_flash_remove 前使用此函数;后者只删槽位记录。
+// 旧版兼容：将槽位关联 DATA 标为 ARCHIVED。新版本卸载必须使用
+// meta_carve_flash_remove_app_and_data 一次提交删除 APP 与全部关联 DATA。
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot);
 
 // 显式擦除指定 play_id(+可选 label)的一条数据记录:记录先行 —— 先把条目
