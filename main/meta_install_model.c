@@ -206,12 +206,9 @@ bool meta_install_model_parse_remove(const char *json, size_t len,
     if (!meta_store_json_get_int(json, len, "slot", &v)) return false;
     if (v < 0 || v > META_SLOT_COUNT - 1) return false;
 
-    // eraseData 可选:缺省/非布尔 → false(归档;更安全的一侧,不会误擦)。
-    bool erase = false;
-    (void)meta_store_json_get_bool(json, len, "eraseData", &erase);
-
+    // 统一为 APP 级联删除；旧客户端传入的 eraseData 字段不再改变行为。
     out->slot = (int)v;
-    out->erase_data = erase;
+    out->erase_data = true;
     return true;
 }
 
