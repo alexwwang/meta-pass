@@ -11,7 +11,7 @@ function appImage() {
   while (total % 16 !== 15) total++;
   total += 1 + 32;
   const b = new Uint8Array(total).fill(0xab);
-  b[0] = 0xe9; b[1] = 2; b[12] = 5; b[23] = 1;
+  b[0] = 0xe9; b[1] = 2; b[12] = 5; b[13] = 0; b[23] = 1;
   const dv = new DataView(b.buffer);
   dv.setUint32(24 + 16, 0x3fc80000, true); dv.setUint32(24 + 20, firstLen, true);
   dv.setUint32(24 + 16 + 8 + firstLen, 0x42000020, true);
