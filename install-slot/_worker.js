@@ -236,6 +236,9 @@ export default {
         return err(400, "missing or invalid id parameter");
       }
       const dataProfile = url.searchParams.get("dataProfile");
+      if (dataProfile && env.ENABLE_TEST_DATA_PROFILES !== "1") {
+        return err(403, "test data profiles are disabled");
+      }
       if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
         return err(400, "unsupported data profile");
       }
