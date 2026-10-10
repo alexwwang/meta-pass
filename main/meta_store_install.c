@@ -1930,10 +1930,217 @@ static esp_err_t h_install_slots(httpd_req_t *req)
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
 
-    /* Retry any interrupted uninstall before starting a new one. */
-    const esp_err_t recovery = remove_recover_pending();
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+
+    uint32_t free_bytes = meta_carve_free(carve);
+    uint32_t archived_count = 0;
+    for (uint8_t j = 0; j < carve->data_count; j++) {
+        if (carve->data[j].state == META_DATA_ARCHIVED) {
+            archived_count++;
+        }
+    }
+
+    // 2026-10-04 真机事故:这份 3072B 响应曾开在 httpd 任务栈上,而安装
+    // httpd 的 stack_size 只有 4096;3 个带名槽 + 归档数据记录时 handler
+    // 溢出 → 栈保护 panic → 设备复位(token 在 RAM → "需要配对")。
+    // 静态化后由 session_lock 串行化填充(当前 httpd 同步 handler 单任务,
+    // 锁是对未来多任务化的保险;尾部 send 后已配对 unlock)。
+    static char resp[3072];
+    session_lock();
+    int off = 0;
+    // Use PRId32 for count (int), PRIu32 for uint32_t
+    off += snprintf(resp + off, sizeof(resp) - off,
+        "{\"protocol_version\":%d,\"count\":%d,\"free\":%" PRIu32 ",\"archived\":%" PRIu32 ",\"slots\":[",
+        (int)META_PROTOCOL_VERSION, carve->count, free_bytes, archived_count);
+
+    bool first = true;
+    for (uint8_t j = 0; j < carve->count; j++) {
+        const meta_carve_slot_t *s = &carve->slot[j];
+        const char *state_str = "empty";
+        if (s->state == META_SLOT_VALID) state_str = "valid";
+        else if (s->state == META_SLOT_INVALID) state_str = "invalid";
+
+        const char *kind_str = "app";
+        if (s->kind == META_CARVE_KIND_STORAGE) kind_str = "storage";
+
+        // Count archived data records for this play
+        uint32_t arc_records = 0;
+        // Note: slots don't have ARCHIVED state, only data does
+        if (s->state == META_SLOT_VALID || s->state == META_SLOT_INVALID) {
+            for (uint8_t k = 0; k < carve->data_count; k++) {
+                if (carve->data[k].play_id == s->play_id &&
+                    carve->data[k].state == META_DATA_ARCHIVED) {
+                    arc_records++;
+                }
+            }
+        }
+
+        if (!first) off += snprintf(resp + off, sizeof(resp) - off, ",");
+        first = false;
+
+        off += snprintf(resp + off, sizeof(resp) - off,
+            "{\"slot\":%d,\"state\":\"%s\",\"name\":\"%s\","
+            "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ",\"limit\":%" PRIu32
+            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32 "}",
+            j, state_str, s->name,
+            s->size, s->image_len, s->size - 0x1000,
+            s->offset, kind_str, arc_records);
+    }
+
+    // dynslot P1-4:数据 carve 记录也占池空间,必须暴露给手机侧分配器 ——
+    // 否则手机提案会落进数据区、被设备 carve_ok 拒(L4 分歧)。只给
+    // offset/size/state(占用所需);label 不输出,避免分区标签含引号时的
+    // JSON 注入面(手机侧占用计算不需要 label)。
+    // data[] 在 P1-4 占用域之外再携带 play_id/label:手机侧"导出归档数据"
+    // 按 play_id 分组生成备份清单(M5 备份闭环);label 走 json_escape,
+    // 与上方 name 同一注入面处理。
+    off += snprintf(resp + off, sizeof(resp) - off, "],\"data\":[");
+    for (uint8_t j = 0; j < carve->data_count; j++) {
+        const meta_carve_data_t *d = &carve->data[j];
+        char label_esc[META_DATA_LABEL_MAX * 2 + 1];
+        json_escape(d->label, label_esc, sizeof(label_esc));
+        if (j) off += snprintf(resp + off, sizeof(resp) - off, ",");
+        off += snprintf(resp + off, sizeof(resp) - off,
+            "{\"play_id\":%" PRIu32 ",\"offset\":%" PRIu32
+            ",\"size\":%" PRIu32 ",\"state\":%u,\"label\":\"%s\"}",
+            d->play_id, d->offset, d->size, (unsigned)d->state, label_esc);
+    }
+    off += snprintf(resp + off, sizeof(resp) - off, "]}");
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t send_rc = httpd_resp_send(req, resp, off);
+    session_unlock();
+    return send_rc;
+}
+
+static esp_err_t h_install_remove(httpd_req_t *req);
+static esp_err_t h_backup_import(httpd_req_t *req);
+
+/* Durable uninstall intent lives in NVS and is committed before any erase.
+ * The full APP identity is re-found after reboot; stale intent cleanup must never
+ * delete another APP that shifted into the previous array index. */
+#define REMOVE_NVS_NS "meta_rm"
+static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
+{
+    nvs_handle_t nvs;
+    esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
+    if (e != ESP_OK) return e;
+    e = nvs_set_u8(nvs, "slot", (uint8_t)slot);
+    if (e == ESP_OK) e = nvs_set_u32(nvs, "pid", target->play_id);
+    if (e == ESP_OK) e = nvs_set_u32(nvs, "offset", target->offset);
+    if (e == ESP_OK) e = nvs_set_u32(nvs, "size", target->size);
+    if (e == ESP_OK) e = nvs_commit(nvs);
+    nvs_close(nvs);
+    return e;
+}
+
+static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
+                                    uint32_t *offset, uint32_t *size)
+{
+    if (!pending || !pid || !offset || !size) return ESP_ERR_INVALID_ARG;
+    *pending = false;
+    nvs_handle_t nvs;
+    esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
+    if (e != ESP_OK) return e;
+    e = nvs_get_u32(nvs, "pid", pid);
+    if (e == ESP_ERR_NVS_NOT_FOUND) { nvs_close(nvs); return ESP_OK; }
+    if (e == ESP_OK) e = nvs_get_u32(nvs, "offset", offset);
+    if (e == ESP_OK) e = nvs_get_u32(nvs, "size", size);
+    nvs_close(nvs);
+    if (e != ESP_OK) return ESP_ERR_INVALID_STATE;
+    *pending = true;
+    return ESP_OK;
+}
+
+static esp_err_t remove_intent_clear(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
+    if (e != ESP_OK) return e;
+    const char *keys[] = {"pid", "offset", "size", "slot"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        esp_err_t x = nvs_erase_key(nvs, keys[i]);
+        if (x != ESP_OK && x != ESP_ERR_NVS_NOT_FOUND) { e = x; break; }
+    }
+    if (e == ESP_OK) e = nvs_commit(nvs);
+    nvs_close(nvs);
+    return e;
+}
+
+static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
+                                             uint32_t offset, uint32_t size)
+{
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (slot < 0 || slot >= (int)carve->count) return ESP_ERR_NOT_FOUND;
+    const meta_carve_slot_t *target = &carve->slot[slot];
+    if (target->play_id != pid || target->offset != offset || target->size != size) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *data = &carve->data[i];
+        if (pid == 0 || data->play_id != pid) continue;
+        const esp_err_t e = esp_flash_erase_region(NULL, data->offset, data->size);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "cascade erase failed: play_id=%u label=%s err=%s",
+                     (unsigned)pid, data->label, esp_err_to_name(e));
+            return e;
+        }
+    }
+    const esp_partition_t *part = slot_partition_any((int8_t)slot);
+    if (part) {
+        const esp_err_t e = esp_partition_erase_range(part, 0, META_SIG_SECTOR);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "remove: image header erase failed: %s", esp_err_to_name(e));
+            return e;
+        }
+    }
+    return meta_carve_flash_remove_app_and_data(slot);
+}
+
+static esp_err_t remove_recover_pending(bool *did_recover)
+{
+    if (did_recover) *did_recover = false;
+    bool pending;
+    uint32_t pid, offset, size;
+    esp_err_t e = remove_intent_read(&pending, &pid, &offset, &size);
+    if (e != ESP_OK || !pending) return e;
+    if (did_recover) *did_recover = true;
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    int found = -1;
+    for (uint8_t i = 0; i < carve->count; i++) {
+        const meta_carve_slot_t *slot = &carve->slot[i];
+        if (slot->play_id == pid && slot->offset == offset && slot->size == size) {
+            found = i; break;
+        }
+    }
+    if (found >= 0) {
+        e = remove_app_bytes_and_commit(found, pid, offset, size);
+        if (e != ESP_OK) return e;
+    }
+    return remove_intent_clear();
+}
+
+// POST /api/install/remove —— APP + 全部关联 DATA 级联删除
+static esp_err_t h_install_remove(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    static char body[512];
+    size_t len = 0;
+    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
+    if (rd == ESP_ERR_INVALID_SIZE) return reply(req, "413 Payload Too Large", "body too large");
+    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
+    meta_install_remove_req_t rm;
+    if (!meta_install_model_parse_remove(body, len, &rm)) {
+        return reply(req, "400 Bad Request", "invalid remove request");
+    }
+    bool recovered = false;
+    const esp_err_t recovery = remove_recover_pending(&recovered);
     if (recovery != ESP_OK) {
         return reply(req, "500 Internal Server Error", "previous uninstall recovery failed; retry");
+    }
+    if (recovered) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
     }
     const meta_carve_t *carve = meta_carve_flash_carve();
     if (!meta_install_model_remove_ok(carve, rm.slot)) {
@@ -1950,314 +2157,7 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         return reply(req, "500 Internal Server Error", "uninstall interrupted; retry to resume safely");
     }
     if (remove_intent_clear() != ESP_OK) {
-        /* The uninstall itself committed. A stale intent is safe: recovery
-         * compares full APP identity and will only clear it, never delete a
-         * different APP shifted into this slot index. */
         ESP_LOGW(TAG, "uninstall committed but intent cleanup deferred");
-    }    ESP_LOGI(TAG, "slot %d and associated DATA removed", rm.slot);
-    return reply(req, "200 OK", "ok");
-}
-
-// ---- 服务生命周期 ----
-
-esp_err_t meta_install_net_init(meta_slot_info_t slots[META_SLOT_COUNT])
-{
-    if (!slots) return ESP_ERR_INVALID_ARG;
-    if (s_init) return ESP_OK;
-    s_slots = slots;
-    memset(&s_session, 0, sizeof(s_session));
-    s_session.confirmed_slot = -1;
-    status_set("idle", "");
-    if (!s_session_mu) s_session_mu = xSemaphoreCreateMutex();
-    if (!s_session_mu) return ESP_ERR_NO_MEM;
-    s_init = true;
-    return ESP_OK;
-}
-
-esp_err_t meta_install_net_start(void)
-{
-    if (!s_init) return ESP_ERR_INVALID_STATE;
-    if (s_httpd) return ESP_OK;   // 幂等:已在跑
-
-    /* Resume any uninstall interrupted by reset before exposing the management API.
-     * If Flash I/O still fails, keep the durable intent and start the service so a
-     * later user retry can re-enter the same idempotent recovery path. */
-    const esp_err_t remove_recovery = remove_recover_pending();
-    if (remove_recovery != ESP_OK) {
-        ESP_LOGE(TAG, "pending uninstall recovery failed: %s",
-                 esp_err_to_name(remove_recovery));
-    }
-
-    httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
-    hcfg.max_open_sockets = 3;
-    hcfg.backlog_conn = 2;
-    hcfg.lru_purge_enable = true;
-    // 2026-10-04 真机栈溢出:handler 帧 + newlib _svfprintf_r(snprintf
-    // 内部,含 FP 格式化路径)在 4096B 上无安全余量(SP 越界 ~1KB 实测)。
-    // 3072B 响应虽已静态化,仍上调到 8192 留一倍余量。
-    hcfg.stack_size = 8192;
-    hcfg.recv_wait_timeout = 10;
-    hcfg.send_wait_timeout = 10;
-
-    const esp_err_t err = httpd_start(&s_httpd, &hcfg);
-    if (err != ESP_OK) {
-        s_httpd = NULL;
-        ESP_LOGE(TAG, "install httpd start failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    const httpd_uri_t uris[] = {
-        { "/",                    HTTP_GET,  h_boot_index,     NULL },
-        { "/api/install/pair",    HTTP_POST, h_install_pair,    NULL },
-        { "/api/install/status",  HTTP_GET,  h_install_status,  NULL },
-        { "/api/install/prepare", HTTP_POST, h_install_prepare, NULL },
-        { "/api/install/session", HTTP_POST, h_install_session, NULL },
-        { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
-        { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
-        { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
-        { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
-        { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
-        { "/api/backup/import",   HTTP_POST, h_backup_import,   NULL },
-        { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
-    };
-    for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
-        if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {
-            ESP_LOGE(TAG, "register %s failed", uris[i].uri);
-            httpd_stop(s_httpd);
-            s_httpd = NULL;
-            return ESP_FAIL;
-        }
-    }
-    ESP_LOGI(TAG, "LAN install service ready");
-    return ESP_OK;
-}
-
-void meta_install_net_stop(void)
-{
-    if (s_httpd) {
-        httpd_stop(s_httpd);
-        s_httpd = NULL;
-    }
-    meta_install_token_stop();   // 幂等:未开 token 时也只是清空状态
-}
-
-// POST /api/backup/import —— 导入归档数据(§M5.12)
-static esp_err_t h_backup_import(httpd_req_t *req)
-{
-    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-
-    static char body[4096];
-    size_t len = 0;
-    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
-    if (rd == ESP_ERR_INVALID_SIZE) {
-        return reply(req, "413 Payload Too Large", "body too large");
-    }
-    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
-
-    uint32_t play_id = 0;
-    char *endptr;
-    char *p = strstr(body, "\"play_id\"");
-    if (!p) return reply(req, "400 Bad Request", "missing play_id");
-    p = strchr(p, ':');
-    if (!p) return reply(req, "400 Bad Request", "malformed play_id");
-    play_id = (uint32_t)strtoul(p + 1, &endptr, 10);
-    if (play_id == 0 || *endptr != ',') return reply(req, "400 Bad Request", "invalid play_id");
-
-    char import_version[33] = {0};
-    p = strstr(body, "\"firmware_version\"");
-    if (!p) return reply(req, "400 Bad Request", "missing firmware_version");
-    p = strchr(p, '"');
-    if (!p) return reply(req, "400 Bad Request", "malformed firmware_version");
-    p++;
-    const char *end = strchr(p, '"');
-    if (!end) return reply(req, "400 Bad Request", "unterminated firmware_version");
-    int ver_len = (int)(end - p);
-    if (ver_len <= 0 || ver_len >= (int)sizeof(import_version)) {
-        return reply(req, "400 Bad Request", "firmware_version too long");
-    }
-    strncpy(import_version, p, ver_len);
-
-    // IDF 5.5.3 签名:const esp_app_desc_t *esp_app_get_description(void)
-    // (host 桩原先虚构了 out 参数版,真编译才暴露分歧)。
-    const esp_app_desc_t *desc = esp_app_get_description();
-    const char *current_version = (desc && desc->version[0] != '\0')
-                                   ? desc->version : "0.0.0-placeholder";
-
-    if (strcmp(import_version, current_version) != 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "version mismatch: backup=%s, device=%s",
-                 import_version, current_version);
-        return reply(req, "400 Bad Request", msg);
-    }
-
-    const char *data_marker = strstr(body, "\"data\"");
-    if (!data_marker) return reply(req, "400 Bad Request", "missing data array");
-    char *array_start = strchr(data_marker, '[');
-    if (!array_start) return reply(req, "400 Bad Request", "malformed data array");
-    array_start++;
-
-    meta_backup_data_t raw[META_BACKUP_DATA_MAX];
-    int raw_count = 0;
-    p = array_start;
-    while (*p && raw_count < META_BACKUP_DATA_MAX) {
-        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-        if (*p != '{') break;
-        meta_backup_data_t rec = {0};
-        char *off_p = strstr(p, "\"offset\"");
-        if (!off_p) break;
-        off_p = strchr(off_p, ':');
-        if (!off_p) break;
-        rec.offset = (uint32_t)strtoul(off_p + 1, &endptr, 10);
-        char *size_p = strstr(p, "\"size\"");
-        if (!size_p) break;
-        size_p = strchr(size_p, ':');
-        if (!size_p) break;
-        rec.size = (uint32_t)strtoul(size_p + 1, &endptr, 10);
-        char *state_p = strstr(p, "\"state\"");
-        if (!state_p) break;
-        state_p = strchr(state_p, ':');
-        if (!state_p) break;
-        rec.state = (uint8_t)strtoul(state_p + 1, &endptr, 10);
-        char *label_p = strstr(p, "\"label\"");
-        if (label_p) {
-            label_p = strchr(label_p, '"');
-            if (label_p) {
-                label_p++;
-                const char *label_end = strchr(label_p, '"');
-                if (label_end) {
-                    int label_len = (int)(label_end - label_p);
-                    if (label_len > 0 && label_len < (int)sizeof(rec.label)) {
-                        strncpy(rec.label, label_p, label_len);
-                        rec.label[label_len] = '\0';
-                    }
-                }
-            }
-        }
-        if (raw_count < META_BACKUP_DATA_MAX) raw[raw_count++] = rec;
-        char *brace_end = strchr(p, '}');
-        if (!brace_end) break;
-        p = brace_end + 1;
-    }
-
-    // 筛选与空间判定走纯逻辑(meta_backup.c,host 可测)。
-    meta_backup_data_t import_records[META_BACKUP_DATA_MAX];
-    const int record_count = meta_backup_filter_import(raw, raw_count, import_records);
-    if (record_count == 0) return reply(req, "400 Bad Request", "no valid archived records");
-
-    uint32_t total_needed = 0;
-    for (int i = 0; i < record_count; i++) total_needed += import_records[i].size;
-
-    const meta_carve_t *carve = meta_carve_flash_carve();
-    if (!carve) return reply(req, "500 Internal Server Error", "carve not available");
-
-    uint32_t free_bytes = meta_carve_free(carve);
-    meta_import_verdict_t verdict = meta_backup_import_verdict(
-        free_bytes, total_needed, meta_carve_reclaimable(carve));
-    if (verdict == META_IMPORT_ERR_NEED_ARC) {
-        // meta_carve_flash_arc 返回实际回收字节数(0 = 无可用归档)。回收后重新判定。
-        ESP_LOGI(TAG, "pool pressure %lu needed, free %lu, attempting ARC",
-                 (unsigned long)total_needed, (unsigned long)free_bytes);
-        (void)meta_carve_flash_arc(total_needed - free_bytes);
-        free_bytes = meta_carve_free(meta_carve_flash_carve());
-        verdict = meta_backup_import_verdict(free_bytes, total_needed, 0);
-    }
-    if (verdict != META_IMPORT_OK) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
-                 (unsigned long)total_needed, (unsigned long)free_bytes);
-        return reply(req, "507 Insufficient Storage", msg);
-    }
-
-    // 在副本上追加再提交:失败时 s_carve 不被改动(避免内存态与 flash 分歧)。
-    meta_carve_t next = *carve;
-    for (int i = 0; i < record_count; i++) {
-        meta_carve_data_t d;
-        memset(&d, 0, sizeof(d));
-        d.play_id = play_id;
-        d.offset = import_records[i].offset;
-        d.size = import_records[i].size;
-        d.state = META_DATA_PRISTINE;
-        d.type = 1;
-        d.subtype = 1;
-        strncpy(d.label, import_records[i].label, sizeof(d.label) - 1);
-        if (!meta_carve_data_append(&next, &d)) {
-            return reply(req, "500 Internal Server Error", "failed to update carve table");
-        }
-    }
-
-    esp_err_t commit_err = meta_carve_flash_commit(&next, true);
-    if (commit_err != ESP_OK) {
-        return reply(req, "500 Internal Server Error", "failed to commit carve table");
-    }
-
-    char resp[128];
-    snprintf(resp, sizeof(resp), "{\"records\":%d,\"ok\":true}", record_count);
-    return reply(req, "200 OK", resp);
-}
-
-static esp_err_t h_install_remove(httpd_req_t *req)
-{
-    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
-
-    static char body[512];
-    size_t len = 0;
-    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
-    if (rd == ESP_ERR_INVALID_SIZE) {
-        return reply(req, "413 Payload Too Large", "body too large");
-    }
-    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
-
-    // 严格解析(scan_int 拒字符串/小数;旧手写 strstr 会把 "slot":"3" 当 0 删错槽)。
-    meta_install_remove_req_t rm;
-    if (!meta_install_model_parse_remove(body, len, &rm)) {
-        return reply(req, "400 Bad Request", "invalid remove request");
-    }
-
-    const meta_carve_t *carve = meta_carve_flash_carve();
-    if (!meta_install_model_remove_ok(carve, rm.slot)) {
-        return reply(req, "404 Not Found", "no such slot");
-    }
-
-    /* Keep DATA records and APP carve reserved until all destructive I/O has
-     * succeeded. Erase bytes directly from the current snapshot; only the final
-     * A/B carve commit removes APP + all DATA references together. */
-    const uint32_t pid = carve->slot[rm.slot].play_id;
-    if (pid != 0) {
-        for (uint8_t i = 0; i < carve->data_count; i++) {
-            const meta_carve_data_t *data = &carve->data[i];
-            if (data->play_id != pid) continue;
-            const esp_err_t e = esp_flash_erase_region(NULL, data->offset, data->size);
-            if (e != ESP_OK) {
-                ESP_LOGE(TAG, "cascade erase failed: play_id=%u label=%s err=%s",
-                         (unsigned)pid, data->label, esp_err_to_name(e));
-                return reply(req, "500 Internal Server Error",
-                             "associated DATA erase failed; retry uninstall");
-            }
-        }
-    }
-
-    /* Clear the image header before dropping the slot record so a reboot-time
-     * scanner cannot resurrect the APP if the final metadata commit fails. */
-    {
-        const esp_partition_t *part = slot_partition_any((int8_t)rm.slot);
-        if (part) {
-            const esp_err_t ee = esp_partition_erase_range(part, 0, META_SIG_SECTOR);
-            if (ee != ESP_OK) {
-                ESP_LOGE(TAG, "remove: image header erase failed: %s",
-                         esp_err_to_name(ee));
-                return reply(req, "500 Internal Server Error",
-                             "erase image header failed; retry uninstall");
-            }
-        }
-    }
-
-    /* One durable A/B record + partition-table commit removes all references.
-     * On commit failure, old metadata still reserves the extents for retry. */
-    if (meta_carve_flash_remove_app_and_data(rm.slot) != ESP_OK) {
-        return reply(req, "500 Internal Server Error",
-                     "APP/DATA metadata commit failed; retry uninstall");
     }
     ESP_LOGI(TAG, "slot %d and associated DATA removed", rm.slot);
     return reply(req, "200 OK", "ok");
@@ -2283,6 +2183,13 @@ esp_err_t meta_install_net_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
+
+    /* Resume interrupted APP/DATA deletion before exposing the management API. */
+    bool recovered = false;
+    const esp_err_t recovery = remove_recover_pending(&recovered);
+    if (recovery != ESP_OK) {
+        ESP_LOGE(TAG, "pending uninstall recovery failed: %s", esp_err_to_name(recovery));
+    }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
     hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
