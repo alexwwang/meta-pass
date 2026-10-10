@@ -4,7 +4,7 @@
 
 # 手机内嵌页 DATA E2E：真实市场固件选择
 
-状态：测试对象已选定；安装缩容与玩法 UI 自动化适配尚未完成。
+状态：测试对象已选定；显式 opt-in 的 DATA 缩容 profile 已接入分析与安装 offer；真实市场镜像和真机验收仍未完成。
 
 ## 决策
 
@@ -23,7 +23,7 @@
 
 ## 容量门槛：不能跳过
 
-Play 28 的完整声明为 app 约 1.5 MiB + `recordings` 约 6.4 MiB，超出当前动态池对单个玩法可提供的容量。研究提出将空白的 `recordings` carve 缩至约 4 MiB；标准 IDF FAT 挂载会从实际分区条目推导大小，因此这是合理候选，但**当前安装链路仍按固件声明的 DATA size 计算需求，并未因此自动支持缩容**。
+Play 28 的完整声明为 app 约 1.5 MiB + `recordings` 约 6.4 MiB，超出当前动态池对单个玩法可提供的容量。研究提出将空白的 `recordings` carve 缩至约 4 MiB；标准 IDF FAT 挂载会从实际分区条目推导大小，因此这是合理候选，默认安装链路仍按固件声明的 DATA size 计算需求；本分支已加入显式 opt-in 测试配置，但尚不能据此宣称真实设备兼容。
 
 实现状态：已加入 `?mp_test_data_profile=play28-recordings-4m` 测试配置（仅 Play ID 28），服务端 analyze 与手机安装 offer 共用相同 profile；默认 URL 不启用。后续仍需用真实市场镜像证明分区表确实为空白且运行时挂载大小为 4 MiB。
 
