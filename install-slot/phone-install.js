@@ -25,7 +25,6 @@
 // (setSha256,测试用 node:crypto)优先。
 
 import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-image.js";
-import { exportBackup, importBackup } from "./backup-data.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { sanitizeDisplayName } from "./name-blob.js";
@@ -1229,26 +1228,9 @@ export function boot(opts = {}) {
   const MGMT_STATE = { valid: "有固件", invalid: "无固件", empty: "空" };
 
   function renderMgmt(info, busy) {
-    // M5 备份闭环:按 play_id 分组归档数据(state==2),每组一个导出按钮;
-    // 导入走文件选择器。设备旧固件(data 无 play_id)不显示导出。
-    const archivedByPid = new Map();
-    for (const d of info.data || []) {
-      if (d.state !== 2 || !d.play_id) continue;
-      if (!archivedByPid.has(d.play_id)) archivedByPid.set(d.play_id, []);
-      archivedByPid.get(d.play_id).push(d);
-    }
-    const exportRows = [...archivedByPid.entries()].map(([pid, recs]) => `
-        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
-          <span style="flex:1;font-size:13.5px;color:var(--ink2)">玩法 ${pid} 的归档数据(${recs.length} 条 · ${fmtMB(recs.reduce((a, r) => a + r.size, 0))})</span>
-          <button class="mp-btn ghost" data-export-pid="${pid}" style="padding:6px 12px;font-size:13px">导出</button>
-        </div>`).join("");
     const backupSection = `
       <h4 style="margin-top:14px">数据备份</h4>
-      ${exportRows || `<p class=mp-sub>没有归档数据可导出</p>`}
-      <div class=mp-actions style="margin-top:10px">
-        <button id=mp-mgmt-import class="mp-btn ghost">导入备份文件</button>
-        <input type=file id=mp-bk-file accept=".bin,application/octet-stream" style="display:none">
-      </div>`;
+      <p class=mp-sub>当前版本尚不支持包含真实 DATA 字节的完整备份与恢复。旧版归档导出仅包含元数据，不能用于恢复数据。卸载 APP 会永久删除其全部 DATA。</p>`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -1272,31 +1254,6 @@ export function boot(opts = {}) {
     </section>`);
     $("mp-mgmt-x").onclick = clearPanel;
     $("mp-mgmt-re").onclick = showMgmt;
-    root.querySelectorAll("[data-export-pid]").forEach((b) => {
-      b.onclick = async () => {
-        b.disabled = true;
-        const r = await exportBackup(bridge, Number(b.dataset.exportPid));
-        log(r.ok ? `✓ 已导出玩法 ${b.dataset.exportPid} 的归档数据(${r.count} 条)`
-                 : `导出失败:${r.reason}`, r.ok ? "ok" : "error");
-        b.disabled = false;
-        if (!r.ok) failSheet("导出失败", r.reason);
-      };
-    });
-    if ($("mp-mgmt-import")) {
-      $("mp-mgmt-import").onclick = () => $("mp-bk-file").click();
-      $("mp-bk-file").onchange = async () => {
-        const file = $("mp-bk-file").files[0];
-        $("mp-bk-file").value = "";
-        if (!file) return;
-        const sr = await bridge.status();
-        let fw = "";
-        try { fw = JSON.parse(sr.text)?.firmware_version || ""; } catch { /* 缺字段 → 版本校验由设备兜底 */ }
-        const r = await importBackup(bridge, file, fw);
-        log(r.ok ? "✓ 备份已导入" : `导入失败:${r.reason}`, r.ok ? "ok" : "error");
-        if (r.ok) showMgmt();
-        else failSheet("导入失败", r.reason);
-      };
-    }
     root.querySelectorAll("[data-rm]").forEach((b) => {
       if (busy) { b.disabled = true; return; }
       b.onclick = () => {
