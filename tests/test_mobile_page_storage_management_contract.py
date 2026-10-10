@@ -45,6 +45,18 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("Math.max(declaredMin, existingSizes[i])", installer)
         self.assertIn("existingSizes[i] != null && editable[i]", installer)
 
+    def test_data_migration_preflights_all_destinations_before_erasing(self):
+        device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+        start = device.index("static esp_err_t prepare_data_moves_locked(")
+        end = device.index("static void cleanup_migrated_sources", start)
+        migration = device[start:end]
+        self.assertIn("data_ranges_overlap", migration)
+        self.assertIn("data migration target overlaps existing DATA source", migration)
+        self.assertIn("data migration targets overlap", migration)
+        self.assertLess(migration.index("All destructive operations start only after the full preflight passes"),
+                        migration.index("esp_flash_erase_region(NULL, moves[i].new_offset"))
+        self.assertIn("uint64_t a_end", migration)
+
     def test_every_new_install_requires_a_fresh_dynamic_app_carve(self):
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
