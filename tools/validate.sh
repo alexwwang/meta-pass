@@ -155,6 +155,7 @@ PY
     python3 tests/test_usb_web_e2e_contract.py
     python3 tests/test_mobile_webview_e2e_contract.py
     python3 tests/test_mobile_page_e2e_contract.py
+    python3 tests/test_mobile_page_browser_smoke_contract.py
     python3 tests/test_data_child_firmware_contract.py
     python3 tests/test_market_data_firmware_selection.py
     python3 tests/test_market_voice_ebook_storage_comparison.py
@@ -186,6 +187,7 @@ PY
         "$_ck_bin" --check tools/realdevice/usb_web_e2e_multi.mjs
         "$_ck_bin" --check tools/realdevice/mobile_webview_e2e.mjs
         "$_ck_bin" --check tools/realdevice/mobile_page_e2e.mjs
+        "$_ck_bin" --check tools/realdevice/mobile_page_browser_smoke.mjs
     else
         echo "WARNING: no real node found (only a Bun wrapper?); skipping harness syntax gate" >&2
     fi

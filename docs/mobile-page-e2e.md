@@ -10,7 +10,22 @@ Target branch: `feat/storage`.
 
 This is not merely a page-rendering or read-only API test. It must install and delete firmware through the real device's web UI, boot the installed child firmware on hardware, access its DATA partition, verify write/read/checksum behavior and persistence across reboot.
 
-The UI runner controls a Chromium instance directly through the Chrome DevTools Protocol (CDP), applying mobile viewport, DPR, touch and mobile User-Agent settings without a Playwright dependency. It does not require an Android emulator, but it is not a native WebView-container test. Device GET APIs are independent verification only; install/delete write APIs must never bypass the UI.
+The UI runner controls a Chromium instance directly through the Chrome DevTools Protocol (CDP), applying mobile viewport, DPR, touch and mobile User-Agent settings without a Playwright dependency. It does not require an Android emulator, but it is not a native WebView-container test. Device GET APIs are independent verification only; install/delete write APIs must never bypass the UI. A browser-only viewport preflight is also available: it opens the page, changes mobile viewport sizes and captures screenshots, without clicking controls or calling write APIs.
+
+### 1.1 Browser-only viewport preflight (no device required)
+
+Use the local dev server and a desktop Chromium instance with CDP enabled to check responsive layout first. This step does not install/delete firmware and does not prove device API or real-firmware compatibility.
+
+```bash
+META_PASS_DEV=1 node tools/install-slot/server.mjs
+# In another terminal, start Chromium with CDP enabled:
+chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-browser-smoke
+node tools/realdevice/mobile_page_browser_smoke.mjs \
+  --cdp-url http://127.0.0.1:9222 \
+  --url 'http://127.0.0.1:4191/?mock=1'
+```
+
+The runner checks key controls, horizontal overflow, page/console errors and failed requests at 320×720, 360×800, 390×844 and 430×932, saving screenshots and `report.json`. Real install/uninstall, DATA reservations and reboot persistence still require the hardware flow below.
 
 ## 2. Required components
 

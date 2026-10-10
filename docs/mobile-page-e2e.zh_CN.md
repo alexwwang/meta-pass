@@ -12,6 +12,21 @@
 
 网页通过 CDP 直接控制启用远程调试的 Chromium，设置移动视口、DPR、触摸能力和移动 User-Agent，不依赖 Playwright。它不需要 Android 模拟器，但也不等于测试了原生 WebView 容器。设备状态 GET API 只用于独立核验，禁止通过安装写 API 绕过网页流程。
 
+### 1.1 不连接真机的浏览器视口预检
+
+先用本地开发服务器和已开启 CDP 的桌面 Chromium 检查页面的移动布局；这一步不安装/删除固件，也不证明设备 API 或真实固件兼容性。
+
+```bash
+META_PASS_DEV=1 node tools/install-slot/server.mjs
+# 另一个终端启动 Chromium 并开放 CDP
+chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-browser-smoke
+node tools/realdevice/mobile_page_browser_smoke.mjs \
+  --cdp-url http://127.0.0.1:9222 \
+  --url 'http://127.0.0.1:4191/?mock=1'
+```
+
+运行器按 320×720、360×800、390×844、430×932 检查关键控件、横向溢出、页面/控制台异常和失败请求，保存每个视口截图与 `report.json`。只要需要验证真实安装/卸载、分区预留或重启持久性，就必须进入后面的真机测试流程。
+
 ## 2. 必需组件
 
 1. **真实 ESP32 设备**：运行当前待测启动器固件，网页服务来自该设备。
