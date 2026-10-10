@@ -21,6 +21,7 @@ for token, label in [
     ("默认安装链路仍按固件声明的 DATA size", "keep resizing opt-in by default"),
     ("?mp_test_data_profile=play28-recordings-4m", "document the explicit test-only profile"),
     ("initial_image_size=0", "refuse resizing non-empty initial DATA"),
+    ("ENABLE_TEST_DATA_PROFILES", "require server-side opt-in to enable test-only behavior"),
     ("BLOCKED / NOT RUN", "keep real business E2E blocked until the target path exists"),
 ]:
     assert token in doc, f"missing market DATA target contract: {label}"
@@ -41,4 +42,6 @@ for token, label in [
 assert "mp_test_data_profile" in phone and "applyDataSizeProfile" in phone
 assert "firmwareDataRequiredSize" in analyzer and "dataProfile" in analyzer
 assert "PLAY28_RECORDINGS_4M_PROFILE" in worker and "storeAnalyzer.analyze(Number(id), dataProfile || null)" in worker
+assert 'env.ENABLE_TEST_DATA_PROFILES !== "1"' in worker
+assert 'process.env.ENABLE_TEST_DATA_PROFILES !== "1"' in (ROOT / "tools/install-slot/server.mjs").read_text(encoding="utf-8")
 print("market DATA firmware selection contract: PASS")
