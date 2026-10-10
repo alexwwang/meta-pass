@@ -48,7 +48,7 @@ const report = {
   browser: "Chromium via direct CDP",
   cdpEndpoint: cdpUrl.replace(/:\/\/[^/]+/, "://<redacted-host>"),
   mobileEmulation: { viewports: viewportMatrix, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
-  target: target.origin + target.pathname,
+  target: target.protocol + "//<redacted-host>" + target.pathname,
   verdict: "FAIL",
   results: [],
   errors: { page: [], console: [], requests: [] },

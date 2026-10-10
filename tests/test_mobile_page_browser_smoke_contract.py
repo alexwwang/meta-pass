@@ -9,7 +9,7 @@ VALIDATE = (ROOT / "tools/validate.sh").read_text(encoding="utf-8")
 for token in (
     'from "./cdp_mobile_page.mjs"',
     "viewportMatrix",
-    "Emulation",
+    "setViewportSize",
     "#mp-install-root",
     "#mp-q",
     "#mp-mgmt",
