@@ -20,7 +20,8 @@ export function applyDataSizeProfile(dataPartitions, playId, profile) {
   const part = matches[0];
   const size = Number(part.required_size ?? part.requiredSize ?? part.size);
   const subtype = Number(part.subtype);
-  const initialSize = Number(part.initial_image_size ?? part.initialImageSize ?? 0);
+  const initialSizeRaw = part.initial_image_size ?? part.initialImageSize;
+  const initialSize = initialSizeRaw == null ? Number.NaN : Number(initialSizeRaw);
   if (subtype !== 0x81 || !Number.isInteger(size) || size < PLAY28_RECORDINGS_DECLARED_MIN ||
       initialSize !== 0) {
     throw new Error("profile-requires-blank-fat-recordings-partition");

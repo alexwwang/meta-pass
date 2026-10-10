@@ -20,6 +20,7 @@ for (const [id, data, message] of [
   [28, [{ ...blank[0], label: "other" }], "wrong partition label"],
   [28, [{ ...blank[0], subtype: 0x82 }], "wrong filesystem subtype"],
   [28, [{ ...blank[0], initial_image_size: 1 }], "non-empty initial DATA must never be truncated"],
+  [28, [{ label: "recordings", subtype: 0x81, size: 6592 * 1024, required_size: 6592 * 1024 }], "missing initial DATA size must fail closed"],
   [28, [{ ...blank[0], size: 4 * 1024 * 1024, required_size: 4 * 1024 * 1024 }], "unexpected source size"],
 ]) {
   assert.throws(() => applyDataSizeProfile(data, id, PLAY28_RECORDINGS_4M_PROFILE),
