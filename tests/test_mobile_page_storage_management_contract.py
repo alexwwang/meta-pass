@@ -61,6 +61,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("remove_recover_pending", device)
         self.assertIn("remove_app_bytes_and_commit", device)
         self.assertIn("meta_carve_flash_remove_app_and_data", device)
+        self.assertIn("DATA ownership is unknown", device)
         self.assertIn("out->erase_data = true", model)
 
     def test_child_b_reservation_is_attributed_to_b_play_id(self):
