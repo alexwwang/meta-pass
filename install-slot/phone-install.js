@@ -1665,7 +1665,10 @@ export function boot(opts = {}) {
           // maximum assumes other DATA extents stay at their minima, so several
           // simultaneous maximum choices must not overcommit the shared pool.
           for (let i = 0; i < selections.length; i++) {
-            const reserve = selections.filter((_, j) => j !== i);
+            // Only brand-new DATA records need simulated reservations: existing
+            // records are already present in geom.listing and must not be counted twice.
+            const reserve = selections.filter((_, j) =>
+              j !== i && editable[j] && existingSizes[j] == null);
             const bounds = dataSizeBounds(geom.listing, appProposal, minimums[i], reserve);
             if (normalizeDataSize(selections[i], bounds) === null) {
               failSheet("数据分区容量组合无效",
