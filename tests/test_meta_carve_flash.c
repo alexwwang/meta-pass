@@ -416,6 +416,15 @@ static void test_remove_app_and_data_atomically(void)
     assert(meta_carve_flash_ensure() == ESP_OK);
     meta_carve_rec_t rec;
     make_rec_with_data(&rec, 123, "save", 0x280000, 0x1000, META_DATA_DIRTY);
+    rec.carve.count = 3;
+    rec.carve.slot[1].kind = META_CARVE_KIND_APP;
+    rec.carve.slot[1].offset = 0x360000;
+    rec.carve.slot[1].size = 0x1F0000;
+    rec.carve.slot[1].play_id = 456;
+    rec.carve.slot[2].kind = META_CARVE_KIND_APP;
+    rec.carve.slot[2].offset = 0x560000;
+    rec.carve.slot[2].size = 0x29E000;
+    rec.carve.slot[2].play_id = 789;
     rec.carve.data_count = 2;
     rec.carve.data[1] = rec.carve.data[0];
     rec.carve.data[1].offset = 0x290000;
@@ -435,7 +444,7 @@ static void test_remove_app_and_data_atomically(void)
     meta_carve_rec_t after;
     assert(read_best(&after));
     assert(after.carve.count == 2 && after.carve.data_count == 0);
-    printf("PASS remove APP + all DATA in one durable metadata commit\\n");
+    printf("PASS remove APP + all DATA in one durable metadata commit\n");
 }
 static void test_set_dirty(void)
 {
