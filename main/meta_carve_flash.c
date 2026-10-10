@@ -388,6 +388,29 @@ esp_err_t meta_carve_flash_remove(int slot)
     return meta_carve_flash_commit(&next, true);
 }
 
+/* Delete APP + all DATA records for its play_id with one durable metadata
+ * commit. Callers erase extents before invoking this function, so a failed
+ * commit leaves all extents reserved (even if their bytes are already erased). */
+esp_err_t meta_carve_flash_remove_app_and_data(int slot)
+{
+    if (!s_active || slot < 0 || slot >= (int)s_carve.count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint32_t play_id = s_carve.slot[slot].play_id;
+    s_work = s_carve;
+    if (play_id != 0) {
+        uint8_t i = 0;
+        while (i < s_work.data_count) {
+            if (s_work.data[i].play_id == play_id) {
+                if (!meta_carve_remove_data(&s_work, i)) return ESP_ERR_INVALID_STATE;
+                continue;
+            }
+            i++;
+        }
+    }
+    if (!meta_carve_remove(&s_work, (uint8_t)slot)) return ESP_ERR_INVALID_ARG;
+    return meta_carve_flash_commit(&s_work, true);
+}
 // ---- 扫描回填 -------------------------------------------------------------
 
 static void hex32_to_bin(const char hex[META_SHA256_HEX_LEN], uint8_t out[32])
