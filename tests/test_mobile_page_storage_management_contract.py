@@ -174,6 +174,13 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, DESIGN)
 
+    def test_document_has_explicit_local_realdevice_runbook(self):
+        for token in ("MOBILE_E2E_URL", "META_PASS_SESSION", "META_PASS_E2E_SERIAL_PORT",
+                      "--require-data-reservation", "CONFIG_META_E2E_TEST_CONTROL=y",
+                      "Node.js 22", "report.json"):
+            with self.subTest(token=token):
+                self.assertIn(token, DESIGN)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
