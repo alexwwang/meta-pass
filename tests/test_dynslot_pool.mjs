@@ -184,14 +184,14 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   assert.equal(dataSizeBounds(empty, null, 0).max, 0);
 
   // DATA 必须避开 APP 提案；有提案时可用容量严格减少。
-  const app = { carveOffset: 0x180000, carveSize: 0x80000 };
+  const app = { carveOffset: 0x360000, carveSize: 0x80000 };
   const afterApp = dataSizeBounds(empty, app, DATA_SIZE_GRANULE);
   assert.ok(afterApp.max < dataSizeBounds(empty, null, DATA_SIZE_GRANULE).max);
   assert.equal(normalizeDataSize(afterApp.max, afterApp), afterApp.max);
 
   // 已有 DATA 作为占用域参与计算，不允许规划覆盖它。
   const withData = dataSizeBounds({
-    slots: [], data: [{ offset: 0x180000, size: 0x40000 }],
+    slots: [], data: [{ offset: 0x360000, size: 0x40000 }],
   }, null, DATA_SIZE_GRANULE);
   assert.ok(withData.max < b.max);
   const malformed = dataSizeBounds({
