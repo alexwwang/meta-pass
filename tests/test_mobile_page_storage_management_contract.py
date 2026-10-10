@@ -147,7 +147,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn('"playId=" + Number(playB)', RUNNER)
 
     def test_storage_invariant_failures_block_follow_on_mutations(self):
-        for token in ("requireSafeStorageState", "refusing subsequent mutations",
+        for token in ("requireSafeStorageState", "assertBaselineAppSlotsPreserved",
+                      "baseline APP slots preserved", "refusing subsequent mutations",
                       "runtimeAResult?.ok", "A/B install and runtime safety gates did not pass",
                       "required DATA reservation for child A was not created",
                       "device API did not confirm install A as VALID"):
