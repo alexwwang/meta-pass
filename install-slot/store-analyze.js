@@ -15,6 +15,7 @@
 
 import { isFullImage, extractAppImage, parseDataPartitions, parseFirmwareManifest } from "./extract-app-image.js";
 import { unpackNameBlobTail } from "./name-blob.js";
+import { applyDataSizeProfile, firmwareDataRequiredSize } from "./data-size-profile.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
 //   pool_0 0x1D6000 | cardid 0x4000 | pool_1 0x49E000(含 store @0x35A000)
@@ -145,7 +146,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
   // 缓存条目 {merged, ext, storeFw, play, revisionId}:analyze 首次构建后,
   // extracted 直接复用 ext.data(不再重拉 3MB、不再重新解包);merged/extData 均不
   // 长期驻留的淘汰交给注入的 cache(生产按方案为 LRU/R2,容量策略在部署侧)。
-  async function analyzed(id) {
+  async function analyzed(id, dataProfile = null) {
     if (!Number.isInteger(id) || id <= 0) return { error: REASON_NOT_FOUND };
 
     const meta = await fetchJson(`/api/plays/id/${id}`);
@@ -153,7 +154,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     const play = meta.json && meta.json.play;
     if (!play || typeof play !== "object") return { error: REASON_NOT_FOUND };
 
-    const cacheKey = `analyzed:${id}`;
+    const cacheKey = `analyzed:${id}:${dataProfile || "default"}`;
     const cached = doCache.get(cacheKey);
     // 命中仍需回源确认 revisionId 未变(方案 §1.2:命中也需回源确认 revisionId)。
     // revisionId 缺失视为"未知版本":只在本地缓存过时才复用(首请求),避免每次回源。
@@ -187,6 +188,11 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       // admission before the device is asked to carve or erase anything.
       firmwareManifest = parseFirmwareManifest(got.buf);
       dataPartitions = firmwareManifest.data;
+      if (dataProfile) {
+        dataPartitions = applyDataSizeProfile(dataPartitions, id, dataProfile);
+        firmwareManifest.data = dataPartitions;
+        firmwareManifest.required_size = firmwareDataRequiredSize(firmwareManifest);
+      }
     } catch (err) {
       return { error: err?.message === "unsupported-partition"
         ? "unsupported-partition" : mapExtractError(err) };
@@ -263,8 +269,8 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
   }
 
   // 对外:分析接口。返回完整 JSON 对象(含 extracted.sha256)。
-  async function analyze(id) {
-    const got = await analyzed(id);
+  async function analyze(id, dataProfile = null) {
+    const got = await analyzed(id, dataProfile);
     if (got.error) {
       // 规范为完整契约(设备端 parse_analysis 依赖固定字段形态)。
       return {
