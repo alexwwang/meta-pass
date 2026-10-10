@@ -2021,15 +2021,43 @@ static esp_err_t remove_recover_pending(bool *did_recover);
  * The full APP identity is re-found after reboot; stale intent cleanup must never
  * delete another APP that shifted into the previous array index. */
 #define REMOVE_NVS_NS "meta_rm"
+static esp_err_t remove_nvs_set_u32(nvs_handle_t nvs, const char *prefix, uint32_t value)
+{
+    char key[8];
+    for (unsigned i = 0; i < 4; i++) {
+        snprintf(key, sizeof(key), "%s%u", prefix, i);
+        const esp_err_t e = nvs_set_u8(nvs, key, (uint8_t)(value >> (i * 8)));
+        if (e != ESP_OK) return e;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t remove_nvs_get_u32(nvs_handle_t nvs, const char *prefix, uint32_t *value)
+{
+    if (!value) return ESP_ERR_INVALID_ARG;
+    char key[8];
+    uint32_t v = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        uint8_t b = 0;
+        snprintf(key, sizeof(key), "%s%u", prefix, i);
+        const esp_err_t e = nvs_get_u8(nvs, key, &b);
+        if (e != ESP_OK) return e;
+        v |= ((uint32_t)b) << (i * 8);
+    }
+    *value = v;
+    return ESP_OK;
+}
+
 static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
 {
     nvs_handle_t nvs;
     esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
     if (e != ESP_OK) return e;
     e = nvs_set_u8(nvs, "slot", (uint8_t)slot);
-    if (e == ESP_OK) e = nvs_set_u32(nvs, "pid", target->play_id);
-    if (e == ESP_OK) e = nvs_set_u32(nvs, "offset", target->offset);
-    if (e == ESP_OK) e = nvs_set_u32(nvs, "size", target->size);
+    if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "p", target->play_id);
+    if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "o", target->offset);
+    if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "z", target->size);
+    if (e == ESP_OK) e = nvs_set_u8(nvs, "active", 1);
     if (e == ESP_OK) e = nvs_commit(nvs);
     nvs_close(nvs);
     return e;
@@ -2043,10 +2071,14 @@ static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
     nvs_handle_t nvs;
     esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
     if (e != ESP_OK) return e;
-    e = nvs_get_u32(nvs, "pid", pid);
-    if (e == ESP_ERR_NVS_NOT_FOUND) { nvs_close(nvs); return ESP_OK; }
-    if (e == ESP_OK) e = nvs_get_u32(nvs, "offset", offset);
-    if (e == ESP_OK) e = nvs_get_u32(nvs, "size", size);
+    uint8_t active = 0;
+    e = nvs_get_u8(nvs, "active", &active);
+    if (e == ESP_ERR_NOT_FOUND) { nvs_close(nvs); return ESP_OK; }
+    if (e != ESP_OK) { nvs_close(nvs); return e; }
+    if (active == 0) { nvs_close(nvs); return ESP_OK; }
+    e = remove_nvs_get_u32(nvs, "p", pid);
+    if (e == ESP_OK) e = remove_nvs_get_u32(nvs, "o", offset);
+    if (e == ESP_OK) e = remove_nvs_get_u32(nvs, "z", size);
     nvs_close(nvs);
     if (e != ESP_OK) return ESP_ERR_INVALID_STATE;
     *pending = true;
@@ -2058,11 +2090,7 @@ static esp_err_t remove_intent_clear(void)
     nvs_handle_t nvs;
     esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
     if (e != ESP_OK) return e;
-    const char *keys[] = {"pid", "offset", "size", "slot"};
-    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
-        esp_err_t x = nvs_erase_key(nvs, keys[i]);
-        if (x != ESP_OK && x != ESP_ERR_NVS_NOT_FOUND) { e = x; break; }
-    }
+    e = nvs_set_u8(nvs, "active", 0);
     if (e == ESP_OK) e = nvs_commit(nvs);
     nvs_close(nvs);
     return e;
