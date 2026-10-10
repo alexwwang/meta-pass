@@ -2020,6 +2020,15 @@ static esp_err_t remove_recover_pending(bool *did_recover);
 /* Durable uninstall intent lives in NVS and is committed before any erase.
  * The full APP identity is re-found after reboot; stale intent cleanup must never
  * delete another APP that shifted into the previous array index. */
+static bool remove_nvs_key_missing(esp_err_t err)
+{
+    if (err == ESP_ERR_NOT_FOUND) return true;
+#ifdef ESP_ERR_NVS_NOT_FOUND
+    if (err == ESP_ERR_NVS_NOT_FOUND) return true;
+#endif
+    return false;
+}
+
 #define REMOVE_NVS_NS "meta_rm"
 static esp_err_t remove_nvs_set_u32(nvs_handle_t nvs, const char *prefix, uint32_t value)
 {
@@ -2073,7 +2082,7 @@ static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
     if (e != ESP_OK) return e;
     uint8_t active = 0;
     e = nvs_get_u8(nvs, "active", &active);
-    if (e == ESP_ERR_NOT_FOUND) { nvs_close(nvs); return ESP_OK; }
+    if (remove_nvs_key_missing(e)) { nvs_close(nvs); return ESP_OK; }
     if (e != ESP_OK) { nvs_close(nvs); return e; }
     if (active == 0) { nvs_close(nvs); return ESP_OK; }
     e = remove_nvs_get_u32(nvs, "p", pid);
