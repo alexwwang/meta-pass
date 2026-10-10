@@ -27,6 +27,7 @@
 import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-image.js";
 import { exportBackup, importBackup } from "./backup-data.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
+import { applyDataSizeProfile } from "./data-size-profile.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing } from "./dynslot-pool.js";
 
@@ -326,11 +327,20 @@ export async function getPlayDetail(id) {
 // preflight(id) 保留为两阶段连跑的兼容入口(测试与旧调用)。
 // 轻量预检:analyze 与详情互相独立,并行发起 —— 点安装到出槽位抽屉的
 // 延迟 ≈ 两者较慢者;串行则叠加(真机反馈:点安装响应慢的一半来源)。
+export function requestedDataSizeProfile(hooks = {}) {
+  if (typeof hooks.dataSizeProfile === "string" && hooks.dataSizeProfile) return hooks.dataSizeProfile;
+  try {
+    return new URL(globalThis.location.href).searchParams.get("mp_test_data_profile") || null;
+  } catch { return null; }
+}
+
 export async function preflightMeta(id, hooks = {}) {
   const stage = (s) => hooks.stage?.(s);
   stage("analyze");
+  const profile = requestedDataSizeProfile(hooks);
+  const profileQuery = profile ? `&dataProfile=${encodeURIComponent(profile)}` : "";
   const [aRes, play] = await Promise.all([
-    mpJson(`/api/analyze?id=${encodeURIComponent(id)}`),
+    mpJson(`/api/analyze?id=${encodeURIComponent(id)}${profileQuery}`),
     getPlayDetail(id),
   ]);
   const a = aRes;
@@ -418,6 +428,8 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     ext = extractAppImage(merged, maxSlotLimit);
     try {
       dataImages = extractDataImages(merged);
+      const profile = requestedDataSizeProfile(hooks);
+      if (profile) dataImages = applyDataSizeProfile(dataImages, play.id, profile);
     } catch (e) {
       return {
         ok: false,
