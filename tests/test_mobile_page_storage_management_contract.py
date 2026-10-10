@@ -31,6 +31,16 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+
+    def test_every_new_install_requires_a_fresh_dynamic_app_carve(self):
+        installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+        device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+        design = (ROOT / "docs/assets/dynslot-install-data-wiring-design.zh_CN.md").read_text(encoding="utf-8")
+        self.assertIn("无法安全创建新的 APP 槽位", installer)
+        self.assertIn("const opts = geom.proposal", installer)
+        self.assertIn("fresh APP carve required", device)
+        self.assertIn("每次安装都必须从动态回收池创建新的 APP carve", design)
+
     def test_child_b_reservation_is_attributed_to_b_play_id(self):
         self.assertIn("d.play_id === Number(playB)", RUNNER)
         self.assertIn('"playId=" + Number(playB)', RUNNER)
