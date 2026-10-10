@@ -613,7 +613,9 @@ try {
         console.log("[NOT COVERED] M07A deleted firmware non-bootability");
       }
       afterRemoveA = await readSlots();
-      record("M06 B remains valid after removing A", Boolean(b) && afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid"));
+      const bPreservedAfterA = Boolean(b) && afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid");
+      record("M06 B remains valid after removing A", bPreservedAfterA);
+      if (!bPreservedAfterA) throw new Error("removing A affected B APP slot; refusing further device mutations");
       if (b) await runChildRuntime(afterRemoveA.slots.find((x) => x.name === nameB), playB, nameB, "M06B");
       if (requireDataReservation) {
         const prior = dataReservations(afterB || afterRemoveA), remaining = dataReservations(afterRemoveA), oldData = dataReservations(baseline);
@@ -622,6 +624,9 @@ try {
         const released = created.filter((d) => !remaining.some((x) =>
           x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
         record("M06 UI delete releases test-created DATA reservations", released.length > 0, "released=" + released.length + "; created=" + created.length);
+        if (requireDataReservation && released.length === 0) {
+          throw new Error("removing A did not release its test-created DATA reservation; refusing further device mutations");
+        }
       }
       requireSafeStorageState(afterRemoveA, "M06 after removing A");
     });
