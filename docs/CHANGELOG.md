@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **Play 28 DATA resize test profile**: Added the default-off `play28-recordings-4m` profile. It applies only to Play ID 28 when the server explicitly sets `ENABLE_TEST_DATA_PROFILES=1` and the request includes `?mp_test_data_profile=play28-recordings-4m`. Only a single blank `recordings` FAT partition (`0x81`, `initial_image_size=0`) with a declared size of at least 6 MiB is accepted; mismatches fail closed. Server analysis and the phone install offer share the same sizing policy. Added unit and analyzer integration tests. Real marketplace-image and hardware validation remain pending; default install behavior is unchanged.
+
 - **Install/uninstall E2E safety hardening**: fixed the ESP-IDF 5.5.3 compile error caused by a mismatched `const` qualifier in the USB Serial/JTAG driver config. Hardened the mobile-page runner so device API must confirm a VALID slot after install; invalid geometry or loss of baseline DATA reservations blocks subsequent writes; and failure of A's runtime verification prevents installing B. Added static contract coverage. Firmware CI for the fix is still pending; no real-device E2E has run.
 
 
