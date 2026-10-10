@@ -102,6 +102,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("const ownedNames = new Set([nameA, nameB, nameC])", RUNNER)
         self.assertIn("M06C fresh DATA reservations released", RUNNER)
         self.assertIn("M06C C APP slot removed", RUNNER)
+        self.assertIn("M06C B DATA reservations preserved", RUNNER)
+        self.assertIn("freshReservationsForB.every", RUNNER)
         self.assertIn("freshReservationsForC.every", RUNNER)
         self.assertIn("M06C", RUNNER[RUNNER.index("M06C fresh install after deletion"):RUNNER.index('if (b) {\n    await runCase("M07 remove B"')])
 
