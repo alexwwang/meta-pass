@@ -156,12 +156,9 @@ meta_install_place_verdict_t meta_install_model_place_offer(
     meta_carve_t *out_next, int *out_idx, bool *out_changed,
     char *out_label, meta_install_no_fit_t *out_nf);
 
-// dynslot 显式删除(design §4.5 Remove / §6,POST /api/install/remove)请求体:
-// {"slot":N[,"eraseData":true]},N ∈ [0, META_SLOT_COUNT)。
-//   - slot:缺字段/越界/类型不符(字符串/小数)一律 false,不动 *out;
-//   - eraseData:可选,缺省 false = 默认归档(design §6 默认保留用户数据)。
-//     JSON true 才置位;非布尔值按缺省 false 处理 —— 落到更安全的归档侧。
-// 返回 false 时适配层映射 400,擦除/提交不得先于它发生。
+// APP 卸载请求体: {"slot":N},N ∈ [0, META_SLOT_COUNT)。
+// APP 删除必然级联删除全部关联 DATA；不提供单独删除或保留 DATA 的用户选项。
+// 返回 false 时适配层映射 400,任何擦除/提交不得先于它发生。
 typedef struct {
     int  slot;
     bool erase_data;   // true = 用户显式"删除数据"(擦字节 + 移除记录)
