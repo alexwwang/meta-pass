@@ -1575,7 +1575,9 @@ export function boot(opts = {}) {
           `DATA ${impossible + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB，但当前分区布局无法提供连续空间。请取消安装或释放存储后重试。`);
         return;
       }
-      const options = minimums.map((min, i) => {
+      const options = minimums.map((declaredMin, i) => {
+        const min = existingSizes[i] != null && editable[i]
+          ? Math.max(declaredMin, existingSizes[i]) : declaredMin;
         if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
         const bounds = boundsByData[i];
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
