@@ -14,6 +14,7 @@ import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createStoreAnalyzer } from "../../install-slot/store-analyze.js";
+import { PLAY28_RECORDINGS_4M_PROFILE } from "../../install-slot/data-size-profile.js";
 
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
@@ -225,7 +226,12 @@ const server = http.createServer((req, res) => {
       sendError(res, 400, "missing or invalid id parameter");
       return;
     }
-    storeAnalyzer.analyze(Number(id)).then(
+    const dataProfile = urlObj.searchParams.get("dataProfile");
+    if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
+      sendError(res, 400, "unsupported data profile");
+      return;
+    }
+    storeAnalyzer.analyze(Number(id), dataProfile || null).then(
       (out) => sendJson(res, 200, out),
       // r10.4:内部异常也回完整契约 JSON(reason+detail),不回裸 502 ——
       // 设备端对非 200 不读体,会把真实异常吞成传输失败。
