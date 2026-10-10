@@ -342,6 +342,27 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
         n++;
     }
 
+    /* The carve builder should allocate disjoint DATA extents, but this
+     * migration helper is a destructive boundary: independently prove that
+     * the newly erased in-place tails and moved destinations do not overlap
+     * each other, even if a malformed after-carve reaches this point. */
+    for (uint8_t i = 0; i < grow_n; i++) {
+        for (uint8_t j = 0; j < i; j++) {
+            if (data_ranges_overlap(grow_offset[i], grow_size[i],
+                                    grow_offset[j], grow_size[j])) {
+                ESP_LOGE(TAG, "in-place DATA growth tails overlap");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+        for (uint8_t j = 0; j < n; j++) {
+            if (data_ranges_overlap(grow_offset[i], grow_size[i],
+                                    moves[j].new_offset, moves[j].new_size)) {
+                ESP_LOGE(TAG, "in-place DATA growth tail overlaps migration target");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
+
     /* All destructive operations start only after the full preflight passes.
      * In-place growth tails are unowned by the old carve; erasing them cannot
      * damage the rollback source if a later moved-DATA copy fails. */
