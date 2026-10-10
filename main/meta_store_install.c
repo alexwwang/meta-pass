@@ -1526,9 +1526,11 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         ESP_LOGW(TAG, "prepare: manifest shape/bounds rejected");
         return reply(req, "400 Bad Request", "manifest rejected");
     }
-    if (m.data_count > 0 && !m.has_carve) {
-        ESP_LOGW(TAG, "prepare: child DATA requires dynslot carve");
-        return reply(req, "400 Bad Request", "data requires carve");
+    // 每次新安装都必须从动态回收池创建新的 APP carve；不再允许旧式
+    // 固定/既有槽位原位安装。删除只释放 carve，后续安装由分配器重新选址。
+    if (!m.has_carve) {
+        ESP_LOGW(TAG, "prepare: fresh APP carve required");
+        return reply(req, "400 Bad Request", "fresh APP carve required");
     }
     meta_install_geom_t g;
     geom_refresh(&g);
