@@ -1549,13 +1549,23 @@ export function boot(opts = {}) {
         return;
       }
       const appProposal = chosen.isNew ? geom.proposal : null;
-      // Existing allocations that meet the safe minimum are retained as-is.
-      // Blank filesystem extents may be downsized to a generic filesystem floor;
-      // non-empty bundled DATA images retain their declared size to avoid
-      // truncating embedded filesystem content.
-      const editable = minimums.map((min, i) => existingSizes[i] == null || existingSizes[i] < min);
+      // Existing DATA may grow during an install/update, but must never shrink:
+      // device-side migration retains the old extent as rollback source and
+      // rejects a target smaller than the current allocation. To calculate the
+      // target's capacity, remove only that DATA record from the occupancy view;
+      // all other slots and DATA reservations remain hard obstacles.
+      const editable = minimums.map((min, i) =>
+        existingSizes[i] == null || existingSizes[i] < min ||
+        (existingSizes[i] >= min && !chosen.isNew));
+      const listingWithoutTarget = (i) => ({
+        ...geom.listing,
+        data: geom.listing.data.filter((rec) =>
+          !(Number(rec.play_id ?? rec.playId) === Number(meta.play.id) &&
+            String(rec.label || "") === String(dataImages[i].label || "")))
+      });
       const boundsByData = minimums.map((min, i) => dataSizeBounds(
-        geom.listing, appProposal, min,
+        existingSizes[i] != null && editable[i] ? listingWithoutTarget(i) : geom.listing,
+        appProposal, Math.max(min, existingSizes[i] || 0),
         minimums.filter((_, j) => j !== i && editable[j] && existingSizes[j] == null)));
       const impossible = minimums.findIndex((min, i) =>
         editable[i] && Math.floor(boundsByData[i].max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE < min);
