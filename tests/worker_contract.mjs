@@ -59,6 +59,8 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
 {
   const serverSrc = readFileSync(path.join(ROOT, "tools", "install-slot", "server.mjs"), "utf8");
   assert.ok(serverSrc.includes("\\d{1,7}"), "server.mjs id validation must match");
+  assert.ok(serverSrc.includes('["/data-size-profile.js"'), "local dev must serve the shared DATA profile module");
+  assert.ok(serverSrc.includes('process.env.ENABLE_TEST_DATA_PROFILES !== "1"'), "local dev must keep test profiles disabled by default");
   console.log("PASS 7: server.mjs (local dev) matches the same id contract");
 }
 
