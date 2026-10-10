@@ -3,7 +3,7 @@
 
 用法:
   python3 tools/realdevice/smoke.py --ip 192.168.x.x \
-      [--port /dev/cu.usbmodem142401] [--app build/FoloToy-AI-Passport.bin] \
+      [--port /dev/cu.XXXX] [--app build/FoloToy-AI-Passport.bin] \
       [--fresh] [--keep-monitor-log]
 
 前置(一次性,人工):
@@ -15,19 +15,22 @@
 覆盖(对应设计验收清单):
   S1 配对:串口取配对码 → POST /api/install/pair 换 token
   S2 fresh 首装:节点侧跑真 dynslot-pool.js 算 carve 提案 → prepare
-     (phone_picked 直确认)→ session → 4KB 分块上传 → finalize
-     → 断言 done-reboot + 串口 "carve loaded: seq=1 slots=1"(方案B + 记录态启动)
+     (phone_picked 直确认)→ session → APP + Child DATA 分块上传 → DATA
+     offset checkpoint/suffix resume → finalize → 断言 done-reboot + 串口
+     "carve loaded: seq=1 slots=1"(方案B + 记录态启动)
   S3 二次安装(carve 第二个槽)→ slots count=2
-  S4 删除归档 + 导出清单 + 删除擦除 + 导入恢复(备份闭环,设备侧全链)
-  S5 中断续连:第三次安装传 30% 后掐断 → esptool 软复位(忠实等价断电:
-     RAM 丢、flash 现状保留、NVS 续连标志在)→ 断言 "install resume"
+  S4 删除归档 + DATA ARCHIVED 断言 + 删除擦除(数据生命周期真实链)
+  S5 中断续连:第三次安装传 30% 后掐断 → esptool 软复位(验证 RAM 丢失、
+     flash/NVS 持久状态保留；这是断电的近似故障注入，不等价于物理断电)→
+     断言 "install resume"
      → 免重配对(新 token 从串口取)→ 幂等重发 prepare → 传完 → finalize
-  S6 取证:read_flash 回读表区 + store 区存 logs/,字节级现场
+  S6 取证:read_flash 回读表区 + store 区 + DATA extent，DATA 做字节级比对
 
 串口所有权分段交替:monitor(idf.py)持口时 esptool 不可跑;esptool 前后
 自动停/起 monitor。日志全程落 tools/realdevice/logs/smoke-<ts>.log。
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -41,7 +44,19 @@ import urllib.error
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IDF = os.environ.get("IDF_PATH", os.path.expanduser("~/esp/esp-idf-v5.5.3"))
-NODE = "/usr/local/bin/node"
+# Node 路径由 NODE_BIN 注入(全仓约定);缺失时探测常见安装位置,失败即报错。
+# 不硬编码 /usr/local/bin/node,因为其他 runner 可能是 /opt/homebrew/bin/node 或 nvm。
+def _find_node():
+    cand = os.environ.get("NODE_BIN")
+    if cand:
+        return cand
+    for c in ("/usr/local/bin/node", "/opt/homebrew/bin/node"):
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    raise SystemExit("NODE_BIN 未设置且未探测到 node;请 export NODE_BIN=<path-to-node>。")
+
+
+NODE = _find_node()
 LOGDIR = os.path.join(REPO, "tools", "realdevice", "logs")
 CHUNK = 4096
 
@@ -156,6 +171,18 @@ class Api:
         except urllib.error.HTTPError as e:
             return e.code, e.read()
 
+    def data_chunk(self, index, offset, data):
+        req = urllib.request.Request(self.base + "/api/install/data", data=data,
+                                     headers=self._hdr({
+                                         "Content-Type": "application/octet-stream",
+                                         "X-Meta-Data-Index": str(index),
+                                         "X-Meta-Offset": str(offset)}))
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
 
 def esptool(port, args, timeout=300):
     return sh(f"source {IDF}/export.sh >/dev/null 2>&1; "
@@ -213,7 +240,7 @@ def wait_done_reboot(mon, port, want, desc):
     """等 finalize 后的受控复位。done→重启是 UI tick 驱动(goto_page 的
     PAGE_STORE_DL 分支):无人值守续连模式下 UI 在列表页,重启不发生 —
     这是设计行为(复位推迟到退出商店页)。此处等 45s,未到则用 esptool
-    软复位兜底(与 S5 同款,等价断电:RAM 丢、flash 现状、NVS 保留)。"""
+    软复位兜底(与 S5 同款,近似覆盖断点续传的 RAM 丢失场景; 不等价于真实断电)。"""
     n = wait_boot_ok(mon, want, timeout=45)
     if n is None:
         ok(f"{desc}: UI 未在商店页,无自复位 —— esptool 软复位兜底")
@@ -261,29 +288,77 @@ def try_restore_token(port, api):
     return None
 
 
-def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=None):
-    """session + 分块上传 + finalize。全程停止串口 monitor:真机证实
-    idf monitor (re)start 后 ~30-50s USB 重枚举(rst:0x15,随机 Saved PC,
-    非固件复位)会掐断在途上传;无 monitor 时上传稳定。复位兜底用 API
-    轮询代替串口等启动。chunk/finalize 幂等,断连整包重传。"""
+def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=None,
+           data_images=None, data_resume_probe=False):
+    """session + APP/DATA 分块上传 + finalize。
+
+    DATA 的 session data[].offset/done 是设备侧事实源。真机测试默认覆盖
+    首传；data_resume_probe=True 时故意先传 DATA 前半段，再 GET status
+    读取 offset，只发送 suffix，验证续传不重复写 prefix。
+    """
+    data_images = data_images or []
     if mon:
         mon.stop()
     try:
         for attempt in (1, 2, 3):
             try:
                 st, body = api.post("/api/install/session", json.dumps({
-                    "imageLen": total, "sha256": __import__("hashlib").sha256(app_bytes).hexdigest(),
+                    "imageLen": total,
+                    "sha256": hashlib.sha256(app_bytes).hexdigest(),
                     "slot": slot}).encode())
                 if st != 200:
                     die(f"{desc}: session {st} {body[:200]!r}")
-                for off in range(0, total, CHUNK):
+                session = json.loads(body)
+                for off in range(int(session.get("offset", 0)), total, CHUNK):
                     st, body = api.chunk(off, app_bytes[off:off + CHUNK])
                     if st != 200:
                         die(f"{desc}: chunk@{off} {st} {body[:200]!r}")
+
+                states = session.get("data") or []
+                if len(states) != len(data_images):
+                    die(f"{desc}: session data entries={len(states)} != manifest={len(data_images)}")
+                for i, item in enumerate(data_images):
+                    expected = len(item["bytes"])
+                    ds = next((x for x in states if x.get("index") == i), None)
+                    if ds is None or int(ds.get("expected", 0)) != expected:
+                        die(f"{desc}: DATA[{i}] session state mismatch: {ds}")
+                    if ds.get("done"):
+                        ok(f"{desc}: DATA[{i}] already done; skip (idempotent)")
+                        continue
+                    doff = int(ds.get("offset", 0))
+                    if data_resume_probe and doff == 0 and expected > 1:
+                        cut = max(1, expected // 2)
+                        st, body = api.data_chunk(i, 0, item["bytes"][:cut])
+                        if st != 200:
+                            die(f"{desc}: data[{i}] prefix {st} {body[:200]!r}")
+                        st, body = api.get("/api/install/status")
+                        if st != 200:
+                            die(f"{desc}: status after DATA prefix {st}")
+                        status = json.loads(body)
+                        live = next((x for x in status.get("data", [])
+                                     if x.get("index") == i), None)
+                        if live is None or int(live.get("offset", -1)) != cut:
+                            die(f"{desc}: DATA[{i}] resume offset={live}, expected={cut}")
+                        ok(f"{desc}: DATA[{i}] resume checkpoint offset={cut}")
+                        doff = cut
+                    for off in range(doff, expected, CHUNK):
+                        st, body = api.data_chunk(i, off, item["bytes"][off:off + CHUNK])
+                        if st != 200:
+                            die(f"{desc}: data[{i}]@{off} {st} {body[:200]!r}")
+                    st, body = api.get("/api/install/status")
+                    if st != 200:
+                        die(f"{desc}: status after DATA[{i}] {st}")
+                    status = json.loads(body)
+                    live = next((x for x in status.get("data", [])
+                                 if x.get("index") == i), None)
+                    if live is None or not live.get("done") or int(live.get("offset", -1)) != expected:
+                        die(f"{desc}: DATA[{i}] not done: {live}")
+                    ok(f"{desc}: DATA[{i}] done offset={expected}")
+
                 st, body = api.post("/api/install/finalize", b"{}")
                 if st != 200:
                     die(f"{desc}: finalize {st} {body[:300]!r}")
-                ok(f"{desc}: finalize 200(受控复位由商店 DL 页 tick 触发,不等固定时延)")
+                ok(f"{desc}: finalize 200(APP + DATA integrity)")
                 return
             except (TimeoutError, ConnectionResetError, OSError) as e:
                 if attempt == 3:
@@ -310,18 +385,25 @@ def upload(api, app_bytes, total, desc, slot=0, mon=None, port=None, manifest=No
         if mon:
             mon.start()
 
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", required=True)
-    ap.add_argument("--port", default="/dev/cu.usbmodem142401")
+    # 串口是本地硬件细节,不写默认值。运行方必须传 --port 或 export META_PASS_PORT。
+    ap.add_argument("--port", default=os.environ.get("META_PASS_PORT"),
+                    help="USB 串口;必填,可用 META_PASS_PORT 注入")
     ap.add_argument("--app", default=os.path.join(REPO, "build", "FoloToy-AI-Passport.bin"))
     ap.add_argument("--fresh", action="store_true",
                     help="全片擦除(会抹 WiFi 凭证,需重新配网)")
+    ap.add_argument("--logdir", default=LOGDIR,
+                    help="本次运行的日志/证据目录")
     args = ap.parse_args()
+    if not args.port:
+        ap.error("--port 缺失:传 --port /dev/cu.XXXX 或 export META_PASS_PORT=...")
 
-    os.makedirs(LOGDIR, exist_ok=True)
-    logfile = os.path.join(LOGDIR, f"smoke-{time.strftime('%Y%m%d-%H%M%S')}.log")
+
+    logroot = os.path.abspath(args.logdir)
+    os.makedirs(logroot, exist_ok=True)
+    logfile = os.path.join(logroot, "uart.log")
     app_bytes = open(args.app, "rb").read()
     app_len = len(app_bytes)
     print(f"app image {app_len}B | log {logfile}")
@@ -387,12 +469,19 @@ def main():
     proposal = node_proposal(json.dumps(s), app_len)
     if not proposal:
         die("node 提案为空(池放不下首个槽?)")
+    # Child DATA fixture:容量 8KB，但首传镜像 4KB；后续会从真机 flash 回读。
+    data_bytes = bytes((i * 37 + 11) & 0xff for i in range(4096))
+    data_images = [{"label": "recordings", "size": 8192, "bytes": data_bytes}]
+    data_sha = hashlib.sha256(data_bytes).hexdigest()
     manifest = {
         "protocol": 1, "playId": 1, "revisionId": 1, "name": "smoke-one",
         "storeSha256": "00" * 32, "imageLen": app_len,
-        "sha256": __import__("hashlib").sha256(app_bytes).hexdigest(),
+        "sha256": hashlib.sha256(app_bytes).hexdigest(),
         "suggestedSlot": 0, "slot": proposal["slot"],
         "slots": [{"slot": 0, "limit": app_len, "fit": True}],
+        "data": [{"playId": 1, "label": "recordings", "size": 8192,
+                  "subtype": 0x82, "initialImageSize": len(data_bytes),
+                  "sha256": data_sha}],
         "reason": "ok",
         "carveOffset": proposal["carveOffset"], "carveSize": proposal["carveSize"],
     }
@@ -400,7 +489,7 @@ def main():
     if st != 200:
         die(f"prepare#1 {st} {body[:300]!r}", mon)
     ok(f"prepare#1 200(carve idx={proposal['slot']} off=0x{proposal['carveOffset']:x})")
-    upload(api, app_bytes, app_len, "install#1", slot=proposal["slot"], mon=mon, port=args.port, manifest=manifest)
+    upload(api, app_bytes, app_len, "install#1", slot=proposal["slot"], mon=mon, port=args.port, manifest=manifest, data_images=data_images, data_resume_probe=True)
     n = wait_done_reboot(mon, args.port, 1, "首装")
     if n != 1:
         die(f"首装后 slots={n} != 1(变砖或 carve 未持久化)", mon)
@@ -415,6 +504,7 @@ def main():
     manifest["carveSize"] = proposal["carveSize"]
     manifest["playId"] = manifest["revisionId"] = 2
     manifest["name"] = "smoke-two"
+    manifest["data"] = []
     st, body = api.post("/api/install/prepare", json.dumps(manifest).encode())
     if st != 200:
         die(f"prepare#2 {st} {body[:300]!r}", mon)
@@ -425,11 +515,9 @@ def main():
         die(f"二装后 slots={n} != 2", mon)
     ok("slots=2 持久")
 
-    # ── S4 删除闭环(归档 no-op + 擦除删除)──────────────────────────────
-    # 注意:LAN/USB 纯固件安装的槽 play_id=0(REC: playId=0 for USB installs),
-    # archive_slot_and_data 对 play_id=0 返回 INVALID_STATE(WARN,无害) —
-    # 数据归档子路径需要带数据的商店玩法安装,本冒烟覆盖不到。
-    stage("S4 删除闭环(归档 no-op + 擦除删除)")
+    # ── S4 删除闭环(DATA 归档 + 擦除删除)───────────────────────────────
+    # S2 使用真实 playId=1 + DATA；删除 slot0 必须将 DATA 转为 ARCHIVED。
+    stage("S4 删除闭环(DATA 归档 + 擦除删除)")
     st, _ = api.post("/api/install/remove", b'{"slot":0}')
     if st != 200:
         die(f"remove(归档) {st}", mon)
@@ -437,7 +525,11 @@ def main():
     s = slots()
     if s["count"] != 1:
         die(f"删槽0后 count={s['count']} != 1", mon)
-    ok("删除槽0(归档路径):count=1,纯 APP 槽无数据可归档(WARN 预期)")
+    archived = [d for d in s.get("data", [])
+                if d.get("play_id") == 1 and d.get("label") == "recordings"]
+    if len(archived) != 1 or int(archived[0].get("state", -1)) != 2:
+        die(f"删除槽0后 DATA 未进入 ARCHIVED: {archived}", mon)
+    ok("删除槽0:count=1, DATA recordings → ARCHIVED")
     # 删除后剩余槽会重新编号(紧凑化),取当前实际索引而非硬编码 1
     s = slots()
     rem = s["slots"][0]["slot"] if s.get("slots") else 0
@@ -451,7 +543,7 @@ def main():
         die(f"删槽1后 count={s['count']} != 0", mon)
     ok("删除槽1(eraseData):count=0")
 
-    # ── S5 中断续连(软复位 = 断电的忠实近似)─────────────────────────────
+    # ── S5 中断续连(软复位续传验证(非真实断电))─────────────────────────────
     stage("S5 中断续连")
     s = slots()
     proposal = node_proposal(json.dumps(s), app_len)
@@ -471,7 +563,7 @@ def main():
     cut = app_len // 3
     for off in range(0, cut, CHUNK):
         api.chunk(off, app_bytes[off:off + CHUNK])
-    ok(f"上传 {cut}B 后掐断 —— 软复位(等价断电:RAM 丢、flash 现状、NVS 保留)")
+    ok(f"上传 {cut}B 后掐断 —— 软复位(近似覆盖断点续传的 RAM 丢失场景; 不等价于真实断电)")
     mon.stop()
     esptool(args.port, "run", timeout=30)
     deadline = time.time() + 90
@@ -508,14 +600,29 @@ def main():
     s = slots()
     ok(f"续连完成:slots={s['count']}")
 
-    # ── S6 取证 ─────────────────────────────────────────────────────────
-    stage("S6 取证")
+    # ── S6 取证 + DATA 字节级回读 ─────────────────────────────────────
+    stage("S6 取证 + DATA 字节级回读")
+    s = slots()
+    rec = next((d for d in s.get("data", [])
+                if d.get("play_id") == 1 and d.get("label") == "recordings"), None)
+    if rec is None:
+        die("找不到已归档 recordings DATA 记录", mon)
+    if int(rec.get("state", -1)) != 2:
+        die(f"recordings 状态异常: {rec}", mon)
+    ok(f"DATA record persisted: offset=0x{int(rec['offset']):x} size={int(rec['size'])} state=ARCHIVED")
     mon.stop()
-    evid = os.path.join(LOGDIR, time.strftime("%Y%m%d-%H%M%S"))
+    evid = os.path.join(logroot, "flash")
     os.makedirs(evid, exist_ok=True)
     esptool(args.port, f"read_flash 0x8000 0xC00 {evid}/table.bin", timeout=60)
     esptool(args.port, f"read_flash 0x35A000 0x2000 {evid}/store.bin", timeout=60)
-    ok(f"表区 + store 区已回读 → {evid}/")
+    data_dump = os.path.join(evid, "recordings.bin")
+    data_off = int(rec["offset"])
+    esptool(args.port, f"read_flash 0x{data_off:x} 0x{len(data_bytes):x} {data_dump}", timeout=60)
+    actual = open(data_dump, "rb").read()
+    if actual != data_bytes:
+        die("DATA 首传镜像字节回读不一致", mon)
+    ok("DATA 首传镜像字节级回读 PASS")
+    ok(f"表区 + store 区 + DATA 区已回读 → {evid}/")
 
     print(f"\n{PASS} 全部阶段通过。日志:{logfile}")
     print("人工抽验(2 分钟):列表导航/OK 启动玩法/彩蛋 —— 自动化不覆盖物理按键。")

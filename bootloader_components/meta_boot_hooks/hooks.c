@@ -37,12 +37,10 @@
  * 此时 state 判定不可靠 → 检测到 flash 加密启用则放弃干预(与 IDF write_
  * otadata 的 write_encrypted 对应;本设备未启用加密,防御性处理)。
  *
- * 日志:ESP_LOGI 在此阶段输出到 UART0(与 "boot:" 前缀日志同通道),
- * 便于真机串口核对策略是否生效。
+ * 本路径不依赖 ESP_LOG，避免二阶段 bootloader 引入额外日志/DRAM 开销。
  */
 
 #include "esp_err.h"
-#include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_flash_partitions.h"
 #include "bootloader_flash_priv.h"
@@ -64,8 +62,6 @@ _Static_assert(offsetof(meta_otadata_entry_t, ota_state) ==
 void bootloader_hooks_include(void)
 {
 }
-
-static const char *TAG = "meta-boot";
 
 /* otadata 扇区地址与 OTA 槽数量由分区表逐条扫描得出,不硬编码 —— 分区表布局
  * 将来若调整,策略自动跟随(与安装页"读回比对"同一自适应哲学)。
@@ -132,12 +128,10 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
     }
     const uint32_t sector = ESP_PARTITION_TABLE_OFFSET / 4096u;
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
-        ESP_LOGE(TAG, "carve: erase table sector failed");
         return false;
     }
-    if (bootloader_flash_write(ESP_PARTITION_TABLE_OFFSET, table, META_PT_SIZE,
+    if (bootloader_flash_write(ESP_PARTITION_TABLE_OFFSET, (void *)table, META_PT_SIZE,
                                false) != ESP_OK) {
-        ESP_LOGE(TAG, "carve: write table failed");
         return false;
     }
     /* 读回复核走共享缓冲:此刻 live 视图已消费完(decide 不会把 v.table 指回
@@ -145,7 +139,6 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
     if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET, s_scratch, META_PT_SIZE,
                               false) != ESP_OK ||
         memcmp(s_scratch, table, META_PT_SIZE) != 0) {
-        ESP_LOGE(TAG, "carve: table read-back mismatch");
         return false;
     }
     /* 新表(安全/记录/legacy 三种来源都必然声明 otadata)扫描取偏移后清两扇区
@@ -153,16 +146,13 @@ static bool meta_carve_boot_restore(const uint8_t table[META_PT_SIZE])
     uint32_t ota_offset = 0;
     uint32_t ota_count = 0;
     if (!scan_partition_table(&ota_offset, &ota_count) || ota_offset == 0) {
-        ESP_LOGE(TAG, "carve: no otadata entry after restore; using fixed 0x7FE000");
         ota_offset = 0x7FE000u;
     }
     for (uint32_t copy = 0; copy < 2u; ++copy) {
         if (bootloader_flash_erase_sector(ota_offset / 4096u + copy) != ESP_OK) {
-            ESP_LOGE(TAG, "carve: erase otadata copy %u failed", (unsigned)copy);
             return false;
         }
     }
-    ESP_LOGW(TAG, "carve: table restored; otadata wiped -> factory boot");
     return true;
 }
 
@@ -181,7 +171,33 @@ static bool load_record(uint32_t addr)
            meta_carve_rec_validate(&s_best);
 }
 
-static void enforce_carve_table(void)
+static int peek_pending_slot(uint32_t ota_offset, uint32_t ota_count)
+{
+    if (ota_count == 0) return -1;
+    bool found = false;
+    uint32_t best_seq = 0;
+    uint32_t best_slot = 0;
+    for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t addr =
+            ota_offset + i * 4096u;
+        esp_ota_select_entry_t entry;
+        if (bootloader_flash_read(addr, &entry, sizeof(entry), false) != ESP_OK) {
+            continue;
+        }
+        const meta_otadata_entry_t *mirror =
+            (const meta_otadata_entry_t *)&entry;
+        if (!meta_boot_policy_entry_must_resume(mirror)) continue;
+        if (entry.crc != bootloader_common_ota_select_crc(&entry)) continue;
+        if (!found || (int32_t)(entry.ota_seq - best_seq) > 0) {
+            found = true;
+            best_seq = entry.ota_seq;
+            best_slot = (entry.ota_seq - 1u) % ota_count;
+        }
+    }
+    return found ? (int)best_slot : -1;
+}
+
+static void enforce_carve_table(int active_slot)
 {
     bool have = false;
 
@@ -216,16 +232,15 @@ static void enforce_carve_table(void)
 
     if (bootloader_flash_read(ESP_PARTITION_TABLE_OFFSET, s_scratch,
                               META_PT_SIZE, false) != ESP_OK) {
-        ESP_LOGE(TAG, "carve: cannot read live table; skipping enforcement");
         return;
     }
     const meta_boot_table_verdict_t v =
-        meta_carve_boot_decide(s_scratch, have ? &s_best : NULL);
+        meta_carve_boot_decide(s_scratch, have ? &s_best : NULL, active_slot);
     if (v.action == META_BOOT_TABLE_PROCEED) {
-        ESP_LOGI(TAG, "carve: %s", v.reason);
+
         return;
     }
-    ESP_LOGW(TAG, "carve repair: %s", v.reason);
+
     meta_carve_boot_restore(v.table);
 }
 
@@ -243,17 +258,15 @@ static bool enforce_single_session_on_copy(uint32_t ota_offset, uint32_t copy_in
         return false;
     }
 
-    ESP_LOGI(TAG, "otadata copy %u in VALID state -> erasing (single-session policy)",
-             (unsigned)copy_index);
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
-        ESP_LOGE(TAG, "erase otadata copy %u failed", (unsigned)copy_index);
+
         return false;
     }
     /* 复核:擦除后该扇区应为全 0xFF,state 读回 0xFFFFFFFF(≠ VALID)。 */
     meta_otadata_entry_t check;
     if (bootloader_flash_read(sector * 4096u, &check, sizeof(check), false) != ESP_OK ||
         check.ota_state == META_OTA_IMG_VALID) {
-        ESP_LOGE(TAG, "otadata copy %u still VALID after erase", (unsigned)copy_index);
+
     }
     return true;
 }
@@ -286,29 +299,24 @@ static bool resume_running_slot_on_copy(uint32_t ota_offset, uint32_t ota_count,
     }
     /* CRC 复核:坏副本交给 bootloader 按原逻辑判无效并回退 factory,不强行续期。 */
     if (entry.crc != bootloader_common_ota_select_crc(&entry)) {
-        ESP_LOGW(TAG, "otadata copy %u looks PENDING but CRC is bad -> not resuming",
-                 (unsigned)copy_index);
+
         return false;
     }
-
-    const uint32_t slot = (entry.ota_seq - 1u) % ota_count;
-    ESP_LOGI(TAG, "deep-sleep wake: resuming ota_%u (otadata copy %u PENDING -> VALID)",
-             (unsigned)slot, (unsigned)copy_index);
 
     entry.ota_state = ESP_OTA_IMG_VALID;
     if (bootloader_flash_erase_sector(sector) != ESP_OK) {
-        ESP_LOGE(TAG, "erase otadata copy %u failed", (unsigned)copy_index);
+
         return false;
     }
     if (bootloader_flash_write(addr, &entry, sizeof(entry), false) != ESP_OK) {
-        ESP_LOGE(TAG, "write otadata copy %u failed", (unsigned)copy_index);
+
         return false;
     }
     /* 复核:state 应读回 VALID。 */
     esp_ota_select_entry_t check;
     if (bootloader_flash_read(addr, &check, sizeof(check), false) != ESP_OK ||
         check.ota_state != ESP_OTA_IMG_VALID) {
-        ESP_LOGE(TAG, "otadata copy %u not VALID after resume write", (unsigned)copy_index);
+
     }
     return true;
 }
@@ -321,21 +329,34 @@ void bootloader_after_init(void)
     return;
 #endif
 
-    /* 第一优先级:dynslot carve 表校验/修复(§4.4)——必须先于 otadata 决策,
-     * 否则被篡改的表可能在修复前就左右本次引导(B5)。 */
-    enforce_carve_table();
+    const bool deep_sleep_wake =
+        (esp_rom_get_reset_reason(0) == RESET_REASON_CORE_DEEP_SLEEP);
 
+    /*
+     * Peek the PENDING target only for deep-sleep resume. This is not an OTA
+     * policy decision: it merely tells the carve gate which derived runtime
+     * table is expected. Cold boot deliberately uses launcher view (-1).
+     */
     uint32_t ota_offset = 0;
     uint32_t ota_count = 0;
+    int active_slot = -1;
+    if (deep_sleep_wake && scan_partition_table(&ota_offset, &ota_count) &&
+        ota_count > 0) {
+        active_slot = peek_pending_slot(ota_offset, ota_count);
+    }
+
+    /* 第一优先级:dynslot carve 表校验/修复(§4.4)——必须先于 otadata 决策,
+     * 否则被篡改的表可能在修复前就左右本次引导(B5)。 */
+    enforce_carve_table(active_slot);
+
+    ota_offset = 0;
+    ota_count = 0;
     if (!scan_partition_table(&ota_offset, &ota_count)) {
         return; /* 无 otadata 分区:策略无对象,直接放行 */
     }
     if (ota_count == 0) {
         return; /* 无 OTA 槽:续期无对象(冷启动的擦除仍无妨,此处统一放行) */
     }
-
-    const bool deep_sleep_wake =
-        (esp_rom_get_reset_reason(0) == RESET_REASON_CORE_DEEP_SLEEP);
 
     bool changed = false;
     for (uint32_t i = 0; i < 2; ++i) {
@@ -349,12 +370,9 @@ void bootloader_after_init(void)
 
     if (deep_sleep_wake) {
         if (changed) {
-            ESP_LOGI(TAG, "deep-sleep wake handled; bootloader will resume the child slot");
         } else {
-            ESP_LOGI(TAG, "deep-sleep wake: no running child to resume; default boot applies");
         }
     } else if (changed) {
-        ESP_LOGI(TAG, "single-session policy enforced; bootloader will default to factory/launcher");
     }
 }
 

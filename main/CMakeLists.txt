@@ -38,4 +38,8 @@ idf_component_register(
 
 # BUG-14 教训:UB 警告(越界写)在构建日志里躺了三个版本没人看 —— 本组件
 # 警告一律升级为错误,固件构建不再可能带着未处置的警告出门。
+if(CONFIG_META_E2E_TEST_CONTROL)
+    target_sources(${COMPONENT_LIB} PRIVATE "meta_e2e_control.c")
+endif()
+
 target_compile_options(${COMPONENT_LIB} PRIVATE -Werror)

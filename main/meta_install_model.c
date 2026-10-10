@@ -132,16 +132,38 @@ bool meta_install_model_parse(const char *json, size_t len,
         if (data_count > META_DATA_MAX) return false;
         out->data_count = (uint8_t)data_count;
         for (size_t i = 0; i < data_count; i++) {
-            int64_t v_pid = 0, v_sz2 = 0;
+            int64_t v_pid = 0, v_sz2 = 0, v_subtype = 0, v_initial = 0;
             char label[META_DATA_LABEL_MAX + 1];
             if (!meta_store_json_get_array_int(json, len, "data", i, "playId", &v_pid)) return false;
             if (v_pid < 0 || v_pid > UINT32_MAX) return false;
             if (!meta_store_json_get_array_int(json, len, "data", i, "size", &v_sz2)) return false;
             if (v_sz2 <= 0 || v_sz2 > UINT32_MAX) return false;
+            if (meta_store_json_get_array_int(json, len, "data", i, "subtype", &v_subtype)) {
+                if (v_subtype < 0 || v_subtype > 0xFF) return false;
+            } else {
+                v_subtype = 0x82; // legacy M5 offers defaulted to SPIFFS
+            }
+            if (meta_store_json_get_array_int(json, len, "data", i, "initialImageSize", &v_initial)) {
+                if (v_initial < 0 || v_initial > (uint32_t)v_sz2) return false;
+            } else {
+                v_initial = 0;
+            }
+            char data_sha[META_SHA256_HEX_LEN + 1];
+            memset(data_sha, 0, sizeof(data_sha));
+            if (v_initial > 0) {
+                if (!meta_store_json_get_array_string(json, len, "data", i,
+                                                      "sha256", data_sha, sizeof(data_sha)) ||
+                    !meta_store_json_parse_sha256(data_sha, strlen(data_sha),
+                                                  out->data[i].sha256)) {
+                    return false;
+                }
+            }
             if (!meta_store_json_get_array_string(json, len, "data", i, "label", label, sizeof(label))) return false;
             if (label[0] == '\0') return false;
             out->data[i].play_id = (uint32_t)v_pid;
             out->data[i].size = (uint32_t)v_sz2;
+            out->data[i].subtype = (uint8_t)v_subtype;
+            out->data[i].initial_image_size = (uint32_t)v_initial;
             strncpy(out->data[i].label, label, sizeof(out->data[i].label) - 1);
             out->data[i].label[sizeof(out->data[i].label) - 1] = '\0';
         }
@@ -184,12 +206,9 @@ bool meta_install_model_parse_remove(const char *json, size_t len,
     if (!meta_store_json_get_int(json, len, "slot", &v)) return false;
     if (v < 0 || v > META_SLOT_COUNT - 1) return false;
 
-    // eraseData 可选:缺省/非布尔 → false(归档;更安全的一侧,不会误擦)。
-    bool erase = false;
-    (void)meta_store_json_get_bool(json, len, "eraseData", &erase);
-
+    // 统一为 APP 级联删除；旧客户端传入的 eraseData 字段不再改变行为。
     out->slot = (int)v;
-    out->erase_data = erase;
+    out->erase_data = true;
     return true;
 }
 
@@ -262,7 +281,33 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
         const uint32_t pid = m->data[d].play_id;
         const char *label = m->data[d].label;
         if (pid == 0) continue;
-        if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 已存在,保留
+        const int existing = meta_carve_find_data(cur, pid, label);
+        if (existing >= 0) {
+            if (cur->data[existing].type != 1 ||
+                cur->data[existing].subtype != m->data[d].subtype) {
+                if (out_label) {
+                    strncpy(out_label, label, META_DATA_LABEL_MAX);
+                    out_label[META_DATA_LABEL_MAX] = '\0';
+                }
+                return changed;
+            }
+            if (m->data[d].size > cur->data[existing].size) {
+                uint32_t move_off = 0;
+                if (!meta_carve_place_data_move(cur, (uint8_t)existing,
+                                                m->data[d].size, &move_off)) {
+                    if (out_label) {
+                        strncpy(out_label, label, META_DATA_LABEL_MAX);
+                        out_label[META_DATA_LABEL_MAX] = '\0';
+                    }
+                    fill_no_fit(out_nf, cur, m->data[d].size);
+                    return changed;
+                }
+                out_next->data[existing].offset = move_off;
+                out_next->data[existing].size = m->data[d].size;
+                changed = true;
+            }
+            continue;   // 已存在且容量足够保留;容量变大则迁移
+        }
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
@@ -286,7 +331,7 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
         rec.size = m->data[d].size;
         rec.state = META_DATA_PRISTINE;
         rec.type = 1;
-        rec.subtype = 1;
+        rec.subtype = m->data[d].subtype;
         strncpy(rec.label, label, sizeof(rec.label) - 1);
         if (!meta_carve_data_append(out_next, &rec)) return changed;  // 数组满
         changed = true;
@@ -304,6 +349,11 @@ meta_install_place_verdict_t meta_install_model_place_offer(
     if (out_label) out_label[0] = '\0';
     if (!m || !cur || !m->has_carve || !out_next) return META_PLACE_REJECTED;
     if (m->protocol != META_INSTALL_PROTOCOL_V1) return META_PLACE_REJECTED;
+    for (uint8_t d = 0; d < m->data_count; d++) {
+        if (m->data[d].play_id != 0 && m->data[d].play_id != m->play_id) {
+            return META_PLACE_REJECTED;
+        }
+    }
     const uint32_t need = meta_carve_need(m->image_len);
     if (need == 0 || m->carve_size != need) return META_PLACE_REJECTED;
 
@@ -337,13 +387,46 @@ meta_install_place_verdict_t meta_install_model_place_offer(
     }
     if (next.slot[idx].offset != m->carve_offset) return META_PLACE_REJECTED;
     if (m->phone_slot >= 0 && m->phone_slot != (int8_t)idx) return META_PLACE_REJECTED;
+    next.slot[idx].play_id = m->play_id;
 
     // 放数据条目。
     for (uint8_t d = 0; d < m->data_count; d++) {
         const uint32_t pid = m->data[d].play_id;
         const char *label = m->data[d].label;
         if (pid == 0) continue;                                     // 声明占位,忽略
-        if (meta_carve_find_data(cur, pid, label) >= 0) continue;   // 升级:保留既有记录
+        if (m->data[d].subtype != 0x81 && m->data[d].subtype != 0x82 && m->data[d].subtype != 0x83) {
+            if (out_label) {
+                strncpy(out_label, label, META_DATA_LABEL_MAX);
+                out_label[META_DATA_LABEL_MAX] = '\0';
+            }
+            return META_PLACE_REJECTED;
+        }
+        const int existing = meta_carve_find_data(cur, pid, label);
+        if (existing >= 0) {
+            if (cur->data[existing].type != 1 ||
+                cur->data[existing].subtype != m->data[d].subtype) {
+                if (out_label) {
+                    strncpy(out_label, label, META_DATA_LABEL_MAX);
+                    out_label[META_DATA_LABEL_MAX] = '\0';
+                }
+                return META_PLACE_REJECTED;
+            }
+            if (m->data[d].size > cur->data[existing].size) {
+                uint32_t move_off = 0;
+                if (!meta_carve_place_data_move(&next, (uint8_t)existing,
+                                                m->data[d].size, &move_off)) {
+                    if (out_label) {
+                        strncpy(out_label, label, META_DATA_LABEL_MAX);
+                        out_label[META_DATA_LABEL_MAX] = '\0';
+                    }
+                    fill_no_fit(out_nf, cur, m->data[d].size);
+                    return META_PLACE_NO_FIT_DATA;
+                }
+                next.data[existing].offset = move_off;
+                next.data[existing].size = m->data[d].size;
+            }
+            continue;   // 升级:容量足够则保留,变大则迁移
+        }
         if (meta_carve_data_label_reserved(label)) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
@@ -374,7 +457,7 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         rec.size = m->data[d].size;
         rec.state = META_DATA_PRISTINE;
         rec.type = 1;
-        rec.subtype = 1;
+        rec.subtype = m->data[d].subtype;
         strncpy(rec.label, label, sizeof(rec.label) - 1);
         if (!meta_carve_data_append(&next, &rec)) return META_PLACE_REJECTED;  // 数组满
     }

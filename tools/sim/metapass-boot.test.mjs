@@ -23,7 +23,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { initSync, WasmEmulator } from "./esp_emu.js";
 import { AiPassportBoard } from "./ai-passport-board.js";
 
@@ -38,8 +39,8 @@ const RELEASE_CYCLES = 20_000_000;     // 松开后等重绘
 // 为什么是 12M 而不是几百毫秒:固件按键回调只认 BSP_BTN_CLICK,
 // 而按住 1500ms(BSP_BTN_LONG_MS)以上只产生 LONG 事件,CLICK 不再触发,
 // 列表导航因此毫无反应。之前用 600M 周期测按键,就是这个原因全被吞掉。
-const firmwarePath = process.env.META_PASS_IMAGE ||
-  new URL("../../build/meta-pass_v0.2.2-35-gaa25c52.bin", import.meta.url);
+const buildDir = new URL("../../build/", import.meta.url);
+let firmwarePath;
 
 // 引导一次,4 个测试顺序共享同一模拟器实例。
 let emulator;
@@ -58,6 +59,12 @@ const frameHash = (frame) =>
 
 const lastHash = () => frameHash(frames.at(-1));
 
+const bootState = () => ({
+  cycles: emulator.cycles(),
+  pc: emulator.pc(),
+  frames: frames.length,
+});
+
 // 注入一次完整按键(按下 + 松开),返回 [按下前, 松开后] 两帧哈希。
 const pressButton = async (name) => {
   const before = lastHash();
@@ -69,6 +76,16 @@ const pressButton = async (name) => {
 };
 
 before(async () => {
+  if (process.env.META_PASS_IMAGE) {
+    firmwarePath = process.env.META_PASS_IMAGE;
+  } else {
+    const entries = (await readdir(buildDir, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && /^meta-pass_v.*\.bin$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort();
+    assert.ok(entries.length > 0, "build/ 下没有 meta-pass_v*.bin，请先运行 tools/validate.sh --firmware");
+    firmwarePath = join(buildDir.pathname, entries.at(-1));
+  }
   const wasm = initSync(await readFile(new URL("./esp_emu_bg.wasm", import.meta.url)));
   emulator = new WasmEmulator("esp32c3");
   emulator.load_default_rom();
@@ -78,8 +95,26 @@ before(async () => {
   // 列表页 = 3 槽 + STORE 行,按键测试的"环形列表"假设成立。
   // 单文件发布件只有 1.1MB,app 尾之外(含 store 区)不在其中,无法预置;
   // fresh 出厂(0 槽)下 DOWN 是设计内 no-op(dynslot 语义,见 git log)。
-  const mergedPath = firmwarePath.replace(/meta-pass_v[^/]*\.bin$/, "FoloToy-AI-Passport-full.bin");
-  const image = new Uint8Array(await readFile(mergedPath));
+  const mergedPath = join(buildDir.pathname, "FoloToy-AI-Passport-full.bin");
+  let image;
+  try {
+    image = new Uint8Array(await readFile(mergedPath));
+  } catch {
+    // CI 的 --firmware 门只保留发布单文件；为避免 sim 因工件形态漏测，
+    // 从 MPUPV2 尾段的 bodyLen 恢复成 8MB flash 镜像。发布件 body 本身
+    // 已含 bootloader + partition table + app，未覆盖区保持擦除态。
+    const published = new Uint8Array(await readFile(firmwarePath));
+    const footer = Buffer.from(published.buffer, published.byteOffset + published.byteLength - 44, 44);
+    if (footer.subarray(0, 8).toString() !== "MPUPV2\\0\\0") {
+      throw new Error("发布镜像缺少 MPUPV2 footer，无法恢复 QEMU flash");
+    }
+    const bodyLen = footer.readUInt32LE(8);
+    if (bodyLen <= 0 || bodyLen > published.byteLength - 44) {
+      throw new Error(`MPUPV2 bodyLen 非法: ${bodyLen}`);
+    }
+    image = new Uint8Array(0x800000).fill(0xff);
+    image.set(published.subarray(0, bodyLen), 0);
+  }
   const store = await readFile(new URL("../../tests/fixtures/carve_store_3slots.bin", import.meta.url));
   image.set(store, 0x35A000);
   emulator.load_firmware(image);
@@ -114,6 +149,16 @@ test("meta-pass 完整镜像在 QEMU 里引导并渲染出 240x320 屏幕", () =
     if (px[i] !== 255) nonWhite = true;
   }
   assert.ok(nonZero && nonWhite, "画面不是纯色,显示管线已激活");
+  const state = bootState();
+  assert.ok(state.cycles >= BOOT_CYCLES, `QEMU 周期不足: ${state.cycles}`);
+  assert.ok(state.pc > 0, `CPU PC 无效: ${state.pc}`);
+});
+
+test("QEMU CPU 在 boot 后仍持续运行而非停在异常状态", () => {
+  const state = bootState();
+  assert.ok(state.pc > 0, `CPU PC 无效: ${state.pc}`);
+  assert.ok(state.cycles >= BOOT_CYCLES, `boot 后周期不足: ${state.cycles}`);
+  assert.ok(state.frames > 0, "boot 后没有任何显示帧");
 });
 
 test("DOWN 键移动列表选中项(画面随之重绘)", async () => {

@@ -115,11 +115,13 @@ LICENSE                  Repository license
 
 Repository documentation is organized by function area. `authoritative` documents define development or collaboration requirements; `reference` documents provide background or an index.
 
+- [`mobile-page-data-e2e-test-firmware.md`](assets/mobile-page-data-e2e-test-firmware.md) — dedicated child firmware for mobile-page DATA lifecycle testing, USB Serial/JTAG protocol, and current automation boundary.
 - [`docs/development/`](development/README.md) — engineering rules and reusable workflows: the `ai-guide.md`, `engineering/`, `ci/`, and `release/` areas. Its README lists them.
 - [`docs/contribution/`](contribution/README.md) — collaboration, documentation, and commit/PR conventions.
 - [`docs/hardware-design/`](hardware-design/README.md) — board facts, constraints, acceptance matrix, and troubleshooting.
 - [`docs/reference/`](reference/README.md) — reference material: reusable development experience and archived application playbooks, grouped by contributor (`reference/<username>/`).
 - [`docs/`](README.md) top-level — [`CHANGELOG.md`](CHANGELOG.md) and [`fork-guide.md`](fork-guide.md).
+- [`docs/assets/usb-web-e2e-design.md`](assets/usb-web-e2e-design.md) — real-device USB Web UI E2E design and execution runbook.
 
 GitHub community documents: [CONTRIBUTING.md](../.github/CONTRIBUTING.md), [CODE_OF_CONDUCT.md](../.github/CODE_OF_CONDUCT.md), [SECURITY.md](../.github/SECURITY.md), and [SUPPORT.md](../.github/SUPPORT.md).
 

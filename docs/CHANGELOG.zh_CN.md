@@ -6,7 +6,50 @@
 
 ## Unreleased
 
-- **测试套件：清理 d4209a0（v2.0 开发，"survive controlled reboot"）遗留的失效断言**。
+- **Play 28 DATA 缩容测试配置**：新增默认关闭的 `play28-recordings-4m` profile，仅在服务端显式设置 `ENABLE_TEST_DATA_PROFILES=1` 且请求带 `?mp_test_data_profile=play28-recordings-4m` 时允许 Play ID 28 的单一 `recordings` FAT 分区由原声明大小按 4 MiB 分配；只接受出厂 DATA 全空（`initial_image_size=0`）的镜像，任何 ID/标签/类型/容量不匹配均 fail closed。服务端 analyze、手机预检与安装 offer 使用同一容量规则；新增 profile 单元和 analyzer 集成测试。真实市场镜像/真机验证仍未完成，默认安装行为不变。
+
+- **安装/卸载 E2E 安全门加固**：依据 ESP-IDF 5.5.3 固件 CI 的真实编译错误，修正 USB Serial/JTAG 驱动配置参数的 `const` 限定符不匹配；并加固手机页 E2E：安装后必须由设备 API 确认槽位为 VALID，空间几何和原有 DATA reservation 任一不满足即阻断后续写操作，A 的运行时验证失败也不会继续安装 B。新增静态契约测试。修复后的固件 CI 仍需等待结果；尚未运行真机 E2E。
+
+
+- **语音与电子书 DATA 存储横向分析**：基于公开小智 AI Passport 源码/8 MiB 分区表，确认 DeepSeek 语音配置主要使用共享 NVS 与 `assets` 资源分区，未发现等同 Play 28 的独立 FAT 录音档案分区；另分析开源 Ebook 的 `userdata` FAT、只读 `assets` LittleFS 和 TF 卡路径。明确开源 Ebook 不是已确认的市场电子书固件，且当前运行环境无法下载发布 ZIP，因此没有虚报二进制级验证。保留 Play 28 为首选真实 DATA E2E 目标，并增加静态契约测试。
+
+- **手机内嵌页面空间管理与子固件生命周期 E2E 门禁**：新增中英双语设计文档和静态契约测试，明确 M01–M08 真实设备流程：手机视口与页面健康、基线安全门、A/B 安装共存、分配器几何、DATA 物理隔离、UI 卸载、DATA reservation 释放及基线恢复。测试要求设备侧串口证据覆盖擦除/写入/读回/checksum/重启持久性与删除后不可启动；静态契约测试已注册到 `tools/validate.sh --static`。本次未运行真机 E2E，不能把静态门禁通过等同设备测试通过。
+- **DeepSeek语音市场关键词追踪**：单独记录官方玩法社区入口、公开索引中的“小智 AI 对话机器人”以及“deepseek语音”精确词组的检索边界。当前只能标记为“未在可索引结果中确认”，不能声称市场不存在，也不能把 FoloToy 小智源码候选等同于已确认的市场固件。文档列出精确完成条件：市场详情页、实际固件与 SHA-256、对应源码版本的证据闭环。
+
+- **真实市场 DATA E2E 目标已选定**：依据市场固件存储调研，选择录音笔 Play 28（`recordings` FAT，subtype `0x81`）作为业务级持久化验收目标，要求通过 WAV 文件哈希验证运行时录音在重启后仍存在，并验证删除行为。`e2edata` fixture 明确降级为基础设施回归测试。Play 28 原始 DATA 声明超出当前池容量，约 4 MiB 的受控缩容和真实录音 UI 自动化尚未实现，因此目标状态仍为 BLOCKED/NOT RUN，不能以 fixture PASS 代替。
+
+- **手机内嵌页面 DATA E2E 专用子固件基线**：新增独立 ESP-IDF 5.5.3 测试应用，使用 USB Serial/JTAG 命令协议，按 `e2edata` 标签通过真实 `esp_partition_*` API 写入、读回并校验确定性记录；新增主机串口客户端和静态契约门禁。文档明确 A/B 不同 play ID 的隔离、跨重启读回和卸载验证流程，同时记录验证边界：现已增加默认关闭的 `CONFIG_META_E2E_TEST_CONTROL` 启动器控制通道和匹配现有 runner 的 runtime driver；它们尚未在 ESP-IDF 环境构建或真机验证，因此仍不得宣称全自动 E2E 通过。
+
+- **前端模块 × 真机回归门禁**:手机端安装路径与空间管理此前只在对 mock 设备
+  (`tests/test_phone_install.mjs`)上跑过,所以 mock 与固件的漂移看不见 ——
+  下方那个被截断的 `/api/install/status` 响应就能骗过 mock,只在硬件上暴露。
+  新增 `tools/realdevice/browser_smoke.mjs`,用真 `fetch` 驱动真实的
+  `install-slot/phone-install.js` 打同一台设备:P1 `preflightMeta →
+  prepareImage → geomFromListing → runInstall`(2 MB 商店下载、校验、解包、
+  carve 提案、分块上传、finalize、slots 回读、remove→归档),P2 用合成的完整
+  flash 镜像跑 Child DATA 分支(`extent` 8192 B > 初始 payload 2048 B,由
+  `extractDataImages` 解析而非手工拼装),P2.5 两道浏览器侧拒绝闸门在上传前
+  判死,P2.6 记录跨 esptool 软复位存活。20/20 PASS,退出码 0。由
+  `run_browser_smoke.py` 编排(复用持久化 NVS token,无需物理配对按键)。
+  证据在源头脱敏 —— token、LAN IP、USB 串口号、主机 home 目录 —— 完整运行
+  输出内联进 `docs/storage-test-report-20261008(.zh_CN).md` §6,不再上传:
+  `realdevice-smoke.yml` 移除了对 `logs/**` 的 `upload-artifact`(原始 log 里
+  带 LAN IP 与主机用户名),改为在 run summary 留一行脱敏判定。
+  `validate.sh --static` 对两个 harness 脚本做语法门,workflow 在协议冒烟
+  之后紧接着跑该回归 —— 仍是仅 `workflow_dispatch`,云端 CI 不自动烧板。
+- **真机冒烟(feat/storage handoff)**:两个固件修复在硬件上实锤。S0–S6 现全绿
+  (证据:`tools/realdevice/logs/20261008-121330/`,报告
+  `docs/storage-test-report-20261008.md`)。(1) `/api/install/status` 发出的
+  body 缺最后 `]}` —— `h_install_status` 的 snprintf 尾巴既没计入 `off` 也没计入
+  发送长度;现改用与 `h_install_session` 同款的 `httpd_resp_sendstr`(S2 时 harness
+  崩在 `JSONDecodeError: column 283`,恰差 2 字节)。(2)
+  `meta_carve_flash_sync_states` 用 memset 从运行时表重建槽位条目时丢了记录侧
+  `play_id`;每次安装的回填提交都把它清零,`archive_slot_and_data` 随后撞
+  `ESP_ERR_INVALID_STATE`,卸载永不归档 DATA(S4 实锤)。回填现保留 `play_id`;
+  `test_meta_carve_flash.c::test_sync_states` 加回归断言。另修 realdevice smoke
+  S6 的 flash 读长(`{len:x}` 把 4096 渲染成十进制 1000),并记录 py3.14 IDF venv
+  损坏的规避(`IDF_PYTHON_ENV_PATH`)。真实断电仍未测(仅软复位)。
+- **测试套件:清理 d4209a0(v2.0 开发,"survive controlled reboot")遗留的失效断言**。
   该 commit 改了行为没同步改 host 测试，导致 `test_phone_install.mjs` 自 10 月 4 日起
   一直红（首个失败遮蔽了后续）：(1) bridge GET 调用对网络错误退避重试，单次
   `status()` 现在透明跨删除后复位窗口而非报 `status 0` —— 9b 重写为断言"透明吸收"

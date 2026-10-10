@@ -1,0 +1,86 @@
+name: Real-device USB smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      ip:
+        description: "ESP32 device LAN IPv4"
+        required: true
+        type: string
+      port:
+        description: "USB serial port (no default: runner-specific, must be supplied)"
+        required: true
+        type: string
+      idf_path:
+        description: "ESP-IDF 5.5.3 path on the self-hosted runner (no default)"
+        required: true
+        type: string
+      fresh:
+        description: "Erase the whole device before the run"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  realdevice:
+    name: USB hardware smoke
+    runs-on: self-hosted
+    timeout-minutes: 60
+    env:
+      IDF_PATH: ${{ inputs.idf_path }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      # 硬件相关输入不再给默认值:缺一个就立刻失败,不等到 esptool 挂掉才报错。
+      - name: Validate hardware inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=""
+          if [ -z "${{ inputs.ip }}" ]; then missing="$missing ip"; fi
+          if [ -z "${{ inputs.port }}" ]; then missing="$missing port"; fi
+          if [ -z "${{ inputs.idf_path }}" ]; then missing="$missing idf_path"; fi
+          if [ -n "$missing" ]; then
+            echo "错误:workflow_dispatch 输入为空:$missing" >&2
+            exit 1
+          fi
+          echo "输入校验通过"
+
+      - name: Build firmware for the attached device
+        run: |
+          source "${IDF_PATH/#\~/$HOME}/export.sh"
+          ./tools/validate.sh --firmware
+
+      - name: Run USB + LAN protocol smoke
+        run: |
+          args=(--ip "${{ inputs.ip }}" --port "${{ inputs.port }}")
+          if [ "${{ inputs.fresh }}" = "true" ]; then
+            args+=(--fresh)
+          fi
+          python3 tools/realdevice/smoke.py "${args[@]}"
+
+      # 前端模块 × 真机回归:smoke.py 是纯 Python 协议客户端,证明设备契约;
+      # 本步用真 fetch 驱动 install-slot/phone-install.js 打同一台设备,补
+      # 「真实前端模块对真机可用」这一层(mock 设备与固件漂移时不会暴露)。
+      # 需要刚构建的 app-only 产物当合成镜像的 app 字节来源。
+      - name: Run browser-module × real-device regression
+        run: |
+          python3 tools/realdevice/run_browser_smoke.py \
+            --ip "${{ inputs.ip }}" --port "${{ inputs.port }}"
+
+      # 证据留在 runner 本地,刻意不上传 log 目录:里面带 LAN IP、USB 串口号、
+      # 主机用户名。交付物是 docs/storage-test-report-*.md 里已内联且脱敏的 §6.2
+      # 完整输出;这里只在 run summary 留一行不含标识信息的判定。
+      - name: Write redacted verdict to run summary
+        if: always()
+        run: |
+          # 只摘一行 verdict(orchestrator 已把设备标识写成 <device>/<ip> 占位)。
+          # 不 cat 整份 log:里面带 LAN IP、USB 串口号、主机用户名。
+          d="$(python3 -c 'import glob,os;p=[x for x in glob.glob("tools/realdevice/logs/browser-smoke-*") if os.path.isdir(x)];print(max(p,key=os.path.getmtime) if p else "")')"
+          if [ -n "$d" ]; then
+            echo "Browser-module x real-device: $(sed -n 's/^- verdict: //p' "$d/report.md")" >> "$GITHUB_STEP_SUMMARY"
+            echo "evidence: $(basename "$d") - kept on runner, not uploaded" >> "$GITHUB_STEP_SUMMARY"
+          fi

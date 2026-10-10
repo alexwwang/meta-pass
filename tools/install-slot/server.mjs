@@ -14,6 +14,7 @@ import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createStoreAnalyzer } from "../../install-slot/store-analyze.js";
+import { PLAY28_RECORDINGS_4M_PROFILE } from "../../install-slot/data-size-profile.js";
 
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
@@ -66,6 +67,7 @@ const STATIC_FILES = new Map([
   ["/store-analyze.js", { file: "store-analyze.js", type: "text/javascript; charset=utf-8" }],
   ["/dynslot-pool.js", { file: "dynslot-pool.js", type: "text/javascript; charset=utf-8" }],
   ["/phone-install.js", { file: "phone-install.js", type: "text/javascript; charset=utf-8" }],
+  ["/data-size-profile.js", { file: "data-size-profile.js", type: "text/javascript; charset=utf-8" }],
   ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   ["/launcher-upgrade.js", { file: "launcher-upgrade.js", type: "text/javascript; charset=utf-8" }],
   // dynslot 槽位模型(USB 安装页动态槽位;设计 §4)
@@ -150,8 +152,12 @@ const server = http.createServer((req, res) => {
       // 页面与模块迭代期禁用缓存:浏览器缓存可能比仓库代码旧(ES 模块同样受限),
       // 曾导致"改了但页面没体现"。生产环境(Cloudflare Pages)发自己的缓存策略,不受影响。
       "cache-control": "no-store",
-      // N6: 安全头 — CSP 限制脚本来源,防 MIME 嗅探与 clickjacking
-      "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+      // N6: 安全头 — 与生产(CF Pages)行为对齐:x-content-type-options 防 MIME
+      // 嗅探,x-frame-options 防 clickjacking。
+      // 注意:CSP 只限 source,不限制 inline —— 页面本身有 3 段 inline <script>
+      // (顶部 fallback 检测、页面主模块、page-fail 提示),script-src 'self' 会让它们
+      // 在本地 dev 完全被浏览器拒绝执行(Chrome 154 Log.enable 实证),整个页面瘫痪。
+      // 生产环境不注入 CSP(Cloudflare Pages 只发 nosniff),保持行为一致。
       "x-content-type-options": "nosniff",
       "x-frame-options": "DENY",
     });
@@ -221,7 +227,21 @@ const server = http.createServer((req, res) => {
       sendError(res, 400, "missing or invalid id parameter");
       return;
     }
-    storeAnalyzer.analyze(Number(id)).then(
+    const dataProfile = urlObj.searchParams.get("dataProfile");
+    if (dataProfile && process.env.ENABLE_TEST_DATA_PROFILES !== "1") {
+      sendError(res, 403, "test data profiles are disabled");
+      return;
+    }
+    if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
+      sendError(res, 400, "unsupported data profile");
+      return;
+    }
+    // Reject profile/play mismatches before market lookup or firmware download.
+    if (dataProfile && id !== "28") {
+      sendError(res, 400, "data profile is only valid for Play 28");
+      return;
+    }
+    storeAnalyzer.analyze(Number(id), dataProfile || null).then(
       (out) => sendJson(res, 200, out),
       // r10.4:内部异常也回完整契约 JSON(reason+detail),不回裸 502 ——
       // 设备端对非 200 不读体,会把真实异常吞成传输失败。

@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { extractAppImage, espImageLength, isFullImage } from "../../install-slot/extract-app-image.js";
+import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
   tailSectorOffset, blobOffset, maxAppImageSize,
@@ -39,6 +39,23 @@ function buildAppImage() {
   // segment 1:load_addr=0x42000020,data_len=seg1
   buf.set([0x20, 0x00, 0x00, 0x42, seg1, 0x00, 0x00, 0x00], off);
   return buf;
+}
+
+function buildManifestImage(app, dataOff, dataSize, subtype, label) {
+  const pt = 0x8000;
+  const full = new Uint8Array(Math.max(0x10000 + app.length, dataOff + dataSize)).fill(0xff);
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  // Synthetic factory is 0x3000, so DATA at 0x20000 does not overlap.
+  full.set([0x00, 0x30, 0x00, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, subtype], pt + 32);
+  full.set([dataOff & 0xff, (dataOff >> 8) & 0xff, (dataOff >> 16) & 0xff, (dataOff >> 24) & 0xff], pt + 36);
+  full.set([dataSize & 0xff, (dataSize >> 8) & 0xff, (dataSize >> 16) & 0xff, (dataSize >> 24) & 0xff], pt + 40);
+  // ESP partition entry label is the 16-byte field at entry +12.
+  full.set([...Buffer.from(label)], pt + 44);
+  full[pt + 44 + label.length] = 0;
+  return full;
 }
 
 // 1. 最小合法镜像:长度精确等于构造长度,原样返回
@@ -127,6 +144,103 @@ function buildAppImage() {
   assert.throws(() => espImageLength(truncated, 0), /Truncated|segment|extends/i,
     "unresolvable image must throw");
   console.log("PASS 3c: layout probe — plain-24B→240, 24B+16B-ext→256; unresolvable throws");
+}
+
+
+ // 3d. Firmware storage manifest: APP + filesystem data is one allocation group.
+ // required_size uses the actual APP image length plus aligned DATA capacities;
+ // initial_image_size measures only bytes actually present in the supplied image.
+{
+  const app = buildAppImage();
+  const pt = 0x8000;
+  const dataOff = 0x20000;
+  const dataSize = 0x30000;
+  const full = buildManifestImage(app, dataOff, dataSize, 0x82, "storage");
+  // SPIFFS data partition: required capacity is 0x30000, but initial payload
+  // occupies only the first 0x1234 bytes. buildManifestImage already encoded
+  // the DATA entry with canonical little-endian fields.
+  full.fill(0x5a, dataOff, dataOff + 0x1234);
+
+  const m = parseFirmwareManifest(full);
+  assert.equal(m.supported, true);
+  assert.equal(m.reason, "ok");
+  assert.equal(m.app.image_size, app.length);
+  assert.equal(m.data.length, 1);
+  assert.equal(m.data[0].label, "storage");
+  assert.equal(m.data[0].required_size, dataSize);
+  assert.equal(m.data[0].initial_image_size, 0x1234);
+  assert.equal(m.required_size,
+    Math.ceil(app.length / 0x1000) * 0x1000 + dataSize);
+  console.log("PASS 3d: APP+DATA manifest separates required capacity from initial image bytes");
+
+  // LittleFS is an ESP-IDF-defined data subtype (0x83) and follows the same
+  // child DATA allocation contract as FAT/SPIFFS.
+  const littleFull = buildManifestImage(app, 0x20000, 0x10000, 0x83, "littlefs");
+  const little = parseFirmwareManifest(littleFull);
+  assert.equal(little.supported, true);
+  assert.ok(little.data.some((d) => d.subtype === 0x83));
+  console.log("PASS 3d-LittleFS: subtype 0x83 accepted as Child DATA");
+}
+
+// 3e. Initial DATA payload extraction is bounded by the actual non-erased image extent.
+{
+  const app = buildAppImage();
+  const pt = 0x8000;
+  const dataOff = 0x20000;
+  const dataSize = 0x30000;
+  const full = buildManifestImage(app, dataOff, dataSize, 0x82, "storage");
+  for (let i = 0; i < 0x1234; i++) full[dataOff + i] = i & 0xff;
+
+  const images = extractDataImages(full);
+  assert.equal(images.length, 1);
+  assert.equal(images[0].offset, dataOff);
+  assert.equal(images[0].required_size, dataSize);
+  assert.equal(images[0].initial_image_size, 0x1234);
+  assert.equal(images[0].data.length, 0x1234);
+  assert.equal(images[0].data[0], 0);
+  assert.equal(images[0].data[0x1233], 0x33);
+  assert.ok(images[0].data.every((b, i) => b === (i & 0xff)));
+  console.log("PASS 3e: initial DATA payload extracted without uploading erased tail");
+}
+
+// 3e. Unsupported custom data partition is an explicit admission failure.
+{
+  const app = buildAppImage();
+  const full = new Uint8Array(0x20000 + 0x10000).fill(0xff);
+  const pt = 0x8000;
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  full.set([0x00, 0x00, 0x30, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, 0x40], pt + 32);
+  full.set([0x00, 0x20, 0x00, 0x00], pt + 36);
+  full.set([0x00, 0x10, 0x00, 0x00], pt + 40);
+  full.set([...Buffer.from("custom")], pt + 44);
+  full[pt + 44 + "custom".length] = 0;
+
+  const m = parseFirmwareManifest(full);
+  assert.equal(m.supported, false);
+  assert.equal(m.reason, "unsupported-partition");
+  assert.equal(m.unsupported.length, 1);
+  assert.equal(m.unsupported[0].label, "custom");
+  console.log("PASS 3e: unsupported data partition rejected explicitly");
+}
+
+// 3f. Malformed partition geometry must be rejected before DATA allocation.
+{
+  const app = buildAppImage();
+  const full = new Uint8Array(0x18000).fill(0xff);
+  const pt = 0x8000;
+  full.set([0xaa, 0x50, 0x00, 0x00], pt);
+  full.set([0x00, 0x00, 0x01, 0x00], pt + 4);
+  full.set([0x00, 0x30, 0x00, 0x00], pt + 8);
+  full.set(app, 0x10000);
+  full.set([0xaa, 0x50, 0x01, 0x82], pt + 32);
+  full.set([0x00, 0x10, 0x01, 0x00], pt + 36);
+  full.set([0x00, 0x10, 0x00, 0x00], pt + 40);
+  full.set([...Buffer.from("storage")], pt + 44);
+  assert.throws(() => parseFirmwareManifest(full), /overlapping-partitions/);
+  console.log("PASS 3f: overlapping partition geometry rejected");
 }
 
 // ===== 4. 显示名 blob(name-blob.js,与 tests/test_meta_name.c 双向锁定)=====

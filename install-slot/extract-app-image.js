@@ -134,24 +134,155 @@ export function extractAppImage(buf, maxSize) {
   return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, tailSector, tailSectorOffset };
 }
 
-// 解析分区表中 subtype=0x81/0x82 的数据分区( fat/spiffs )。
+// 解析分区表中 subtype=0x81/0x82/0x83 的数据分区(FAT/SPIFFS/LittleFS)。
 // 返回 [{offset, size, type, label}] 数组;无则空数组。
+export function parseFirmwareManifest(buf) {
+  if (!isFullImage(buf)) throw new Error("firmware manifest requires a full flash image");
+
+  const partitions = [];
+  const unsupported = [];
+  for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
+    if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
+    const type = buf[off + 2];
+    const subtype = buf[off + 3];
+    const offset = u32le(buf, off + 4);
+    const size = u32le(buf, off + 8);
+    let label = "";
+    for (let i = 12; i < 28 && buf[off + i] !== 0; i++) label += String.fromCharCode(buf[off + i]);
+
+    if (type === 0x00) {
+      if (subtype === 0x00) partitions.push({ kind: "app", label, type: "app", subtype, offset, size });
+      continue;
+    }
+    if (type !== 0x01) continue;
+
+    // Data partition ownership:
+    // - subtype 0x00 (OTA metadata) is meta-pass-owned;
+    // - cardid is a legacy meta-pass-owned data partition;
+    // - NVS/PHY are global MVP resources and are not child DATA;
+    // - filesystem DATA is allocated per child;
+    // - other custom DATA is rejected rather than silently copied.
+    const metaOwned = subtype === 0x00 || label === "cardid";
+    if (metaOwned) continue;
+
+    const supported =
+      subtype === 0x81 || // FAT
+      subtype === 0x82 || // SPIFFS
+      subtype === 0x83 || // LittleFS
+      subtype === 0x02 || // NVS (global in MVP)
+      subtype === 0x01;   // PHY (global in MVP)
+    const meta = {
+      kind: "data",
+      label,
+      type: "data",
+      subtype,
+      offset,
+      size,
+      required_size: size,
+      initial_image_size: initialDataImageSize(buf, offset, size),
+      supported,
+    };
+    if (supported) partitions.push(meta);
+    else unsupported.push(meta);
+  }
+
+  // The child manifest must describe a physically coherent partition table.
+  // Reject overlapping/overflowing ranges before using any DATA extent for
+  // allocation; otherwise a malformed image could make the initial payload
+  // point into another partition (or wrap a 32-bit end address).
+  const ranges = partitions.concat(unsupported)
+    .filter(p => p.size > 0)
+    .map(p => ({ label: p.label, offset: p.offset, end: p.offset + p.size }));
+  if (ranges.some(p => p.end > 0x100000000 || p.end <= p.offset)) {
+    throw new Error("invalid-partition-range");
+  }
+  ranges.sort((a, b) => a.offset - b.offset);
+  for (let i = 1; i < ranges.length; i++) {
+    if (ranges[i - 1].end > ranges[i].offset) {
+      throw new Error("overlapping-partitions");
+    }
+  }
+
+  const apps = partitions.filter(p => p.kind === "app");
+  const data = partitions.filter(p => p.kind === "data" && p.subtype !== 0x02 && p.subtype !== 0x01);
+  if (!apps.some(p => p.subtype === 0x00)) {
+    throw new Error("no factory app partition");
+  }
+  if (unsupported.length) {
+    return {
+      app: apps.find(p => p.subtype === 0x00),
+      data,
+      unsupported,
+      required_size: null,
+      supported: false,
+      reason: "unsupported-partition",
+    };
+  }
+
+  const align = (n) => Math.ceil(n / 0x1000) * 0x1000;
+  const app = apps.find(p => p.subtype === 0x00);
+  const appImageSize = espImageLength(buf, app.offset);
+  const required_size = align(appImageSize) +
+    data.reduce((sum, p) => sum + align(p.required_size), 0);
+  return {
+    app: { ...app, image_size: appImageSize, required_size: appImageSize },
+    data,
+    unsupported: [],
+    required_size,
+    supported: true,
+    reason: "ok",
+  };
+}
+
+function initialDataImageSize(buf, offset, size) {
+  const end = Math.min(buf.length, offset + size);
+  if (offset >= end) return 0;
+  let last = -1;
+  // Full images use 0xFF for erased/unwritten flash. Preserve the exact
+  // initial payload extent; allocation admission is based on required_size,
+  // not this image byte count.
+  for (let i = end - 1; i >= offset; i--) {
+    if (buf[i] !== 0xFF) {
+      last = i;
+      break;
+    }
+  }
+  return last < 0 ? 0 : last - offset + 1;
+}
+
+
+export function extractDataImages(buf) {
+  const manifest = parseFirmwareManifest(buf);
+  if (!manifest.supported) {
+    throw new Error(manifest.reason || "unsupported-partition");
+  }
+  return manifest.data
+    .map(d => ({
+      label: d.label,
+      subtype: d.subtype,
+      offset: d.offset,
+      required_size: d.required_size,
+      initial_image_size: d.initial_image_size,
+      data: buf.slice(d.offset, d.offset + d.initial_image_size),
+    }));
+}
+
 export function parseDataPartitions(buf) {
   const result = [];
   for (let off = PARTITION_TABLE_OFFSET; off + PARTITION_ENTRY_LEN <= buf.length; off += PARTITION_ENTRY_LEN) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     const type = buf[off + 2];
     const subtype = buf[off + 3];
-    // subtype 0x81 = fat, 0x82 = spiffs — 数据分区
-    if (type === 1 && (subtype === 0x81 || subtype === 0x82)) {
+    // subtype 0x81 = fat, 0x82 = spiffs, 0x83 = littlefs — 数据分区
+    if (type === 1 && (subtype === 0x81 || subtype === 0x82 || subtype === 0x83)) {
       const offset = u32le(buf, off + 4);
       const size = u32le(buf, off + 8);
-      // label 在条目末尾 16 字节
+      // label 位于分区表条目的 +12..+27 字节(16B)。
       let label = '';
-      for (let i = 16; i < 32 && buf[off + i] !== 0; i++) {
+      for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      result.push({ offset, size, type: subtype === 0x81 ? 'fat' : 'spiffs', label });
+      result.push({ offset, size, type: subtype === 0x81 ? 'fat' : subtype === 0x82 ? 'spiffs' : 'littlefs', label });
     }
   }
   return result;

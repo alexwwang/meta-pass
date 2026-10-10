@@ -4,9 +4,10 @@
 # 直接编译并运行固件的 main/meta_sign.c,调用固件真实的 meta_sign_verify()。
 # 不定义 HOST_TEST,因此编译的是真实 mbedtls ECDSA 验签路径,不是 stub。
 #
-# 用法:
-#   tools/signing/run-verify-tests.sh                    # 用默认测试镜像
-#   tools/signing/run-verify-tests.sh <signed.bin>       # 指定签名镜像
+# 用法(签名镜像必须显式给出,无默认值):
+#   tools/signing/run-verify-tests.sh <signed.bin>       # 传文件路径
+#   META_PASS_SIGNED_BIN=<signed.bin> \
+#       tools/signing/run-verify-tests.sh                # 或用环境变量注入
 #
 # 前置: brew install mbedtls  (本机路径 /usr/local/opt/mbedtls)
 set -euo pipefail
@@ -14,7 +15,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-SIGNED="${1:-$REPO_ROOT/../pass-radar/build/pass-radar_v0.1-2-g8fcce59-signed.bin}"
+# 签名镜像不硬编码:传第 1 个参数,或 export META_PASS_SIGNED_BIN。
+SIGNED="${1:-${META_PASS_SIGNED_BIN:-}}"
+if [ -z "$SIGNED" ]; then
+  echo "错误:未指定签名镜像。传第 1 个参数,或 export META_PASS_SIGNED_BIN=<path>" >&2
+  exit 2
+fi
 SRC="$SCRIPT_DIR/test_integration.c"
 FIRMWARE_SRC="$REPO_ROOT/main/meta_sign.c"
 BUILD_DIR="$REPO_ROOT/build/host-verify"

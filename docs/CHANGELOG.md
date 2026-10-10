@@ -6,6 +6,58 @@
 
 ## Unreleased
 
+- **Play 28 DATA resize test profile**: Added the default-off `play28-recordings-4m` profile. It applies only to Play ID 28 when the server explicitly sets `ENABLE_TEST_DATA_PROFILES=1` and the request includes `?mp_test_data_profile=play28-recordings-4m`. Only a single blank `recordings` FAT partition (`0x81`, `initial_image_size=0`) with a declared size of at least 6 MiB is accepted; mismatches fail closed. Server analysis and the phone install offer share the same sizing policy. Added unit and analyzer integration tests. Real marketplace-image and hardware validation remain pending; default install behavior is unchanged.
+
+- **Install/uninstall E2E safety hardening**: fixed the ESP-IDF 5.5.3 compile error caused by a mismatched `const` qualifier in the USB Serial/JTAG driver config. Hardened the mobile-page runner so device API must confirm a VALID slot after install; invalid geometry or loss of baseline DATA reservations blocks subsequent writes; and failure of A's runtime verification prevents installing B. Added static contract coverage. Firmware CI for the fix is still pending; no real-device E2E has run.
+
+
+- **Voice and e-book DATA storage comparison**: source-audited the public XiaoZhi AI Passport configuration and its 8 MiB partition table; the DeepSeek-configurable voice firmware uses shared NVS plus an `assets` resource partition, with no equivalent dedicated FAT recording archive found. Also reviewed the open-source Ebook project's FAT `userdata`, read-only LittleFS `assets`, and TF-card paths. The open-source e-reader is not confirmed to be the marketplace play, and the release ZIP could not be downloaded in this runtime, so no binary-level verification is claimed. Play 28 remains the preferred real DATA E2E target; a static contract test was added.
+
+- **Mobile embedded-page storage management and child-firmware E2E gate**: added bilingual design docs and a static contract test for the M01–M08 real-device path: mobile viewport/page health, baseline safety gate, A/B coexistence, allocator geometry, physical DATA isolation, UI uninstall, reservation release, and baseline restoration. Device-side serial evidence is required for erase/write/readback/checksum/reboot persistence and deleted-image non-bootability. The static contract is registered in `tools/validate.sh --static`. No real-device E2E was run in this turn; a static gate is not a hardware pass.
+- **DeepSeek voice marketplace keyword trace**: documented the official play-community entry, the indexed XiaoZhi AI chatbot listing, and the limits of exact-phrase search for the Chinese keyword documented in the linked note. Status remains “not confirmed in indexed results”—not “absent”—and the FoloToy XiaoZhi source candidate is not treated as the confirmed marketplace binary. The note defines the required evidence chain: listing detail, actual firmware plus SHA-256, and matching source version.
+
+- **Real marketplace DATA E2E target selected**: based on the marketplace firmware storage research, Recorder Play 28 (`recordings` FAT, subtype `0x81`) is the business-level persistence target. Acceptance must compare WAV file hashes before and after reboot and verify deletion. The `e2edata` fixture is infrastructure regression coverage only. Play 28's declared DATA extent exceeds the current pool; a controlled ~4 MiB carve override and recording-UI automation are not implemented yet, so the target remains BLOCKED/NOT RUN and fixture PASS cannot substitute for it.
+
+- **Dedicated DATA E2E child firmware baseline for the mobile page**: adds a standalone ESP-IDF 5.5.3 test app with a USB Serial/JTAG command protocol. It writes, reads, and validates a deterministic record through the real `esp_partition_*` API resolved by the `e2edata` label; a host serial client and static contract gate are included. The runbook specifies A/B isolation by distinct play IDs, post-reboot reads, and uninstall checks. It also explicitly records the remaining blocker: a default-off `CONFIG_META_E2E_TEST_CONTROL` launcher channel and a runtime driver matching the existing runner are now included. They have not yet been built in ESP-IDF or validated on hardware, so full automated E2E must not be claimed.
+
+- **Front-end module × real-device regression gate**: the phone-side install
+  path and space management were only ever exercised against a mock device
+  (`tests/test_phone_install.mjs`), so mock↔firmware drift was invisible — the
+  truncated `/api/install/status` body below would have passed the mock and
+  only surfaced on hardware. New `tools/realdevice/browser_smoke.mjs` drives
+  the real `install-slot/phone-install.js` with real `fetch` against the same
+  board: P1 `preflightMeta → prepareImage → geomFromListing → runInstall`
+  (2 MB store download, verify, extract, carve proposal, chunked upload,
+  finalize, slots readback, remove→archived), P2 the Child DATA branch via a
+  synthesised full flash image (`extent` 8192 B > initial payload 2048 B,
+  parsed by `extractDataImages`, not hand-assembled), P2.5 both browser-side
+  reject gates firing before any upload, P2.6 the record survives an esptool
+  soft reset. 20/20 PASS, exit 0. Orchestrated by `run_browser_smoke.py`
+  (restores the persisted NVS token, so no physical pairing press).
+  Evidence is redacted at the source — token, LAN IP, USB serial and host
+  home dir — and the full run output is inlined into
+  `docs/storage-test-report-20261008(.zh_CN).md` §6 instead of uploaded:
+  `realdevice-smoke.yml` dropped `upload-artifact` for `logs/**` (the raw
+  logs carry the LAN IP and host username) in favour of a redacted verdict
+  line in the run summary. `validate.sh --static` syntax-gates both harness
+  scripts, and the workflow runs the regression right after the protocol
+  smoke — still `workflow_dispatch` only, with no board flashed in cloud CI.
+- **Real-device smoke (feat/storage handoff): two firmware fixes proven on
+  hardware**. S0–S6 now all PASS (evidence: `tools/realdevice/logs/
+  20261008-121330/`, report `docs/storage-test-report-20261008.md`).
+  (1) `/api/install/status` sent a body missing its final `]}` —
+  `h_install_status` counted the snprintf tail in neither `off` nor the send
+  length; now uses `httpd_resp_sendstr` like `h_install_session` (S2 crashed
+  the harness with `JSONDecodeError: column 283` = 2 bytes short).
+  (2) `meta_carve_flash_sync_states` rebuilt slot entries from the runtime
+  table with memset and dropped record-side `play_id`; every install's
+  backfill commit zeroed it, and `archive_slot_and_data` then died with
+  `ESP_ERR_INVALID_STATE`, so uninstall never archived DATA (S4). Backfill
+  now preserves `play_id`; regression assertion added to
+  `test_meta_carve_flash.c::test_sync_states`. Also fixed the realdevice
+  smoke's S6 flash-read length (`{len:x}` rendered 4096 as decimal 1000) and
+  documented the broken py3.14 IDF venv workaround (`IDF_PYTHON_ENV_PATH`).
+  Physical power loss remains UNTESTED (soft reset only).
 - **Test suite: close out stale phone/pool contract assertions left by
   d4209a0** ("survive controlled reboot", v2.0 dev). That commit changed two
   behaviors without updating the host tests, leaving `test_phone_install.mjs`

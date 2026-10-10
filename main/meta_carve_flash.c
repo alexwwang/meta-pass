@@ -42,7 +42,7 @@ static meta_carve_rec_t s_tmp;             // A/B 比较暂存
 esp_err_t meta_carve_flash_data_copy(uint32_t src_offset, uint32_t size,
                                      uint32_t dst_offset)
 {
-    if (!size || size > 0x100000) return ESP_ERR_INVALID_SIZE;  // 上限 1MB
+    if (!size) return ESP_ERR_INVALID_SIZE;
     if (size % META_CARVE_SIZE_GRANULE != 0) return ESP_ERR_INVALID_SIZE;  // 擦除粒度
     const meta_pool_desc_t *p = meta_carve_pool();
     // 验证 src/dst 都在池内且对齐
@@ -260,6 +260,22 @@ static bool load_best(meta_carve_rec_t *best, meta_carve_rec_t *tmp, bool *from_
 
 // ---- 提交 -----------------------------------------------------------------
 
+
+esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id)
+{
+    if (!s_active || !s_have_record) return ESP_ERR_INVALID_STATE;
+
+    // 0 = launcher view (APP only); non-zero = one Child Firmware's DATA.
+    if (!meta_pt_from_carve_active(&s_carve, active_play_id, s_live)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (meta_carve_flash_table_read(s_ref) &&
+        meta_pt_equal(s_ref, s_live)) {
+        return ESP_OK;
+    }
+    return meta_carve_flash_table_write(s_live);
+}
+
 esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
 {
     if (!carve) return ESP_ERR_INVALID_ARG;
@@ -319,7 +335,16 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
     // 分区,当前 boot 的分区缓存与 legacy 槽扫描都已过期,靠退出时重启
     // 清账;不立刻复位,保住手机侧会话 token(2026-10-04 交互修订)。
     if (materialize) {
-        const esp_err_t e = meta_carve_flash_table_write(rec->table);
+        /*
+         * "materialize" means the launcher runtime view, never the durable
+         * full carve. Child DATA is exposed only by
+         * meta_carve_flash_materialize_active() immediately before boot.
+         */
+        static uint8_t launcher_table[META_PT_SIZE];
+        if (!meta_pt_from_carve_active(&s_in, 0, launcher_table)) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        const esp_err_t e = meta_carve_flash_table_write(launcher_table);
         if (e != ESP_OK) return e;
         s_reboot_pending = true;
     }
@@ -363,6 +388,31 @@ esp_err_t meta_carve_flash_remove(int slot)
     return meta_carve_flash_commit(&next, true);
 }
 
+/* Delete APP + all DATA records for its play_id with one durable metadata
+ * commit. Callers erase extents before invoking this function, so a failed
+ * commit leaves all extents reserved (even if their bytes are already erased). */
+esp_err_t meta_carve_flash_remove_app_and_data(int slot)
+{
+    if (!s_active || slot < 0 || slot >= (int)s_carve.count) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint32_t play_id = s_carve.slot[slot].play_id;
+    s_work = s_carve;
+    /* A legacy APP without play_id cannot be safely associated with DATA. */
+    if (play_id == 0 && s_work.data_count > 0) return ESP_ERR_INVALID_STATE;
+    if (play_id != 0) {
+        uint8_t i = 0;
+        while (i < s_work.data_count) {
+            if (s_work.data[i].play_id == play_id) {
+                if (!meta_carve_remove_data(&s_work, i)) return ESP_ERR_INVALID_STATE;
+                continue;
+            }
+            i++;
+        }
+    }
+    if (!meta_carve_remove(&s_work, (uint8_t)slot)) return ESP_ERR_INVALID_ARG;
+    return meta_carve_flash_commit(&s_work, true);
+}
 // ---- 扫描回填 -------------------------------------------------------------
 
 static void hex32_to_bin(const char hex[META_SHA256_HEX_LEN], uint8_t out[32])
@@ -391,6 +441,9 @@ esp_err_t meta_carve_flash_sync_states(const meta_slot_info_t *slots, int count)
         built.kind = next.slot[i].kind;
         built.offset = next.slot[i].offset;
         built.size = next.slot[i].size;
+        built.play_id = next.slot[i].play_id;   // 记录侧元数据,运行时表无此字段;
+                                                // 丢失则卸载归档链 INVALID_STATE
+                                                // (真机 S4 实锤:seq=6 同步后 play_id=0)
         built.state = (uint8_t)info->state;
         if (info->state == META_SLOT_VALID) {
             built.image_len = info->size;
@@ -466,14 +519,22 @@ esp_err_t meta_carve_flash_ensure(void)
     const bool live_ok = meta_carve_flash_table_read(s_live);
 
     if (have) {
-        // 防御性对账:hook 正常已在引导期修复;此处兜住"hook 修复后又被改"的窗口。
-        if (live_ok && !meta_pt_equal(s_live, s_best.table)) {
-            ESP_LOGW(TAG, "live table differs from committed carve; re-materializing");
-            const esp_err_t e = meta_carve_flash_table_write(s_best.table);
-            if (e != ESP_OK) return e;
-        } else if (!live_ok) {
-            ESP_LOGE(TAG, "cannot read live table");
+        /*
+         * The committed carve is the durable allocation authority.  The live
+         * partition table is a runtime projection: launcher view contains no
+         * Child DATA; a child view is materialized only immediately before its
+         * boot.  app_main is always the launcher, so repair the live table to
+         * launcher view rather than restoring the full carve table.
+         */
+        static uint8_t launcher_table[META_PT_SIZE];
+        if (!meta_pt_from_carve_active(&s_best.carve, 0, launcher_table)) {
+            ESP_LOGE(TAG, "cannot materialize launcher runtime table");
             return ESP_FAIL;
+        }
+        if (!live_ok || !meta_pt_equal(s_live, launcher_table)) {
+            ESP_LOGW(TAG, "live table differs from launcher runtime view; re-materializing");
+            const esp_err_t e = meta_carve_flash_table_write(launcher_table);
+            if (e != ESP_OK) return e;
         }
         s_carve = s_best.carve;
         s_seq = s_best.seq;
@@ -626,41 +687,51 @@ esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label)
     return ESP_OK;
 }
 
-uint32_t meta_carve_flash_arc(uint32_t target)
+static uint32_t arc_prepare_locked(uint32_t target)
 {
     if (!s_active || !s_have_record || target == 0) return 0;
 
-    // 最旧优先(数组序 = 分配序),整条回收 ARCHIVED 记录。整条回收保证擦除
-    // 区间按 4KB 对齐(esp_flash_erase_region 要求);可能略超 target —— 多
-    // 回收总是安全方向。
     s_work = s_carve;
-    uint32_t off[META_DATA_MAX], sz[META_DATA_MAX];
-    uint8_t n = 0;
     uint32_t reclaimed = 0;
     uint8_t i = 0;
-    while (i < s_work.data_count && reclaimed < target && n < META_DATA_MAX) {
+    while (i < s_work.data_count && reclaimed < target) {
         if (s_work.data[i].state != META_DATA_ARCHIVED || s_work.data[i].size == 0) {
             i++;
             continue;
         }
-        off[n] = s_work.data[i].offset;
-        sz[n]  = s_work.data[i].size;
-        n++;
         reclaimed += s_work.data[i].size;
-        if (!meta_carve_remove_data(&s_work, i)) return 0;   // 压缩:下标不前进
+        if (!meta_carve_remove_data(&s_work, i)) return 0;
     }
-    if (n == 0) return 0;
+    if (reclaimed == 0) return 0;
 
-    // 记录先行:先持久化"不再引用这些区域",再擦字节 —— 断电只会残留未引用空间。
+    // Transactional callers must be able to roll the metadata back. Do not erase
+    // the physical bytes here; they remain the rollback source until finalize.
     const esp_err_t ce = meta_carve_flash_commit(&s_work, false);
-    if (ce != ESP_OK) return 0;
+    return ce == ESP_OK ? reclaimed : 0;
+}
 
-    for (uint8_t k = 0; k < n; k++) {
-        const esp_err_t e = esp_flash_erase_region(NULL, off[k], sz[k]);
-        if (e != ESP_OK) {
-            ESP_LOGW(TAG, "ARC erase failed @0x%08lx: %s",
-                     (unsigned long)off[k], esp_err_to_name(e));
-        }
+uint32_t meta_carve_flash_arc_prepare(uint32_t target)
+{
+    return arc_prepare_locked(target);
+}
+
+uint32_t meta_carve_flash_arc(uint32_t target)
+{
+    if (!s_active || !s_have_record || target == 0) return 0;
+
+    const meta_carve_t before = s_carve;
+    const uint32_t reclaimed = arc_prepare_locked(target);
+    if (reclaimed == 0) return 0;
+
+    // Non-transactional legacy API: erase exactly the data records removed by
+    // the metadata commit. The transactional install path calls arc_prepare()
+    // and defers this erase until its final commit instead.
+    const meta_carve_t *after = &s_carve;
+    for (uint8_t i = 0; i < before.data_count; i++) {
+        const meta_carve_data_t *old = &before.data[i];
+        const int idx = meta_carve_find_data(after, old->play_id, old->label);
+        if (idx >= 0 && after->data[idx].offset == old->offset) continue;
+        (void)esp_flash_erase_region(NULL, old->offset, old->size);
     }
     return reclaimed;
 }

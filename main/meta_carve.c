@@ -261,6 +261,29 @@ bool meta_carve_place_data(const meta_carve_t *cur, uint32_t size,
     return scan_fit(cur, size, out_offset);
 }
 
+bool meta_carve_place_data_move(const meta_carve_t *cur, uint8_t old_idx,
+                                uint32_t new_size, uint32_t *out_offset)
+{
+    if (!cur || !out_offset || old_idx >= cur->data_count) return false;
+    if (new_size < META_CARVE_MIN_DATA ||
+        new_size % POOL.size_granule != 0 ||
+        !meta_carve_valid(cur)) {
+        return false;
+    }
+
+    uint32_t off = 0;
+    if (!scan_fit(cur, new_size, &off)) return false;
+
+    const meta_carve_data_t *old = &cur->data[old_idx];
+    if (off == old->offset) return false;
+    if (off < old->offset + old->size &&
+        old->offset < off + new_size) {
+        return false;
+    }
+    *out_offset = off;
+    return true;
+}
+
 int meta_carve_find_data(const meta_carve_t *c, uint32_t play_id, const char *label)
 {
     if (!c || play_id == 0 || !label) {
@@ -362,8 +385,8 @@ bool meta_carve_valid(const meta_carve_t *c)
     }
     for (uint8_t i = 0; i < c->count; i++) {
         const meta_carve_slot_t *s = &c->slot[i];
-        if (s->kind > META_CARVE_KIND_STORAGE) {
-            return false;
+        if (s->kind != META_CARVE_KIND_APP) {
+            return false;   // committed runtime carve contains APP slots only
         }
         if (s->state > META_SLOT_INVALID) {
             return false;
@@ -397,8 +420,8 @@ bool meta_carve_valid(const meta_carve_t *c)
         if (d->play_id == 0 || d->type != 1 || d->state > META_DATA_ARCHIVED) {
             return false;
         }
-        if (d->subtype == 0) {
-            return false;   // DATA_OTA:子固件条目会在表序里抢单系统 otadata
+        if (d->subtype != 0x81 && d->subtype != 0x82 && d->subtype != 0x83) {
+            return false;   // only child filesystem DATA is allocatable in MVP
         }
         if (d->size < META_CARVE_MIN_DATA || d->size % POOL.size_granule != 0) {
             return false;
@@ -425,7 +448,8 @@ bool meta_carve_valid(const meta_carve_t *c)
         for (uint8_t j = 0; j < i; j++) {
             // (label, subtype) 全局唯一 —— 首配语义下重复条目不可区分;
             // 跨玩法同名共享(M4)是未来设备配置项,v1 直接拒。
-            if (c->data[j].subtype == d->subtype &&
+            if (c->data[j].play_id == d->play_id &&
+                c->data[j].subtype == d->subtype &&
                 strcmp(c->data[j].label, d->label) == 0) {
                 return false;
             }
@@ -445,38 +469,29 @@ bool meta_carve_valid(const meta_carve_t *c)
 }
 
 // ---- 表物化 ---------------------------------------------------------------
+static void pt_set_entry(meta_pt_t *t, uint8_t type, uint8_t subtype,
+                         uint32_t offset, uint32_t size, const char *label);
 
-typedef struct {
-    uint8_t  type;
-    uint8_t  subtype;
-    uint32_t offset;
-    uint32_t size;
-    const char *label;
-} fixed_entry_t;
 
 // 固定系统条目(offset 升序):与 partitions.csv 安全表同源。
-static const fixed_entry_t FIXED[] = {
-    { 1, 2, 0x9000u,    0x6000u,   "nvs" },
-    { 1, 1, 0xF000u,    0x1000u,   "phy_init" },
-    { 0, 0, 0x10000u,   0x170000u, "factory" },
-    { 1, 2, 0x356000u,  0x4000u,   "cardid" },
-    { 1, 2, 0x35A000u,  0x6000u,   "store" },
-    { 1, 0, 0x7FE000u,  0x2000u,   "otadata" },
-};
-#define FIXED_COUNT (sizeof(FIXED) / sizeof(FIXED[0]))
-
-// 池占位条目(仅安全表;carved 表不带 —— 未分配空隙不声明,天然不可引导)。
-static const fixed_entry_t POOL_PLACEHOLDER[2] = {
-    { 1, 0x40, META_POOL0_START, META_POOL0_END - META_POOL0_START, "pool_0" },
-    { 1, 0x40, META_POOL1_START, META_POOL1_END - META_POOL1_START, "pool_1" },
-};
-
-// legacy v1.x 固定 3 槽表条目(partitions.csv @ 9e591a2,offset 升序)。
-static const fixed_entry_t LEGACY_OTA[3] = {
-    { 0, 0x10, 0x180000u, 0x1D6000u, "ota_0" },
-    { 0, 0x11, 0x360000u, 0x200000u, "ota_1" },
-    { 0, 0x12, 0x560000u, 0x29E000u, "ota_2" },
-};
+// 直接写入避免 bootloader 携带 fixed_entry_t 元数据表及其指针/字符串表。
+static void pt_add_fixed(meta_pt_t *t, bool with_pools)
+{
+    pt_set_entry(t, 1, 2, 0x9000u, 0x6000u, "nvs");
+    pt_set_entry(t, 1, 1, 0xF000u, 0x1000u, "phy_init");
+    pt_set_entry(t, 0, 0, 0x10000u, 0x170000u, "factory");
+    if (with_pools) {
+        pt_set_entry(t, 1, 0x40, META_POOL0_START,
+                     META_POOL0_END - META_POOL0_START, "pool_0");
+    }
+    pt_set_entry(t, 1, 2, 0x356000u, 0x4000u, "cardid");
+    pt_set_entry(t, 1, 2, 0x35A000u, 0x6000u, "store");
+    if (with_pools) {
+        pt_set_entry(t, 1, 0x40, META_POOL1_START,
+                     META_POOL1_END - META_POOL1_START, "pool_1");
+    }
+    pt_set_entry(t, 1, 0, 0x7FE000u, 0x2000u, "otadata");
+}
 
 static void pt_set_entry(meta_pt_t *t, uint8_t type, uint8_t subtype,
                          uint32_t offset, uint32_t size, const char *label)
@@ -591,22 +606,7 @@ static void build_fixed_only(uint8_t out[META_PT_SIZE], bool with_pools)
 {
     meta_pt_t t;
     t.count = 0;
-    for (size_t i = 0; i < FIXED_COUNT; i++) {
-        const fixed_entry_t *f = &FIXED[i];
-        if (with_pools && f->subtype == 2 && f->offset == 0x356000u) {
-            // cardid 前插入 pool_0(升序)。
-            pt_set_entry(&t, POOL_PLACEHOLDER[0].type, POOL_PLACEHOLDER[0].subtype,
-                         POOL_PLACEHOLDER[0].offset, POOL_PLACEHOLDER[0].size,
-                         POOL_PLACEHOLDER[0].label);
-        }
-        if (with_pools && f->offset == 0x7FE000u) {
-            // otadata 前插入 pool_1(升序)。
-            pt_set_entry(&t, POOL_PLACEHOLDER[1].type, POOL_PLACEHOLDER[1].subtype,
-                         POOL_PLACEHOLDER[1].offset, POOL_PLACEHOLDER[1].size,
-                         POOL_PLACEHOLDER[1].label);
-        }
-        pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
-    }
+    pt_add_fixed(&t, with_pools);
     meta_pt_encode(&t, out);
 }
 
@@ -656,22 +656,13 @@ void meta_pt_legacy(uint8_t out[META_PT_SIZE])
 {
     meta_pt_t t;
     t.count = 0;
-    static const fixed_entry_t HEAD[3] = {
-        { 1, 2, 0x9000u,   0x6000u,   "nvs" },
-        { 1, 1, 0xF000u,   0x1000u,   "phy_init" },
-        { 0, 0, 0x10000u,  0x170000u, "factory" },
-    };
-    for (size_t i = 0; i < 3; i++) {
-        pt_set_entry(&t, HEAD[i].type, HEAD[i].subtype, HEAD[i].offset,
-                     HEAD[i].size, HEAD[i].label);
-    }
-    pt_set_entry(&t, LEGACY_OTA[0].type, LEGACY_OTA[0].subtype,
-                 LEGACY_OTA[0].offset, LEGACY_OTA[0].size, LEGACY_OTA[0].label);
+    pt_set_entry(&t, 1, 2, 0x9000u, 0x6000u, "nvs");
+    pt_set_entry(&t, 1, 1, 0xF000u, 0x1000u, "phy_init");
+    pt_set_entry(&t, 0, 0, 0x10000u, 0x170000u, "factory");
+    pt_set_entry(&t, 0, 0x10, 0x180000u, 0x1D6000u, "ota_0");
     pt_set_entry(&t, 1, 2, 0x356000u, 0x4000u, "cardid");
-    pt_set_entry(&t, LEGACY_OTA[1].type, LEGACY_OTA[1].subtype,
-                 LEGACY_OTA[1].offset, LEGACY_OTA[1].size, LEGACY_OTA[1].label);
-    pt_set_entry(&t, LEGACY_OTA[2].type, LEGACY_OTA[2].subtype,
-                 LEGACY_OTA[2].offset, LEGACY_OTA[2].size, LEGACY_OTA[2].label);
+    pt_set_entry(&t, 0, 0x11, 0x360000u, 0x200000u, "ota_1");
+    pt_set_entry(&t, 0, 0x12, 0x560000u, 0x29E000u, "ota_2");
     pt_set_entry(&t, 1, 0, 0x7FE000u, 0x2000u, "otadata");
     meta_pt_encode(&t, out);
 }
@@ -685,10 +676,7 @@ bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE])
     t.count = 0;
     // 全量收集(固定 + 槽位 + 数据)再按 offset 升序:数据记录在数组里是
     // 分配序(乱序),表内顺序不影响 IDF 查找,但升序保持黄金产物逐字节一致。
-    for (size_t i = 0; i < FIXED_COUNT; i++) {
-        const fixed_entry_t *f = &FIXED[i];
-        pt_set_entry(&t, f->type, f->subtype, f->offset, f->size, f->label);
-    }
+    pt_add_fixed(&t, false);
     for (uint8_t i = 0; i < c->count; i++) {
         char label[6] = { 'o', 't', 'a', '_', (char)('0' + i), '\0' };
         pt_set_entry(&t, 0, (uint8_t)(0x10 + i),
@@ -708,6 +696,48 @@ bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE])
         }
         t.e[j] = key;
     }
+    meta_pt_encode(&t, out);
+    return true;
+}
+
+
+bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
+                               uint8_t out[META_PT_SIZE])
+{
+    if (!c || !out || !meta_carve_valid(c)) {
+        return false;
+    }
+
+    meta_pt_t t;
+    memset(&t, 0, sizeof(t));
+
+    // Keep every APP entry visible: bootloader/launcher still needs the full
+    // child-app set. Data entries are the only entries scoped to the active
+    // Child Firmware.
+    pt_add_fixed(&t, false);
+    for (uint8_t i = 0; i < c->count; i++) {
+        char label[6] = { 'o', 't', 'a', '_', (char)('0' + i), '\0' };
+        pt_set_entry(&t, 0, (uint8_t)(0x10 + i),
+                     c->slot[i].offset, c->slot[i].size, label);
+    }
+    for (uint8_t i = 0; i < c->data_count; i++) {
+        const meta_carve_data_t *d = &c->data[i];
+        if (d->play_id != active_play_id) continue;
+        if (d->state == META_DATA_ARCHIVED) continue;
+        if (t.count >= META_PT_MAX_ENTRIES) return false;
+        pt_set_entry(&t, d->type, d->subtype, d->offset, d->size, d->label);
+    }
+
+    for (uint8_t i = 1; i < t.count; i++) {
+        const meta_pt_entry_t key = t.e[i];
+        uint8_t j = i;
+        while (j > 0 && t.e[j - 1].offset > key.offset) {
+            t.e[j] = t.e[j - 1];
+            j--;
+        }
+        t.e[j] = key;
+    }
+
     meta_pt_encode(&t, out);
     return true;
 }

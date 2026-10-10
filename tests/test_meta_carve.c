@@ -144,6 +144,7 @@ static void test_fit_reuse_remove(void)
     // storage 槽不可作为安装目标。
     c.slot[0].kind = META_CARVE_KIND_STORAGE;
     assert(meta_carve_find_fit(&c, 0x1000) == 1);
+    assert(!meta_carve_valid(&c)); // storage reservations are not boot/runtime slots
     c.slot[0].kind = META_CARVE_KIND_APP;
 
     // 删除中间项:压缩并保持 offset 升序,余下槽不动。
@@ -391,6 +392,78 @@ static void test_seed_images_shrinkwrap(void)
     printf("PASS seed images shrink-wrap\n");
 }
 
+
+static void test_active_data_materialization(void)
+{
+    meta_carve_t c = empty_carve();
+    meta_carve_t next;
+
+    // Different Child Firmware instances may use the same label/subtype.
+    assert(meta_carve_place(&c, 0x20000, META_CARVE_KIND_APP, &next) == 0);
+    next.slot[0].play_id = 100;
+    c = next;
+    assert(meta_carve_place(&c, 0x20000, META_CARVE_KIND_APP, &next) == 1);
+    next.slot[1].play_id = 200;
+    c = next;
+
+    meta_carve_data_t a = {
+        .play_id = 100, .offset = 0x1C0000, .size = 0x10000,
+        .state = META_DATA_DIRTY, .subtype = 0x82, .type = 1,
+    };
+    strcpy(a.label, "storage");
+    assert(meta_carve_data_append(&c, &a));
+
+    meta_carve_data_t b = {
+        .play_id = 200, .offset = 0x1D0000, .size = 0x10000,
+        .state = META_DATA_DIRTY, .subtype = 0x82, .type = 1,
+    };
+    strcpy(b.label, "storage");
+    assert(meta_carve_data_append(&c, &b));
+    assert(meta_carve_valid(&c));
+
+    uint8_t table[META_PT_SIZE];
+    assert(meta_pt_from_carve_active(&c, 100, table));
+
+    meta_pt_t t;
+    assert(meta_pt_decode(table, &t));
+    int storage_count = 0;
+    for (uint8_t i = 0; i < t.count; i++) {
+        if (strcmp(t.e[i].label, "storage") == 0) {
+            storage_count++;
+            assert(t.e[i].offset == a.offset);
+            assert(t.e[i].size == a.size);
+        }
+    }
+    assert(storage_count == 1);
+
+    assert(meta_pt_from_carve_active(&c, 200, table));
+    assert(meta_pt_decode(table, &t));
+    storage_count = 0;
+    for (uint8_t i = 0; i < t.count; i++) {
+        if (strcmp(t.e[i].label, "storage") == 0) {
+            storage_count++;
+            assert(t.e[i].offset == b.offset);
+            assert(t.e[i].size == b.size);
+        }
+    }
+    assert(storage_count == 1);
+
+    // A Child without data still gets a valid runtime partition table.
+    assert(meta_pt_from_carve_active(&c, 300, table));
+    assert(meta_pt_decode(table, &t));
+    for (uint8_t i = 0; i < t.count; i++) {
+        assert(strcmp(t.e[i].label, "storage") != 0);
+    }
+
+    // play_id 0 is the launcher view: APP partitions remain, Child DATA is hidden.
+    assert(meta_pt_from_carve_active(&c, 0, table));
+    assert(meta_pt_decode(table, &t));
+    for (uint8_t i = 0; i < t.count; i++) {
+        assert(strcmp(t.e[i].label, "storage") != 0);
+    }
+    printf("PASS active data materialization\n");
+}
+
 static void test_free_space(void)
 {
     // 总池 = 两池之和(§4.1:6,766,592 B;列表页"剩余空间"的单一事实源)。
@@ -431,6 +504,7 @@ int main(void)
     test_seed_legacy();
     test_seed_images_shrinkwrap();
     test_free_space();
+    test_active_data_materialization();
     printf("PASS test_meta_carve\n");
     return 0;
 }

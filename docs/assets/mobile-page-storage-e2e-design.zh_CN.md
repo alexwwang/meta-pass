@@ -1,0 +1,92 @@
+# 手机内嵌安装页：空间管理与子固件安装/卸载 E2E
+
+<p align="right">
+  <a href="mobile-page-storage-e2e-design.md">English</a> · <strong>简体中文</strong>
+</p>
+
+日期：2026-10-09  
+分支：`feat/storage`
+
+## 目标
+
+使用手机视口浏览器直接操作设备提供的安装页面；通过设备只读 API 和设备侧串口运行证据独立校验结果。不要以模拟器替代浏览器视口测试，也不要把仅有 UI 成功提示当成设备端安装成功。
+
+当前主执行器：`tools/realdevice/mobile_page_e2e.mjs`  
+设备侧驱动接口：`tools/realdevice/mobile_page_runtime_driver.py`  
+子固件串口协议客户端：`tools/realdevice/data_child_serial.py`
+
+## 已实现的真实设备测试路径
+
+| 阶段 | 自动化动作 | 必须满足的后置条件 |
+|---|---|---|
+| M01 页面与视口 | 打开真实设备页面；检查内容、交互控件、触控能力；测试 320×720、360×800、390×844、430×932 | 页面可用、关键控件可见、无横向溢出、无页面/控制台/请求错误 |
+| M02 基线与安全门 | 读取 slots、DATA reservations、installer status | 安装器空闲；分区池范围、对齐、大小粒度、重叠和 free 字节计算一致；否则拒绝写设备 |
+| M04 安装 A | 从市场按 play ID 查找、选择槽位并安装；独立读取设备状态 | UI 显示完成且设备 API 出现 VALID 槽；空间几何正确；原有 DATA reservation 不丢失 |
+| M04A 删除取消保护 | 安装 A 后进入管理页并触发删除确认，再取消 | 槽表、DATA reservations 与安装器状态完全不变；否则失败并停止后续破坏性操作 |
+| M04B 子固件 A | 运行设备侧 runtime driver | 子固件确实启动；DATA 擦除、写入、读回、校验和、重启持久性全部有串口证据 |
+| M05 安装 B | 安装第二个 play ID | A/B 可同时存在；无重叠；原有 DATA reservation 保留 |
+| M05C A/B 隔离 | 比较设备侧报告的 DATA 物理地址 | A/B DATA extent 不同，不能仅凭 play ID 不同就判定隔离成立 |
+| M06 卸载 A | 在管理 UI 中双击删除、确认；卸载后运行 B | A 从槽表消失；B 仍 VALID 且可启动；A 的 DATA reservation 被释放；池几何仍正确 |
+| M06C 删除后重新安装 | A 删除后，用 A 的 play ID、不同随机名称 C 重新安装；运行并卸载 C | C 必须获得独立于仍存活 B 的新 APP 槽位；旧 A 名称不能复活；按要求创建新的 DATA reservation；卸载后明确确认 C 的 APP 槽和新 DATA reservation 均已释放，B 的 DATA reservation 仍保留且 B 不受影响 |
+| M07 卸载 B | 同样从 UI 删除并验证 | B 从槽表消失；设备侧证明已删除镜像不可启动且 DATA 已释放 |
+| M08 恢复基线 | 再读 slots、reservations 和 status | 安装器空闲；槽表、DATA reservations 和 free bytes 与测试前完全一致 |
+
+## 数据与空间管理断言
+
+测试必须分别验证以下四个层次，不能互相替代：
+
+1. **UI 层**：管理列表、槽位状态、删除确认、安装进度及完成/失败反馈。
+2. **设备 API 层**：`/api/install/slots` 和 `/api/install/status` 的独立读回。
+3. **分配器层**：每个 app slot / DATA reservation 都在动态池范围内、按规则对齐、彼此不重叠，且 `free = pool bytes - occupied bytes`。
+4. **设备运行层**：测试子固件真实启动并通过 USB Serial/JTAG 提供 DATA 擦除、写入、读回、checksum、重启持久性及返回启动器的证据。
+
+删除后的 UI 行消失不代表 Flash 镜像已不可启动；DATA reservation 从 API 消失也不等于子固件 DATA 内容经过了正确验证。需要 runtime driver 对应证据。
+
+## 本地 Agent / 真机执行步骤
+
+该流程会真实安装、启动和卸载测试 APP，并写入测试 DATA 分区。只在专用测试设备上执行；不要用存有重要用户数据的设备。测试固件必须先准备好，不能把本流程当成自动刷写固件的步骤。
+
+1. 使用启用了 `CONFIG_META_E2E_TEST_CONTROL=y` 的 launcher 固件启动设备，并确认管理网页可访问。
+2. 将专用 DATA 测试子固件发布为两个不同的 marketplace play ID；两个 ID 必须不同，且通过 `--play-a` / `--play-b` 显式传入。
+3. 在本机启动仅监听回环地址的 Chromium/Chrome CDP，例如 Linux 上使用独立测试 profile：`google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-cdp`。不要把 CDP 端口暴露到局域网。
+4. 安装串口依赖：`python3 -m pip install pyserial`。确认 `node` 支持内置 `fetch` 和 `WebSocket`（建议 Node.js 22 或更新版本）。
+5. 在 Bash 或 Zsh 中设置设备网页地址、session token 和 launcher 的 USB Serial/JTAG 端口。token 只放在环境变量中，不要写进命令行参数或提交到仓库：
+
+```bash
+export MOBILE_E2E_URL='http://<device-host>/'
+read -rsp 'Session token (32 hex): ' META_PASS_SESSION; echo
+export META_PASS_SESSION
+export MOBILE_E2E_CDP_URL='http://127.0.0.1:9222'
+export META_PASS_E2E_SERIAL_PORT='/dev/<launcher-usb-serial-device>'
+```
+
+6. 从仓库根目录执行（将两个 play ID 替换为已发布测试子固件的 ID）：
+
+```sh
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device \
+  --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \
+  --require-data-reservation \
+  --play-a <test-play-id-a> \
+  --play-b <test-play-id-b>
+```
+
+执行前，runner 会检查 driver 文件、Python/pyserial、串口配置和 session 格式；设备端还必须通过安装器空闲状态、槽表几何和基线校验。任一门禁失败时应停止，不要通过删掉现有槽位或绕过检查来继续。
+
+报告默认写入 `tools/realdevice/logs/mobile-page-e2e-<timestamp>/report.json`。只有报告的 `verdict` 为 `PASS` 且所有运行证据字段成立，才可视为自动化 E2E 通过；CI 的 host tests 和固件构建成功不等于真机 E2E 成功。若执行失败，先检查报告和清理结果，再决定是否重跑。
+
+## 安全与可复现性
+
+- 真机写操作必须显式传入 `--real-device`；禁止默认执行破坏性测试。
+- 只允许测试运行器创建带随机后缀的专属测试名称，不能卸载基线中已有的用户槽位。
+- 测试前若安装器非空闲、槽位几何非法或测试名称冲突，必须停止，不得尝试“自动修复”设备。
+- 失败后仅清理本轮创建的测试槽位；最终报告必须记录清理失败。
+- 日志不得包含 session token、完整设备 URL、局域网 IP 或主机敏感路径。
+- `--manual-assist` 只能报告 `PASS_WITH_MANUAL_STEPS`，不得宣称全自动通过；没有设备侧证据的 DATA 持久性和删除不可启动性必须标记为未覆盖。
+- 该 E2E 是显式派发的硬件测试，不应在普通 CI 中自动烧写设备。
+
+## 当前证据边界
+
+主执行器已经包含 M01–M09（含 M06C 删除后重新安装）的 UI + 设备 API + runtime driver 测试流程，并在 `--require-data-reservation` 模式下检查 DATA reservation、A/B 物理隔离、卸载释放和基线恢复。本次新增静态契约测试，防止后续改动意外删除这些门禁。
+
+这不代表本轮已经连接真机运行了 E2E。真实设备结果必须以 `tools/realdevice/logs/<run>/report.json` 及其脱敏证据为准。市场固件的 DATA 行为分析也不能由测试子固件的成功代替。

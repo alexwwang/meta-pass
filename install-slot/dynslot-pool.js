@@ -169,5 +169,142 @@ export function geomFromListing(listing, imageLen) {
     ];
   }
   const suggestedSlot = current.find((s) => s.fit)?.slot ?? proposal?.slot ?? -1;
-  return { current, proposal, placed, suggestedSlot, maxGap, totalFree };
+  return { current, proposal, placed, suggestedSlot, maxGap, totalFree, listing: { slots: all, data } };
+}
+
+// DATA capacity planning shared by the installer UI and Node tests.
+// All values are bytes. Existing DATA allocations are immutable inputs: this
+// planner only describes capacity for a new allocation and never resizes a
+// committed partition in place.
+export const DATA_SIZE_GRANULE = 0x1000;
+export const DATA_SIZE_MIN = DATA_SIZE_GRANULE;
+export const DATA_SIZE_STEP = 1024 * 1024;
+export const DATA_SIZE_MIN_FAT = 1024 * 1024;
+export const DATA_SIZE_MIN_FLASH_FS = 64 * 1024;
+
+// Partition-table size is the firmware's default/recommended capacity, not
+// necessarily a hard minimum. A non-empty embedded DATA image cannot be
+// downsized safely without understanding its on-flash format, so retain the
+// declared size in that case. For blank supported filesystems, expose a
+// conservative format-level floor and let the user choose a smaller extent.
+export function dataPartitionMinimum(partition) {
+  const declared = Number(partition?.required_size ?? partition?.requiredSize ?? partition?.size);
+  const payload = Number(partition?.initial_image_size ?? partition?.initialImageSize ?? 0);
+  const subtype = Number(partition?.subtype);
+  if (!Number.isSafeInteger(declared) || declared < DATA_SIZE_GRANULE ||
+      declared % DATA_SIZE_GRANULE !== 0) return null;
+  if (!Number.isSafeInteger(payload) || payload < 0 || payload > declared) return null;
+  if (payload > 0) return declared;
+  if (subtype === 0x81) return DATA_SIZE_MIN_FAT;
+  if (subtype === 0x82 || subtype === 0x83) return DATA_SIZE_MIN_FLASH_FS;
+  return declared;
+}
+
+export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_SIZE_MIN,
+                                reserveSizes = []) {
+  const slots = Array.isArray(listing?.slots) ? listing.slots : [];
+  const data = Array.isArray(listing?.data) ? listing.data : [];
+  const occupancy = slots.map((s) => ({ offset: s.offset, size: s.size }))
+    .concat(data.map((d) => ({ offset: d.offset, size: d.size })));
+  if (appProposal) {
+    if (!Number.isSafeInteger(appProposal.carveOffset) ||
+        !Number.isSafeInteger(appProposal.carveSize) || appProposal.carveSize <= 0) {
+      return { min: DATA_SIZE_MIN, max: 0, step: DATA_SIZE_STEP, available: 0 };
+    }
+    occupancy.push({ offset: appProposal.carveOffset, size: appProposal.carveSize });
+  }
+  const minRaw = Number(requestedMin);
+  if (!Number.isSafeInteger(minRaw) || minRaw < DATA_SIZE_MIN) {
+    return { min: DATA_SIZE_MIN, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+  const min = Math.ceil(minRaw / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+  // Do not silently drop malformed occupancy records: a bad record could
+  // otherwise be interpreted as free flash and authorize an overlapping carve.
+  if (occupancy.some((r) => !Number.isSafeInteger(r.offset) ||
+      !Number.isSafeInteger(r.size) || r.offset < 0 || r.size <= 0 ||
+      !Number.isSafeInteger(r.offset + r.size))) {
+    return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+  const sorted = occupancy.slice().sort((a, b) => a.offset - b.offset);
+  // Every occupied extent must be wholly contained by exactly one pool segment;
+  // reject cross-segment/out-of-pool geometry as well as overlaps.
+  for (const r of sorted) {
+    const rEnd = r.offset + r.size;
+    const seg = POOL.seg.find((s) => r.offset >= s.start && rEnd <= s.end);
+    if (!seg) return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+  for (const seg of POOL.seg) {
+    let end = seg.start;
+    for (const r of sorted) {
+      const rEnd = r.offset + r.size;
+      if (rEnd <= seg.start || r.offset >= seg.end) continue;
+      if (r.offset < end || rEnd > seg.end) {
+        return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+      }
+      end = rEnd;
+    }
+  }
+
+  // Simulate the device's first-fit placement for other new DATA extents at
+  // their declared minimums before computing the selected extent's max.
+  const placeExtent = (size) => {
+    if (!Number.isSafeInteger(size) || size < DATA_SIZE_GRANULE ||
+        size % DATA_SIZE_GRANULE !== 0) return false;
+    const ranges = [...sorted].sort((a, b) => a.offset - b.offset);
+    for (const seg of POOL.seg) {
+      let cursor = seg.start;
+      for (const r of ranges) {
+        const rEnd = r.offset + r.size;
+        if (rEnd <= seg.start || r.offset >= seg.end) continue;
+        const at = alignUp(cursor, POOL.offsetAlign);
+        if (at + size <= r.offset) {
+          sorted.push({ offset: at, size });
+          sorted.sort((a, b) => a.offset - b.offset);
+          return true;
+        }
+        cursor = Math.max(cursor, rEnd);
+      }
+      const at = alignUp(cursor, POOL.offsetAlign);
+      if (at + size <= seg.end) {
+        sorted.push({ offset: at, size });
+        sorted.sort((a, b) => a.offset - b.offset);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const size of reserveSizes) {
+    if (!placeExtent(size)) return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+
+  let largest = 0;
+  let total = 0;
+  for (const seg of POOL.seg) {
+    let cursor = seg.start;
+    for (const r of sorted) {
+      const end = r.offset + r.size;
+      if (end <= seg.start || r.offset >= seg.end) continue;
+      const aligned = alignUp(cursor, POOL.offsetAlign);
+      const span = Math.max(0, Math.floor((r.offset - aligned) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE);
+      largest = Math.max(largest, span);
+      total += Math.max(0, r.offset - cursor);
+      cursor = end;
+    }
+    const aligned = alignUp(cursor, POOL.offsetAlign);
+    const span = Math.max(0, Math.floor((seg.end - aligned) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE);
+    largest = Math.max(largest, span);
+    total += Math.max(0, seg.end - cursor);
+  }
+  return {
+    min,
+    max: Math.floor(largest / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE,
+    step: DATA_SIZE_STEP,
+    available: total,
+  };
+}
+
+export function normalizeDataSize(value, bounds) {
+  if (!bounds || !Number.isSafeInteger(value) || value < bounds.min ||
+      value > bounds.max || value % DATA_SIZE_GRANULE !== 0) return null;
+  return value;
 }

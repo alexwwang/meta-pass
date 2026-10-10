@@ -27,4 +27,10 @@ typedef struct {
 // rec 为 NULL 或结构校验失败 → 按无记录处理:live ∈ {安全表, legacy 表} 放行,
 // 否则 RESTORE_SAFE(§4.7 "child scribbles the table" / "store dead")。
 meta_boot_table_verdict_t meta_carve_boot_decide(
-    const uint8_t live[META_PT_SIZE], const meta_carve_rec_t *rec);
+    const uint8_t live[META_PT_SIZE], const meta_carve_rec_t *rec,
+    int active_slot);
+
+/* active_slot == -1: launcher/runtime view (no Child DATA).
+ * active_slot >= 0: deep-sleep/trial child view; only that child's DATA
+ * partitions are expected to be visible. The committed full carve table is
+ * never used as the normal runtime view. */

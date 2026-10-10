@@ -14,7 +14,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-PORT="${1:-/dev/cu.usbmodem142401}"
+# 端口是本地硬件细节,不写默认值。传第 1 个参数或 export META_PASS_PORT。
+PORT="${1:-${META_PASS_PORT:-}}"
+if [ -z "$PORT" ]; then
+  echo "错误:未指定 USB 串口。传第 1 个参数,或 export META_PASS_PORT=/dev/cu.XXXX" >&2
+  exit 2
+fi
 WAIT_SECONDS="${2:-120}"
 if [ "${3:-}" != "" ]; then
   IMAGE="$3"

@@ -13,6 +13,7 @@
 #include "meta_image.h"
 #include "meta_name.h"
 #include "meta_sign.h"
+#include "meta_carve_flash.h"
 static const char *TAG = "meta_store";
 
 // 槽位与分区 subtype 的固定映射:ota_0/ota_1/ota_2(见 partitions.csv)。
@@ -171,6 +172,22 @@ esp_err_t meta_store_erase_slot(int slot)
 
 esp_err_t meta_store_boot_slot(int slot)
 {
+    if (slot < 0 || slot >= META_SLOT_COUNT) return ESP_ERR_INVALID_ARG;
+
+    // The committed carve contains every Child DATA allocation, but the
+    // runtime partition table must expose only the selected child's DATA.
+    // Materialize that view before resolving the OTA partition so the child
+    // sees its own standard labels (e.g. "storage") after reboot.
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    uint32_t play_id = 0;
+    if (carve && slot < (int)carve->count &&
+        carve->slot[slot].kind == META_CARVE_KIND_APP) {
+        play_id = carve->slot[slot].play_id;
+    }
+    if (meta_carve_flash_materialize_active(play_id) != ESP_OK) {
+        return ESP_FAIL;
+    }
+
     const esp_partition_t *part = meta_store_slot_partition(slot);
     if (!part) return ESP_ERR_INVALID_ARG;
     return esp_ota_set_boot_partition(part);

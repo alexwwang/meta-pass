@@ -28,6 +28,10 @@ const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
+// Test-only DATA resizing must require an explicit profile; ordinary installs stay unchanged.
+assert.equal(phone.requestedDataSizeProfile(), null);
+assert.equal(phone.requestedDataSizeProfile({ dataSizeProfile: "play28-recordings-4m" }), "play28-recordings-4m");
+
 // ── 夹具:最小合法 ESP 镜像(同 test-extract.mjs 构造法) ────────────────
 function buildAppImage(seg0len = 100, seg1len = 64) {
   const bodyLen = 24 + 16 + (8 + seg0len) + (8 + seg1len);
@@ -239,7 +243,8 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
 function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
                       failChunkAt = -1, failTimes = 1, finalOk = true,
                       autoConfirm = true, resumeOffset = 0, neverDone = false,
-                      carve = defaultCarve(), rebootPolls = 2 } = {}) {
+                      carve = defaultCarve(), rebootPolls = 2, dataImages = [],
+                      dataResumeOffsets = [], dataDone = [] } = {}) {
   const calls = [];
   const d = {
     protocol: 1, state: "pairing", message: "",
@@ -249,6 +254,15 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
     carve: carve.map((s) => ({ ...s })),  // 规范 carve 快照(dynslot §4.5)
     rebootLeft: 0,                        // 删除提交后复位窗口内剩余不可达轮数
     polls: 0,   // status 轮询计数:模拟"用户在设备上按 OK"的时序
+    data: dataImages.map((img, index) => {
+      const expected = img.initial_image_size ?? img.initialImageSize ?? img.data?.length ?? 0;
+      const offset = Number(dataResumeOffsets[index] ?? 0);
+      const done = Boolean(dataDone[index]) || offset >= expected;
+      return {
+        index, offset: Math.min(offset, expected), expected,
+        done, bytes: Array.from(img.data?.slice(0, Math.min(offset, expected)) ?? []),
+      };
+    }),
   };
   d.handlers = async (input, init) => {
     const url = urlOf(input);
@@ -302,8 +316,12 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
       const body = JSON.parse(init.body);
       assert.equal(body.slot, d.slot);   // session 槽位必须 = 已确认槽位(设备值)
       d.session = true; d.state = "uploading"; d.offset = resumeOffset;
-      return new Response(JSON.stringify({ state: "ready", offset: resumeOffset, maxChunk }),
-        { status: 200 });
+      return new Response(JSON.stringify({
+        state: "ready", offset: resumeOffset, maxChunk,
+        data: d.data.map((x) => ({
+          index: x.index, offset: x.offset, expected: x.expected, done: x.done,
+        })),
+      }), { status: 200 });
     }
     if (pathn === "/api/install/chunk" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
@@ -318,9 +336,31 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
       d.offset = off + len;
       return new Response("ok", { status: 200 });
     }
+    if (pathn === "/api/install/data" && method === "POST") {
+      let r = need(); if (r) return new Response(r.text, { status: r.status });
+      const index = Number(init.headers["X-Meta-Data-Index"]);
+      const off = Number(init.headers["X-Meta-Offset"]);
+      const x = d.data[index];
+      if (!x || !Number.isInteger(index) || !Number.isInteger(off) ||
+          off !== x.offset || init.body.length > maxChunk) {
+        return new Response("data chunk rejected", { status: 400 });
+      }
+      const bytes = new Uint8Array(init.body);
+      x.bytes.push(...bytes);
+      x.offset += bytes.length;
+      if (x.offset === x.expected) x.done = true;
+      return new Response("ok", { status: 200 });
+    }
     if (pathn === "/api/install/finalize" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
-      if (d.offset !== imageLen) return new Response("finalize failed", { status: 500 });
+      if (d.offset !== imageLen) {
+        d.message = "finalize app incomplete";
+        return new Response("finalize app incomplete", { status: 500 });
+      }
+      if (d.data.some((x) => !x.done)) {
+        d.message = "finalize data incomplete";
+        return new Response("finalize data incomplete", { status: 500 });
+      }
       // neverDone(审计 M1 回归):finalize 接受但状态永远不到 done —— 手机侧
       // 必须报失败,而不是静默成功。
       if (neverDone) return new Response("ok", { status: 200 });
@@ -402,6 +442,7 @@ const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
     suggestedSlot: 0,
     slot: -1,               // 兼容入口不选槽 → 设备物理确认旧流程
     slots: SLOT_LIMITS,
+    data: [],
     reason: "ok",
   });
   console.log("PASS 3: preflight happy path — offer matches §6.4 shape, slots from SLOT_GEOMETRY");
@@ -1083,6 +1124,72 @@ const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.slot, 7);
   console.log("PASS 10d: 8-slot bound — device-confirmed slot 7 accepted end-to-end");
+}
+
+// ── DATA 初始镜像上传:session 返回 per-entry offset/done,新建 DATA 逐块写入 ──
+{
+  const data = new Uint8Array([1, 2, 3, 4, 5]);
+  const dataImages = [{ initial_image_size: data.length, data }];
+  const dev = makeDevice({ dataImages });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const offer = {
+    protocol: 1, playId: 563, revisionId: 1499, name: "data-test",
+    storeSha256: MERGED_SHA, imageLen: APP.length, sha256: APP_SHA,
+    suggestedSlot: 0, slot: 0, slots: SLOT_LIMITS,
+    data: [{ playId: 563, size: 0x10000, label: "storage", subtype: 0x82,
+             initialImageSize: data.length }],
+    reason: "ok",
+  };
+  const r = await phone.runInstall(bridge, offer, APP, { dataImages });
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
+  assert.deepEqual(dev.data[0].bytes, [...data]);
+  assert.equal(dev.data[0].done, true);
+  assert.ok(dev.calls.includes("POST /api/install/data"));
+  console.log("PASS DATA upload: initial Child DATA payload follows session offsets and reaches finalize");
+}
+
+// DATA resume: device-reported per-entry offset is authoritative; only the suffix is sent.
+{
+  const data = new Uint8Array([1, 2, 3, 4, 5]);
+  const dataImages = [{ initial_image_size: data.length, data }];
+  const dev = makeDevice({ dataImages, dataResumeOffsets: [2] });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const offer = {
+    protocol: 1, playId: 564, revisionId: 1500, name: "data-resume-test",
+    storeSha256: MERGED_SHA, imageLen: APP.length, sha256: APP_SHA,
+    suggestedSlot: 0, slot: 0, slots: SLOT_LIMITS,
+    data: [{ playId: 564, size: 0x10000, label: "storage", subtype: 0x82,
+             initialImageSize: data.length }],
+    reason: "ok",
+  };
+  const r = await phone.runInstall(bridge, offer, APP, { dataImages });
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
+  assert.deepEqual(dev.data[0].bytes, [...data]);
+  assert.equal(dev.data[0].done, true);
+  assert.ok(dev.calls.includes("POST /api/install/data"));
+  console.log("PASS DATA resume: device offset=2 skips the prefix and uploads only the remaining suffix");
+}
+
+// Existing DATA is reported done and must not be overwritten by the install image.
+{
+  const data = new Uint8Array([9, 8, 7]);
+  const dataImages = [{ initial_image_size: data.length, data }];
+  const dev = makeDevice({ dataImages, dataDone: [true] });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const offer = {
+    protocol: 1, playId: 565, revisionId: 1501, name: "data-done-test",
+    storeSha256: MERGED_SHA, imageLen: APP.length, sha256: APP_SHA,
+    suggestedSlot: 0, slot: 0, slots: SLOT_LIMITS,
+    data: [{ playId: 565, size: 0x10000, label: "storage", subtype: 0x82,
+             initialImageSize: data.length }],
+    reason: "ok",
+  };
+  const r = await phone.runInstall(bridge, offer, APP, { dataImages });
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
+  assert.deepEqual(dev.data[0].bytes, []);
+  assert.equal(dev.data[0].done, true);
+  assert.equal(dev.calls.filter((c) => c === "POST /api/install/data").length, 0);
+  console.log("PASS DATA done: completed device entry is skipped without rewriting existing bytes");
 }
 
 console.log("ALL phone-install TESTS PASSED");

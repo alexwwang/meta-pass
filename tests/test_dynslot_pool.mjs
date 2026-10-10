@@ -12,7 +12,8 @@ import path from "node:path";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pool = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
-        carvePlace, geomFromListing } = pool;
+        carvePlace, geomFromListing, dataSizeBounds, normalizeDataSize,
+        DATA_SIZE_GRANULE, DATA_SIZE_STEP, dataPartitionMinimum } = pool;
 
 // ── 1. 池描述符 == main/meta_carve.h 常量(单一几何事实源) ─────────────────
 {
@@ -163,6 +164,72 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   assert.equal(g3.proposal.carveOffset, 0x180000);
 
   console.log("PASS 6: geomFromListing counts data-carve occupancy (P1-4)");
+}
+
+
+
+// ── 7. 通用 DATA 容量规划:设备池范围、对齐、非法占用 fail-closed ──────────
+{
+  const empty = { slots: [], data: [] };
+  const b = dataSizeBounds(empty, null, 1024 * 1024);
+  assert.equal(b.min, 1024 * 1024);
+  assert.equal(b.step, DATA_SIZE_STEP);
+  assert.ok(b.max > b.min);
+  assert.equal(b.max % DATA_SIZE_GRANULE, 0);
+  assert.equal(normalizeDataSize(b.min, b), b.min);
+  assert.equal(normalizeDataSize(b.max, b), b.max);
+  assert.equal(normalizeDataSize(b.min - DATA_SIZE_GRANULE, b), null);
+  assert.equal(normalizeDataSize(b.max + DATA_SIZE_GRANULE, b), null);
+  assert.equal(normalizeDataSize(b.min + 1, b), null);
+  assert.equal(dataSizeBounds(empty, null, 0).max, 0);
+
+  // The partition-table size is a default, not always a hard minimum:
+  // blank supported filesystems have generic floors; non-empty payloads keep
+  // the declared extent so selection cannot truncate embedded filesystem data.
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 0, subtype: 0x81,
+  }), 1024 * 1024);
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 0, subtype: 0x82,
+  }), 64 * 1024);
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 4096, subtype: 0x81,
+  }), 6 * 1024 * 1024);
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 0, subtype: 0x99,
+  }), 6 * 1024 * 1024);
+
+  // DATA 必须避开 APP 提案；有提案时可用容量严格减少。
+  const app = { carveOffset: 0x360000, carveSize: 0x80000 };
+  const afterApp = dataSizeBounds(empty, app, DATA_SIZE_GRANULE);
+  assert.ok(afterApp.max < dataSizeBounds(empty, null, DATA_SIZE_GRANULE).max);
+  assert.equal(normalizeDataSize(afterApp.max, afterApp), afterApp.max);
+  assert.equal(dataSizeBounds(empty, { carveOffset: Number.NaN, carveSize: 0x80000 },
+    DATA_SIZE_GRANULE).max, 0, "malformed APP proposal must fail closed");
+
+  // 已有 DATA 作为占用域参与计算，不允许规划覆盖它。
+  const withData = dataSizeBounds({
+    slots: [], data: [{ offset: 0x360000, size: 0x40000 }],
+  }, null, DATA_SIZE_GRANULE);
+  assert.ok(withData.max < b.max);
+  const malformed = dataSizeBounds({
+    slots: [{ offset: 0x180000, size: 0x40000 }],
+    data: [{ offset: 0x180000, size: 0x10000 }],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(malformed.max, 0, "overlapping occupancy must fail closed");
+  const invalidOffset = dataSizeBounds({
+    slots: [{ offset: Number.NaN, size: 0x10000 }], data: [],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(invalidOffset.max, 0, "malformed occupancy must fail closed");
+  const outsidePool = dataSizeBounds({
+    slots: [{ offset: 0x100000, size: 0x10000 }], data: [],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(outsidePool.max, 0, "out-of-pool occupancy must fail closed");
+  const crossingSegment = dataSizeBounds({
+    slots: [{ offset: 0x350000, size: 0x20000 }], data: [],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(crossingSegment.max, 0, "cross-segment occupancy must fail closed");
+  console.log("PASS 7: generic DATA capacity bounds and validation");
 }
 
 console.log("ALL dynslot-pool TESTS PASSED");
