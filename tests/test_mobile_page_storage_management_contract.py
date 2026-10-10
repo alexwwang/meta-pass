@@ -162,6 +162,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+    def test_reinstall_c_requires_all_remove_a_checks_to_pass(self):
+        self.assertIn('let removeAResult = { ok: false, value: null }', RUNNER)
+        self.assertIn('removeAResult = await runCase("M06 remove A and verify B isolation"', RUNNER)
+        c_gate = RUNNER[RUNNER.index("if (removeAResult.ok && afterRemoveA"):RUNNER.index('if (b) {\n    await runCase("M07 remove B"')]
+        self.assertIn("removeAResult.ok", c_gate)
+
     def test_cancelled_uninstall_must_leave_state_unchanged(self):
         for token in ("cancelRemoveByName", "cancel uninstall is a no-op",
                       "slotsUnchanged", "installerIdle", "#mp-mgmt-x"):
