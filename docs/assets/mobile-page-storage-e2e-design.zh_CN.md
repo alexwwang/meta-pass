@@ -63,11 +63,11 @@ export META_PASS_E2E_SERIAL_PORT='/dev/<launcher-usb-serial-device>'
 6. 从仓库根目录执行（将两个 play ID 替换为已发布测试子固件的 ID）：
 
 ```sh
-node tools/realdevice/mobile_page_e2e.mjs \\
-  --real-device \\
-  --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \\
-  --require-data-reservation \\
-  --play-a <test-play-id-a> \\
+node tools/realdevice/mobile_page_e2e.mjs \
+  --real-device \
+  --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \
+  --require-data-reservation \
+  --play-a <test-play-id-a> \
   --play-b <test-play-id-b>
 ```
 
