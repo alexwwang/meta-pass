@@ -6,12 +6,16 @@ import { PLAY28_RECORDINGS_4M_PROFILE, PLAY28_RECORDINGS_4M_SIZE } from "../inst
 
 const sha256 = (b) => createHash("sha256").update(b).digest("hex");
 function appImage() {
-  const b = new Uint8Array(24 + 16 + 8 + 128 + 8 + 64 + 64).fill(0xab);
+  const firstLen = 1500000, secondLen = 64;
+  let total = 24 + 16 + 8 + firstLen + 8 + secondLen;
+  while (total % 16 !== 15) total++;
+  total += 1 + 32;
+  const b = new Uint8Array(total).fill(0xab);
   b[0] = 0xe9; b[1] = 2; b[12] = 5; b[23] = 1;
   const dv = new DataView(b.buffer);
-  dv.setUint32(24 + 16, 0x3fc80000, true); dv.setUint32(24 + 20, 128, true);
-  dv.setUint32(24 + 16 + 8 + 128, 0x42000020, true);
-  dv.setUint32(24 + 16 + 8 + 128 + 4, 64, true);
+  dv.setUint32(24 + 16, 0x3fc80000, true); dv.setUint32(24 + 20, firstLen, true);
+  dv.setUint32(24 + 16 + 8 + firstLen, 0x42000020, true);
+  dv.setUint32(24 + 16 + 8 + firstLen + 4, secondLen, true);
   return b;
 }
 function entry(label, type, subtype, offset, size) {
