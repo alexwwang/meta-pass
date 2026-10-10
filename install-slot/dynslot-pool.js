@@ -173,9 +173,9 @@ export function geomFromListing(listing, imageLen) {
 }
 
 // DATA capacity planning shared by the installer UI and Node tests.
-// Sizes are bytes. The returned maximum is conservative: it is the largest
-// aligned single extent after reserving a new APP proposal, not aggregate free
-// bytes. Existing DATA records remain occupied and are never resized implicitly.
+// All values are bytes. Existing DATA allocations are immutable inputs: this
+// planner only describes capacity for a new allocation and never resizes a
+// committed partition in place.
 export const DATA_SIZE_GRANULE = 0x1000;
 export const DATA_SIZE_MIN = DATA_SIZE_GRANULE;
 export const DATA_SIZE_STEP = 1024 * 1024;
@@ -185,8 +185,8 @@ export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_
   const data = Array.isArray(listing?.data) ? listing.data : [];
   const occupancy = slots.map((s) => ({ offset: s.offset, size: s.size }))
     .concat(data.map((d) => ({ offset: d.offset, size: d.size })));
-  if (appProposal && Number.isInteger(appProposal.carveOffset) &&
-      Number.isInteger(appProposal.carveSize) && appProposal.carveSize > 0) {
+  if (appProposal && Number.isSafeInteger(appProposal.carveOffset) &&
+      Number.isSafeInteger(appProposal.carveSize) && appProposal.carveSize > 0) {
     occupancy.push({ offset: appProposal.carveOffset, size: appProposal.carveSize });
   }
   const minRaw = Number(requestedMin);
@@ -194,13 +194,37 @@ export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_
     return { min: DATA_SIZE_MIN, max: 0, step: DATA_SIZE_STEP, available: 0 };
   }
   const min = Math.ceil(minRaw / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-  const spans = freeSpans(occupancy);
-  // freeSpans.max is an upper bound when the proposed APP is placed at an
-  // earlier first-fit location. Recompute the actual largest free span after
-  // adding the proposal, which keeps the selector from advertising impossible
-  // aggregate capacity.
-  const max = Math.floor(spans.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-  return { min, max, step: DATA_SIZE_STEP, available: spans.total };
+  const sorted = occupancy.filter((r) => Number.isSafeInteger(r.offset) &&
+    Number.isSafeInteger(r.size) && r.offset >= 0 && r.size > 0)
+    .sort((a, b) => a.offset - b.offset);
+  let largest = 0;
+  let total = 0;
+  for (const seg of POOL.seg) {
+    let cursor = seg.start;
+    for (const r of sorted) {
+      const end = r.offset + r.size;
+      if (end <= seg.start || r.offset >= seg.end) continue;
+      if (r.offset < cursor || end > seg.end) {
+        // Malformed/overlapping occupancy must not advertise capacity.
+        return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+      }
+      const aligned = alignUp(cursor, POOL.offsetAlign);
+      const span = Math.max(0, Math.floor((r.offset - aligned) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE);
+      largest = Math.max(largest, span);
+      total += Math.max(0, r.offset - cursor);
+      cursor = end;
+    }
+    const aligned = alignUp(cursor, POOL.offsetAlign);
+    const span = Math.max(0, Math.floor((seg.end - aligned) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE);
+    largest = Math.max(largest, span);
+    total += Math.max(0, seg.end - cursor);
+  }
+  return {
+    min,
+    max: Math.floor(largest / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE,
+    step: DATA_SIZE_STEP,
+    available: total,
+  };
 }
 
 export function normalizeDataSize(value, bounds) {
