@@ -1585,7 +1585,7 @@ export function boot(opts = {}) {
     // DATA sizing is a general installation option, not a Play/test-profile
     // switch. The device remains authoritative and revalidates every size.
     const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
-    if (dataImages.length && geom?.listing && chosen.isNew && geom.proposal) {
+    if (dataImages.length && geom?.listing) {
       const declared = dataImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
       const minimums = dataImages.map((d) => dataPartitionMinimum(d));
       const existingSizes = dataImages.map((d) => {
@@ -1611,6 +1611,11 @@ export function boot(opts = {}) {
         const reserve = minimums.filter((_, j) => j !== i && editable[j]);
         const bounds = dataSizeBounds(geom.listing, appProposal, min, reserve);
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+        if (max < min) {
+          failSheet("数据分区空间不足",
+            `DATA ${i + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB，但当前分区布局无法提供连续空间。请取消安装或释放存储后重试。`);
+          return;
+        }
         const values = [min];
         if (max >= min) {
           let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
@@ -1655,7 +1660,21 @@ export function boot(opts = {}) {
             }
           });
         });
-        $("mp-data-confirm").onclick = () => resolve(selections.slice());
+        $("mp-data-confirm").onclick = () => {
+          // Validate the whole selection as a set: each dropdown's individual
+          // maximum assumes other DATA extents stay at their minima, so several
+          // simultaneous maximum choices must not overcommit the shared pool.
+          for (let i = 0; i < selections.length; i++) {
+            const reserve = selections.filter((_, j) => j !== i);
+            const bounds = dataSizeBounds(geom.listing, appProposal, minimums[i], reserve);
+            if (normalizeDataSize(selections[i], bounds) === null) {
+              failSheet("数据分区容量组合无效",
+                "当前选择的多个 DATA 容量无法同时放入现有分区布局，请调小部分容量后重试。");
+              return;
+            }
+          }
+          resolve(selections.slice());
+        };
         $("mp-data-cancel").onclick = () => resolve(null);
       });
       if (!accepted) { clearPanel(); return; }
