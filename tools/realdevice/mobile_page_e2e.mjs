@@ -41,6 +41,28 @@ if (runtimeDriver && manualAssist) {
   console.error("Choose one runtime mode: --runtime-driver or --manual-assist, not both.");
   process.exit(2);
 }
+if (runtimeDriver) {
+  const driverPath = path.resolve(runtimeDriver);
+  if (runtimeDriver.toLowerCase().endsWith(".py")) {
+    if (!fs.existsSync(driverPath)) {
+      console.error("Runtime driver does not exist: " + driverPath);
+      process.exit(2);
+    }
+    if (!String(process.env.META_PASS_E2E_SERIAL_PORT || "").trim()) {
+      console.error("Set META_PASS_E2E_SERIAL_PORT to the launcher's native USB Serial/JTAG port before any device mutation.");
+      process.exit(2);
+    }
+    const python = process.env.PYTHON || "python3";
+    const serialCheck = spawnSync(python, ["-c", "import serial"], { encoding: "utf8", timeout: 10000 });
+    if (serialCheck.error || serialCheck.status !== 0) {
+      console.error("Runtime driver requires pyserial in " + python + "; install it before running E2E.");
+      process.exit(2);
+    }
+  } else if (runtimeDriver.includes(path.sep) && !fs.existsSync(driverPath)) {
+    console.error("Runtime driver does not exist: " + driverPath);
+    process.exit(2);
+  }
+}
 if (manualAssist && (!process.stdin.isTTY || !process.stdout.isTTY)) {
   console.error("--manual-assist requires an interactive terminal.");
   process.exit(2);
