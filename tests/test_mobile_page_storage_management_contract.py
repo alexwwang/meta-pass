@@ -31,6 +31,15 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn('command + "\\n"', DRIVER)
         self.assertNotIn('command + "\\\\n"', DRIVER)
 
+    def test_runtime_driver_prerequisites_fail_before_hardware_mutation(self):
+        runtime_start = RUNNER.index("if (runtimeDriver) {")
+        runtime_end = RUNNER.index("if (manualAssist &&", runtime_start)
+        runtime_preflight = RUNNER[runtime_start:runtime_end]
+        for token in ("META_PASS_E2E_SERIAL_PORT", "import serial", "Runtime driver does not exist"):
+            with self.subTest(token=token):
+                self.assertIn(token, runtime_preflight)
+        self.assertLess(runtime_start, RUNNER.index('const urlArg = String(args.url'))
+
     def test_install_uninstall_and_space_accounting_are_end_to_end(self):
         for token in ("M04 install A", "M05 install B", "assertDynamicSlotGeometry",
                       "assertBaselineDataPreserved", "M06 UI delete releases test-created DATA reservations",
