@@ -128,6 +128,7 @@ const report = {
   results: [],
 };
 let page, baseline;
+let freshReservationsForB = [];
 const pageErrors = [], consoleErrors = [], failedRequests = [];
 function redact(value) {
   return String(value)
@@ -553,14 +554,14 @@ try {
     record("M05 both plays coexist", coexist, "slotA=" + (a ? a.slot : "missing") + "; slotB=" + slot.slot);
     if (!coexist) throw new Error("device API did not confirm A/B coexistence");
     requireSafeStorageState(listing, "M05 after install B");
+    const oldData = dataReservations(baseline);
+    freshReservationsForB = dataReservations(listing).filter((d) => d.play_id === Number(playB) &&
+      !oldData.some((x) => x.offset === d.offset && x.size === d.size &&
+        x.play_id === d.play_id && x.label === d.label));
     if (requireDataReservation) {
-      const oldData = dataReservations(baseline);
-      const fresh = dataReservations(listing).filter((d) => d.play_id === Number(playB) &&
-        !oldData.some((x) => x.offset === d.offset && x.size === d.size &&
-          x.play_id === d.play_id && x.label === d.label));
-      record("M05 child-firmware DATA reservation created", fresh.length > 0,
-        "playId=" + Number(playB) + "; newReservations=" + fresh.length);
-      if (fresh.length === 0) throw new Error("required DATA reservation for child firmware was not created");
+      record("M05 child-firmware DATA reservation created", freshReservationsForB.length > 0,
+        "playId=" + Number(playB) + "; newReservations=" + freshReservationsForB.length);
+      if (freshReservationsForB.length === 0) throw new Error("required DATA reservation for child firmware was not created");
     }
     saveJson("after-install-data-reservations.json", dataReservations(listing));
     return { slot, listing };
@@ -655,6 +656,14 @@ try {
             freshReservationsForC.filter((d) => remainingData.some((x) =>
               x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label)).length);
           if (!cDataReleased) throw new Error("C DATA reservation remained after uninstall");
+          const remainingBData = dataReservations(listing);
+          const bDataPreserved = freshReservationsForB.every((d) => remainingBData.some((x) =>
+            x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+          record("M06C B DATA reservations preserved", bDataPreserved,
+            "expected=" + freshReservationsForB.length + "; remaining=" +
+            freshReservationsForB.filter((d) => remainingBData.some((x) =>
+              x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label)).length);
+          if (!bDataPreserved) throw new Error("removing C affected B DATA reservations");
           const bStillValid = listing.slots.some((x) => x.name === nameB && x.state === "valid");
           record("M06C B remains valid after removing C", bStillValid);
           if (!bStillValid) throw new Error("removing C affected B");
