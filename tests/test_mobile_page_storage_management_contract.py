@@ -65,6 +65,14 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("remove_app_bytes_and_commit", device)
         self.assertIn("meta_carve_flash_remove_app_and_data", device)
         self.assertIn("DATA ownership is unknown", device)
+        # An unresolved durable uninstall intent must prevent the management
+        # HTTP API from starting; otherwise another mutation could invalidate
+        # the recovery target before the delete transaction is resumed.
+        startup = device[device.index("esp_err_t meta_install_net_start(void)"):]
+        recovery_guard = startup.index("pending uninstall recovery failed")
+        server_start = startup.index("httpd_start(&s_httpd, &hcfg)")
+        self.assertLess(recovery_guard, server_start)
+        self.assertIn("return recovery;", startup[recovery_guard:server_start])
         self.assertIn("501 Not Implemented", device)
         self.assertIn("metadata-only import is disabled", device)
         self.assertIn("out->erase_data = true", model)
