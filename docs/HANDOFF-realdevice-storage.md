@@ -102,8 +102,15 @@ Install APP + DATA. Verify:
 ### S3
 Install a second APP slot and verify two slots survive reboot without damaging the first installation.
 
-### S4
-Delete the DATA-bearing slot. Verify DATA becomes ARCHIVED. Then delete the remaining slot with eraseData and verify count=0.
+### S4 Cascade-delete APP + DATA
+
+- Delete an APP with multiple DATA labels.
+- The device enumerates all DATA belonging to that APP; UI offers neither standalone DATA deletion nor data retention.
+- After success, APP and all associated DATA records are absent, no extents remain referenced, and free-space accounting matches released extents.
+- Records and bytes for other APPs/DATA remain unchanged.
+- If erase or persistent commit fails, do not report success or reclaim extents that remain referenced.
+- Interrupt deletion and reboot; the durable transaction must recover idempotently, and image scanning must not resurrect the deleted APP.
+- Until real byte-level backup is implemented, UI must warn that uninstall permanently deletes data and must not claim backup/restore is available.
 
 ### S5
 Start a third install, upload only about one third, interrupt it, perform esptool soft reset, wait for service recovery, reissue prepare idempotently, resume from persisted offset, finalize and reboot.
