@@ -624,9 +624,13 @@ try {
           x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
         const released = created.filter((d) => !remaining.some((x) =>
           x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
-        record("M06 UI delete releases test-created DATA reservations", released.length > 0, "released=" + released.length + "; created=" + created.length);
-        if (requireDataReservation && released.length === 0) {
-          throw new Error("removing A did not release its test-created DATA reservation; refusing further device mutations");
+        const releaseVerified = created.length > 0 && released.length === created.length;
+        record("M06 UI delete releases test-created DATA reservations",
+          releaseVerified || (!requireDataReservation && created.length === 0),
+          "released=" + released.length + "; created=" + created.length);
+        if ((created.length > 0 && released.length !== created.length) ||
+            (requireDataReservation && created.length === 0)) {
+          throw new Error("removing A did not release all expected test-created DATA reservations; refusing further device mutations");
         }
       }
       requireSafeStorageState(afterRemoveA, "M06 after removing A");
