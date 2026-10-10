@@ -100,7 +100,10 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
         self.assertIn("const ownedNames = new Set([nameA, nameB, nameC])", RUNNER)
-        self.assertIn("M06C", RUNNER[RUNNER.index("if (afterRemoveA && b"):RUNNER.index('if (b) {\n    await runCase("M07 remove B"')])
+        self.assertIn("M06C fresh DATA reservations released", RUNNER)
+        self.assertIn("M06C C APP slot removed", RUNNER)
+        self.assertIn("freshReservationsForC.every", RUNNER)
+        self.assertIn("M06C", RUNNER[RUNNER.index("M06C fresh install after deletion"):RUNNER.index('if (b) {\n    await runCase("M07 remove B"')])
 
     def test_app_uninstall_cascades_data_and_ui_has_no_standalone_data_delete(self):
         for token in ("卸载 APP 必须同时删除该 APP 关联的全部 DATA",
