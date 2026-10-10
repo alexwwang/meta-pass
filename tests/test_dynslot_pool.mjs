@@ -204,6 +204,8 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   const afterApp = dataSizeBounds(empty, app, DATA_SIZE_GRANULE);
   assert.ok(afterApp.max < dataSizeBounds(empty, null, DATA_SIZE_GRANULE).max);
   assert.equal(normalizeDataSize(afterApp.max, afterApp), afterApp.max);
+  assert.equal(dataSizeBounds(empty, { carveOffset: Number.NaN, carveSize: 0x80000 },
+    DATA_SIZE_GRANULE).max, 0, "malformed APP proposal must fail closed");
 
   // 已有 DATA 作为占用域参与计算，不允许规划覆盖它。
   const withData = dataSizeBounds({
