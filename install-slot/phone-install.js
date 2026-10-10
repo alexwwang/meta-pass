@@ -1591,16 +1591,16 @@ export function boot(opts = {}) {
         return;
       }
       const appProposal = chosen.isNew ? geom.proposal : null;
-      const bounds = dataSizeBounds(geom.listing, appProposal, DATA_SIZE_GRANULE);
-      // Keep a conservative contiguous-space budget for all new DATA requests.
       // Existing allocations that already satisfy the firmware minimum are
-      // locked to their current size; this UI only lets users size new extents.
+      // locked to their current size. For each editable extent, simulate
+      // first-fit reservations for the other new DATA minima before exposing
+      // its maximum; this avoids offering mutually incompatible max values.
       const editable = declared.map((min, i) => existingSizes[i] == null || existingSizes[i] < min);
-      const sumDeclared = declared.reduce((a, n, i) => a + (editable[i] ? n : 0), 0);
       const options = declared.map((min, i) => {
         if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
-        const otherMinimums = sumDeclared - min;
-        const max = Math.floor(Math.max(0, bounds.max - otherMinimums) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+        const reserve = declared.filter((_, j) => j !== i && editable[j]);
+        const bounds = dataSizeBounds(geom.listing, appProposal, min, reserve);
+        const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
         const values = [min];
         if (max >= min) {
           let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
