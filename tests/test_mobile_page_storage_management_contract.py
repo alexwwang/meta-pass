@@ -45,6 +45,18 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("Math.max(declaredMin, existingSizes[i])", installer)
         self.assertIn("existingSizes[i] != null && editable[i]", installer)
 
+    def test_in_place_data_growth_erases_only_new_free_tail(self):
+        device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+        start = device.index("static esp_err_t prepare_data_moves_locked(")
+        end = device.index("static void cleanup_migrated_sources", start)
+        migration = device[start:end]
+        self.assertIn("if (now->size > old->size)", migration)
+        self.assertIn("const uint32_t tail_offset = old->offset + old->size;", migration)
+        self.assertIn("in-place DATA growth tail overlaps existing DATA source", migration)
+        self.assertIn("esp_flash_erase_region(NULL, grow_offset[i], grow_size[i])", migration)
+        self.assertLess(migration.index("All destructive operations start only after the full preflight passes"),
+                        migration.index("esp_flash_erase_region(NULL, grow_offset[i], grow_size[i])"))
+
     def test_data_migration_preflights_all_destinations_before_erasing(self):
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
         start = device.index("static esp_err_t prepare_data_moves_locked(")
