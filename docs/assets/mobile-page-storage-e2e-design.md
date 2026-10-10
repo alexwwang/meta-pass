@@ -35,7 +35,7 @@ Child-firmware serial client: `tools/realdevice/data_child_serial.py`
 
 1. **UI:** management list, slot state, delete confirmation, install progress and completion/failure.
 2. **Device API:** independent reads of `/api/install/slots` and `/api/install/status`.
-3. **Allocator:** every app slot and DATA reservation is inside the dynamic pool, correctly aligned, non-overlapping, and `free = pool bytes - occupied bytes`.
+3. **Allocator:** every app slot and DATA reservation is inside the dynamic pool, correctly aligned, non-overlapping, and `free = pool bytes - occupied bytes`; each phase also confirms that all pre-existing VALID APP slots and baseline DATA reservations remain unchanged.
 4. **Runtime:** the child actually boots and provides USB Serial/JTAG evidence for DATA erase, write, readback, checksum, reboot persistence and return to launcher.
 
 A vanished UI row does not prove a flash image cannot boot. A missing DATA reservation does not prove the child's DATA contents were validated.
