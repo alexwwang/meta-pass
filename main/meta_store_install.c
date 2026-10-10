@@ -2041,38 +2041,26 @@ static esp_err_t h_install_remove(httpd_req_t *req)
         return reply(req, "404 Not Found", "no such slot");
     }
 
-    if (rm.erase_data) {
-        // 显式"删除数据"(design §6):擦该玩法全部数据记录(字节 + 记录)。
-        // erase_data 一次一条且会改动记录 —— 先快照 label 列表再逐条擦。
-        const uint32_t pid = carve->slot[rm.slot].play_id;
-        if (pid != 0) {
-            char labels[META_DATA_MAX][META_DATA_LABEL_MAX + 1];
-            uint8_t n = 0;
-            for (uint8_t i = 0; i < carve->data_count && n < META_DATA_MAX; i++) {
-                if (carve->data[i].play_id != pid) continue;
-                memcpy(labels[n], carve->data[i].label, sizeof(labels[0]));
-                labels[n][META_DATA_LABEL_MAX] = '\0';
-                n++;
-            }
-            for (uint8_t i = 0; i < n; i++) {
-                const esp_err_t e = meta_carve_flash_erase_data(pid, labels[i]);
-                if (e != ESP_OK) {
-                    ESP_LOGE(TAG, "cascade erase failed: play_id=%u label=%s err=%s",
-                             (unsigned)pid, labels[i], esp_err_to_name(e));
-                    return reply(req, "500 Internal Server Error",
-                                 "associated DATA erase failed; APP remains installed");
-                }
+    /* Keep DATA records and APP carve reserved until all destructive I/O has
+     * succeeded. Erase bytes directly from the current snapshot; only the final
+     * A/B carve commit removes APP + all DATA references together. */
+    const uint32_t pid = carve->slot[rm.slot].play_id;
+    if (pid != 0) {
+        for (uint8_t i = 0; i < carve->data_count; i++) {
+            const meta_carve_data_t *data = &carve->data[i];
+            if (data->play_id != pid) continue;
+            const esp_err_t e = esp_flash_erase_region(NULL, data->offset, data->size);
+            if (e != ESP_OK) {
+                ESP_LOGE(TAG, "cascade erase failed: play_id=%u label=%s err=%s",
+                         (unsigned)pid, data->label, esp_err_to_name(e));
+                return reply(req, "500 Internal Server Error",
+                             "associated DATA erase failed; retry uninstall");
             }
         }
-    } else {
-        return reply(req, "400 Bad Request", "cascade data deletion required");
     }
 
-    // 防"删除复活"(真机 2026-10-04):remove 只清记录、不擦镜像字节,而物化
-    // 表仍保留该分区 → 重启后扫描见有效镜像 → sync_states 把 EMPTY 顶回
-    // VALID,删除形同虚设(记录扇区 A/B _seq 22→23 现场实锤)。先擦镜像首
-    // sector(4KB):扫描首扇区全 0xFF 即判 EMPTY,与记录一致,复活链断。
-    // 擦除失败 → 500 不删(删了必复活,不如不删让用户重试)。
+    /* Clear the image header before dropping the slot record so a reboot-time
+     * scanner cannot resurrect the APP if the final metadata commit fails. */
     {
         const esp_partition_t *part = slot_partition_any((int8_t)rm.slot);
         if (part) {
@@ -2081,15 +2069,17 @@ static esp_err_t h_install_remove(httpd_req_t *req)
                 ESP_LOGE(TAG, "remove: image header erase failed: %s",
                          esp_err_to_name(ee));
                 return reply(req, "500 Internal Server Error",
-                             "erase image header failed");
+                             "erase image header failed; retry uninstall");
             }
         }
     }
 
-    if (meta_carve_flash_remove(rm.slot) != ESP_OK) {
-        return reply(req, "500 Internal Server Error", "remove failed");
+    /* One durable A/B record + partition-table commit removes all references.
+     * On commit failure, old metadata still reserves the extents for retry. */
+    if (meta_carve_flash_remove_app_and_data(rm.slot) != ESP_OK) {
+        return reply(req, "500 Internal Server Error",
+                     "APP/DATA metadata commit failed; retry uninstall");
     }
-
     ESP_LOGI(TAG, "slot %d and associated DATA removed", rm.slot);
     return reply(req, "200 OK", "ok");
 }
