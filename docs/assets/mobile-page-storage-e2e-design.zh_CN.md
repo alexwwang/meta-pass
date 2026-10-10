@@ -27,7 +27,7 @@
 | M05 安装 B | 安装第二个 play ID | A/B 可同时存在；无重叠；原有 DATA reservation 保留 |
 | M05C A/B 隔离 | 比较设备侧报告的 DATA 物理地址 | A/B DATA extent 不同，不能仅凭 play ID 不同就判定隔离成立 |
 | M06 卸载 A | 在管理 UI 中双击删除、确认；卸载后运行 B | A 从槽表消失；B 仍 VALID 且可启动；A 的 DATA reservation 被释放；池几何仍正确 |
-| M06C 删除后重新安装 | A 删除后，用 A 的 play ID、不同随机名称 C 重新安装；运行并卸载 C | C 必须获得独立于仍存活 B 的新 APP 槽位；旧 A 名称不能复活；按要求创建新的 DATA reservation；卸载后明确确认 C 的 APP 槽和新 DATA reservation 均已释放，且 B 不受影响 |
+| M06C 删除后重新安装 | A 删除后，用 A 的 play ID、不同随机名称 C 重新安装；运行并卸载 C | C 必须获得独立于仍存活 B 的新 APP 槽位；旧 A 名称不能复活；按要求创建新的 DATA reservation；卸载后明确确认 C 的 APP 槽和新 DATA reservation 均已释放，B 的 DATA reservation 仍保留且 B 不受影响 |
 | M07 卸载 B | 同样从 UI 删除并验证 | B 从槽表消失；设备侧证明已删除镜像不可启动且 DATA 已释放 |
 | M08 恢复基线 | 再读 slots、reservations 和 status | 安装器空闲；槽表、DATA reservations 和 free bytes 与测试前完全一致 |
 
