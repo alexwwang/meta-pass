@@ -432,14 +432,16 @@ static void test_remove_app_and_data_atomically(void)
     strcpy(rec.carve.data[1].label, "assets");
     rec.carve.slot[0].play_id = 123;
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
-    const uint32_t old_seq = s_seq;
+    meta_carve_rec_t before_remove, committed;
+    assert(read_best(&before_remove));
     assert(meta_carve_flash_remove_app_and_data(0) == ESP_OK);
+    assert(read_best(&committed));
+    assert(committed.seq == before_remove.seq + 1);
     const meta_carve_t *cur = meta_carve_flash_carve();
     assert(cur->count == 2);
     assert(cur->data_count == 0);
     assert(meta_carve_find_data(cur, 123, "save") == -1);
     assert(meta_carve_find_data(cur, 123, "assets") == -1);
-    assert(s_seq == old_seq + 1);
     restart();
     meta_carve_rec_t after;
     assert(read_best(&after));
