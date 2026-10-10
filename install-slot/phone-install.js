@@ -1571,7 +1571,7 @@ export function boot(opts = {}) {
         <div class=lb><span id=mp-stage>准备中</span><span id=mp-pct>预检…</span></div>
       </div>
     </section>`);
-    const bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
+    let bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
     stage("下载固件");
     const pre = await prepareImage(meta, slot,
       { stage: (s) => { stageEl.textContent = s; } }, userName,
@@ -1662,6 +1662,18 @@ export function boot(opts = {}) {
         pre.dataImages[i].requiredSize = size;
         pre.dataImages[i].size = size;
       }
+      // The selector replaces the progress panel; recreate it before upload so
+      // subsequent progress callbacks update visible elements rather than a
+      // detached DOM subtree.
+      setPanel(`<section class=mp-panel>
+        <div class=mp-prog>
+          <progress id=mp-bar value=0 max=1></progress>
+          <div class=lb><span id=mp-stage>准备上传</span><span id=mp-pct>0%</span></div>
+        </div>
+      </section>`);
+      bar = $("mp-bar");
+      stageEl = $("mp-stage");
+      pctEl = $("mp-pct");
     }
 
     stageEl.textContent = "上传";
