@@ -326,7 +326,7 @@ static void test_parse_remove(void)
     // 非布尔 eraseData 被忽略，仍按级联删除策略处理。
     const char *j5 = "{\"slot\":2,\"eraseData\":\"yes\"}";
     assert(meta_install_model_parse_remove(j5, strlen(j5), &r));
-    assert(r.slot == 2 && !r.erase_data);
+    assert(r.slot == 2 && r.erase_data);
 
     // 缺 slot / 越界 / 负数 / 非整数 / 空输入一律拒绝(不动 *out)。
     assert(!meta_install_model_parse_remove("{\"x\":1}", 7, &r));
