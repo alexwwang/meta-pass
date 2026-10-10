@@ -4,7 +4,7 @@
 
 # Mobile-page DATA E2E: selecting a real marketplace firmware
 
-Status: the target has been selected; install-time size reduction and play-UI automation are not implemented yet.
+Status: the target is selected and an explicit opt-in size profile is wired into analysis and the install offer; real marketplace-binary and hardware acceptance are still pending.
 
 ## Decision
 
@@ -23,14 +23,14 @@ Based on `docs/assets/dynslot-data-unification-research.md` (2026-10-02 byte-lev
 
 ## Capacity gate — mandatory
 
-Play 28 declares an approximately 1.5 MiB app plus a 6.4 MiB `recordings` partition, which exceeds the capacity available to one play in the current dynamic pool. The research proposed shrinking the erased `recordings` carve to about 4 MiB. Standard IDF FAT mounting derives the size from the actual partition entry, making this a plausible approach, but **the current installer still calculates admission using the declared DATA size; shrink-to-fit is not implemented automatically**.
+Play 28 declares an approximately 1.5 MiB app plus a 6.4 MiB `recordings` partition, which exceeds the capacity available to one play in the current dynamic pool. The research proposed shrinking the erased `recordings` carve to about 4 MiB. Standard IDF FAT mounting derives the size from the actual partition entry, making this a plausible approach, The default installer still uses the declared DATA size. This branch now has an explicit opt-in test profile, but that is not yet evidence of real-device compatibility.
 
-Before Play 28 can become an executable hardware target, implement and test a narrowly scoped test configuration:
+Implementation status: `?mp_test_data_profile=play28-recordings-4m` is wired for Play ID 28 only; the server analysis and phone install offer use the same profile. The default URL does not enable it. The actual marketplace image must still prove the partition is blank and the running firmware sees a 4 MiB partition.\n\nSafety boundaries:
 
-1. Allow a size override from the declared value to 4 MiB only for an explicit test play ID/test run; leave production defaults unchanged.
+1. Allow the override from the declared value to 4 MiB only for Play ID 28 plus the explicit test query parameter; leave production defaults unchanged.
 2. Do not rewrite the original firmware binary or copy out-of-range DATA bytes from the source image into the smaller carve.
 3. Analyze/prepare/finalize and the device store record must agree on the final size; after boot, the real firmware must resolve `recordings` by label and see a 4 MiB partition.
-4. If this consistency cannot be achieved with a controlled configuration, fail the capacity gate. Do not bypass it by dropping checks or fabricating DATA reservations.
+4. The profile accepts only one `recordings` FAT (`0x81`) partition, a declared size of at least 6 MiB, and `initial_image_size=0`; all mismatches fail closed.\n5. If consistency cannot be achieved with the controlled configuration, fail the capacity gate. Do not bypass it by dropping checks or fabricating DATA reservations.
 
 ## Acceptance scenarios
 
