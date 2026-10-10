@@ -1,3 +1,5 @@
+[English](app-data-lifecycle-design.md)
+
 # APP 与 DATA 生命周期设计（feat/storage）
 
 ## 1. 目标与范围
