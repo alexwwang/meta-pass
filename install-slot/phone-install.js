@@ -1438,9 +1438,8 @@ export function boot(opts = {}) {
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
-    // dynslot §4.5:设备 carve 是槽位几何事实源(删除/新槽后与 SLOT_GEOMETRY
-    // 不同源)。slots() 不可达(旧固件无此路由 / 无 token)→ 回退 legacy 视图,
-    // 真伪仍由设备 prepare 时 offer_ok/carve_ok 终裁。
+    // dynslot §4.5:设备动态 carve 清单是分配事实源。新安装必须创建新的 APP carve；
+    // slots() 不可达或旧固件不支持动态池时 fail closed，不能退回固定/既有槽覆盖。
     let geom = null;
     try {
       const lr = await bridge.slots();
