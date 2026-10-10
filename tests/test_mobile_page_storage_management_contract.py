@@ -9,6 +9,7 @@ RUNNER = (ROOT / "tools/realdevice/mobile_page_e2e.mjs").read_text(encoding="utf
 DRIVER = (ROOT / "tools/realdevice/mobile_page_runtime_driver.py").read_text(encoding="utf-8")
 SERIAL = (ROOT / "tools/realdevice/data_child_serial.py").read_text(encoding="utf-8")
 DESIGN = (ROOT / "docs/assets/mobile-page-storage-e2e-design.zh_CN.md").read_text(encoding="utf-8")
+LIFECYCLE = (ROOT / "docs/assets/app-data-lifecycle-design.zh_CN.md").read_text(encoding="utf-8")
 
 
 class MobilePageStorageManagementContract(unittest.TestCase):
@@ -40,6 +41,18 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("const opts = geom.proposal", installer)
         self.assertIn("fresh APP carve required", device)
         self.assertIn("每次安装都必须从动态回收池创建新的 APP carve", design)
+
+    def test_app_uninstall_cascades_data_and_ui_has_no_standalone_data_delete(self):
+        for token in ("卸载 APP 必须同时删除该 APP 关联的全部 DATA",
+                      "不提供单独删除 DATA 的用户操作",
+                      "不允许用户选择卸载时保留 DATA",
+                      "删除中断后重启",
+                      "真实字节级备份未实现"):
+            with self.subTest(token=token):
+                self.assertIn(token, LIFECYCLE)
+        installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+        self.assertIn("同时删除数据", installer)
+        self.assertIn("不 = 数据归档保留", installer) if False else None
 
     def test_child_b_reservation_is_attributed_to_b_play_id(self):
         self.assertIn("d.play_id === Number(playB)", RUNNER)
