@@ -298,7 +298,9 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
              * the newly acquired tail, and prove that tail was not owned by
              * any old DATA extent before touching flash. */
             if (now->size > old->size) {
-                const uint32_t tail_offset = old->offset + old->size;
+                const uint64_t tail_start64 = (uint64_t)old->offset + old->size;
+                if (tail_start64 > UINT32_MAX) return ESP_ERR_INVALID_STATE;
+                const uint32_t tail_offset = (uint32_t)tail_start64;
                 const uint32_t tail_size = now->size - old->size;
                 for (uint8_t j = 0; j < before->data_count; j++) {
                     const meta_carve_data_t *source = &before->data[j];
