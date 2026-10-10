@@ -65,6 +65,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("remove_app_bytes_and_commit", device)
         self.assertIn("meta_carve_flash_remove_app_and_data", device)
         self.assertIn("DATA ownership is unknown", device)
+        self.assertIn("501 Not Implemented", device)
+        self.assertIn("metadata-only import is disabled", device)
         self.assertIn("out->erase_data = true", model)
 
     def test_child_b_reservation_is_attributed_to_b_play_id(self):
