@@ -227,6 +227,10 @@ const server = http.createServer((req, res) => {
       return;
     }
     const dataProfile = urlObj.searchParams.get("dataProfile");
+    if (dataProfile && process.env.ENABLE_TEST_DATA_PROFILES !== "1") {
+      sendError(res, 403, "test data profiles are disabled");
+      return;
+    }
     if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
       sendError(res, 400, "unsupported data profile");
       return;
