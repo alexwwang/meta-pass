@@ -240,3 +240,16 @@ deferred to v2).
 4. **P1-4 dependency**: landed (58caa0e — `/api/install/slots` exposes data
    records, `parseSlots` passes them through, `geomFromListing` unions
    occupancy); record creation unblocked.
+
+
+## 8. APP slot lifecycle for new installs (decision, 2026-10-10)
+
+**Every install must allocate a fresh APP carve from the dynamic pool; installing over an existing APP slot is forbidden.** The phone UI and device prepare API both enforce this: the UI only offers a new allocator proposal and fails closed if the dynamic slot listing is unavailable; the device rejects legacy install requests without `has_carve`.
+
+- The installer only shows the new carve proposed for the current APP image. Existing empty, valid, and invalid slots are not install targets.
+- Removing an APP first clears the image header that could otherwise let boot scanning resurrect the slot, then commits removal of the carve record. Its extent returns to the pool. A later install may receive the same physical offset, but only as a new allocation with a new slot identity.
+- DATA lifecycle is independent of the APP slot. By default, deleting an APP archives associated DATA instead of silently erasing user data; explicit erasure remains a separate confirmed action.
+- On prepare/upload failure, reclaim only the new carve created by that attempt; never release a previously committed APP slot prematurely.
+- The displayed slot number is a transient index derived from current carve ordering, not a durable identity. Insertion/removal can change indices; durable association must use persisted record fields such as play ID and label.
+
+This policy reduces state branches and improves pool utilization. The old fixed-slot install path is no longer a compatibility fallback for new installs; devices without dynamic-pool support must be upgraded rather than silently overwriting an existing slot.
