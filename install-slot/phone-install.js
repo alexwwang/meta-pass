@@ -1369,7 +1369,15 @@ export function boot(opts = {}) {
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在擦除 APP 和全部关联数据…</p></section>`);
     const r = await bridge.remove(slot);
     if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
-    if (r.status === 409) { failSheet("无法删除", "安装进行中 —— 请先完成或取消安装"); return; }
+    if (r.status === 409) {
+      if ((r.text || "").includes("previous uninstall recovered")) {
+        log("✓ 已恢复上次中断的删除，正在刷新列表", "ok");
+        showMgmt();
+        return;
+      }
+      failSheet("无法删除", "安装进行中 —— 请先完成或取消安装");
+      return;
+    }
     if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
     if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
     if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
