@@ -13,7 +13,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pool = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
         carvePlace, geomFromListing, dataSizeBounds, normalizeDataSize,
-        DATA_SIZE_GRANULE, DATA_SIZE_STEP } = pool;
+        DATA_SIZE_GRANULE, DATA_SIZE_STEP, dataPartitionMinimum } = pool;
 
 // ── 1. 池描述符 == main/meta_carve.h 常量(单一几何事实源) ─────────────────
 {
@@ -182,6 +182,22 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   assert.equal(normalizeDataSize(b.max + DATA_SIZE_GRANULE, b), null);
   assert.equal(normalizeDataSize(b.min + 1, b), null);
   assert.equal(dataSizeBounds(empty, null, 0).max, 0);
+
+  // The partition-table size is a default, not always a hard minimum:
+  // blank supported filesystems have generic floors; non-empty payloads keep
+  // the declared extent so selection cannot truncate embedded filesystem data.
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 0, subtype: 0x81,
+  }), 1024 * 1024);
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 0, subtype: 0x82,
+  }), 64 * 1024);
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 4096, subtype: 0x81,
+  }), 6 * 1024 * 1024);
+  assert.equal(dataPartitionMinimum({
+    required_size: 6 * 1024 * 1024, initial_image_size: 0, subtype: 0x99,
+  }), 6 * 1024 * 1024);
 
   // DATA 必须避开 APP 提案；有提案时可用容量严格减少。
   const app = { carveOffset: 0x360000, carveSize: 0x80000 };
