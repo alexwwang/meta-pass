@@ -29,7 +29,7 @@ import { exportBackup, importBackup } from "./backup-data.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { sanitizeDisplayName } from "./name-blob.js";
-import { POOL, META_SLOT_COUNT, geomFromListing, dataSizeBounds, normalizeDataSize, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
+import { POOL, META_SLOT_COUNT, geomFromListing, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -1587,37 +1587,45 @@ export function boot(opts = {}) {
     const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
     if (dataImages.length && geom?.listing && chosen.isNew && geom.proposal) {
       const declared = dataImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
+      const minimums = dataImages.map((d) => dataPartitionMinimum(d));
       const existingSizes = dataImages.map((d) => {
         const rec = geom.listing.data.find((x) =>
           x.play_id === Number(meta.play.id) && x.label === String(d.label || ""));
         return rec && Number.isSafeInteger(rec.size) ? rec.size : null;
       });
       const valid = declared.every((n) => Number.isSafeInteger(n) &&
-        n >= DATA_SIZE_GRANULE && n % DATA_SIZE_GRANULE === 0);
+        n >= DATA_SIZE_GRANULE && n % DATA_SIZE_GRANULE === 0) &&
+        minimums.every((n) => Number.isSafeInteger(n) && n >= DATA_SIZE_GRANULE);
       if (!valid) {
-        failSheet("数据分区容量无效", "固件声明的数据分区大小不是合法的 4 KiB 对齐容量，已停止安装。");
+        failSheet("数据分区容量无效", "固件声明的数据分区大小或最低容量不合法，已停止安装。");
         return;
       }
       const appProposal = chosen.isNew ? geom.proposal : null;
-      // Existing allocations that already satisfy the firmware minimum are
-      // locked to their current size. For each editable extent, simulate
-      // first-fit reservations for the other new DATA minima before exposing
-      // its maximum; this avoids offering mutually incompatible max values.
-      const editable = declared.map((min, i) => existingSizes[i] == null || existingSizes[i] < min);
-      const options = declared.map((min, i) => {
+      // Existing allocations that meet the safe minimum are retained as-is.
+      // Blank filesystem extents may be downsized to a generic filesystem floor;
+      // non-empty bundled DATA images retain their declared size to avoid
+      // truncating embedded filesystem content.
+      const editable = minimums.map((min, i) => existingSizes[i] == null || existingSizes[i] < min);
+      const options = minimums.map((min, i) => {
         if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
-        const reserve = declared.filter((_, j) => j !== i && editable[j]);
+        const reserve = minimums.filter((_, j) => j !== i && editable[j]);
         const bounds = dataSizeBounds(geom.listing, appProposal, min, reserve);
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
         const values = [min];
         if (max >= min) {
           let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
           while (next <= max) { values.push(next); next += DATA_SIZE_STEP; }
+          if (declared[i] >= min && declared[i] <= max) values.push(declared[i]);
           if (max > min && values[values.length - 1] !== max) values.push(max);
         }
-        return { min, max: Math.max(min, max), values: [...new Set(values)].filter((v) => v <= Math.max(min, max)), index: i, existing: false };
+        const validValues = [...new Set(values)].filter((v) => v >= min && v <= Math.max(min, max));
+        const defaultSize = declared[i] >= min && declared[i] <= max ? declared[i] :
+          (max >= min ? validValues[validValues.length - 1] : min);
+        if (!validValues.includes(defaultSize)) validValues.push(defaultSize);
+        return { min, max: Math.max(min, max), values: validValues.sort((a, b) => a - b),
+          defaultSize, index: i, existing: false };
       });
-      const selections = options.map((o) => o.min);
+      const selections = options.map((o, i) => o.existing ? o.min : o.defaultSize);
       const accepted = await new Promise((resolve) => {
         const rows = dataImages.map((d, i) => {
           const label = String(d.label || `DATA ${i + 1}`);
@@ -1653,8 +1661,8 @@ export function boot(opts = {}) {
       if (!accepted) { clearPanel(); return; }
       for (let i = 0; i < accepted.length; i++) {
         const size = normalizeDataSize(accepted[i], { min: options[i].min, max: options[i].max });
-        if (size === null || size < declared[i]) {
-          failSheet("数据分区容量无效", `DATA ${i + 1} 容量不在允许范围内。`);
+        if (size === null || size < minimums[i]) {
+          failSheet("数据分区容量无效", `DATA ${i + 1} 容量低于允许的最低容量。`);
           return;
         }
         pre.offer.data[i].size = size;
