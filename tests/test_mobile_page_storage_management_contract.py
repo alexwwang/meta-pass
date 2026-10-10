@@ -39,6 +39,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                 self.assertIn(token, RUNNER)
 
 
+    def test_existing_data_resize_never_offers_shrinking(self):
+        installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+        self.assertIn("const listingWithoutTarget = (i) =>", installer)
+        self.assertIn("Math.max(declaredMin, existingSizes[i])", installer)
+        self.assertIn("existingSizes[i] != null && editable[i]", installer)
+
     def test_every_new_install_requires_a_fresh_dynamic_app_carve(self):
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
