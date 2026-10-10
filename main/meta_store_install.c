@@ -1534,10 +1534,8 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     }
     meta_install_geom_t g;
     geom_refresh(&g);
-    // P0-5 修正:carve 提案的 fit 权威是下方 place_offer —— 新槽尚未物化,
-    // 不在 geom/分区缓存中,offer_ok 的"手机 fit 声称必须本地也 fit"会把
-    // 真提案当错报拒掉(fresh 设备首装 400,真机冒烟 S2 暴露)。无提案路径
-    // 保持 offer_ok 裁决。offer_ok 的其余形状校验 parse 已做,无损失。
+    // 新安装在上方已强制要求 carve 提案；新槽尚未物化，因此提案的
+    // 几何裁决权属于 place_offer，不能用当前 live partition table 的 fit 覆盖。
     if (!m.has_carve && !meta_install_model_offer_ok(&m, &g)) {
         ESP_LOGW(TAG, "prepare: local geometry re-check rejected");
         return reply(req, "400 Bad Request", "manifest rejected");
