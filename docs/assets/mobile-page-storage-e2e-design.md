@@ -27,7 +27,7 @@ Child-firmware serial client: `tools/realdevice/data_child_serial.py`
 | M05 install B | Install a second play ID | A and B coexist; no overlap; baseline DATA reservations preserved |
 | M05C isolation | Compare DATA physical addresses reported by the device driver | A/B DATA extents differ; different play IDs alone do not prove isolation |
 | M06 remove A | Delete through management UI with confirmation; run B after deletion | A absent; B remains VALID and boots; A DATA reservation released; geometry remains valid |
-| M06C reinstall after deletion | After deleting A, reinstall A's play ID under a fresh random name C; run and remove C | C gets a fresh APP carve distinct from surviving B; stale A name does not return; when required, C gets a fresh DATA reservation; removal explicitly releases C's APP slot and new DATA reservation without affecting B |
+| M06C reinstall after deletion | After deleting A, reinstall A's play ID under a fresh random name C; run and remove C | C gets a fresh APP carve distinct from surviving B; stale A name does not return; when required, C gets a fresh DATA reservation; removal explicitly releases C's APP slot and new DATA reservation while preserving B's DATA reservation and APP slot |
 | M07 remove B | Delete through UI and verify | B absent; device evidence proves deleted image is not bootable and DATA is released |
 | M08 restore baseline | Re-read slots, reservations and status | Installer idle; slots, reservations and free bytes exactly match baseline |
 
