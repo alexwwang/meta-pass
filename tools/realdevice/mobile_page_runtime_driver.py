@@ -65,7 +65,7 @@ def reopen_port(port):
 
 
 def expect_rejection(port, command, expected_error, timeout):
-    port.write((command + "\\n").encode("ascii"))
+    port.write((command + "\n").encode("ascii"))
     port.flush()
     response = read_json(port, time.monotonic() + timeout,
                          lambda x: x.get("ok") is False)
@@ -114,7 +114,7 @@ def wait_child(port, timeout):
 
 
 def child_expect_error(port, command, expected_error, timeout):
-    port.write((command + "\\n").encode("ascii"))
+    port.write((command + "\n").encode("ascii"))
     port.flush()
     response = read_json(port, time.monotonic() + timeout,
                          lambda x: x.get("ok") is False)
