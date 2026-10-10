@@ -43,6 +43,10 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize);
 // 不在 carve 的下标 → ESP_ERR_INVALID_ARG,不写任何东西。
 esp_err_t meta_carve_flash_remove(int slot);
 
+/* Commit removal of an APP and all DATA records keyed to its play_id in one
+ * durable carve/table update. Caller must erase referenced bytes first. */
+esp_err_t meta_carve_flash_remove_app_and_data(int slot);
+
 // 扫描回填:把派生态(EMPTY/VALID/INVALID + sha + name)同步进记录;
 // 无变化不写(磨损友好)。count 必须 == 规范 carve 槽数(同一张表派生)。
 esp_err_t meta_carve_flash_sync_states(const meta_slot_info_t *slots, int count);
