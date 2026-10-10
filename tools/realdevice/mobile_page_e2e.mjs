@@ -612,6 +612,7 @@ try {
   // the allocator creates a fresh APP carve instead of reviving stale metadata.
   if (afterRemoveA && b && afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid") &&
       !afterRemoveA.slots.some((x) => x.name === nameA)) {
+    let freshReservationsForC = [];
     const installC = await runCase("M06C fresh install after deletion", async () => {
       const slot = await installPlay(playA, nameC, "M06C fresh install C");
       const listing = await readSlots();
@@ -625,14 +626,14 @@ try {
         !listing.slots.some((x) => x.name === nameA));
       if (!fresh || !separate) throw new Error("fresh install C did not allocate a separate slot while preserving B");
       requireSafeStorageState(listing, "M06C after install C");
+      const oldData = dataReservations(baseline);
+      freshReservationsForC = dataReservations(listing).filter((d) => d.play_id === Number(playA) &&
+        !oldData.some((x) => x.offset === d.offset && x.size === d.size &&
+          x.play_id === d.play_id && x.label === d.label));
       if (requireDataReservation) {
-        const oldData = dataReservations(baseline);
-        const freshData = dataReservations(listing).filter((d) => d.play_id === Number(playA) &&
-          !oldData.some((x) => x.offset === d.offset && x.size === d.size &&
-            x.play_id === d.play_id && x.label === d.label));
-        record("M06C fresh DATA reservation for reinstalled play", freshData.length > 0,
-          "newReservations=" + freshData.length);
-        if (freshData.length === 0) throw new Error("fresh install C did not create a new DATA reservation");
+        record("M06C fresh DATA reservation for reinstalled play", freshReservationsForC.length > 0,
+          "newReservations=" + freshReservationsForC.length);
+        if (freshReservationsForC.length === 0) throw new Error("fresh install C did not create a new DATA reservation");
       }
       return slot;
     });
@@ -643,6 +644,17 @@ try {
           await removeByName(nameC, "M06C");
           if (!manualAssist) verifyDeletedRuntime(nameC, playA, "M06C");
           const listing = await readSlots();
+          const cAbsent = !listing.slots.some((x) => x.name === nameC);
+          record("M06C C APP slot removed", cAbsent);
+          if (!cAbsent) throw new Error("C APP slot remains after uninstall");
+          const remainingData = dataReservations(listing);
+          const cDataReleased = freshReservationsForC.every((d) => !remainingData.some((x) =>
+            x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label));
+          record("M06C fresh DATA reservations released", cDataReleased,
+            "created=" + freshReservationsForC.length + "; remaining=" +
+            freshReservationsForC.filter((d) => remainingData.some((x) =>
+              x.offset === d.offset && x.size === d.size && x.play_id === d.play_id && x.label === d.label)).length);
+          if (!cDataReleased) throw new Error("C DATA reservation remained after uninstall");
           const bStillValid = listing.slots.some((x) => x.name === nameB && x.state === "valid");
           record("M06C B remains valid after removing C", bStillValid);
           if (!bStillValid) throw new Error("removing C affected B");
