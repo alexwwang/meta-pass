@@ -85,7 +85,8 @@ Reuse `meta_carve` and `meta_carve_flash`; do not create a second allocator.
 ## 9. Implementation status (2026-10-10)
 
 - Added shared pure-JavaScript capacity range and value-validation helpers in `install-slot/dynslot-pool.js`, accounting for existing APP/DATA occupancy, 64 KiB placement alignment and 4 KiB size granularity. Invalid overlapping layouts advertise no available capacity.
-- Added a DATA sizing step to `install-slot/phone-install.js` before upload. It uses the device's dynamic listing and the proposed new APP extent; selected sizes are included in the install offer.
-- Existing matching DATA extents that meet the firmware minimum are displayed at their current size and cannot be changed through this selector.
-- Added capacity-boundary and occupancy tests to `tests/test_dynslot_pool.mjs`.
-- Remaining: rerun and pass static/Node tests and firmware build; audit full device-side validation/commit/rollback behavior for selected capacities; run browser and real-device verification. Do not treat the current implementation as accepted until those gates pass.
+- Added a general DATA sizing step to `install-slot/phone-install.js`, independent of Play ID or test flags. For new DATA, minimums are derived conservatively from known filesystem type and embedded payload: blank FAT uses a 1 MiB floor, blank SPIFFS/LittleFS uses 64 KiB, and embedded payloads or unknown types retain the manifest-declared size.
+- Existing matching DATA extents that meet the minimum are kept at their current size; the flow does not silently shrink or overwrite them. Multi-DATA selections are checked as a set, and malformed/out-of-pool/cross-segment geometry fails closed.
+- Added capacity-boundary, filesystem-minimum, APP/DATA occupancy, overlap, malformed-geometry and out-of-pool tests to `tests/test_dynslot_pool.mjs`.
+- This iteration also enabled sizing when installing into an existing APP slot, fixed the insufficient-space control flow, and prevented existing DATA extents from being double-counted during combination checks.
+- Remaining: execute and pass static/Node tests and firmware build; audit full device-side validation/commit/rollback behavior for selected capacities; run browser and real-device verification. The latest commit has no visible PR workflow run in the current GitHub Actions query, so test results remain unverified. Do not treat the implementation as accepted until those gates pass.
