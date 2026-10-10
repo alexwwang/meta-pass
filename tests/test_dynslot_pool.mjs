@@ -215,6 +215,18 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
     data: [{ offset: 0x180000, size: 0x10000 }],
   }, null, DATA_SIZE_GRANULE);
   assert.equal(malformed.max, 0, "overlapping occupancy must fail closed");
+  const invalidOffset = dataSizeBounds({
+    slots: [{ offset: Number.NaN, size: 0x10000 }], data: [],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(invalidOffset.max, 0, "malformed occupancy must fail closed");
+  const outsidePool = dataSizeBounds({
+    slots: [{ offset: 0x100000, size: 0x10000 }], data: [],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(outsidePool.max, 0, "out-of-pool occupancy must fail closed");
+  const crossingSegment = dataSizeBounds({
+    slots: [{ offset: 0x350000, size: 0x20000 }], data: [],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(crossingSegment.max, 0, "cross-segment occupancy must fail closed");
   console.log("PASS 7: generic DATA capacity bounds and validation");
 }
 
