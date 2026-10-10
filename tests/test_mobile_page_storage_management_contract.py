@@ -25,6 +25,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
+    def test_runtime_driver_uses_line_terminated_serial_commands(self):
+        # Rejection probes must send the same newline-delimited protocol as
+        # successful commands; a literal backslash+n leaves the child waiting.
+        self.assertIn('command + "\\n"', DRIVER)
+        self.assertNotIn('command + "\\\\n"', DRIVER)
+
     def test_install_uninstall_and_space_accounting_are_end_to_end(self):
         for token in ("M04 install A", "M05 install B", "assertDynamicSlotGeometry",
                       "assertBaselineDataPreserved", "M06 UI delete releases test-created DATA reservations",
