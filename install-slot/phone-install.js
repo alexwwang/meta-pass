@@ -1606,16 +1606,21 @@ export function boot(opts = {}) {
       // non-empty bundled DATA images retain their declared size to avoid
       // truncating embedded filesystem content.
       const editable = minimums.map((min, i) => existingSizes[i] == null || existingSizes[i] < min);
+      const boundsByData = minimums.map((min, i) => dataSizeBounds(
+        geom.listing, appProposal, min,
+        minimums.filter((_, j) => j !== i && editable[j] && existingSizes[j] == null)));
+      const impossible = minimums.findIndex((min, i) =>
+        editable[i] && Math.floor(boundsByData[i].max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE < min);
+      if (impossible >= 0) {
+        const min = minimums[impossible];
+        failSheet("数据分区空间不足",
+          `DATA ${impossible + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB，但当前分区布局无法提供连续空间。请取消安装或释放存储后重试。`);
+        return;
+      }
       const options = minimums.map((min, i) => {
         if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
-        const reserve = minimums.filter((_, j) => j !== i && editable[j]);
-        const bounds = dataSizeBounds(geom.listing, appProposal, min, reserve);
+        const bounds = boundsByData[i];
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-        if (max < min) {
-          failSheet("数据分区空间不足",
-            `DATA ${i + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB，但当前分区布局无法提供连续空间。请取消安装或释放存储后重试。`);
-          return;
-        }
         const values = [min];
         if (max >= min) {
           let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
