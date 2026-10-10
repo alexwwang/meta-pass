@@ -48,9 +48,9 @@ This flow really installs, boots, and removes test apps and writes their DATA pa
 2. Publish the dedicated DATA test child firmware under two distinct marketplace play IDs. Pass both explicitly using `--play-a` and `--play-b`.
 3. Start Chromium/Chrome CDP on the local host only, for example with a dedicated Linux test profile: `google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-cdp`. Do not expose the CDP port to the LAN.
 4. Install the serial dependency: `python3 -m pip install pyserial`. Use Node.js with built-in `fetch` and `WebSocket` support (Node.js 22 or newer is recommended).
-5. Set the device page URL, session token, and launcher's USB Serial/JTAG port. Keep the token in an environment variable; do not put it in command-line arguments or commit it:
+5. In Bash or Zsh, set the device page URL, session token, and launcher's USB Serial/JTAG port. Keep the token in an environment variable; do not put it in command-line arguments or commit it:
 
-```sh
+```bash
 export MOBILE_E2E_URL='http://<device-host>/'
 read -rsp 'Session token (32 hex): ' META_PASS_SESSION; echo
 export META_PASS_SESSION
