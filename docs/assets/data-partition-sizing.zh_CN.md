@@ -134,5 +134,5 @@ DATA 分区初次创建时可由应用按自己的文件系统策略格式化。
 - 已在 `install-slot/phone-install.js` 增加安装确认前的通用 DATA 容量选择步骤；不依赖 Play ID 或测试任务开关。新建 DATA 的最小容量按已知文件系统类型与内嵌 payload 计算：空白 FAT 保守下限 1 MiB，空白 SPIFFS/LittleFS 下限 64 KiB，含内嵌 payload 或未知类型保留 manifest 声明容量。
 - 已存在且满足最低容量的 DATA 保留原容量，不在此流程中缩小或覆盖。选择多个 DATA 时会验证所选容量组合；空间不足、坏几何和跨池/池外占用 fail-closed。
 - 已在 `tests/test_dynslot_pool.mjs` 增加容量范围、4 KiB 对齐、边界值、APP 占用、已有 DATA 占用、重叠/非法/池外几何 fail-closed 测试。
-- 本轮补上既有 APP 槽的 DATA 容量选择路径，并修正空间不足分支的控制流；同时避免组合校验时重复计算已存在 DATA 占用。
-- 尚未完成：实际执行 Node/静态测试与固件构建；设备端对容量选择的完整几何复核、提交/回滚测试；手机浏览器和真机验证。当前 GitHub Actions 查询未发现该最新提交对应的 PR workflow run，故测试结果仍为未验证，不得视为功能验收通过。
+- 2026-10-10 存储策略更新：每次安装必须创建新的 APP carve，不允许复用既有 APP 槽位；DATA 容量选择在新 APP carve 的安装流程中完成。设备 prepare 端拒绝不带 carve 提案的旧式安装请求。
+- CI 状态需以包含 fresh APP carve 策略的最新提交为准。此前提交的静态/宿主测试与固件构建结果不能代替本次改动的 CI；浏览器和真机仍需按新的“安装新槽—删除释放—再次安装”语义验收。不得将旧真机报告视为该策略已通过。
