@@ -1467,8 +1467,11 @@ export function boot(opts = {}) {
           return { slot, limit, fit: Number.isFinite(imageLen) && imageLen <= limit, isNew: false };
         });
     const requiresDataCarve = Array.isArray(a?.data) && a.data.length > 0;
-    if (requiresDataCarve && (!geom?.proposal || !geom.listing)) {
-      const msg = "该固件声明了独立 DATA 分区，但设备当前无法提供新的动态分区提案。请先释放足够的连续空间，或更新到支持动态 DATA 分区的设备固件。";
+    const missingDataAllocation = requiresDataCarve && (!geom?.listing ||
+      a.data.some((d) => !geom.listing.data.some((x) =>
+        x.play_id === Number(meta.play.id) && x.label === String(d.label || ""))));
+    if (requiresDataCarve && (!geom?.listing || (missingDataAllocation && !geom.proposal))) {
+      const msg = "该固件声明了新的独立 DATA 分区，但设备当前无法提供新的动态分区提案。请先释放足够的连续空间，或更新到支持动态 DATA 分区的设备固件。";
       log(`✗ ${msg}`, "err");
       failSheet("无法安装 DATA 固件", `${p.name}\n${msg}`);
       return;
@@ -1488,7 +1491,7 @@ export function boot(opts = {}) {
       ? geom.suggestedSlot
       : (fit.some((o) => o.slot === a?.suggestedSlot) ? a.suggestedSlot : fit[0].slot);
     // 建议项按 (slot, isNew) 定位:洞位提案可与既有下标同号。
-    const suggestedOpt = (requiresDataCarve ? fit.find((o) => o.isNew) : null)
+    const suggestedOpt = (missingDataAllocation ? fit.find((o) => o.isNew) : null)
       ?? fit.find((o) => o.slot === suggestedNum && !o.isNew)
       ?? fit.find((o) => o.slot === suggestedNum && o.isNew) ?? fit[0];
     let chosen = { slot: suggestedOpt.slot, isNew: suggestedOpt.isNew };
