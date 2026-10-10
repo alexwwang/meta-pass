@@ -55,6 +55,9 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("if (tail_start64 > UINT32_MAX) return ESP_ERR_INVALID_STATE;", migration)
         self.assertIn("const uint32_t tail_offset = (uint32_t)tail_start64;", migration)
         self.assertIn("in-place DATA growth tail overlaps existing DATA source", migration)
+        self.assertIn("in-place DATA growth tails overlap", migration)
+        self.assertIn("in-place DATA growth tail overlaps migration target", migration)
+        self.assertIn("for (uint8_t j = 0; j < i; j++)", migration)
         self.assertIn("esp_flash_erase_region(NULL, grow_offset[i], grow_size[i])", migration)
         self.assertLess(migration.index("All destructive operations start only after the full preflight passes"),
                         migration.index("esp_flash_erase_region(NULL, grow_offset[i], grow_size[i])"))
