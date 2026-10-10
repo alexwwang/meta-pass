@@ -304,26 +304,26 @@ static void test_parse_remove(void)
 {
     meta_install_remove_req_t r;
 
-    // slot 必填;eraseData 可选(缺省 = 归档)。
+    // slot 必填；无论旧客户端是否传 eraseData，卸载都级联删除 DATA。
     const char *j1 = "{\"slot\":3}";
     assert(meta_install_model_parse_remove(j1, strlen(j1), &r));
     assert(r.slot == 3);
-    assert(!r.erase_data);   // 缺省 = 归档(design §6)
+    assert(r.erase_data);    // 默认级联删除 DATA
 
     const char *j2 = "{ \"slot\" : 0 }";
     assert(meta_install_model_parse_remove(j2, strlen(j2), &r));
     assert(r.slot == 0);
 
-    // eraseData:true → 显式擦除;false → 归档。
+    // 兼容旧字段：true/false 都不得改变级联删除策略。
     const char *j3 = "{\"slot\":2,\"eraseData\":true}";
     assert(meta_install_model_parse_remove(j3, strlen(j3), &r));
     assert(r.slot == 2 && r.erase_data);
 
     const char *j4 = "{\"slot\":2,\"eraseData\":false}";
     assert(meta_install_model_parse_remove(j4, strlen(j4), &r));
-    assert(r.slot == 2 && !r.erase_data);
+    assert(r.slot == 2 && r.erase_data);
 
-    // 非布尔 eraseData 落到更安全的归档侧(不误擦)。
+    // 非布尔 eraseData 被忽略，仍按级联删除策略处理。
     const char *j5 = "{\"slot\":2,\"eraseData\":\"yes\"}";
     assert(meta_install_model_parse_remove(j5, strlen(j5), &r));
     assert(r.slot == 2 && !r.erase_data);
