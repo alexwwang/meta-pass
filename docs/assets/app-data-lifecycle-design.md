@@ -1,3 +1,5 @@
+[Chinese](app-data-lifecycle-design.zh_CN.md)
+
 # APP and DATA Lifecycle Design (feat/storage)
 
 ## 1. Goals and invariants
