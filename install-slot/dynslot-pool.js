@@ -206,8 +206,11 @@ export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_
   const data = Array.isArray(listing?.data) ? listing.data : [];
   const occupancy = slots.map((s) => ({ offset: s.offset, size: s.size }))
     .concat(data.map((d) => ({ offset: d.offset, size: d.size })));
-  if (appProposal && Number.isSafeInteger(appProposal.carveOffset) &&
-      Number.isSafeInteger(appProposal.carveSize) && appProposal.carveSize > 0) {
+  if (appProposal) {
+    if (!Number.isSafeInteger(appProposal.carveOffset) ||
+        !Number.isSafeInteger(appProposal.carveSize) || appProposal.carveSize <= 0) {
+      return { min: DATA_SIZE_MIN, max: 0, step: DATA_SIZE_STEP, available: 0 };
+    }
     occupancy.push({ offset: appProposal.carveOffset, size: appProposal.carveSize });
   }
   const minRaw = Number(requestedMin);
