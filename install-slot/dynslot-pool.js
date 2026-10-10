@@ -169,7 +169,7 @@ export function geomFromListing(listing, imageLen) {
     ];
   }
   const suggestedSlot = current.find((s) => s.fit)?.slot ?? proposal?.slot ?? -1;
-  return { current, proposal, placed, suggestedSlot, maxGap, totalFree };
+  return { current, proposal, placed, suggestedSlot, maxGap, totalFree, listing: { slots: all, data } };
 }
 
 // DATA capacity planning shared by the installer UI and Node tests.
