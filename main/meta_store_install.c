@@ -252,6 +252,14 @@ static void cleanup_new_data_locked(void)
     }
 }
 
+static bool data_ranges_overlap(uint32_t a_off, uint32_t a_size,
+                                 uint32_t b_off, uint32_t b_size)
+{
+    const uint64_t a_end = (uint64_t)a_off + a_size;
+    const uint64_t b_end = (uint64_t)b_off + b_size;
+    return (uint64_t)a_off < b_end && (uint64_t)b_off < a_end;
+}
+
 static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
                                            const meta_carve_t *after,
                                            data_move_t moves[META_DATA_MAX],
@@ -259,8 +267,16 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
 {
     uint8_t n = 0;
     if (out_n) *out_n = 0;
-    if (!before || !after || !s_session.manifest_valid) return ESP_ERR_INVALID_ARG;
+    if (!before || !after || !moves || !s_session.manifest_valid) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
+    /*
+     * Preflight every move before erasing anything. The old carve remains the
+     * durable source of truth until commit, so no destination may overlap any
+     * old DATA extent (including a different APP's DATA). Otherwise an early
+     * erase could destroy a source needed by this or a later move.
+     */
     for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
         const uint32_t pid = s_session.manifest.data[i].play_id;
         if (pid == 0) continue;
@@ -277,28 +293,44 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
             return ESP_ERR_INVALID_STATE;
         }
 
+        for (uint8_t j = 0; j < before->data_count; j++) {
+            const meta_carve_data_t *source = &before->data[j];
+            if (data_ranges_overlap(now->offset, now->size,
+                                    source->offset, source->size)) {
+                ESP_LOGE(TAG, "data migration target overlaps existing DATA source");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+        for (uint8_t j = 0; j < n; j++) {
+            if (data_ranges_overlap(now->offset, now->size,
+                                    moves[j].new_offset, moves[j].new_size)) {
+                ESP_LOGE(TAG, "data migration targets overlap");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+
         moves[n].old_offset = old->offset;
         moves[n].old_size = old->size;
         moves[n].new_offset = now->offset;
         moves[n].new_size = now->size;
         n++;
+    }
 
-        /*
-         * The new extent is not committed yet, so the old record remains the
-         * durable source of truth. Copy first; only then commit the carve that
-         * switches the DATA record to the new extent.
-         */
-        esp_err_t e = esp_flash_erase_region(NULL, now->offset, now->size);
+    /* All destructive operations start only after the full preflight passes. */
+    for (uint8_t i = 0; i < n; i++) {
+        esp_err_t e = esp_flash_erase_region(NULL, moves[i].new_offset,
+                                             moves[i].new_size);
         if (e != ESP_OK) {
             ESP_LOGE(TAG, "data migration erase failed @0x%08lx: %s",
-                     (unsigned long)now->offset, esp_err_to_name(e));
+                     (unsigned long)moves[i].new_offset, esp_err_to_name(e));
             goto rollback;
         }
-        e = meta_carve_flash_data_copy(old->offset, old->size, now->offset);
+        e = meta_carve_flash_data_copy(moves[i].old_offset, moves[i].old_size,
+                                       moves[i].new_offset);
         if (e != ESP_OK) {
             ESP_LOGE(TAG, "data migration copy failed old=0x%08lx new=0x%08lx: %s",
-                     (unsigned long)old->offset, (unsigned long)now->offset,
-                     esp_err_to_name(e));
+                     (unsigned long)moves[i].old_offset,
+                     (unsigned long)moves[i].new_offset, esp_err_to_name(e));
             goto rollback;
         }
     }
@@ -307,6 +339,7 @@ static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
     return ESP_OK;
 
 rollback:
+    /* Preflight guarantees these extents are disjoint from every old source. */
     for (uint8_t i = 0; i < n; i++) {
         (void)esp_flash_erase_region(NULL, moves[i].new_offset, moves[i].new_size);
     }
