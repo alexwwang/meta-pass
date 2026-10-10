@@ -12,7 +12,8 @@ import path from "node:path";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pool = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
-        carvePlace, geomFromListing } = pool;
+        carvePlace, geomFromListing, dataSizeBounds, normalizeDataSize,
+        DATA_SIZE_GRANULE, DATA_SIZE_STEP } = pool;
 
 // ── 1. 池描述符 == main/meta_carve.h 常量(单一几何事实源) ─────────────────
 {
@@ -163,6 +164,42 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   assert.equal(g3.proposal.carveOffset, 0x180000);
 
   console.log("PASS 6: geomFromListing counts data-carve occupancy (P1-4)");
+}
+
+
+
+// ── 7. 通用 DATA 容量规划:设备池范围、对齐、非法占用 fail-closed ──────────
+{
+  const empty = { slots: [], data: [] };
+  const b = dataSizeBounds(empty, null, 1024 * 1024);
+  assert.equal(b.min, 1024 * 1024);
+  assert.equal(b.step, DATA_SIZE_STEP);
+  assert.ok(b.max > b.min);
+  assert.equal(b.max % DATA_SIZE_GRANULE, 0);
+  assert.equal(normalizeDataSize(b.min, b), b.min);
+  assert.equal(normalizeDataSize(b.max, b), b.max);
+  assert.equal(normalizeDataSize(b.min - DATA_SIZE_GRANULE, b), null);
+  assert.equal(normalizeDataSize(b.max + DATA_SIZE_GRANULE, b), null);
+  assert.equal(normalizeDataSize(b.min + 1, b), null);
+  assert.equal(dataSizeBounds(empty, null, 0).max, 0);
+
+  // DATA 必须避开 APP 提案；有提案时可用容量严格减少。
+  const app = { carveOffset: 0x180000, carveSize: 0x80000 };
+  const afterApp = dataSizeBounds(empty, app, DATA_SIZE_GRANULE);
+  assert.ok(afterApp.max < dataSizeBounds(empty, null, DATA_SIZE_GRANULE).max);
+  assert.equal(normalizeDataSize(afterApp.max, afterApp), afterApp.max);
+
+  // 已有 DATA 作为占用域参与计算，不允许规划覆盖它。
+  const withData = dataSizeBounds({
+    slots: [], data: [{ offset: 0x180000, size: 0x40000 }],
+  }, null, DATA_SIZE_GRANULE);
+  assert.ok(withData.max < b.max);
+  const malformed = dataSizeBounds({
+    slots: [{ offset: 0x180000, size: 0x40000 }],
+    data: [{ offset: 0x180000, size: 0x10000 }],
+  }, null, DATA_SIZE_GRANULE);
+  assert.equal(malformed.max, 0, "overlapping occupancy must fail closed");
+  console.log("PASS 7: generic DATA capacity bounds and validation");
 }
 
 console.log("ALL dynslot-pool TESTS PASSED");
