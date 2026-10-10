@@ -427,3 +427,24 @@ smoke 失败后不得只输出“FAIL”。
 `POWER_LOSS_UNTESTED`
 
 而不能把它隐含为 PASS。
+
+## 14. 2026-10-10 新增验收要求：每次安装必须新建 APP carve
+
+当前 feat/storage 已调整为严格的新安装语义：
+
+- 手机安装页只显示动态回收池为本次 APP 计算的新 carve 提案；不允许选择已有空槽/有效槽/无效槽原位覆盖。
+- 无法读取 /api/install/slots 或设备不支持动态池时，安装页必须 fail closed，不再回退固定三槽安装路径。
+- 设备 POST /api/install/prepare 拒绝不带 has_carve 的旧式请求，防止客户端绕过 UI。
+- 删除 APP 后，APP carve 记录被移除、对应物理范围返回池；之后即使分配到相同 offset，也必须作为新分配处理。关联 DATA 默认归档保留，不能把 APP 槽位释放等同于 DATA 擦除。
+- 同一 prepare 的网络重试仍应命中幂等分支，不应重复分配；只有本次未完成安装创建的 carve 才能在失败清理中回收。
+
+**重要：此前真机 S0-S6 证据并未覆盖这项新策略，不能直接视为本次策略已验收。** 本地 Agent 必须在此改动的最终 commit 上重新执行静态/宿主测试与固件构建；有真机时新增至少以下断言：
+
+1. 首装 A：槽位数量 +1，APP offset 与设备 allocator 的 fresh proposal 一致。
+2. 安装 B：再新增一个槽位，A 的数据与运行状态不受影响；不得覆盖现有 empty/valid/invalid 槽。
+3. 删除 A：A 的 APP carve 被释放，删除的镜像不能重新启动；关联 DATA 按归档策略保留。
+4. 再安装 C：从当前回收池重新计算并分配，允许物理 offset 与 A 相同，但槽位是一次新分配，不能恢复旧镜像/旧状态。
+5. 动态槽位清单不可达或旧固件不支持 carve 时，UI 和设备 API 都拒绝安装，不得走 legacy 原位安装。
+6. 对不带 has_carve 的直接 HTTP prepare 请求验证返回 400 fresh APP carve required，且 carve 记录、分区表和既有 APP/DATA 均不改变。
+
+这项改动改变了原有“优先安装到现有空槽”的行为，因此必须重新跑受影响的 CI 和真机路径；如果当前环境没有真机，明确记录为未验证，不得用旧报告代替。
