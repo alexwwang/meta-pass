@@ -11,6 +11,7 @@
 // + revisionId 进程内缓存(隔离实例各自回源,正确性不受影响)。
 
 import { createStoreAnalyzer } from "./store-analyze.js";
+import { PLAY28_RECORDINGS_4M_PROFILE } from "./data-size-profile.js";
 
 const BACKEND = "https://ai-passport.folotoy.cn";
 
@@ -234,8 +235,12 @@ export default {
       if (id == null || !PLAY_ID_RE.test(id)) {
         return err(400, "missing or invalid id parameter");
       }
+      const dataProfile = url.searchParams.get("dataProfile");
+      if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
+        return err(400, "unsupported data profile");
+      }
       try {
-        const out = await storeAnalyzer.analyze(Number(id));
+        const out = await storeAnalyzer.analyze(Number(id), dataProfile || null);
         // r10.18:成功时下发下载票据(HMAC,与玩法 id + 签发时间绑定,10 分钟有效);
         // 设备原样带回 sig+ts 才能吃 R2 快路径(无票/过期 = 自动降级老链路)。
         if (out && out.ok && env.DL_SECRET) {
