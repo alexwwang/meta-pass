@@ -16,7 +16,7 @@
 1. APP + DATA manifest。
 2. APP/DATA 联合容量计算。
 3. dynamic carve / slot placement。
-4. ARCHIVED 自动回收。
+4. APP 卸载时 APP + 全部关联 DATA 级联删除。
 5. 409 no-fit 结构化返回。
 6. carve record-first 原子提交。
 7. launcher / active child runtime table 派生。
@@ -190,14 +190,15 @@ PASS：
 - 重启后仍为 2。
 - 不允许第一槽或 DATA 被破坏。
 
-### S4 ARCHIVED + eraseData
+### S4 APP + DATA 级联删除
 
-- 删除带 DATA 的旧 slot。
-- slot count 正确下降。
-- DATA 进入 ARCHIVED。
-- 再删除剩余 slot 并请求 eraseData。
-- 删除后 count=0。
-- 记录 DATA 生命周期状态。
+- 删除一个带多个 DATA label 的 APP。
+- 设备端一次性枚举该 APP 的全部 DATA；UI 不提供单独删除 DATA 或保留 DATA 的选项。
+- 删除后 APP 与全部关联 DATA 记录均不存在，关联 extents 不再被引用，池可用空间变化与释放范围一致。
+- 其他 APP/DATA 的记录与字节保持不变。
+- 若擦除/持久化提交任一步失败，不得返回成功，也不得提前回收仍被引用的 extent。
+- 中断删除并重启，持久化事务幂等恢复；已删除 APP 不得被镜像扫描复活。
+- 在真实字节级备份完成前，UI 必须警告卸载会永久删除数据，不能声称可备份/恢复。
 
 ### S5 中断续传
 
