@@ -1,3 +1,8 @@
+<p align="right">
+  <strong>English</strong> ·
+  <a href="data-partition-sizing.zh_CN.md">简体中文</a>
+</p>
+
 # Generic DATA Partition Sizing
 
 Status: implementation baseline for `feat/storage`
