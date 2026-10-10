@@ -604,8 +604,9 @@ try {
     }
   }
 
+  let removeAResult = { ok: false, value: null };
   if (a && b && runtimeBResult?.ok) {
-    await runCase("M06 remove A and verify B isolation", async () => {
+    removeAResult = await runCase("M06 remove A and verify B isolation", async () => {
       await removeByName(nameA, "M06");
       if (!manualAssist) verifyDeletedRuntime(nameA, playA, "M07A");
       else {
@@ -634,7 +635,8 @@ try {
 
   // Reinstall A's play ID under a new name after deleting A. This proves
   // the allocator creates a fresh APP carve instead of reviving stale metadata.
-  if (afterRemoveA && b && afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid") &&
+  if (removeAResult.ok && afterRemoveA && b &&
+      afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid") &&
       !afterRemoveA.slots.some((x) => x.name === nameA)) {
     let freshReservationsForC = [];
     const installC = await runCase("M06C fresh install after deletion", async () => {
