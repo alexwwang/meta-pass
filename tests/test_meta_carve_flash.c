@@ -408,6 +408,35 @@ static void make_rec_with_data(meta_carve_rec_t *rec, uint32_t play_id,
     }
 }
 
+static void test_remove_app_and_data_atomically(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+    meta_carve_rec_t rec;
+    make_rec_with_data(&rec, 123, "save", 0x280000, 0x1000, META_DATA_DIRTY);
+    rec.carve.data_count = 2;
+    rec.carve.data[1] = rec.carve.data[0];
+    rec.carve.data[1].offset = 0x290000;
+    rec.carve.data[1].size = 0x2000;
+    strcpy(rec.carve.data[1].label, "assets");
+    rec.carve.slot[0].play_id = 123;
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+    const uint32_t old_seq = s_seq;
+    assert(meta_carve_flash_remove_app_and_data(0) == ESP_OK);
+    const meta_carve_t *cur = meta_carve_flash_carve();
+    assert(cur->count == 2);
+    assert(cur->data_count == 0);
+    assert(meta_carve_find_data(cur, 123, "save") == -1);
+    assert(meta_carve_find_data(cur, 123, "assets") == -1);
+    assert(s_seq == old_seq + 1);
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(after.carve.count == 2 && after.carve.data_count == 0);
+    printf("PASS remove APP + all DATA in one durable metadata commit\\n");
+}
 static void test_set_dirty(void)
 {
     reset_all();
@@ -695,6 +724,7 @@ int main(void)
     test_commit_rotation_and_torn_write();
     test_sync_states();
     test_remove_slot();
+    test_remove_app_and_data_atomically();
     test_set_dirty();
     test_archive_slot_and_data();
     test_erase_data();
