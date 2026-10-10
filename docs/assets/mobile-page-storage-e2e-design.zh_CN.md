@@ -42,6 +42,39 @@
 
 删除后的 UI 行消失不代表 Flash 镜像已不可启动；DATA reservation 从 API 消失也不等于子固件 DATA 内容经过了正确验证。需要 runtime driver 对应证据。
 
+## 本地 Agent / 真机执行步骤
+
+该流程会真实安装、启动和卸载测试 APP，并写入测试 DATA 分区。只在专用测试设备上执行；不要用存有重要用户数据的设备。测试固件必须先准备好，不能把本流程当成自动刷写固件的步骤。
+
+1. 使用启用了 `CONFIG_META_E2E_TEST_CONTROL=y` 的 launcher 固件启动设备，并确认管理网页可访问。
+2. 将专用 DATA 测试子固件发布为两个不同的 marketplace play ID；两个 ID 必须不同，且通过 `--play-a` / `--play-b` 显式传入。
+3. 在本机启动仅监听回环地址的 Chromium/Chrome CDP，例如 Linux 上使用独立测试 profile：`google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-cdp`。不要把 CDP 端口暴露到局域网。
+4. 安装串口依赖：`python3 -m pip install pyserial`。确认 `node` 支持内置 `fetch` 和 `WebSocket`（建议 Node.js 22 或更新版本）。
+5. 设置设备网页地址、session token 和 launcher 的 USB Serial/JTAG 端口。token 只放在环境变量中，不要写进命令行参数或提交到仓库：
+
+```sh
+export MOBILE_E2E_URL='http://<device-host>/'
+read -rsp 'Session token (32 hex): ' META_PASS_SESSION; echo
+export META_PASS_SESSION
+export MOBILE_E2E_CDP_URL='http://127.0.0.1:9222'
+export META_PASS_E2E_SERIAL_PORT='/dev/<launcher-usb-serial-device>'
+```
+
+6. 从仓库根目录执行（将两个 play ID 替换为已发布测试子固件的 ID）：
+
+```sh
+node tools/realdevice/mobile_page_e2e.mjs \\
+  --real-device \\
+  --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \\
+  --require-data-reservation \\
+  --play-a <test-play-id-a> \\
+  --play-b <test-play-id-b>
+```
+
+执行前，runner 会检查 driver 文件、Python/pyserial、串口配置和 session 格式；设备端还必须通过安装器空闲状态、槽表几何和基线校验。任一门禁失败时应停止，不要通过删掉现有槽位或绕过检查来继续。
+
+报告默认写入 `tools/realdevice/logs/mobile-page-e2e-<timestamp>/report.json`。只有报告的 `verdict` 为 `PASS` 且所有运行证据字段成立，才可视为自动化 E2E 通过；CI 的 host tests 和固件构建成功不等于真机 E2E 成功。若执行失败，先检查报告和清理结果，再决定是否重跑。
+
 ## 安全与可复现性
 
 - 真机写操作必须显式传入 `--real-device`；禁止默认执行破坏性测试。
