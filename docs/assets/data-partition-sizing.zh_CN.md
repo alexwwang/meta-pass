@@ -1,3 +1,8 @@
+<p align="right">
+  <a href="data-partition-sizing.md">English</a> ·
+  <strong>简体中文</strong>
+</p>
+
 # 通用 DATA 分区大小调整方案
 
 状态：设计与实施基线（feat/storage）
