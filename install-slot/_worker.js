@@ -242,6 +242,10 @@ export default {
       if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
         return err(400, "unsupported data profile");
       }
+      // Reject profile/play mismatches before market lookup or firmware download.
+      if (dataProfile && id !== "28") {
+        return err(400, "data profile is only valid for Play 28");
+      }
       try {
         const out = await storeAnalyzer.analyze(Number(id), dataProfile || null);
         // r10.18:成功时下发下载票据(HMAC,与玩法 id + 签发时间绑定,10 分钟有效);

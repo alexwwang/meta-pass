@@ -236,6 +236,11 @@ const server = http.createServer((req, res) => {
       sendError(res, 400, "unsupported data profile");
       return;
     }
+    // Reject profile/play mismatches before market lookup or firmware download.
+    if (dataProfile && id !== "28") {
+      sendError(res, 400, "data profile is only valid for Play 28");
+      return;
+    }
     storeAnalyzer.analyze(Number(id), dataProfile || null).then(
       (out) => sendJson(res, 200, out),
       // r10.4:内部异常也回完整契约 JSON(reason+detail),不回裸 502 ——

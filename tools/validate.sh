@@ -280,6 +280,7 @@ PATHCHECK
         "${node_bin}" tests/test_data_size_profile.mjs
         "${node_bin}" tests/test_store_analyze_profile.mjs
         "${node_bin}" tests/test_phone_data_profile.mjs
+        "${node_bin}" tests/test_data_profile_gate.mjs
         "${node_bin}" tests/worker_contract.mjs
         # 手机安装模块(设计文档 §4.2/§6):SHA-256 对拍、preflight 三道门、
         # 设备会话全流程与续传语义(mock 设备契约 = meta_store_install.c)。
