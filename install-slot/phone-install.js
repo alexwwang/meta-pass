@@ -29,7 +29,7 @@ import { exportBackup, importBackup } from "./backup-data.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { sanitizeDisplayName } from "./name-blob.js";
-import { POOL, META_SLOT_COUNT, geomFromListing } from "./dynslot-pool.js";
+import { POOL, META_SLOT_COUNT, geomFromListing, dataSizeBounds, normalizeDataSize, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -1573,6 +1573,80 @@ export function boot(opts = {}) {
       failSheet("安装失败", `${meta.play.name}\n[${pre.stage}] ${pre.reason}`);
       return;
     }
+
+    // DATA sizing is a general installation option, not a Play/test-profile
+    // switch. The device remains authoritative and revalidates every size.
+    const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
+    if (dataImages.length && geom?.listing) {
+      const declared = dataImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
+      const valid = declared.every((n) => Number.isSafeInteger(n) &&
+        n >= DATA_SIZE_GRANULE && n % DATA_SIZE_GRANULE === 0);
+      if (!valid) {
+        failSheet("数据分区容量无效", "固件声明的数据分区大小不是合法的 4 KiB 对齐容量，已停止安装。");
+        return;
+      }
+      const appProposal = chosen.isNew ? geom.proposal : null;
+      const bounds = dataSizeBounds(geom.listing, appProposal, DATA_SIZE_GRANULE);
+      // Keep a conservative contiguous-space budget for all DATA requests.
+      // Other DATA extents reserve their declared minimum before one extent is
+      // allowed to grow. The device independently checks the final layout.
+      const sumDeclared = declared.reduce((a, n) => a + n, 0);
+      const options = declared.map((min, i) => {
+        const max = Math.floor(Math.max(0, bounds.max - (sumDeclared - min)) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+        const values = [min];
+        if (max >= min) {
+          let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
+          while (next <= max) { values.push(next); next += DATA_SIZE_STEP; }
+          if (max > min && values[values.length - 1] !== max) values.push(max);
+        }
+        return { min, max: Math.max(min, max), values: [...new Set(values)].filter((v) => v <= Math.max(min, max)), index: i };
+      });
+      const selections = declared.slice();
+      const accepted = await new Promise((resolve) => {
+        const rows = dataImages.map((d, i) => {
+          const label = String(d.label || `DATA ${i + 1}`);
+          const opts = options[i].values.map((v) =>
+            `<option value="${v}" ${v === selections[i] ? "selected" : ""}>${(v / (1024 * 1024)).toFixed(v % (1024 * 1024) ? 3 : 0)} MiB</option>`
+          ).join("");
+          return `<label style="display:block;margin:12px 0 4px">${esc(label)} · 最小 ${(options[i].min / (1024 * 1024)).toFixed(3)} MiB</label>
+            <select data-data-size="${i}" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)" ${options[i].values.length <= 1 ? "disabled" : ""}>${opts}</select>`;
+        }).join("");
+        setPanel(`<section class=mp-panel>
+          <h4>数据分区大小</h4>
+          <p class=mp-sub>容量按 MiB 展示，设备按当前分区布局再次校验。已有数据分区不会在此流程中自动缩小或覆盖。</p>
+          ${rows}
+          <p class=mp-note>范围受当前连续空闲空间、分区对齐和固件声明的最小容量限制。</p>
+          <div class=mp-actions>
+            <button id=mp-data-confirm class=mp-btn>确认容量并安装</button>
+            <button id=mp-data-cancel class="mp-btn ghost">取消</button>
+          </div>
+        </section>`);
+        root.querySelectorAll("[data-data-size]").forEach((el) => {
+          el.addEventListener("change", () => {
+            const i = Number(el.dataset.dataSize);
+            const v = Number(el.value);
+            if (normalizeDataSize(v, { min: options[i].min, max: options[i].max }) !== null) {
+              selections[i] = v;
+            }
+          });
+        });
+        $("mp-data-confirm").onclick = () => resolve(selections.slice());
+        $("mp-data-cancel").onclick = () => resolve(null);
+      });
+      if (!accepted) { clearPanel(); return; }
+      for (let i = 0; i < accepted.length; i++) {
+        const size = normalizeDataSize(accepted[i], { min: options[i].min, max: options[i].max });
+        if (size === null || size < declared[i]) {
+          failSheet("数据分区容量无效", `DATA ${i + 1} 容量不在允许范围内。`);
+          return;
+        }
+        pre.offer.data[i].size = size;
+        pre.dataImages[i].required_size = size;
+        pre.dataImages[i].requiredSize = size;
+        pre.dataImages[i].size = size;
+      }
+    }
+
     stageEl.textContent = "上传";
     log("✓ " + pre.offer.name + " → 槽位 " + slot + ",开始上传");
     const r = await runInstall(bridge, pre.offer, pre.ext, {
