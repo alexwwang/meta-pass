@@ -1579,6 +1579,11 @@ export function boot(opts = {}) {
     const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
     if (dataImages.length && geom?.listing) {
       const declared = dataImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
+      const existingSizes = dataImages.map((d) => {
+        const rec = geom.listing.data.find((x) =>
+          x.play_id === Number(meta.play.id) && x.label === String(d.label || ""));
+        return rec && Number.isSafeInteger(rec.size) ? rec.size : null;
+      });
       const valid = declared.every((n) => Number.isSafeInteger(n) &&
         n >= DATA_SIZE_GRANULE && n % DATA_SIZE_GRANULE === 0);
       if (!valid) {
@@ -1587,29 +1592,33 @@ export function boot(opts = {}) {
       }
       const appProposal = chosen.isNew ? geom.proposal : null;
       const bounds = dataSizeBounds(geom.listing, appProposal, DATA_SIZE_GRANULE);
-      // Keep a conservative contiguous-space budget for all DATA requests.
-      // Other DATA extents reserve their declared minimum before one extent is
-      // allowed to grow. The device independently checks the final layout.
-      const sumDeclared = declared.reduce((a, n) => a + n, 0);
+      // Keep a conservative contiguous-space budget for all new DATA requests.
+      // Existing allocations that already satisfy the firmware minimum are
+      // locked to their current size; this UI only lets users size new extents.
+      const editable = declared.map((min, i) => existingSizes[i] == null || existingSizes[i] < min);
+      const sumDeclared = declared.reduce((a, n, i) => a + (editable[i] ? n : 0), 0);
       const options = declared.map((min, i) => {
-        const max = Math.floor(Math.max(0, bounds.max - (sumDeclared - min)) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+        if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
+        const otherMinimums = sumDeclared - min;
+        const max = Math.floor(Math.max(0, bounds.max - otherMinimums) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
         const values = [min];
         if (max >= min) {
           let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
           while (next <= max) { values.push(next); next += DATA_SIZE_STEP; }
           if (max > min && values[values.length - 1] !== max) values.push(max);
         }
-        return { min, max: Math.max(min, max), values: [...new Set(values)].filter((v) => v <= Math.max(min, max)), index: i };
+        return { min, max: Math.max(min, max), values: [...new Set(values)].filter((v) => v <= Math.max(min, max)), index: i, existing: false };
       });
-      const selections = declared.slice();
+      const selections = options.map((o) => o.min);
       const accepted = await new Promise((resolve) => {
         const rows = dataImages.map((d, i) => {
           const label = String(d.label || `DATA ${i + 1}`);
           const opts = options[i].values.map((v) =>
             `<option value="${v}" ${v === selections[i] ? "selected" : ""}>${(v / (1024 * 1024)).toFixed(v % (1024 * 1024) ? 3 : 0)} MiB</option>`
           ).join("");
-          return `<label style="display:block;margin:12px 0 4px">${esc(label)} · 最小 ${(options[i].min / (1024 * 1024)).toFixed(3)} MiB</label>
-            <select data-data-size="${i}" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)" ${options[i].values.length <= 1 ? "disabled" : ""}>${opts}</select>`;
+          const note = options[i].existing ? " · 已有分区，保留当前容量" : ` · 最小 ${(options[i].min / (1024 * 1024)).toFixed(3)} MiB`;
+          return `<label style="display:block;margin:12px 0 4px">${esc(label)}${note}</label>
+            <select data-data-size="${i}" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)" ${options[i].existing || options[i].values.length <= 1 ? "disabled" : ""}>${opts}</select>`;
         }).join("");
         setPanel(`<section class=mp-panel>
           <h4>数据分区大小</h4>
