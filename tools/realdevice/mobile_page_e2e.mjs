@@ -459,10 +459,14 @@ function verifyDeletedRuntime(name, playId, phase) {
   try { evidence = JSON.parse(fs.readFileSync(evidenceFile, "utf8")); }
   catch (e) { throw new Error("invalid delete evidence " + phase + ": " + e.message); }
   saveJson("runtime-" + phase.toLowerCase() + "-delete-evidence.json", evidence);
-  const ok = evidence.deletedSlotNotBootable === true && evidence.dataPartitionReleased === true;
+  const ok = evidence.deletedSlotNotBootable === true && evidence.dataPartitionReleased === true &&
+    evidence.playId === Number(playId) && evidence.slotName === name &&
+    typeof evidence.serialEvidence === "string" && evidence.serialEvidence.trim().length > 0;
   record(phase + ": deleted firmware cannot boot and DATA is released", ok,
-    "slotNotBootable=" + evidence.deletedSlotNotBootable + "; dataReleased=" + evidence.dataPartitionReleased);
-  if (!ok) throw new Error("delete postcondition failed for " + phase);
+    "slotNotBootable=" + evidence.deletedSlotNotBootable + "; dataReleased=" + evidence.dataPartitionReleased +
+    "; identityMatches=" + (evidence.playId === Number(playId) && evidence.slotName === name) +
+    "; serialEvidence=" + Boolean(evidence.serialEvidence));
+  if (!ok) throw new Error("delete postcondition or evidence identity failed for " + phase);
 }
 async function cleanupOwned() {
   if (!baseline || !page) return;
