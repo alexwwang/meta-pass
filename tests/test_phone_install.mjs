@@ -28,6 +28,10 @@ const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
+// Test-only DATA resizing must require an explicit profile; ordinary installs stay unchanged.
+assert.equal(phone.requestedDataSizeProfile(), null);
+assert.equal(phone.requestedDataSizeProfile({ dataSizeProfile: "play28-recordings-4m" }), "play28-recordings-4m");
+
 // ── 夹具:最小合法 ESP 镜像(同 test-extract.mjs 构造法) ────────────────
 function buildAppImage(seg0len = 100, seg1len = 64) {
   const bodyLen = 24 + 16 + (8 + seg0len) + (8 + seg1len);
