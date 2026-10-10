@@ -2016,7 +2016,7 @@ static esp_err_t h_install_slots(httpd_req_t *req)
 static esp_err_t h_install_remove(httpd_req_t *req);
 static esp_err_t h_backup_import(httpd_req_t *req);
 
-// POST /api/install/remove —— dynslot 显式删除(§M5: 先归档数据,再删槽位)
+// POST /api/install/remove —— APP + 全部关联 DATA 级联删除
 static esp_err_t h_install_remove(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
@@ -2057,17 +2057,15 @@ static esp_err_t h_install_remove(httpd_req_t *req)
             for (uint8_t i = 0; i < n; i++) {
                 const esp_err_t e = meta_carve_flash_erase_data(pid, labels[i]);
                 if (e != ESP_OK) {
-                    ESP_LOGW(TAG, "erase_data failed: play_id=%u label=%s",
-                             (unsigned)pid, labels[i]);
+                    ESP_LOGE(TAG, "cascade erase failed: play_id=%u label=%s err=%s",
+                             (unsigned)pid, labels[i], esp_err_to_name(e));
+                    return reply(req, "500 Internal Server Error",
+                                 "associated DATA erase failed; APP remains installed");
                 }
             }
         }
     } else {
-        // 默认归档:不擦字节,保留用户数据,可被回收阶梯回收(design §6)。
-        const esp_err_t arc_err = meta_carve_flash_archive_slot_and_data(rm.slot);
-        if (arc_err != ESP_OK && arc_err != ESP_ERR_INVALID_ARG) {
-            ESP_LOGW(TAG, "archive_slot_and_data failed: %s", esp_err_to_name(arc_err));
-        }
+        return reply(req, "400 Bad Request", "cascade data deletion required");
     }
 
     // 防"删除复活"(真机 2026-10-04):remove 只清记录、不擦镜像字节,而物化
@@ -2092,8 +2090,7 @@ static esp_err_t h_install_remove(httpd_req_t *req)
         return reply(req, "500 Internal Server Error", "remove failed");
     }
 
-    ESP_LOGI(TAG, "slot %d removed (%s)", rm.slot,
-             rm.erase_data ? "data erased" : "data archived");
+    ESP_LOGI(TAG, "slot %d and associated DATA removed", rm.slot);
     return reply(req, "200 OK", "ok");
 }
 
