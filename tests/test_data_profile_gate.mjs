@@ -45,8 +45,8 @@ async function startDevServer(enabled) {
     for (let attempt = 0; attempt < 80; attempt++) {
       if (child.exitCode !== null) throw new Error("dev server exited early: " + stderr);
       try {
-        const response = await fetch(base + "/api/analyze?id=28&dataProfile=" + PROFILE, { signal: AbortSignal.timeout(500) });
-        if (response.status === 403 || response.status === 200) return { child, base, stderr: () => stderr };
+        const response = await fetch(base + "/", { signal: AbortSignal.timeout(500) });
+        if (response.status === 200) return { child, base, stderr: () => stderr };
       } catch {}
       await sleep(50);
     }
