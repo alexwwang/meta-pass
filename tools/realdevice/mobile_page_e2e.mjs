@@ -103,7 +103,8 @@ const device = target.origin;
 const suffix = Date.now().toString(36).slice(-6);
 const nameA = ("MOB-A-" + suffix).slice(0, 32);
 const nameB = ("MOB-B-" + suffix).slice(0, 32);
-const ownedNames = new Set([nameA, nameB]);
+const nameC = ("MOB-C-" + suffix).slice(0, 32);
+const ownedNames = new Set([nameA, nameB, nameC]);
 const installAttempted = new Set();
 fs.mkdirSync(logDir, { recursive: true });
 
@@ -121,8 +122,8 @@ const report = {
   cdpEndpoint: cdpUrl.replace(/:\/\/[^/]+/, "://<redacted-host>"),
   mobileEmulation: { ...viewport, viewportMatrix, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
   device: "redacted",
-  playIds: [Number(playA), Number(playB)],
-  testNames: [nameA, nameB],
+  playIds: [Number(playA), Number(playB), Number(playA)],
+  testNames: [nameA, nameB, nameC],
   verdict: "FAIL",
   results: [],
 };
@@ -606,6 +607,52 @@ try {
       requireSafeStorageState(afterRemoveA, "M06 after removing A");
     });
   } else record("M06 remove A and verify B isolation", false, "blocked: A/B install and runtime safety gates did not pass");
+
+  // Reinstall A's play ID under a new name after deleting A. This proves
+  // the allocator creates a fresh APP carve instead of reviving stale metadata.
+  if (afterRemoveA && b && afterRemoveA.slots.some((x) => x.name === nameB && x.state === "valid") &&
+      !afterRemoveA.slots.some((x) => x.name === nameA)) {
+    const installC = await runCase("M06C fresh install after deletion", async () => {
+      const slot = await installPlay(playA, nameC, "M06C fresh install C");
+      const listing = await readSlots();
+      saveJson("after-install-c.json", stableSlots(listing));
+      const fresh = listing.slots.some((x) => x.name === nameC && x.state === "valid") &&
+        listing.slots.some((x) => x.name === nameB && x.state === "valid") &&
+        !listing.slots.some((x) => x.name === nameA);
+      const separate = slot.slot !== b.slot;
+      record("M06C new APP carve, no stale A slot revival", fresh && separate,
+        "newSlot=" + slot.slot + "; BSlot=" + b.slot + "; oldANameAbsent=" +
+        !listing.slots.some((x) => x.name === nameA));
+      if (!fresh || !separate) throw new Error("fresh install C did not allocate a separate slot while preserving B");
+      requireSafeStorageState(listing, "M06C after install C");
+      if (requireDataReservation) {
+        const oldData = dataReservations(baseline);
+        const freshData = dataReservations(listing).filter((d) => d.play_id === Number(playA) &&
+          !oldData.some((x) => x.offset === d.offset && x.size === d.size &&
+            x.play_id === d.play_id && x.label === d.label));
+        record("M06C fresh DATA reservation for reinstalled play", freshData.length > 0,
+          "newReservations=" + freshData.length);
+        if (freshData.length === 0) throw new Error("fresh install C did not create a new DATA reservation");
+      }
+      return slot;
+    });
+    if (installC.ok) {
+      const runtimeC = await runCase("M06C runtime C", () => runChildRuntime(installC.value, playA, nameC, "M06C"));
+      if (runtimeC.ok) {
+        await runCase("M06C remove C and verify B isolation", async () => {
+          await removeByName(nameC, "M06C");
+          if (!manualAssist) verifyDeletedRuntime(nameC, playA, "M06C");
+          const listing = await readSlots();
+          const bStillValid = listing.slots.some((x) => x.name === nameB && x.state === "valid");
+          record("M06C B remains valid after removing C", bStillValid);
+          if (!bStillValid) throw new Error("removing C affected B");
+          requireSafeStorageState(listing, "M06C after removing C");
+        });
+      }
+    }
+  } else {
+    record("M06C fresh install after deletion", false, "blocked: A deletion or B-preservation safety gate failed");
+  }
 
   if (b) {
     await runCase("M07 remove B", async () => {
