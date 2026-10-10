@@ -179,6 +179,26 @@ export function geomFromListing(listing, imageLen) {
 export const DATA_SIZE_GRANULE = 0x1000;
 export const DATA_SIZE_MIN = DATA_SIZE_GRANULE;
 export const DATA_SIZE_STEP = 1024 * 1024;
+export const DATA_SIZE_MIN_FAT = 1024 * 1024;
+export const DATA_SIZE_MIN_FLASH_FS = 64 * 1024;
+
+// Partition-table size is the firmware's default/recommended capacity, not
+// necessarily a hard minimum. A non-empty embedded DATA image cannot be
+// downsized safely without understanding its on-flash format, so retain the
+// declared size in that case. For blank supported filesystems, expose a
+// conservative format-level floor and let the user choose a smaller extent.
+export function dataPartitionMinimum(partition) {
+  const declared = Number(partition?.required_size ?? partition?.requiredSize ?? partition?.size);
+  const payload = Number(partition?.initial_image_size ?? partition?.initialImageSize ?? 0);
+  const subtype = Number(partition?.subtype);
+  if (!Number.isSafeInteger(declared) || declared < DATA_SIZE_GRANULE ||
+      declared % DATA_SIZE_GRANULE !== 0) return null;
+  if (!Number.isSafeInteger(payload) || payload < 0 || payload > declared) return null;
+  if (payload > 0) return declared;
+  if (subtype === 0x81) return DATA_SIZE_MIN_FAT;
+  if (subtype === 0x82 || subtype === 0x83) return DATA_SIZE_MIN_FLASH_FS;
+  return declared;
+}
 
 export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_SIZE_MIN,
                                 reserveSizes = []) {
