@@ -51,8 +51,13 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, LIFECYCLE)
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
-        self.assertIn("同时删除数据", installer)
-        self.assertIn("不 = 数据归档保留", installer) if False else None
+        self.assertIn("删除 APP 及全部数据", installer)
+        self.assertIn("永久删除此 APP 及其全部数据", installer)
+        self.assertNotIn("mp-rm-erase", installer)
+        device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+        model = (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
+        self.assertIn("cascade data deletion required", device)
+        self.assertIn("out->erase_data = true", model)
 
     def test_child_b_reservation_is_attributed_to_b_play_id(self):
         self.assertIn("d.play_id === Number(playB)", RUNNER)
