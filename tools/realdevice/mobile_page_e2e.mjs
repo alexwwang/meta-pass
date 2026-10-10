@@ -48,8 +48,13 @@ if (runtimeDriver) {
       console.error("Runtime driver does not exist: " + driverPath);
       process.exit(2);
     }
-    if (!String(process.env.META_PASS_E2E_SERIAL_PORT || "").trim()) {
+    const serialPort = String(process.env.META_PASS_E2E_SERIAL_PORT || "").trim();
+    if (!serialPort) {
       console.error("Set META_PASS_E2E_SERIAL_PORT to the launcher's native USB Serial/JTAG port before any device mutation.");
+      process.exit(2);
+    }
+    if ((path.isAbsolute(serialPort) || serialPort.includes(path.sep)) && !fs.existsSync(serialPort)) {
+      console.error("META_PASS_E2E_SERIAL_PORT does not exist; refusing device mutation.");
       process.exit(2);
     }
     const python = process.env.PYTHON || "python3";
