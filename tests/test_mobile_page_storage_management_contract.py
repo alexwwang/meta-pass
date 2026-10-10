@@ -35,7 +35,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         runtime_start = RUNNER.index("if (runtimeDriver) {")
         runtime_end = RUNNER.index("if (manualAssist &&", runtime_start)
         runtime_preflight = RUNNER[runtime_start:runtime_end]
-        for token in ("META_PASS_E2E_SERIAL_PORT", "import serial", "Runtime driver does not exist"):
+        for token in ("META_PASS_E2E_SERIAL_PORT", "serialPort.includes(path.sep)",
+                      "does not exist; refusing device mutation", "import serial", "Runtime driver does not exist"):
             with self.subTest(token=token):
                 self.assertIn(token, runtime_preflight)
         self.assertLess(runtime_start, RUNNER.index('const urlArg = String(args.url'))
