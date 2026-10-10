@@ -183,6 +183,14 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("serial", DRIVER.lower())
         self.assertIn("checksum", SERIAL.lower())
 
+    def test_deleted_runtime_evidence_must_match_requested_identity(self):
+        verifier = RUNNER[RUNNER.index("function verifyDeletedRuntime"):RUNNER.index("async function cleanupOwned")]
+        for token in ("evidence.playId === Number(playId)", "evidence.slotName === name",
+                      "evidence.serialEvidence.trim().length > 0",
+                      "delete postcondition or evidence identity failed"):
+            with self.subTest(token=token):
+                self.assertIn(token, verifier)
+
     def test_document_states_evidence_boundary_and_manual_assist_gap(self):
         for token in ("PASS_WITH_MANUAL_STEPS", "真实设备结果", "不能由测试子固件的成功代替"):
             with self.subTest(token=token):
