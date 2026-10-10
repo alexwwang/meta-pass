@@ -180,7 +180,8 @@ export const DATA_SIZE_GRANULE = 0x1000;
 export const DATA_SIZE_MIN = DATA_SIZE_GRANULE;
 export const DATA_SIZE_STEP = 1024 * 1024;
 
-export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_SIZE_MIN) {
+export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_SIZE_MIN,
+                                reserveSizes = []) {
   const slots = Array.isArray(listing?.slots) ? listing.slots : [];
   const data = Array.isArray(listing?.data) ? listing.data : [];
   const occupancy = slots.map((s) => ({ offset: s.offset, size: s.size }))
@@ -197,6 +198,52 @@ export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_
   const sorted = occupancy.filter((r) => Number.isSafeInteger(r.offset) &&
     Number.isSafeInteger(r.size) && r.offset >= 0 && r.size > 0)
     .sort((a, b) => a.offset - b.offset);
+  // Reject malformed, overlapping or out-of-pool existing geometry.
+  for (let si = 0; si < POOL.seg.length; si++) {
+    const seg = POOL.seg[si];
+    let end = seg.start;
+    for (const r of sorted) {
+      const rEnd = r.offset + r.size;
+      if (rEnd <= seg.start || r.offset >= seg.end) continue;
+      if (r.offset < end || rEnd > seg.end) {
+        return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+      }
+      end = rEnd;
+    }
+  }
+
+  // Simulate the device's first-fit placement for other new DATA extents at
+  // their declared minimums before computing the selected extent's max.
+  const placeExtent = (size) => {
+    if (!Number.isSafeInteger(size) || size < DATA_SIZE_GRANULE ||
+        size % DATA_SIZE_GRANULE !== 0) return false;
+    const ranges = [...sorted].sort((a, b) => a.offset - b.offset);
+    for (const seg of POOL.seg) {
+      let cursor = seg.start;
+      for (const r of ranges) {
+        const rEnd = r.offset + r.size;
+        if (rEnd <= seg.start || r.offset >= seg.end) continue;
+        const at = alignUp(cursor, POOL.offsetAlign);
+        if (at + size <= r.offset) {
+          sorted.push({ offset: at, size });
+          sorted.sort((a, b) => a.offset - b.offset);
+          return true;
+        }
+        cursor = Math.max(cursor, rEnd);
+      }
+      const at = alignUp(cursor, POOL.offsetAlign);
+      if (at + size <= seg.end) {
+        sorted.push({ offset: at, size });
+        sorted.sort((a, b) => a.offset - b.offset);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (const size of reserveSizes) {
+    if (!placeExtent(size)) return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
+  }
+
   let largest = 0;
   let total = 0;
   for (const seg of POOL.seg) {
@@ -204,10 +251,6 @@ export function dataSizeBounds(listing, appProposal = null, requestedMin = DATA_
     for (const r of sorted) {
       const end = r.offset + r.size;
       if (end <= seg.start || r.offset >= seg.end) continue;
-      if (r.offset < cursor || end > seg.end) {
-        // Malformed/overlapping occupancy must not advertise capacity.
-        return { min, max: 0, step: DATA_SIZE_STEP, available: 0 };
-      }
       const aligned = alignUp(cursor, POOL.offsetAlign);
       const span = Math.max(0, Math.floor((r.offset - aligned) / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE);
       largest = Math.max(largest, span);
