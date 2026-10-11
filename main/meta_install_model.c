@@ -358,6 +358,16 @@ meta_install_place_verdict_t meta_install_model_place_offer(
             return META_PLACE_REJECTED;
         }
     }
+    if (m->restore_data) {
+        // Restore is import-only: it must never reuse existing APP/DATA ownership,
+        // because the normal upgrade path intentionally preserves existing bytes.
+        for (uint8_t i = 0; i < cur->count; i++) {
+            if (cur->slot[i].play_id == m->play_id) return META_PLACE_REJECTED;
+        }
+        for (uint8_t i = 0; i < cur->data_count; i++) {
+            if (cur->data[i].play_id == m->play_id) return META_PLACE_REJECTED;
+        }
+    }
     const uint32_t need = meta_carve_need(m->image_len);
     if (need == 0 || m->carve_size != need) return META_PLACE_REJECTED;
 
