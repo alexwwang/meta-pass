@@ -967,10 +967,10 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
     phone.parseSlots('{"count":0,"free":10,"slots":[]}').data, []);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":1572864,"size":131072,"state":1}]}').data,
-    [{ offset: 0x180000, size: 0x20000, state: 1, play_id: 0, label: "" }]);
+    [{ offset: 0x180000, size: 0x20000, state: 1, play_id: 0, type: 1, subtype: 0, label: "" }]);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"play_id":42,"offset":1572864,"size":131072,"state":2,"label":"rec"}]}').data,
-    [{ offset: 0x180000, size: 0x20000, state: 2, play_id: 42, label: "rec" }]);
+    [{ offset: 0x180000, size: 0x20000, state: 2, play_id: 42, type: 1, subtype: 0, label: "rec" }]);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":"x","size":1},{"offset":10,"size":0}]}').data,
     [], "malformed data records dropped");
