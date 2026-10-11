@@ -30,7 +30,29 @@ const manifest = buildDataArchiveManifest({
 });
 assert.equal(manifest.manifest_version, DATA_ARCHIVE_MANIFEST_VERSION);
 assert.equal(manifest.data[0].file, dataPath);
+assert.equal(manifest.complete, true);
+assert.deepEqual(manifest.missing_slots, undefined);
 assert.equal(validateDataArchiveManifest(manifest), manifest);
+
+const partial = buildDataArchiveManifest({
+  createdUtc: "2026-10-11T00:00:00.000Z",
+  complete: false, missingSlots: [2, 0],
+  slots: [{ play_id: 123, source_slot: 1, name: "demo",
+    files: [{ name: appPath, bytes: app.length, sha256: digest(app), type: "app" }] }],
+  data: [],
+});
+assert.equal(partial.complete, false);
+assert.deepEqual(partial.missing_slots, [0, 2]);
+assert.equal(validateDataArchiveManifest(partial), partial);
+assert.throws(() => buildDataArchiveManifest({
+  complete: true, missingSlots: [2],
+  slots: [{ play_id: 123, source_slot: 1, name: "demo",
+    files: [{ name: appPath, bytes: app.length, sha256: digest(app), type: "app" }] }],
+  data: [],
+}), /invalid archive completeness metadata/);
+assert.throws(() => validateDataArchiveManifest({ ...partial, missing_slots: [] }),
+  /invalid archive completeness metadata/);
+console.log("PASS 0: complete vs partial archives are explicit and validated");
 assert.deepEqual(
   await validateDataArchivePayloads(manifest, new Map([[appPath, app], [dataPath, data]]), async (b) => digest(b)),
   { ok: true, fileCount: 2, dataCount: 1 },
