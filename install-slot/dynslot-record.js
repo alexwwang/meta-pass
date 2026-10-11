@@ -533,11 +533,17 @@ export function findEmptyFit(carve, imageLen) {
 
 /** 移除槽位(数组压缩;字节擦除由调用方负责,= meta_carve_remove)。 */
 export function removeSlot(carve, index) {
-  if (!carve || !Number.isInteger(index) || index < 0 || index >= carve.slots.length) return null;
-  return {
-    slots: carve.slots.slice(0, index).concat(carve.slots.slice(index + 1)),
-    data: carve.data.slice(),
-  };
+  if (!carve || !Array.isArray(carve.slots) || !Array.isArray(carve.data) ||
+      !Number.isInteger(index) || index < 0 || index >= carve.slots.length) return null;
+  const removed = carve.slots[index];
+  const slots = carve.slots.slice(0, index).concat(carve.slots.slice(index + 1));
+  // DATA belongs to an APP installation instance, not merely to its visible
+  // slot index. Removing an APP must not leave orphan records. A zero playId
+  // denotes an empty/unassigned slot and must never claim DATA ownership.
+  const data = removed.playId
+    ? carve.data.filter((record) => record.playId !== removed.playId)
+    : carve.data.slice();
+  return { slots, data };
 }
 
 /** 在插入下标处放入新槽(= meta_carve_place 的插入语义)。 */
