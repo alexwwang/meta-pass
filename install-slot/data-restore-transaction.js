@@ -41,6 +41,19 @@ export async function executeDataRestoreTransaction({
   if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 4096) {
     fail("restore chunk size must be between 1 and 4096 bytes", "INVALID_RESTORE_TRANSACTION");
   }
+  const manifestPlayIds = manifest.slots.map((slot) => slot.play_id);
+  if (new Set(manifestPlayIds).size !== manifestPlayIds.length ||
+      manifestPlayIds.length !== plan.playIds.length ||
+      manifestPlayIds.some((id) => !plan.playIds.includes(id))) {
+    fail("restore plan APP identities do not match the manifest", "INVALID_RESTORE_PLAN");
+  }
+  if (manifest.data.length !== plan.data.length ||
+      manifest.data.some((record) => !plan.data.some((planned) =>
+        planned.play_id === record.play_id && planned.label === record.label &&
+        planned.bytes === record.bytes && planned.sha256 === record.sha256 &&
+        planned.file === record.file))) {
+    fail("restore plan DATA identities do not match the manifest", "INVALID_RESTORE_PLAN");
+  }
   const requiredMethods = [
     "beginRestore", "allocateData", "writeData", "readData", "writeApp",
     "verifyApp", "commitRestore", "readCommittedState", "cleanupStaging",
