@@ -79,6 +79,17 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                 self.assertIn(token, handler)
         self.assertIn('{ "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL }', DEVICE)
         self.assertIn('dataRead: (playId, label, offset, length)', (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8"))
+        self.assertIn('{ "/api/install/slot/read",HTTP_GET,  h_install_slot_read,NULL }', DEVICE)
+        slot_start = DEVICE.index("static esp_err_t h_install_slot_read")
+        slot_end = DEVICE.index("// POST /api/install/finalize", slot_start)
+        slot_handler = DEVICE[slot_start:slot_end]
+        for token in ("origin_allowed(req)", "req_token_ok(req)", '"X-Meta-Play-Id"',
+                      "length > INSTALL_IO_BUF", "offset > match->size || length > match->size - offset",
+                      "slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP",
+                      "esp_flash_read(NULL, read_buf, address, length)"):
+            with self.subTest(token=token):
+                self.assertIn(token, slot_handler)
+        self.assertIn('slotRead: (playId, offset, length)', (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8"))
 
     def test_in_place_data_growth_erases_only_new_free_tail(self):
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
@@ -145,8 +156,11 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("删除 APP 及全部数据", installer)
         self.assertIn("永久删除此 APP 及其全部数据", installer)
         self.assertNotIn("mp-rm-erase", installer)
-        self.assertIn("不支持包含真实 DATA 字节的完整备份与恢复", installer)
-        self.assertIn("旧版归档导出仅包含元数据", installer)
+        self.assertIn("可导出所选 APP 槽位及关联 DATA 的真实字节", installer)
+        self.assertIn("当前版本尚不支持导入恢复", installer)
+        self.assertIn("readAppSlotReservation", installer)
+        self.assertIn("readDataReservation", installer)
+        self.assertIn("validateDataArchivePayloads(manifest, payloadMap, sha256Hex)", installer)
         self.assertNotIn("data-export-pid", installer)
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
         model = (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
