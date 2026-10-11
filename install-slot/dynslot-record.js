@@ -520,6 +520,40 @@ export function placeNewSlot(carve, need) {
   return { index, offset: found, size: need };
 }
 
+/**
+ * DATA first-fit placement (= meta_carve_place_data / scan_fit). Unlike APP
+ * slots, DATA may be as small as one 4 KiB sector and does not consume a slot
+ * index; the shared occupancy scan still treats every APP and DATA extent as
+ * a hard obstacle.
+ */
+export function placeNewData(carve, size) {
+  if (!carve || !carveValid(carve)) return null;
+  if (!Number.isInteger(size) || size < MIN_DATA || size % SIZE_GRANULE !== 0) return null;
+  if (carve.data.length >= DATA_MAX) return null;
+  const occ = occupancyOf(carve);
+  let found = -1;
+  let si = 0;
+  for (let seg = 0; seg < POOL.seg.length && found < 0; seg++) {
+    const segStart = POOL.seg[seg].start;
+    const segEnd = POOL.seg[seg].end;
+    let cursor = segStart;
+    while (si < occ.length && occ[si].offset + occ[si].size <= segStart) si++;
+    for (;;) {
+      let gapEnd = segEnd;
+      if (si < occ.length && occ[si].offset < segEnd) gapEnd = occ[si].offset;
+      const candidate = alignUp(cursor, OFFSET_ALIGN);
+      if (candidate + size <= gapEnd) { found = candidate; break; }
+      if (si < occ.length && occ[si].offset < segEnd) {
+        cursor = occ[si].offset + occ[si].size;
+        si++;
+      } else {
+        break;
+      }
+    }
+  }
+  return found < 0 ? null : { offset: found, size };
+}
+
 /** 空 APP 槽复用判定(= meta_carve_find_fit 但仅 EMPTY:装着玩法的槽不作推荐)。 */
 export function findEmptyFit(carve, imageLen) {
   if (!carve || !Number.isInteger(imageLen) || imageLen <= 0) return -1;
