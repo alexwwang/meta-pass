@@ -309,6 +309,7 @@ PATHCHECK
         # (USB 安装页动态槽位设计:docs/assets/dynslot-usb-slot-page-design.md §11 T1-T6)
         "${node_bin}" tools/install-slot/test-dynslot-record.mjs
         "${node_bin}" tools/install-slot/test-data-install-plan.mjs
+        "${node_bin}" tools/install-slot/test-data-restore-plan.mjs
     else
         echo "WARN: node not found; skipping install-slot mjs tests" >&2
     fi
