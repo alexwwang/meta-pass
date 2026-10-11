@@ -27,6 +27,7 @@
 import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-image.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
+import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { buildDataArchiveManifest, validateDataArchivePayloads, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
@@ -1733,19 +1734,8 @@ export function boot(opts = {}) {
         if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
         const bounds = boundsByData[i];
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-        const values = [min];
-        if (max >= min) {
-          let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
-          while (next <= max) { values.push(next); next += DATA_SIZE_STEP; }
-          if (declared[i] >= min && declared[i] <= max) values.push(declared[i]);
-          if (max > min && values[values.length - 1] !== max) values.push(max);
-        }
-        const validValues = [...new Set(values)].filter((v) => v >= min && v <= Math.max(min, max));
-        const defaultSize = declared[i] >= min && declared[i] <= max ? declared[i] :
-          (max >= min ? validValues[validValues.length - 1] : min);
-        if (!validValues.includes(defaultSize)) validValues.push(defaultSize);
-        return { min, max: Math.max(min, max), values: validValues.sort((a, b) => a - b),
-          defaultSize, index: i, existing: false };
+        const optionSet = buildDataSizeOptions(min, Math.max(min, max), declared[i], DATA_SIZE_STEP);
+        return { ...optionSet, index: i, existing: false };
       });
       const selections = options.map((o, i) => o.existing ? o.min : o.defaultSize);
       const accepted = await new Promise((resolve) => {
