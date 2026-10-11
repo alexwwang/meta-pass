@@ -1,5 +1,7 @@
 # Handoff：feat/storage 本地验证与真机测试
 
+简体中文 | [English](mobile-page-storage-local-test-handoff.md)
+
 日期：2026-10-11  
 仓库：`alexwwang/meta-pass`  
 分支：`feat/storage`  
