@@ -1820,8 +1820,12 @@ $("file-input").addEventListener("change", async (ev) => {
     const buf = new Uint8Array(await file.arrayBuffer());
     log(t("msg_read_file", { name: file.name, size: fmtBytes(buf.length) }));
     const img = extractAppImage(buf);
-    localImage = { ...img, name: file.name };
-    $("file-info").textContent = t("msg_file_info", { source: img.source, size: fmtBytes(img.length) });
+    const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];
+    localImage = { ...img, dataImages, name: file.name };
+    const dataSummary = dataImages.length
+      ? ` · ${dataImages.length} DATA partition(s): ${dataImages.map((d) => d.label).join(", ")}`
+      : "";
+    $("file-info").textContent = t("msg_file_info", { source: img.source, size: fmtBytes(img.length) }) + dataSummary;
     $("file-info").className = "ok";
     log(t("msg_validated", { name: file.name, source: img.source, size: img.length }), "ok");
     // 预填显示名:文件名去扩展名,剔除非可打印 ASCII;剔完为空则留空不写 blob
@@ -2600,10 +2604,12 @@ async function prepareCommunityImage() {
     throw new Error(t("err_sha256_mismatch", { expected, got: digest }));
   }
   log(t("msg_sha256_verified"), "ok");
-  // 社区固件为 Full Flash 合并镜像,走同一解包/校验入口
+  // 社区固件为 Full Flash 合并镜像；APP 与 DATA 声明走同一解析入口。
   const img = extractAppImage(buf);
+  const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];
   log(t("msg_extracted", { size: img.length, source: img.source }));
-  return img;
+  if (dataImages.length) log(`Firmware declares ${dataImages.length} DATA partition(s): ${dataImages.map((d) => d.label).join(", ")}`);
+  return { ...img, dataImages };
 }
 
 $("btn-install").addEventListener("click", async () => {
