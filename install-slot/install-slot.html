@@ -175,6 +175,19 @@
     <div class="progress"><div id="progress-bar"></div></div>
   </section>
 
+  <dialog id="data-size-dialog" style="max-width:560px;width:calc(100% - 32px);border:1px solid #ccd0d5;border-radius:10px;padding:18px;">
+    <form method="dialog" id="data-size-form">
+      <h2 id="data-size-title">DATA partition sizes</h2>
+      <p id="data-size-help" class="subtitle">Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.</p>
+      <div id="data-size-rows"></div>
+      <p id="data-size-error" class="error" role="alert"></p>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button type="button" id="data-size-cancel">Cancel</button>
+        <button type="button" id="data-size-confirm" class="primary">Confirm sizes</button>
+      </div>
+    </form>
+  </dialog>
+
   <section>
     <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
     <p class="subtitle" data-i18n="backup_desc">Backs up the selected slots to a verified zip file on this computer.</p>
@@ -244,7 +257,7 @@
 
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
-import { extractAppImage, hex } from "./extract-app-image.js";
+import { extractAppImage, extractDataImages, isFullImage, hex } from "./extract-app-image.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
@@ -279,11 +292,12 @@ import {
   MODE, PLAN, SLOT_STATE, SLOT_KIND,
   STORE_OFFSET, STORE_SECTOR_SIZE, REC_SIZE, PT_SIZE,
   emptyCarve, carveValid, pickRecord, decodeAndValidate,
-  encodeRecord, materializeTable, insertSlot,
-  planInstall, planRemove, detectSlotMode, isDynMode, buildSlotView, checkTable,
+  encodeRecord, materializeTable, insertSlot, placeNewData, occupancyOf,
+  DATA_STATE, planInstall, planRemove, detectSlotMode, isDynMode, buildSlotView, checkTable,
 } from "./dynslot-record.js";
 // mock 设备(?mock=1):内存 flash 模拟真机读写语义,供无硬件的浏览器走查(设计 §10)。
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
+import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
