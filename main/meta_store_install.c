@@ -1613,6 +1613,14 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    bool recovered_remove = false;
+    const esp_err_t remove_recovery = remove_recover_pending(&recovered_remove);
+    if (remove_recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    }
+    if (recovered_remove) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
     if (s_session.confirmed || s_session.session_opened) {
         return reply(req, "409 Conflict", "already confirmed");
     }
@@ -2143,6 +2151,14 @@ static esp_err_t h_install_slots(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    bool recovered_remove = false;
+    const esp_err_t remove_recovery = remove_recover_pending(&recovered_remove);
+    if (remove_recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    }
+    if (recovered_remove) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
 
     const meta_carve_t *carve = meta_carve_flash_carve();
     if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
@@ -2472,6 +2488,10 @@ static esp_err_t h_install_remove(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "cannot uninstall during an install session");
     static char body[512];
     size_t len = 0;
     const esp_err_t rd = req_body(req, body, sizeof(body), &len);
