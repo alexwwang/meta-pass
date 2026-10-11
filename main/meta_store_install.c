@@ -2325,7 +2325,7 @@ static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
                                              uint32_t offset, uint32_t size)
 {
     const meta_carve_t *carve = meta_carve_flash_carve();
-    if (slot < 0 || slot >= (int)carve->count) return ESP_ERR_NOT_FOUND;
+    if (!carve || slot < 0 || slot >= (int)carve->count) return ESP_ERR_NOT_FOUND;
     const meta_carve_slot_t *target = &carve->slot[slot];
     if (target->play_id != pid || target->offset != offset || target->size != size) {
         return ESP_ERR_INVALID_STATE;
@@ -2333,25 +2333,46 @@ static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
     /* Legacy APPs with unknown play_id cannot safely claim or delete DATA.
      * Fail closed rather than create orphan DATA or erase another APP's data. */
     if (pid == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
+
+    /* Snapshot all extents before the metadata commit invalidates the active
+     * carve view. Never erase bytes while their DATA records are still live:
+     * a failed commit must leave every owned DATA byte untouched. */
+    uint32_t data_offsets[META_DATA_MAX];
+    uint32_t data_sizes[META_DATA_MAX];
+    uint8_t data_count = 0;
     for (uint8_t i = 0; i < carve->data_count; i++) {
         const meta_carve_data_t *data = &carve->data[i];
         if (pid == 0 || data->play_id != pid) continue;
-        const esp_err_t e = esp_flash_erase_region(NULL, data->offset, data->size);
+        if (data_count >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+        data_offsets[data_count] = data->offset;
+        data_sizes[data_count] = data->size;
+        data_count++;
+    }
+
+    /* First atomically remove APP + owned DATA records and materialize the
+     * new partition table. If this fails, do not erase APP or DATA bytes. */
+    const esp_err_t commit = meta_carve_flash_remove_app_and_data(slot);
+    if (commit != ESP_OK) return commit;
+
+    /* The records are now gone, so failed erases can only leave unregistered
+     * stale bytes. Future allocation must erase its chosen extent before use. */
+    esp_err_t first_error = ESP_OK;
+    const esp_err_t app_erase = esp_flash_erase_region(NULL, offset, META_SIG_SECTOR);
+    if (app_erase != ESP_OK) {
+        ESP_LOGE(TAG, "remove: APP header erase failed @0x%08lx: %s",
+                 (unsigned long)offset, esp_err_to_name(app_erase));
+        first_error = app_erase;
+    }
+    for (uint8_t i = 0; i < data_count; i++) {
+        const esp_err_t e = esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i]);
         if (e != ESP_OK) {
-            ESP_LOGE(TAG, "cascade erase failed: play_id=%u label=%s err=%s",
-                     (unsigned)pid, data->label, esp_err_to_name(e));
-            return e;
+            ESP_LOGE(TAG, "cascade erase failed @0x%08lx size=%lu err=%s",
+                     (unsigned long)data_offsets[i], (unsigned long)data_sizes[i],
+                     esp_err_to_name(e));
+            if (first_error == ESP_OK) first_error = e;
         }
     }
-    const esp_partition_t *part = slot_partition_any((int8_t)slot);
-    if (part) {
-        const esp_err_t e = esp_partition_erase_range(part, 0, META_SIG_SECTOR);
-        if (e != ESP_OK) {
-            ESP_LOGE(TAG, "remove: image header erase failed: %s", esp_err_to_name(e));
-            return e;
-        }
-    }
-    return meta_carve_flash_remove_app_and_data(slot);
+    return first_error;
 }
 
 static esp_err_t remove_recover_pending(bool *did_recover)
