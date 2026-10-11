@@ -2275,13 +2275,45 @@ static esp_err_t remove_nvs_get_u32(nvs_handle_t nvs, const char *prefix, uint32
 
 static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
 {
+    if (!target) return ESP_ERR_INVALID_ARG;
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve || slot < 0 || slot >= (int)carve->count ||
+        carve->slot[slot].play_id != target->play_id ||
+        carve->slot[slot].offset != target->offset ||
+        carve->slot[slot].size != target->size) return ESP_ERR_INVALID_STATE;
+    uint32_t data_offsets[META_DATA_MAX];
+    uint32_t data_sizes[META_DATA_MAX];
+    uint8_t data_count = 0;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *d = &carve->data[i];
+        if (target->play_id == 0 || d->play_id != target->play_id) continue;
+        if (data_count >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+        data_offsets[data_count] = d->offset;
+        data_sizes[data_count] = d->size;
+        data_count++;
+    }
+    if (target->play_id == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
+
     nvs_handle_t nvs;
     esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
     if (e != ESP_OK) return e;
-    e = nvs_set_u8(nvs, "slot", (uint8_t)slot);
+    /* Disable any stale intent before replacing its payload. */
+    e = nvs_set_u8(nvs, "active", 0);
+    if (e == ESP_OK) e = nvs_commit(nvs);
+    if (e == ESP_OK) e = nvs_set_u8(nvs, "slot", (uint8_t)slot);
     if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "p", target->play_id);
     if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "o", target->offset);
     if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "z", target->size);
+    if (e == ESP_OK) e = nvs_set_u8(nvs, "dc", data_count);
+    for (uint8_t i = 0; e == ESP_OK && i < data_count; i++) {
+        char op[4], sp[4];
+        snprintf(op, sizeof(op), "do%u", (unsigned)i);
+        snprintf(sp, sizeof(sp), "ds%u", (unsigned)i);
+        e = remove_nvs_set_u32(nvs, op, data_offsets[i]);
+        if (e == ESP_OK) e = remove_nvs_set_u32(nvs, sp, data_sizes[i]);
+    }
+    /* Active is the final field, committed only after the complete cleanup
+     * manifest is durable. Recovery can retry erases after metadata removal. */
     if (e == ESP_OK) e = nvs_set_u8(nvs, "active", 1);
     if (e == ESP_OK) e = nvs_commit(nvs);
     nvs_close(nvs);
@@ -2289,10 +2321,15 @@ static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
 }
 
 static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
-                                    uint32_t *offset, uint32_t *size)
+                                    uint32_t *offset, uint32_t *size,
+                                    uint8_t *data_count,
+                                    uint32_t data_offsets[META_DATA_MAX],
+                                    uint32_t data_sizes[META_DATA_MAX])
 {
-    if (!pending || !pid || !offset || !size) return ESP_ERR_INVALID_ARG;
+    if (!pending || !pid || !offset || !size || !data_count ||
+        !data_offsets || !data_sizes) return ESP_ERR_INVALID_ARG;
     *pending = false;
+    *data_count = 0;
     nvs_handle_t nvs;
     esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
     if (e != ESP_OK) return e;
@@ -2304,12 +2341,28 @@ static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
     e = remove_nvs_get_u32(nvs, "p", pid);
     if (e == ESP_OK) e = remove_nvs_get_u32(nvs, "o", offset);
     if (e == ESP_OK) e = remove_nvs_get_u32(nvs, "z", size);
+    uint8_t count = 0;
+    if (e == ESP_OK) {
+        e = nvs_get_u8(nvs, "dc", &count);
+        /* Older intent records predate durable DATA extent snapshots. Their
+         * original order erased DATA before metadata commit, so zero is safe. */
+        if (remove_nvs_key_missing(e)) { e = ESP_OK; count = 0; }
+    }
+    if (e == ESP_OK && count > META_DATA_MAX) e = ESP_ERR_INVALID_STATE;
+    for (uint8_t i = 0; e == ESP_OK && i < count; i++) {
+        char op[4], sp[4];
+        snprintf(op, sizeof(op), "do%u", (unsigned)i);
+        snprintf(sp, sizeof(sp), "ds%u", (unsigned)i);
+        e = remove_nvs_get_u32(nvs, op, &data_offsets[i]);
+        if (e == ESP_OK) e = remove_nvs_get_u32(nvs, sp, &data_sizes[i]);
+        if (e == ESP_OK && data_sizes[i] == 0) e = ESP_ERR_INVALID_STATE;
+    }
     nvs_close(nvs);
     if (e != ESP_OK) return ESP_ERR_INVALID_STATE;
+    *data_count = count;
     *pending = true;
     return ESP_OK;
 }
-
 static esp_err_t remove_intent_clear(void)
 {
     nvs_handle_t nvs;
@@ -2380,10 +2433,15 @@ static esp_err_t remove_recover_pending(bool *did_recover)
     if (did_recover) *did_recover = false;
     bool pending;
     uint32_t pid, offset, size;
-    esp_err_t e = remove_intent_read(&pending, &pid, &offset, &size);
+    uint8_t data_count = 0;
+    uint32_t data_offsets[META_DATA_MAX] = {0};
+    uint32_t data_sizes[META_DATA_MAX] = {0};
+    esp_err_t e = remove_intent_read(&pending, &pid, &offset, &size,
+                                     &data_count, data_offsets, data_sizes);
     if (e != ESP_OK || !pending) return e;
     if (did_recover) *did_recover = true;
     const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return ESP_ERR_INVALID_STATE;
     int found = -1;
     for (uint8_t i = 0; i < carve->count; i++) {
         const meta_carve_slot_t *slot = &carve->slot[i];
@@ -2392,8 +2450,19 @@ static esp_err_t remove_recover_pending(bool *did_recover)
         }
     }
     if (found >= 0) {
+        /* Metadata is still present: retry the complete commit-first removal. */
         e = remove_app_bytes_and_commit(found, pid, offset, size);
         if (e != ESP_OK) return e;
+    } else {
+        /* Metadata was committed before power loss/erase failure. The durable
+         * intent still identifies old extents, so retry cleanup without ever
+         * reintroducing their records. Erases are idempotent. */
+        e = esp_flash_erase_region(NULL, offset, META_SIG_SECTOR);
+        if (e != ESP_OK) return e;
+        for (uint8_t i = 0; i < data_count; i++) {
+            e = esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i]);
+            if (e != ESP_OK) return e;
+        }
     }
     return remove_intent_clear();
 }
