@@ -65,6 +65,7 @@ export async function executeDataRestoreTransaction({
     "beginRestore", "allocateData", "writeData", "readData", "writeApp",
     "verifyApp", "commitRestore", "readCommittedState", "cleanupStaging",
   ];
+  if (manifest.nvs) requiredMethods.push("writeNvs", "verifyNvs");
   for (const name of requiredMethods) {
     if (typeof device[name] !== "function") fail("device adapter missing " + name, "INVALID_RESTORE_ADAPTER");
   }
@@ -76,7 +77,8 @@ export async function executeDataRestoreTransaction({
   const dataRecords = manifest.data.map((record) => ({
     record, bytes: bytesFor(payloads, record.file),
   }));
-  for (const item of [...appRecords, ...dataRecords]) {
+  const nvsItem = manifest.nvs ? { file: manifest.nvs, bytes: bytesFor(payloads, manifest.nvs.file) } : null;
+  for (const item of [...appRecords, ...dataRecords, ...(nvsItem ? [nvsItem] : [])]) {
     if (item.bytes.byteLength !== item.file?.bytes && item.file) {
       fail("APP payload length changed after preflight", "INVALID_RESTORE_PAYLOAD");
     }
@@ -126,6 +128,10 @@ export async function executeDataRestoreTransaction({
       await device.verifyApp(token, {
         play_id: slot.play_id, source_slot: slot.source_slot, name: slot.name,
       }, file);
+    }
+    if (nvsItem) {
+      await device.writeNvs(token, nvsItem.file, nvsItem.bytes);
+      await device.verifyNvs(token, nvsItem.file);
     }
 
     // From this point onward a timeout/error may mean the durable commit happened.
