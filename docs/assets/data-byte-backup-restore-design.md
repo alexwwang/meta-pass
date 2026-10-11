@@ -11,7 +11,7 @@ Branch: `feat/storage`
 
 Align DATA lifecycle semantics between the USB service page and the embedded mobile page: install DATA, back up its actual bytes, restore those bytes, and delete DATA owned by an APP when that APP is uninstalled.
 
-**End-to-end backup/restore is not implemented yet.** The current USB ZIP contains APP slot images and optional NVS, but not DATA bytes. The mobile storage page also states this limitation. The new mobile DATA read API is only infrastructure for a future byte-level export; it does not provide a complete archive, restore, or rollback workflow.
+**End-to-end backup/restore is not implemented yet.** USB dynslot v2 export now includes actual bytes for selected APPs' DIRTY/ARCHIVED DATA reservations, with per-file SHA-256 validation and a post-read A/B ownership-record consistency check. Legacy/v1 layouts remain APP/NVS-only. DATA restore is not implemented, and the mobile page still lacks complete archive export/restore; a v2 archive must not be treated as restorable yet.
 
 ## Invariants
 
@@ -48,7 +48,7 @@ Reuse the ZIP container and manifest but increment the manifest version. Version
       "state": 1,
       "bytes": 65536,
       "sha256": "...",
-      "file": "data/123/cfg_save.bin"
+      "file": "data/123/0.bin"
     }
   ]
 }
@@ -88,7 +88,7 @@ Still required:
 
 - Mobile chunked archive UI, full-length/digest validation, and file export.
 - Restore endpoint with authorization, capacity preflight, staged writes, readback verification, and atomic metadata commit.
-- USB ZIP v2 export/restore of real DATA bytes and a shared manifest parser/validator.
+- USB ZIP v2 DATA export is implemented for selected dynslot APPs and non-PRISTINE DATA; still required: v2 restore transaction and mobile UI export/restore.
 - Repeatable mock-device tests for the device API, USB ZIP, and mobile UI, plus dedicated hardware tests.
 
 ## Acceptance Matrix
@@ -109,4 +109,4 @@ Still required:
 
 ## Implementation Boundary
 
-The current code provides a token/Origin-protected, ownership-keyed, 4 KiB-bounded DATA read API with relative-range validation, plus binary `DeviceBridge.dataRead` support. Complete backup/restore UI and the write transaction are still missing. Passing CI does not prove real-device readback or reboot persistence.
+The current code provides a token/Origin-protected, ownership-keyed, 4 KiB-bounded mobile DATA read API, binary `DeviceBridge.dataRead`, shared MPTB v2 manifest/payload validation, and USB dynslot export of real DATA bytes with SHA-256 verification. Mobile archive UI, DATA restore/write transaction, and repeatable end-to-end mock/hardware tests are still missing. Passing CI does not prove real-device byte-level backup or reboot persistence.
