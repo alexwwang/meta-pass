@@ -2329,7 +2329,7 @@ $("btn-backup").addEventListener("click", async () => {
     } catch (err) {
       log(t("msg_backup_nvs_failed", { err: err.message }), "warn");
     }
-    // Dynslot v2 archives include real bytes for selected APPs' non-PRISTINE DATA.
+    // Dynslot v2 archives include real bytes for every DATA reservation owned by selected APPs.
     // Legacy/v1 records have no stable play_id and deliberately stay APP/NVS-only.
     let manifestObj;
     const v2Slots = manifestEntries.map((entry) => ({
@@ -2340,7 +2340,7 @@ $("btn-backup").addEventListener("click", async () => {
     if (canArchiveData) {
       const selectedPlayIds = new Set(v2Slots.map((entry) => entry.play_id));
       const dataRecords = (slotModel.carve?.data || []).filter((record) =>
-        selectedPlayIds.has(record.playId) && record.state !== DATA_STATE.PRISTINE);
+        selectedPlayIds.has(record.playId));
       const dataPayloads = [];
       for (const record of dataRecords) {
         log(`DATA backup: ${record.label} (${record.playId}) · ${fmtBytes(record.size)}`);
