@@ -1290,6 +1290,16 @@ export function boot(opts = {}) {
     archiveBusy = true;
     archiveMessage = "正在读取 APP 与关联 DATA 字节…";
     try {
+      const assertIdle = async () => {
+        const status = await bridge.status();
+        if (!status.ok) throw new Error("无法确认设备安装状态");
+        let state;
+        try { state = JSON.parse(status.text); } catch { throw new Error("设备安装状态格式无效"); }
+        if (state.offer || state.confirmed || state.session) {
+          throw new Error("设备正在安装或等待确认；请结束安装后再备份");
+        }
+      };
+      await assertIdle();
       const listing = await bridge.slots();
       if (!listing.ok) throw new Error("设备清单读取失败 (HTTP " + listing.status + ")");
       const info = parseSlots(listing.text);
@@ -1317,7 +1327,9 @@ export function boot(opts = {}) {
         dataInputs.push({ play_id: record.play_id, label: record.label, type: record.type,
           subtype: record.subtype, state: record.state, bytes: read.bytes.length, sha256: read.sha256 });
       }
-      // Re-fetch ownership after byte reads. A changed mapping invalidates the archive.
+      // Re-fetch ownership and install state after byte reads. A changed mapping or
+      // concurrent installation invalidates the archive rather than producing a mixed snapshot.
+      await assertIdle();
       const afterResponse = await bridge.slots();
       const after = afterResponse.ok ? parseSlots(afterResponse.text) : null;
       const afterSlot = after?.slots.find((item) => item.slot === slotIndex);
