@@ -2056,6 +2056,51 @@ static esp_err_t h_install_data_read(httpd_req_t *req)
     return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
 
+// GET /api/install/slot/read: authenticated, bounded reads of an APP slot owned by play_id.
+// This is read-only and relative to the registered APP slot; callers cannot provide Flash addresses.
+static esp_err_t h_install_slot_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    char pid_str[16], off_str[16], len_str[16];
+    uint32_t play_id = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Play-Id", pid_str, sizeof(pid_str)) != ESP_OK ||
+        !parse_u32(pid_str, &play_id) || play_id == 0 ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad APP read headers");
+    }
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+    const meta_carve_slot_t *match = NULL;
+    for (uint8_t i = 0; i < carve->count; i++) {
+        const meta_carve_slot_t *slot = &carve->slot[i];
+        if (slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP) {
+            if (match) return reply(req, "409 Conflict", "ambiguous APP identity");
+            match = slot;
+        }
+    }
+    if (!match) return reply(req, "404 Not Found", "APP slot not found");
+    if (offset > match->size || length > match->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "APP read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const uint32_t address = match->offset + offset;
+    const esp_err_t e = esp_flash_read(NULL, read_buf, address, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "APP read failed play_id=%" PRIu32 " off=%" PRIu32 ": %s",
+                 play_id, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "APP flash read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
@@ -2429,6 +2474,7 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
         { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
         { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
+        { "/api/install/slot/read",HTTP_GET,  h_install_slot_read,NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
