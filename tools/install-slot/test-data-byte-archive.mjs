@@ -7,6 +7,7 @@ import {
   buildDataArchiveManifest,
   validateDataArchiveManifest,
   validateDataArchivePayloads,
+  readDataReservation,
 } from "../../install-slot/data-byte-archive.js";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -32,7 +33,32 @@ assert.deepEqual(
   await validateDataArchivePayloads(manifest, new Map([[appPath, app], [dataPath, data]]), async (b) => digest(b)),
   { ok: true, fileCount: 2, dataCount: 1 },
 );
+
 console.log("PASS 1: v2 manifest + exact APP/DATA payload digest validation");
+
+const readCalls = [];
+const progress = [];
+const read = await readDataReservation({
+  async dataRead(playId, label, offset, length) {
+    readCalls.push({ playId, label, offset, length });
+    return { ok: true, status: 200, bytes: data.slice(offset, offset + length) };
+  },
+}, { play_id: 123, label: "cfg_save", bytes: data.length }, {
+  chunkSize: 2,
+  sha256Hex: async (bytes) => digest(bytes),
+  onProgress: (p) => progress.push(p),
+});
+assert.deepEqual([...read.bytes], [...data]);
+assert.equal(read.sha256, digest(data));
+assert.deepEqual(readCalls.map((x) => [x.offset, x.length]), [[0, 2], [2, 2]]);
+assert.equal(progress.at(-1).completed, data.length);
+await assert.rejects(() => readDataReservation({
+  async dataRead() { return { ok: false, status: 416, text: "out of bounds" }; },
+}, { play_id: 123, label: "cfg_save", bytes: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /DATA read failed at offset 0/);
+await assert.rejects(() => readDataReservation({
+  async dataRead() { throw new Error("must not be called"); },
+}, { play_id: 123, label: "../cfg", bytes: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /invalid DATA reservation identity/);
+console.log("PASS 1B: chunked DATA reads enforce identity, exact lengths, progress, and full-content digest");
 
 // A metadata-only or old v1 archive must never be treated as DATA backup.
 assert.throws(() => validateDataArchiveManifest({ ...manifest, manifest_version: 1 }), /v1 archives do not contain DATA bytes/);
