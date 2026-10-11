@@ -2362,7 +2362,11 @@ $("btn-backup").addEventListener("click", async () => {
         play_id: record.playId, label: record.label, type: record.type, subtype: record.subtype,
         state: record.state, bytes: dataPayloads[index].length, sha256: await sha256Hex(dataPayloads[index]),
       })));
-      manifestObj = buildDataArchiveManifest({ slots: v2Slots, data: dataInputs });
+      const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
+      manifestObj = buildDataArchiveManifest({
+        slots: v2Slots, data: dataInputs,
+        complete: missingSlots.length === 0, missingSlots,
+      });
       if (nvsEntry) manifestObj.nvs = nvsEntry;
       for (let i = 0; i < manifestObj.data.length; i++) {
         entries.push({ name: manifestObj.data[i].file, data: dataPayloads[i] });
@@ -2372,8 +2376,11 @@ $("btn-backup").addEventListener("click", async () => {
       log(`DATA backup verified: ${manifestObj.data.length} reservation(s), real bytes + SHA-256`, "ok");
     } else {
       // Never guess ownership from partition labels or slot indexes.
+      const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
       manifestObj = {
         manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
+        complete: missingSlots.length === 0,
+        ...(missingSlots.length ? { missing_slots: missingSlots } : {}),
         slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
         ...(nvsEntry ? { nvs: nvsEntry } : {}),
       };
@@ -2385,6 +2392,10 @@ $("btn-backup").addEventListener("click", async () => {
       name: MANIFEST_NAME,
       data: new TextEncoder().encode(JSON.stringify(manifestObj, null, 2)),
     });
+    const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
+    if (missingSlots.length) {
+      log(`INCOMPLETE BACKUP: slot(s) ${missingSlots.join(", ")} could not be read; archive contains only the successfully verified subset.`, "warn");
+    }
     const zipEntries = entries;
     log(t("msg_backup_zipping"));
     const zip = buildZip(zipEntries);
