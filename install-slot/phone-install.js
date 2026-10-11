@@ -1284,6 +1284,7 @@ export function boot(opts = {}) {
   const MGMT_STATE = { valid: "有固件", invalid: "无固件", empty: "空" };
   let archiveBusy = false;
   let archiveMessage = "";
+  let archiveDownload = null;
 
   async function doBackup(slotIndex) {
     if (archiveBusy) return;
@@ -1352,10 +1353,11 @@ export function boot(opts = {}) {
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const filename = "metapass-data-backup-" + slot.play_id + "-" + stamp + ".zip";
       const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
-      const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
-      // iOS Safari may resolve the download asynchronously; keep the URL alive until consumed.
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-      archiveMessage = "备份已导出并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。注意：当前版本尚不支持导入恢复。";
+      // Do not auto-click after async reads: mobile Safari may drop the original user
+      // activation. Render a real download link so the user can tap it explicitly.
+      if (archiveDownload?.url) URL.revokeObjectURL(archiveDownload.url);
+      archiveDownload = { url, filename };
+      archiveMessage = "备份已生成并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。请点击下方下载链接保存；当前版本尚不支持导入恢复。";
       log(archiveMessage, "ok");
     } catch (error) {
       archiveMessage = "备份失败：" + (error && error.message ? error.message : String(error));
@@ -1371,7 +1373,8 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">数据备份</h4>
-      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256；但当前版本尚不支持导入恢复。备份文件暂不能在本页恢复，卸载 APP 仍会永久删除设备上的数据。</p>`;
+      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256；当前版本尚不支持导入恢复。卸载 APP 会永久删除设备上的关联数据。</p>
+      ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
