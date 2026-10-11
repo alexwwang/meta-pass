@@ -11,7 +11,7 @@
 // + revisionId 进程内缓存(隔离实例各自回源,正确性不受影响)。
 
 import { createStoreAnalyzer } from "./store-analyze.js";
-import { PLAY28_RECORDINGS_4M_PROFILE } from "./data-size-profile.js";
+import { PLAY28_RECORDINGS_4M_PROFILE, PLAY28_RECORDINGS_3M_PROFILE } from "./data-size-profile.js";
 
 const BACKEND = "https://ai-passport.folotoy.cn";
 
@@ -239,7 +239,8 @@ export default {
       if (dataProfile && env.ENABLE_TEST_DATA_PROFILES !== "1") {
         return err(403, "test data profiles are disabled");
       }
-      if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
+      if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE &&
+          dataProfile !== PLAY28_RECORDINGS_3M_PROFILE) {
         return err(400, "unsupported data profile");
       }
       // Reject profile/play mismatches before market lookup or firmware download.

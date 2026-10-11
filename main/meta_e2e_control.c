@@ -168,8 +168,18 @@ static void control_task(void *arg)
     printf("{\"event\":\"E2E_READY\",\"protocol\":1}\n");
     fflush(stdout);
     for (;;) {
+        // 无人值守 E2E 策略:待确认 offer 出现即代按 OK(等价人工在 P2 页按
+        // 确认键;仅限本测试构建)。手机页 install 流程否则永远等物理确认。
+        // 每 200ms 巡检一次,offer 生命周期秒级,不会错过。
+        meta_install_session_status_t st;
+        meta_install_session_poll(&st);
+        if (st.offer_ready && !st.confirmed && st.slot >= 0) {
+            const esp_err_t e = meta_install_confirm_slot(st.slot);
+            ESP_LOGW(TAG, "auto-confirm offer slot=%d: %s", (int)st.slot,
+                     e == ESP_OK ? "confirmed" : esp_err_to_name(e));
+        }
         if (!fgets(line, sizeof(line), stdin)) {
-            vTaskDelay(pdMS_TO_TICKS(20));
+            vTaskDelay(pdMS_TO_TICKS(200));
             continue;
         }
         if (strstr(line, "\n") == NULL && !feof(stdin)) {

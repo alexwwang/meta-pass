@@ -353,8 +353,10 @@ async function cancelRemoveByName(name, stage = "UI") {
   const afterSlots = stableSlots(await readSlots());
   const afterStatus = await readStatus();
   const unchanged = JSON.stringify(afterSlots) === JSON.stringify(beforeSlots);
+  // 与 assertIdle 同一语义:active 是"店内会话存活"标志,空闲 = 无在途
+  // offer/confirmed/session。
   const idle = beforeStatus.protocol === afterStatus.protocol &&
-    !afterStatus.active && !afterStatus.session && !afterStatus.offer && !afterStatus.confirmed;
+    !afterStatus.session && !afterStatus.offer && !afterStatus.confirmed;
   record(stage + ": cancel uninstall is a no-op", unchanged && idle,
     "slot=" + current.slot + "; slotsUnchanged=" + unchanged + "; installerIdle=" + idle);
   if (!unchanged || !idle) throw new Error("cancelled uninstall mutated device state");
@@ -375,6 +377,14 @@ async function installPlay(playId, name, label) {
   installAttempted.add(name);
   await page.locator("#mp-confirm").click();
   const outcome = await waitFor(async () => {
+    // DATA 容量选择页(storage 交互:固件声明 DATA 且可选值 >1 时出现;
+    // 真机 2026-10-11 实证:不点确认则安装流程永远停在此处)。默认选中
+    // 声明/覆写后的容量,直接代用户点「确认容量并安装」。
+    const dataConfirm = page.locator("#mp-data-confirm");
+    if (await dataConfirm.isVisible().catch(() => false)) {
+      await dataConfirm.click();
+      return null;
+    }
     const stage = (await page.locator("#mp-stage").textContent().catch(() => "")) || "";
     const status = (await page.locator("#mp-status").textContent().catch(() => "")) || "";
     const panel = (await page.locator("#mp-panel").innerText().catch(() => "")) || "";
@@ -527,7 +537,7 @@ async function verifyDeviceRestoration() {
     saveJson("recovery-final-status.json", finalStatus);
     const slotsRestored = JSON.stringify(stableSlots(finalSlots)) === JSON.stringify(stableSlots(baseline));
     const dataRestored = JSON.stringify(dataReservations(finalSlots)) === JSON.stringify(dataReservations(baseline));
-    const idle = finalStatus.protocol === 1 && !finalStatus.active && !finalStatus.session && !finalStatus.offer && !finalStatus.confirmed;
+    const idle = finalStatus.protocol === 1 && !finalStatus.session && !finalStatus.offer && !finalStatus.confirmed;
     const geometryOk = assertDynamicSlotGeometry(finalSlots, "recovery verification");
     // Device state readback is authoritative for restoration. A cleanup command
     // may report an error even if a prior mutation already removed the slot;

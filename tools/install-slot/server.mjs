@@ -14,7 +14,7 @@ import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createStoreAnalyzer } from "../../install-slot/store-analyze.js";
-import { PLAY28_RECORDINGS_4M_PROFILE } from "../../install-slot/data-size-profile.js";
+import { PLAY28_RECORDINGS_4M_PROFILE, PLAY28_RECORDINGS_3M_PROFILE } from "../../install-slot/data-size-profile.js";
 
 const PORT = Number(process.env.PORT) || 4191;
 const BACKEND = "https://ai-passport.folotoy.cn";
@@ -253,7 +253,8 @@ const server = http.createServer((req, res) => {
       sendError(res, 403, "test data profiles are disabled");
       return;
     }
-    if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE) {
+    if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE &&
+        dataProfile !== PLAY28_RECORDINGS_3M_PROFILE) {
       sendError(res, 400, "unsupported data profile");
       return;
     }

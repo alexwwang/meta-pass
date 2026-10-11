@@ -5,6 +5,8 @@ import {
   firmwareDataRequiredSize,
   PLAY28_RECORDINGS_4M_PROFILE,
   PLAY28_RECORDINGS_4M_SIZE,
+  PLAY28_RECORDINGS_3M_PROFILE,
+  PLAY28_RECORDINGS_3M_SIZE,
 } from "../install-slot/data-size-profile.js";
 
 const blank = [{ label: "recordings", subtype: 0x81, size: 6592 * 1024,
@@ -33,4 +35,10 @@ assert.equal(firmwareDataRequiredSize({
   app: { image_size: 1536 * 1024 },
   data: resized,
 }), 1536 * 1024 + PLAY28_RECORDINGS_4M_SIZE);
-console.log("DATA size profile: PASS (opt-in, blank FAT only, fail-closed, 4 MiB capacity accounting)");
+const resized3m = applyDataSizeProfile(blank, 28, PLAY28_RECORDINGS_3M_PROFILE);
+assert.equal(resized3m[0].required_size, PLAY28_RECORDINGS_3M_SIZE);
+assert.equal(resized3m[0].testSizeProfile, PLAY28_RECORDINGS_3M_PROFILE);
+assert.throws(() => applyDataSizeProfile(blank, 28, "play28-recordings-2m"),
+  undefined, "unknown profile names must fail closed");
+
+console.log("DATA size profile: PASS (opt-in, blank FAT only, fail-closed, 4/3 MiB capacity accounting)");
