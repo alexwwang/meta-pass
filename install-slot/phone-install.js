@@ -285,6 +285,8 @@ export function parseSlots(text) {
         data.push({ offset: x.offset, size: x.size,
                     state: Number.isInteger(x.state) ? x.state : 0,
                     play_id: Number.isInteger(x.play_id) ? x.play_id : 0,
+                    type: Number.isInteger(x.type) ? x.type : 1,
+                    subtype: Number.isInteger(x.subtype) ? x.subtype : 0,
                     label: typeof x.label === "string" ? x.label : "" });
       }
     }
