@@ -1426,10 +1426,10 @@ async function chooseUsbDataSizes(dataImages, carve) {
       minimums.filter((_, j) => j !== i));
     const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
     const min = minimums[i];
-    if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest available ${fmtBytes(max)}`);
+    if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest contiguous gap ${fmtBytes(max)}, total free ${fmtBytes(bounds.available)}. Fixed partitions cannot be moved or crossed.`);
     const declared = Number(d.required_size);
     const optionSet = buildDataSizeOptions(min, max, declared, DATA_SIZE_STEP);
-    return { ...optionSet, selected: optionSet.defaultSize };
+    return { ...optionSet, available: bounds.available, selected: optionSet.defaultSize };
   });
 
   rows.replaceChildren();
@@ -1438,8 +1438,8 @@ async function chooseUsbDataSizes(dataImages, carve) {
     label.style.display = "block";
     label.style.margin = "12px 0 4px";
     label.textContent = zh
-      ? `${dataImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大 ${fmtBytes(o.max)}`
-      : `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} maximum`;
+      ? `${dataImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大连续 ${fmtBytes(o.max)} · 总空闲 ${fmtBytes(o.available)}`
+      : `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} max contiguous · ${fmtBytes(o.available)} total free`;
     const select = document.createElement("select");
     select.dataset.dataSize = String(i);
     select.style.width = "100%";
