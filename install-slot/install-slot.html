@@ -1386,6 +1386,13 @@ async function chooseUsbDataSizes(dataImages, carve) {
   const dialog = $("data-size-dialog");
   const rows = $("data-size-rows");
   const error = $("data-size-error");
+  const zh = currentLang === "zh";
+  $("data-size-title").textContent = zh ? "数据分区容量" : "DATA partition sizes";
+  $("data-size-help").textContent = zh
+    ? "为每个 DATA 分区选择容量。范围受当前连续空闲空间约束，提交前会再次验证。"
+    : "Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.";
+  $("data-size-cancel").textContent = zh ? "取消" : "Cancel";
+  $("data-size-confirm").textContent = zh ? "确认容量" : "Confirm sizes";
   const listing = dataSizingListing(carve);
   const minimums = dataImages.map((d) => dataPartitionMinimum(d));
   if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
@@ -1427,7 +1434,9 @@ async function chooseUsbDataSizes(dataImages, carve) {
     const label = document.createElement("label");
     label.style.display = "block";
     label.style.margin = "12px 0 4px";
-    label.textContent = `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} maximum`;
+    label.textContent = zh
+      ? `${dataImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大 ${fmtBytes(o.max)}`
+      : `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} maximum`;
     const select = document.createElement("select");
     select.dataset.dataSize = String(i);
     select.style.width = "100%";
@@ -1457,12 +1466,12 @@ async function chooseUsbDataSizes(dataImages, carve) {
       for (let i = 0; i < dataImages.length; i++) {
         const size = normalizeDataSize(sizes[i], { min: options[i].min, max: options[i].max });
         if (size === null || size < minimums[i]) {
-          error.textContent = `Invalid size for DATA ${dataImages[i].label}`;
+          error.textContent = zh ? `DATA ${dataImages[i].label} 容量无效` : `Invalid size for DATA ${dataImages[i].label}`;
           return;
         }
         const place = placeNewData(planned, size);
         if (!place) {
-          error.textContent = "These DATA sizes do not fit together in the current partition layout. Reduce one or more sizes.";
+          error.textContent = zh ? "这些 DATA 容量组合无法放入当前分区布局，请调小部分容量。" : "These DATA sizes do not fit together in the current partition layout. Reduce one or more sizes.";
           return;
         }
         planned = {
@@ -1474,7 +1483,7 @@ async function chooseUsbDataSizes(dataImages, carve) {
           }],
         };
         if (!carveValid(planned)) {
-          error.textContent = `Invalid DATA allocation for ${dataImages[i].label}`;
+          error.textContent = zh ? `DATA ${dataImages[i].label} 分配无效` : `Invalid DATA allocation for ${dataImages[i].label}`;
           return;
         }
       }
