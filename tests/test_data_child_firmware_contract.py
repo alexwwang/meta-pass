@@ -69,6 +69,11 @@ app_erase_at = remove_handler.index("esp_flash_erase_region(NULL, offset, META_S
 data_erase_at = remove_handler.index("esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i])")
 assert commit_at < app_erase_at < data_erase_at, "device uninstall must commit APP+DATA metadata before erasing bytes"
 assert "if (commit != ESP_OK) return commit;" in remove_handler, "metadata commit failure must preserve APP/DATA bytes"
+assert "nvs_set_u8(nvs, \"dc\", data_count)" in install_net, "uninstall intent must persist owned DATA extent count before commit"
+assert "remove_nvs_set_u32(nvs, op, data_offsets[i])" in install_net, "uninstall intent must persist DATA offsets for post-commit recovery"
+assert "remove_nvs_set_u32(nvs, sp, data_sizes[i])" in install_net, "uninstall intent must persist DATA sizes for post-commit recovery"
+assert "Metadata was committed before power loss/erase failure" in install_net, "recovery must retry erases after metadata is already removed"
+assert "if (e != ESP_OK) return e;" in install_net[install_net.index("static esp_err_t remove_recover_pending"):install_net.index("// POST /api/install/remove")], "failed cleanup must keep durable intent pending"
 assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
 assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
 assert "await writeDataPayload(dataImage, dataImage)" in usb_page, "USB DATA payload must be written and read-back verified before commit"
