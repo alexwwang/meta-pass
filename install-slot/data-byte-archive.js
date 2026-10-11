@@ -173,3 +173,43 @@ export async function validateDataArchivePayloads(manifest, fileBytes, sha256Hex
   }
   return { ok: true, fileCount: records.length, dataCount: manifest.data.length };
 }
+
+
+// Read one registered DATA reservation through the mobile bridge. Offsets are
+// relative to that reservation; the device resolves (play_id, label) and never
+// accepts a caller-provided absolute Flash address. The caller must not mark an
+// archive complete until all reservations and their APP payloads are verified.
+export async function readDataReservation(bridge, record, {
+  chunkSize = 4096,
+  sha256Hex,
+  onProgress = () => {},
+  maxBytes = 32 * 1024 * 1024,
+} = {}) {
+  if (!bridge || typeof bridge.dataRead !== "function") fail("mobile DATA read bridge is required");
+  if (!record || !Number.isSafeInteger(record.play_id) || record.play_id <= 0 ||
+      !safeLabel(record.label) || !Number.isSafeInteger(record.bytes) ||
+      record.bytes <= 0 || record.bytes > maxBytes) {
+    fail("invalid DATA reservation identity or size");
+  }
+  if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 4096) {
+    fail("DATA read chunk size must be between 1 and 4096 bytes");
+  }
+  if (typeof sha256Hex !== "function") fail("SHA-256 implementation is required");
+
+  const bytes = new Uint8Array(record.bytes);
+  for (let offset = 0; offset < record.bytes; offset += chunkSize) {
+    const length = Math.min(chunkSize, record.bytes - offset);
+    const result = await bridge.dataRead(record.play_id, record.label, offset, length);
+    if (!result || !result.ok || !(result.bytes instanceof Uint8Array) ||
+        result.bytes.byteLength !== length) {
+      const status = result && result.status ? " (HTTP " + result.status + ")" : "";
+      fail("DATA read failed at offset " + offset + status + ": " +
+        (result && result.text ? result.text : "invalid binary response"));
+    }
+    bytes.set(result.bytes, offset);
+    onProgress({ play_id: record.play_id, label: record.label, completed: offset + length, total: record.bytes });
+  }
+  const sha256 = await sha256Hex(bytes);
+  if (typeof sha256 !== "string" || !SHA256_RE.test(sha256)) fail("SHA-256 implementation returned an invalid digest");
+  return { bytes, sha256 };
+}
