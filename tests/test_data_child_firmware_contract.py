@@ -59,6 +59,16 @@ remove_end = usb_page.index("// mock 连接", remove_start)
 remove_action = usb_page[remove_start:remove_end]
 assert remove_action.index("commitCarve(rm.carve") < remove_action.index("wipeRange(d.offset, d.size)"), "USB deletion must commit lifecycle metadata before erasing owned DATA bytes"
 assert "slot.playId" in remove_action and "ownedData" in remove_action, "USB deletion must resolve DATA ownership by playId, not slot index"
+
+# Device uninstall must publish removal metadata before touching APP/DATA bytes.
+remove_start = install_net.index("static esp_err_t remove_app_bytes_and_commit(")
+remove_end = install_net.index("static esp_err_t remove_recover_pending", remove_start)
+remove_handler = install_net[remove_start:remove_end]
+commit_at = remove_handler.index("meta_carve_flash_remove_app_and_data(slot)")
+app_erase_at = remove_handler.index("esp_flash_erase_region(NULL, offset, META_SIG_SECTOR)")
+data_erase_at = remove_handler.index("esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i])")
+assert commit_at < app_erase_at < data_erase_at, "device uninstall must commit APP+DATA metadata before erasing bytes"
+assert "if (commit != ESP_OK) return commit;" in remove_handler, "metadata commit failure must preserve APP/DATA bytes"
 assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
 assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
 assert "await writeDataPayload(dataImage, dataImage)" in usb_page, "USB DATA payload must be written and read-back verified before commit"
