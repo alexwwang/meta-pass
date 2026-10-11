@@ -1724,8 +1724,9 @@ export function boot(opts = {}) {
         editable[i] && Math.floor(boundsByData[i].max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE < min);
       if (impossible >= 0) {
         const min = minimums[impossible];
+        const bounds = boundsByData[impossible];
         failSheet("数据分区空间不足",
-          `DATA ${impossible + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB，但当前分区布局无法提供连续空间。请取消安装或释放存储后重试。`);
+          `DATA ${impossible + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB；最大连续空闲空间 ${(bounds.max / (1024 * 1024)).toFixed(3)} MiB，总空闲空间 ${(bounds.available / (1024 * 1024)).toFixed(3)} MiB。固定分区不可移动，无法跨区拼接，请取消安装或释放存储后重试。`);
         return;
       }
       const options = minimums.map((declaredMin, i) => {
@@ -1735,7 +1736,7 @@ export function boot(opts = {}) {
         const bounds = boundsByData[i];
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
         const optionSet = buildDataSizeOptions(min, Math.max(min, max), declared[i], DATA_SIZE_STEP);
-        return { ...optionSet, index: i, existing: false };
+        return { ...optionSet, available: bounds.available, index: i, existing: false };
       });
       const selections = options.map((o, i) => o.existing ? o.min : o.defaultSize);
       const accepted = await new Promise((resolve) => {
@@ -1744,7 +1745,7 @@ export function boot(opts = {}) {
           const opts = options[i].values.map((v) =>
             `<option value="${v}" ${v === selections[i] ? "selected" : ""}>${(v / (1024 * 1024)).toFixed(v % (1024 * 1024) ? 3 : 0)} MiB</option>`
           ).join("");
-          const note = options[i].existing ? " · 已有分区，保留当前容量" : ` · 范围 ${(options[i].min / (1024 * 1024)).toFixed(3)}–${(options[i].max / (1024 * 1024)).toFixed(3)} MiB · 步进 1 MiB`;
+          const note = options[i].existing ? " · 已有分区，保留当前容量" : ` · 范围 ${(options[i].min / (1024 * 1024)).toFixed(3)}–${(options[i].max / (1024 * 1024)).toFixed(3)} MiB · 总空闲 ${(options[i].available / (1024 * 1024)).toFixed(3)} MiB · 步进 1 MiB`;
           return `<label style="display:block;margin:12px 0 4px">${esc(label)}${note}</label>
             <select data-data-size="${i}" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)" ${options[i].existing || options[i].values.length <= 1 ? "disabled" : ""}>${opts}</select>`;
         }).join("");
