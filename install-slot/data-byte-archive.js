@@ -30,7 +30,7 @@ function validateFileRecord(file, seenNames) {
   if (!file || !safeFileName(file.name) || seenNames.has(file.name)) {
     fail("invalid or duplicate archive file path");
   }
-  if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) {
+  if (!Number.isSafeInteger(file.bytes) || file.bytes <= 0) {
     fail("invalid archive file length");
   }
   if (typeof file.sha256 !== "string" || !SHA256_RE.test(file.sha256)) {
@@ -43,6 +43,7 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
   if (!Array.isArray(slots) || !Array.isArray(data)) fail("slots and data must be arrays");
   if (data.length > DATA_ARCHIVE_MAX_FILES) fail("too many DATA records");
   const slotIds = new Set();
+  const sourceSlots = new Set();
   const normalizedSlots = slots.map((slot) => {
     if (!slot || !Number.isSafeInteger(slot.play_id) || slot.play_id <= 0 ||
         !Number.isInteger(slot.source_slot) || slot.source_slot < 0 ||
@@ -50,7 +51,10 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
       fail("invalid APP slot entry");
     }
     if (slotIds.has(slot.play_id)) fail("duplicate APP play_id");
+    if (sourceSlots.has(slot.source_slot)) fail("duplicate source slot");
+    if (slot.files.length === 0) fail("APP slot has no payload files");
     slotIds.add(slot.play_id);
+    sourceSlots.add(slot.source_slot);
     return {
       play_id: slot.play_id,
       source_slot: slot.source_slot,
@@ -104,19 +108,31 @@ export function validateDataArchiveManifest(manifest) {
   }
   if (manifest.data.length > DATA_ARCHIVE_MAX_FILES) fail("too many DATA records");
   const playIds = new Set();
+  const sourceSlots = new Set();
+  const appPayloadPlayIds = new Set();
   const seenNames = new Set();
   for (const slot of manifest.slots) {
     if (!slot || !Number.isSafeInteger(slot.play_id) || slot.play_id <= 0 ||
         !Number.isInteger(slot.source_slot) || slot.source_slot < 0 ||
         typeof slot.name !== "string" || !Array.isArray(slot.files)) fail("invalid APP slot entry");
     if (playIds.has(slot.play_id)) fail("duplicate APP play_id");
+    if (sourceSlots.has(slot.source_slot)) fail("duplicate source slot");
+    if (slot.files.length === 0) fail("APP slot has no payload files");
     playIds.add(slot.play_id);
-    for (const file of slot.files) validateFileRecord(file, seenNames);
+    sourceSlots.add(slot.source_slot);
+    for (const file of slot.files) {
+      validateFileRecord(file, seenNames);
+      if (file.type === "app" || file.type === "raw" ||
+          file.name.endsWith("_firmware.bin") || file.name.endsWith("_raw.bin")) {
+        appPayloadPlayIds.add(slot.play_id);
+      }
+    }
   }
   const ownership = new Set();
   manifest.data.forEach((record, index) => {
-    if (!record || !Number.isSafeInteger(record.play_id) || !playIds.has(record.play_id)) {
-      fail("DATA record has no matching APP play_id");
+    if (!record || !Number.isSafeInteger(record.play_id) || !playIds.has(record.play_id) ||
+        !appPayloadPlayIds.has(record.play_id)) {
+      fail("DATA record has no matching APP payload");
     }
     if (!safeLabel(record.label)) fail("invalid DATA label");
     const key = record.play_id + ":" + record.label;
