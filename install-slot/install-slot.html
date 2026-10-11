@@ -893,7 +893,7 @@ const I18N = {
     msg_orphan_slot_warning: "Warning: slot geometry was committed but firmware write failed. The slot is allocated but empty — reinstall or delete it to avoid boot issues.",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
-    backup_desc: "Backs up selected APP slot images to a verified zip file. DATA partition bytes are not included.",
+    backup_desc: "Backs up selected APP images and owned DATA bytes when dynslot ownership metadata is available; legacy layouts remain APP-only.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
     restore_desc: "Restores APP images only. DATA bytes in v2 archives are not restored yet.",
