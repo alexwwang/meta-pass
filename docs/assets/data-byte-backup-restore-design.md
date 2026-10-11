@@ -1,5 +1,9 @@
 # DATA Byte-Level Backup and Restore Design
 
+<p align="right">
+  <strong>English</strong> · <a href="data-byte-backup-restore-design.zh_CN.md">简体中文</a>
+</p>
+
 Date: 2026-10-11  
 Branch: `feat/storage`
 
