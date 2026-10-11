@@ -156,6 +156,14 @@ assert.equal(new DataView(zip.buffer, zip.byteOffset, zip.byteLength).getUint32(
 assert.equal(new DataView(zip.buffer, zip.byteOffset, zip.byteLength).getUint32(zip.length - 22, true), 0x06054b50);
 assert.throws(() => buildDataArchiveZip([{ name: "../escape", data }]), /invalid or duplicate ZIP entry/);
 console.log("PASS 6: shared ZIP writer emits valid local/central directory signatures and rejects unsafe paths");
+const parsedZip = readDataArchiveZip(zip);
+assert.deepEqual([...parsedZip.keys()], ["manifest.json", "data/321/0.bin"]);
+assert.deepEqual(parsedZip.get("data/321/0.bin"), data);
+const corruptedZip = zip.slice();
+corruptedZip[35] ^= 0x01;
+assert.throws(() => readDataArchiveZip(corruptedZip), /ZIP local\/central metadata mismatch|ZIP CRC mismatch/);
+assert.throws(() => readDataArchiveZip(zip, { maxArchiveBytes: 8 }), /ZIP archive size/);
+console.log("PASS 8: bounded ZIP reader verifies stored entries, duplicate/path metadata, and CRC");
 
 // Optional NVS is also a real archive payload, not an unchecked manifest-only claim.
 const withNvs = { ...pristineManifest, nvs: {
