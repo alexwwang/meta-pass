@@ -84,12 +84,16 @@ assert "Metadata was committed before power loss/erase failure" in install_net, 
 prepare_start = install_net.index("static esp_err_t h_install_prepare(")
 prepare_end = install_net.index("// POST /api/install/session", prepare_start)
 prepare_handler = install_net[prepare_start:prepare_end]
-assert "remove_recover_pending(&recovered_remove)" in prepare_handler, "new install must recover or block on pending uninstall"
+assert "remove_recovery_gate(&recovered_remove)" in prepare_handler, "new install must recover or block on pending uninstall"
 slots_start = install_net.index("static esp_err_t h_install_slots(")
 slots_end = install_net.index("static esp_err_t h_install_remove(httpd_req_t *req);", slots_start)
 slots_handler = install_net[slots_start:slots_end]
-assert "remove_recover_pending(&recovered_remove)" in slots_handler, "slot listing must not expose stale state during uninstall recovery"
+assert "remove_recovery_gate(&recovered_remove)" in slots_handler, "slot listing must not expose stale state during uninstall recovery"
 assert "cannot uninstall during an install session" in install_net, "uninstall must not race an active install session"
+gate_start = install_net.index("static esp_err_t remove_recovery_gate(bool *did_recover)\\n{")
+gate_end = install_net.index("static esp_err_t remove_recover_pending(bool *did_recover)\\n{", gate_start)
+gate_handler = install_net[gate_start:gate_end]
+assert "if (!s_remove_recovery_needed)" in gate_handler and "return ESP_OK;" in gate_handler, "steady-state DATA chunk reads must not reopen NVS for each 4 KiB request"
 assert "if (e != ESP_OK) return e;" in install_net[install_net.index("static esp_err_t remove_recover_pending"):install_net.index("// POST /api/install/remove")], "failed cleanup must keep durable intent pending"
 assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
 assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
@@ -122,7 +126,7 @@ for token, label in [
     ("esp_flash_read(NULL, read_buf, address, length)", "APP reads return actual flash bytes"),
     ("s_session.confirmed || s_session.session_opened", "APP reads are rejected during install activity"),
     ("install_busy", "APP reads check the install-session safety gate"),
-    ("remove_recover_pending(&recovered_remove)", "APP reads recover pending uninstall before exposing bytes"),
+    ("remove_recovery_gate(&recovered_remove)", "APP reads recover pending uninstall before exposing bytes"),
     ("previous uninstall recovered; refresh slot list", "APP reads stop after recovery changes slot state"),
 ]:
     assert token in slot_read_handler, f"missing APP read API contract: {label}"
@@ -141,7 +145,7 @@ for token, label in [
     ("offset > match->size || length > match->size - offset", "DATA reads cannot cross reservation bounds"),
     ("d->play_id == play_id && strcmp(d->label, label) == 0", "DATA reads resolve the ownership key"),
     ("esp_flash_read(NULL, read_buf, address, length)", "DATA bytes are read only after reservation lookup"),
-    ("remove_recover_pending(&recovered_remove)", "DATA reads recover pending uninstall before exposing bytes"),
+    ("remove_recovery_gate(&recovered_remove)", "DATA reads recover pending uninstall before exposing bytes"),
     ("previous uninstall recovered; refresh slot list", "DATA reads stop after recovery changes ownership"),
 ]:
     assert token in read_handler, f"missing DATA read API contract: {label}"
