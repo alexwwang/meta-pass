@@ -83,13 +83,35 @@ function fakeBridge() {
   console.log("PASS 1: single APP+DATA archive uses device allocator, APP/DATA upload, and finalize");
 }
 {
+  const tail = new Uint8Array(4096).fill(0xff);
+  const splitManifest = buildDataArchiveManifest({
+    slots: [{ play_id: 564, source_slot: 2, name: "usb-backed-demo",
+      files: [
+        { name: "slot2_firmware.bin", bytes: app.length, sha256: sha(app), type: "app" },
+        { name: "slot2_tail.bin", bytes: tail.length, sha256: sha(tail), type: "other" },
+      ] }],
+    data: [{ play_id: 564, label: "cfg_save", type: 1, subtype: 0x82,
+      state: 1, bytes: data.length, sha256: sha(data) }],
+  });
+  const splitPayloads = new Map([
+    ["slot2_firmware.bin", app], ["slot2_tail.bin", tail],
+    [splitManifest.data[0].file, data],
+  ]);
+  const bridge = fakeBridge();
+  const result = await restoreDataArchive(bridge, listing, splitManifest, splitPayloads);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.playId, 564);
+  assert.equal(bridge.offer.playId, 564);
+  console.log("PASS 2: USB-style firmware + tail archive is restored through the same mobile transaction");
+}
+{
   const bridge = fakeBridge();
   const collision = { ...listing, slots: [...listing.slots, { ...listing.slots[0], slot: 1, play_id: 563 }] };
   const result = await restoreDataArchive(bridge, collision, manifest, payloads);
   assert.equal(result.ok, false);
   assert.match(result.reason, /play_id already exists/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 2: conflicting play_id is rejected before device I/O");
+  console.log("PASS 3: conflicting play_id is rejected before device I/O");
 }
 {
   const bridge = fakeBridge();
@@ -98,7 +120,7 @@ function fakeBridge() {
   assert.equal(result.ok, false);
   assert.match(result.reason, /incomplete archives/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 3: incomplete archive is rejected before device I/O");
+  console.log("PASS 4: incomplete archive is rejected before device I/O");
 }
 {
   const bridge = fakeBridge();
@@ -107,5 +129,5 @@ function fakeBridge() {
   assert.equal(result.ok, false);
   assert.match(result.reason, /global NVS/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 4: global NVS is never silently restored outside the APP/DATA transaction");
+  console.log("PASS 5: global NVS is never silently restored outside the APP/DATA transaction");
 }
