@@ -659,6 +659,9 @@ async function removeSlotAction(index) {
   const slot = slotModel.carve?.slots?.[index];
   if (!slot) { log(t("err_remove_target"), "error"); return; }
   const name = slot.name || t("slot_unnamed", { n: index });
+  const ownedData = slot.playId
+    ? slotModel.carve.data.filter((d) => d.playId === slot.playId)
+    : [];
   busy = true;
   refreshInstallButton();
   const ok = window.confirm(t("confirm_remove_slot", {
@@ -666,23 +669,36 @@ async function removeSlotAction(index) {
   }));
   try {
     if (!ok) { log(t("msg_remove_cancelled"), "warn"); return; }
-    if (slot.kind === SLOT_KIND.APP) {
+    const rm = planRemove(slotModel.carve, index);
+    if (!rm) throw new Error(t("err_remove_target"));
+
+    // Commit lifecycle metadata first. If the record/table commit fails, do not
+    // erase bytes belonging to an APP/DATA instance that is still registered.
+    slotPickUserSet = false;   // 删除会让后续行改号:显式选择作废,回默认推导
+    const info = await commitCarve(rm.carve, { materialize: true });
+    log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+    log(t("msg_table_materialized"), "ok");
+
+    // Once unregistered, clear the APP header and every DATA extent owned by
+    // the removed installation. Failure is reported distinctly: metadata is
+    // already committed, so the bytes are unreachable and future allocation
+    // must wipe the extent before reuse.
+    let eraseFailed = false;
+    try {
       const ff = new Uint8Array(0x1000).fill(0xff);
       await loader.writeFlash({
         fileArray: [{ data: u8ToBinaryString(ff), address: slot.offset }],
         flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
       });
-      log(t("msg_slot_header_erased", { addr: hex(slot.offset) }), "ok");
-    } else {
-      log(t("msg_slot_storage_kept"), "warn");
+      for (const d of ownedData) {
+        await wipeRange(d.offset, d.size);
+        log(`DATA ${d.label} erased (${fmtBytes(d.size)} at ${hex(d.offset)})`, "ok");
+      }
+    } catch (err) {
+      eraseFailed = true;
+      log(t("msg_remove_failed", { err: `metadata is removed, but physical erase failed: ${err.message}` }), "error");
     }
-    const rm = planRemove(slotModel.carve, index);
-    if (!rm) throw new Error(t("err_remove_target"));
-    slotPickUserSet = false;   // 删除会让后续行改号:显式选择作废,回默认推导
-    const info = await commitCarve(rm.carve, { materialize: true });
-    log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
-    log(t("msg_table_materialized"), "ok");
-    log(t("msg_slot_removed", { name, freed: fmtBytes(rm.removed.size) }), "ok");
+    log(t("msg_slot_removed", { name, freed: fmtBytes(rm.removed.size + ownedData.reduce((n, d) => n + d.size, 0)) }), eraseFailed ? "warn" : "ok");
   } catch (err) {
     log(t("msg_remove_failed", { err: err.message }), "error");
   } finally {
