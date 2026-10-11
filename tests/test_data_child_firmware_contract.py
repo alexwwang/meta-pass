@@ -18,6 +18,8 @@ runtime = RUNTIME.read_text(encoding="utf-8")
 control = CONTROL.read_text(encoding="utf-8")
 config = CONFIG.read_text(encoding="utf-8")
 doc = DOC.read_text(encoding="utf-8")
+record = (ROOT / "install-slot/dynslot-record.js").read_text(encoding="utf-8")
+usb_page = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
 
 for token, label in [
     ("esp_partition_find_first", "DATA must be resolved by label through IDF partition API"),
@@ -43,6 +45,12 @@ assert "CONFIG_META_E2E_TEST_CONTROL" in control and "default n" in config, "lau
 assert "meta_store_boot_slot(slot)" in control, "test control must reuse the validated production boot path"
 assert "E2E BOOT_PLAY" in control and "expect_rejection" in runtime, "deleted play ID must be rejected by launcher boot policy"
 assert "esp_partition_write" not in control and "esp_flash_write" not in control, "launcher control must not expose flash writes"
+assert "carve.data.filter((record) => record.playId !== removed.playId)" in record, "APP removal must cascade to all DATA records owned by its nonzero playId"
+remove_start = usb_page.index("async function removeSlotAction(index)")
+remove_end = usb_page.index("// mock 连接", remove_start)
+remove_action = usb_page[remove_start:remove_end]
+assert remove_action.index("commitCarve(rm.carve") < remove_action.index("wipeRange(d.offset, d.size)"), "USB deletion must commit lifecycle metadata before erasing owned DATA bytes"
+assert "slot.playId" in remove_action and "ownedData" in remove_action, "USB deletion must resolve DATA ownership by playId, not slot index"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
 assert "USB Serial/JTAG" in doc and "尚未在 ESP-IDF 环境编译" in doc, "document hardware validation limitation"
