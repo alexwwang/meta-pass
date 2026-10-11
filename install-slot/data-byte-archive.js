@@ -65,7 +65,7 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
   const seenOwnership = new Set();
   const normalizedData = data.map((record, index) => {
     if (!record || !Number.isSafeInteger(record.play_id) || record.play_id <= 0 ||
-        !slotIds.has(record.play_id)) fail("DATA record has no matching APP play_id");
+        !slotIds.has(record.play_id)) fail("DATA record has no matching APP payload");
     if (!safeLabel(record.label)) fail("invalid DATA label");
     const ownership = record.play_id + ":" + record.label;
     if (seenOwnership.has(ownership)) fail("duplicate DATA ownership key");
