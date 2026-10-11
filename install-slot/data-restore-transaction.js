@@ -53,7 +53,7 @@ export async function executeDataRestoreTransaction({
         planned.bytes === record.bytes && planned.sha256 === record.sha256 &&
         planned.file === record.file &&
         planned.allocatedBytes === Math.ceil(record.bytes / 4096) * 4096))) {
-    fail("restore plan DATA identities/sizes do not match the manifest", "INVALID_RESTORE_PLAN");
+    fail("restore plan DATA identities do not match the manifest (including sizes)", "INVALID_RESTORE_PLAN");
   }
   const expectedDataBytes = manifest.data.reduce((sum, record) =>
     sum + Math.ceil(record.bytes / 4096) * 4096, 0);
