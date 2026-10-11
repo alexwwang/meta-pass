@@ -84,11 +84,13 @@ Manifest 不保存可直接用于写入的源 Flash 绝对地址。归档文件�
 - 成功返回 `application/octet-stream`；失败返回非 2xx。
 - 手机 `DeviceBridge.dataRead(playId, label, offset, length)` 返回二进制字节数组及 HTTP 状态。
 
+已新增 `install-slot/data-byte-archive.js`，提供 MPTB v2 清单结构、DATA 所有权、路径安全、文件长度与 SHA-256 校验的共享纯逻辑，并由宿主测试覆盖。它目前尚未接入 ZIP 导出/导入流程，不能因此视为完整备份能力。
+
 仍需实现：
 
 - 手机端分块归档 UI、完整长度/摘要校验和文件导出。
 - 恢复端点及其授权、容量预检、暂存写入、读回校验与原子元数据提交。
-- USB 页面在 ZIP v2 中导出和恢复真实 DATA 字节，并与手机格式共用 manifest 解析/校验模块。
+- 将共享校验模块接入 USB ZIP v2 导出/恢复和手机归档流程，并保持 v1 明确不含 DATA 的兼容行为。
 - 对设备端 API、USB ZIP 和手机 UI 增加可重复的模拟设备测试及专用真机测试。
 
 ## 验收矩阵
