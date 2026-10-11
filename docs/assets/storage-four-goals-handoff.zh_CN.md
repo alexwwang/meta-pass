@@ -1,5 +1,7 @@
 # Storage 四项功能交接：实现验收与真机验证
 
+简体中文 | [English](storage-four-goals-handoff.md)
+
 日期：2026-10-11  
 仓库：`alexwwang/meta-pass`  
 工作分支：`feat/storage`  
