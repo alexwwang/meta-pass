@@ -84,6 +84,8 @@ for token, label in [
     ("offset > match->size || length > match->size - offset", "APP reads cannot cross slot bounds"),
     ("slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP", "APP reads resolve an APP slot, not DATA or storage"),
     ("esp_flash_read(NULL, read_buf, address, length)", "APP reads return actual flash bytes"),
+    ("s_session.confirmed || s_session.session_opened", "APP reads are rejected during install activity"),
+    ("install_busy", "APP reads check the install-session safety gate"),
 ]:
     assert token in slot_read_handler, f"missing APP read API contract: {label}"
 assert "arc_records, s->play_id" in install_server, "mobile slot listing must expose APP play_id for archive ownership"
