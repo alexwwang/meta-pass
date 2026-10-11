@@ -32,6 +32,9 @@ assert "start: 0x180000, end: 0x356000" in POOL
 assert "start: 0x360000, end: 0x7fe000" in POOL
 assert "No Flash addresses or writes are accepted here" in RESTORE
 assert "当前版本尚不支持导入恢复" in PHONE
+assert 'from "./data-size-options.js"' in PHONE
+assert 'from "./data-size-options.js"' in USB
+assert "tools/install-slot/test-data-size-options.mjs" in VALIDATE
 assert "v2 restore before any device writes" in (ROOT / "tests/test_data_child_firmware_contract.py").read_text(encoding="utf-8")
 
 # USB-only local firmware installation remains a required asymmetric capability.
