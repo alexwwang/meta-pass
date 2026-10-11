@@ -22,8 +22,10 @@ META_PASS_DEV=1 node tools/install-slot/server.mjs
 chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-browser-smoke
 node tools/realdevice/mobile_page_browser_smoke.mjs \
   --cdp-url http://127.0.0.1:9222 \
-  --url 'http://127.0.0.1:4191/?mock=1'
+  --url 'http://127.0.0.1:4191/m'
 ```
+
+`/m` is the local dev server's phone-module shell page (only with `META_PASS_DEV=1`), mirroring the firmware SHELL_HTML's role: it loads `/phone-install.js` same-origin and mounts `#mp-install-root`. The USB installer page (`/?mock=1`) does not mount the phone module and cannot be the smoke target.
 
 The runner checks key controls, horizontal overflow, page/console errors and failed requests at 320×720, 360×800, 390×844 and 430×932, saving screenshots and `report.json`. Real install/uninstall, DATA reservations and reboot persistence still require the hardware flow below.
 

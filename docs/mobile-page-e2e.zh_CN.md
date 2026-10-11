@@ -22,8 +22,10 @@ META_PASS_DEV=1 node tools/install-slot/server.mjs
 chromium --remote-debugging-port=9222 --user-data-dir=/tmp/meta-pass-browser-smoke
 node tools/realdevice/mobile_page_browser_smoke.mjs \
   --cdp-url http://127.0.0.1:9222 \
-  --url 'http://127.0.0.1:4191/?mock=1'
+  --url 'http://127.0.0.1:4191/m'
 ```
+
+`/m` 是本地开发服务器的手机模块壳页（仅 `META_PASS_DEV=1` 时可用），镜像固件 SHELL_HTML 的职责：同源加载 `/phone-install.js` 并挂载 `#mp-install-root`。USB 安装页（`/?mock=1`）不挂载手机模块，不能作为本 smoke 的目标。
 
 运行器按 320×720、360×800、390×844、430×932 检查关键控件、横向溢出、页面/控制台异常和失败请求，保存每个视口截图与 `report.json`。只要需要验证真实安装/卸载、分区预留或重启持久性，就必须进入后面的真机测试流程。
 

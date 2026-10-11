@@ -67,9 +67,11 @@ git log -1 --oneline
 
 ```bash
 node tools/realdevice/mobile_page_browser_smoke.mjs \
-  --url 'http://127.0.0.1:4191/?mock=1' \
+  --url 'http://127.0.0.1:4191/m' \
   --cdp-url 'http://127.0.0.1:9222'
 ```
+
+`/m` 是本地 dev 服务器的手机模块壳页（仅 `META_PASS_DEV=1`；镜像固件 SHELL_HTML，同源加载 `/phone-install.js` 挂载 `#mp-install-root`）。不要对 USB 安装页（`/?mock=1`）跑本 smoke —— 该页不挂载手机模块，关键控件检查必失败。
 
 如果本机服务需要其他启动参数，先查看项目已有启动脚本及说明，不要臆造新的服务方式。Smoke 默认覆盖 320×720、360×800、390×844、430×932 等视口。检查报告里的关键控件、横向溢出、页面错误、控制台错误及请求失败。
 

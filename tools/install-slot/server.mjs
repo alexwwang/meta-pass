@@ -81,6 +81,7 @@ const STATIC_FILES = new Map([
   ["/vendor/atob-lite.js", { file: "vendor/atob-lite.js", type: "text/javascript; charset=utf-8" }],
   ["/vendor/esp32c3.js", { file: "vendor/esp32c3.js", type: "text/javascript; charset=utf-8" }],
   ["/vendor/stub_flasher_32c3.js", { file: "vendor/stub_flasher_32c3.js", type: "text/javascript; charset=utf-8" }],
+  ["/author-coffee.jpg", { file: "author-coffee.jpg", type: "image/jpeg" }],
 ]);
 
 function sendJson(res, status, obj) {
@@ -165,6 +166,26 @@ const server = http.createServer((req, res) => {
     const html = fs.readFileSync(path.join(PAGE_DIR, "install-slot.html"), "utf8")
       .replaceAll("__PAGE_VERSION__", PAGE_VERSION);
     res.end(html);
+    return;
+  }
+
+  // GET /m → 手机安装模块本地壳页(dev only):镜像固件 SHELL_HTML(meta_store_install.c)
+  // 的最小职责 —— 同源加载 /phone-install.js 并自动挂载 #mp-install-root。手机模块
+  // 只随设备 boot 页或本路由存在;USB 安装页(install-slot.html)不挂载它。生产
+  // (CF Pages/设备)各自有入口,这里仅服务本地无硬件走查(docs/mobile-page-e2e §1.1)。
+  if (pathname === "/m") {
+    if (process.env.META_PASS_DEV !== "1") return sendError(res, 404, "not found");
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "DENY",
+    });
+    res.end("<!doctype html><meta charset=utf-8>"
+      + "<meta name=viewport content='width=device-width,initial-scale=1'>"
+      + "<title>meta-pass install</title>"
+      + "<noscript><p>JavaScript is off. Enable JavaScript and reload this page.</p></noscript>"
+      + "<script type=module src=/phone-install.js></script>");
     return;
   }
 

@@ -67,9 +67,11 @@ Example (adjust port and URL to the actual local server):
 
 ```bash
 node tools/realdevice/mobile_page_browser_smoke.mjs \
-  --url 'http://127.0.0.1:4191/?mock=1' \
+  --url 'http://127.0.0.1:4191/m' \
   --cdp-url 'http://127.0.0.1:9222'
 ```
+
+`/m` is the local dev server's phone-module shell page (`META_PASS_DEV=1` only; mirrors the firmware SHELL_HTML, loading `/phone-install.js` same-origin to mount `#mp-install-root`). Do not run this smoke against the USB installer page (`/?mock=1`) — that page does not mount the phone module and the key-controls check will always fail.
 
 If the local server needs other startup parameters, check the project's existing startup scripts and docs first; do not invent a new serving method. The smoke covers viewports including 320×720, 360×800, 390×844, and 430×932 by default. Check the report for key controls, horizontal overflow, page errors, console errors, and failed requests.
 
