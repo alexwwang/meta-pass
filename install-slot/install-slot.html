@@ -930,6 +930,7 @@ const I18N = {
     msg_restore_pick_file: "Choose a backup zip first.",
     msg_restore_bad_zip: "Not a valid backup zip: {err}",
     msg_restore_manifest_missing: "Zip has no {name} — refusing an unverifiable backup.",
+    msg_restore_partial_archive: "This archive is incomplete (missing slots: {slots}); restore is blocked to avoid silently applying a partial backup.",
     msg_restore_loaded: "Loaded backup: {slots}. Choose target slots, then Restore.",
     msg_restore_slot_label: "Backup slot {from} → target slot",
     msg_restore_same_slot: "Slot {slot} (same)",
@@ -1141,6 +1142,7 @@ const I18N = {
     msg_restore_pick_file: "请先选择备份 zip。",
     msg_restore_bad_zip: "无效的备份 zip:{err}",
     msg_restore_manifest_missing: "zip 内没有 {name} —— 拒绝无法校验的备份。",
+    msg_restore_partial_archive: "该备份不完整（缺失槽位：{slots}）；为避免静默恢复部分数据，已阻止恢复。",
     msg_restore_loaded: "备份已加载:{slots}。请选择目标槽位后开始恢复。",
     msg_restore_slot_label: "备份槽位 {from} → 目标槽位",
     msg_restore_same_slot: "槽位 {slot}(原位)",
@@ -2478,6 +2480,10 @@ $("restore-input").addEventListener("change", async (ev) => {
     const manifestText = new TextDecoder().decode(manifestBytes);
     let rawManifest;
     try { rawManifest = JSON.parse(manifestText); } catch { throw new Error("manifest.json is not valid JSON"); }
+    if (rawManifest?.complete === false) {
+      const missing = Array.isArray(rawManifest.missing_slots) ? rawManifest.missing_slots.join(", ") : "unknown";
+      throw new Error(t("msg_restore_partial_archive", { slots: missing }));
+    }
     if (rawManifest?.manifest_version === 2) {
       throw new Error("This v2 archive contains APP+DATA bytes, but transactional DATA restore is not implemented yet. No device writes were performed.");
     }
