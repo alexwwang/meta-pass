@@ -217,6 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
+    <p class="hint" data-i18n="data_backup_unavailable">DATA byte-level backup/restore is not supported yet. Removing an APP also deletes its owned DATA; do not uninstall if you need to preserve that data.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -891,12 +892,13 @@ const I18N = {
     msg_orphan_slot_warning: "Warning: slot geometry was committed but firmware write failed. The slot is allocated but empty — reinstall or delete it to avoid boot issues.",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
-    backup_desc: "Backs up the selected slots to a verified zip file on this computer.",
+    backup_desc: "Backs up selected APP slot images to a verified zip file. DATA partition bytes are not included.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "Restores a backup zip onto the device slots, with automatic space and integrity checks.",
+    restore_desc: "Restores APP slot images only; it does not restore DATA partition bytes.",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
+    data_backup_unavailable: "DATA byte-level backup/restore is not supported yet. Removing an APP also deletes its owned DATA; do not uninstall if you need to preserve that data.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
     msg_backup_start: "Backing up slots…",
@@ -1101,12 +1103,13 @@ const I18N = {
     msg_orphan_slot_warning: "警告:槽位几何已提交但固件写入失败。槽位已分配但为空——请重新安装或删除该槽位,以免设备启动异常。",
     // 备份/恢复流程
     step_backup: "5. 备份子固件(读取槽位 → zip)",
-    backup_desc: "将选中的槽位备份为一个带校验的 zip 文件,保存到本机。",
+    backup_desc: "将选中的 APP 槽位镜像备份为带校验的 zip 文件。不会包含 DATA 分区的实际字节。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "将备份 zip 恢复到设备槽位,自动进行空间与完整性校验。",
+    restore_desc: "仅恢复 APP 槽位镜像，不会恢复 DATA 分区的实际字节。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
+    data_backup_unavailable: "当前尚不支持 DATA 字节级备份/恢复。删除 APP 会同时删除其关联 DATA；如需保留数据，请勿卸载。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_start: "开始备份槽位…",
