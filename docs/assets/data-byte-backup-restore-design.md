@@ -56,6 +56,8 @@ Reuse the ZIP container and manifest but increment the manifest version. Version
 
 The manifest must not store source Flash addresses that could be reused as write targets. Archive paths must be normalized safely; labels are logical identities and must not be used as unescaped paths.
 
+Archives also carry an explicit `complete` flag. If any selected slot could not be read, a verified subset may still be exported, but the manifest must set `complete: false` and list `missing_slots`. The UI must label it as a partial backup, never as a complete one.
+
 ## Backup Flow
 
 1. Read slots and DATA reservations; validate carve geometry and installer state.
