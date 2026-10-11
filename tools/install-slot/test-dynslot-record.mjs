@@ -419,6 +419,30 @@ const emptySlot = (offset, size, extra = {}) => ({
   assert.equal(rm.carve.slots[0].offset, 0x360000);
   assert.equal(rec.planRemove(carve, 5), null, "out-of-range remove rejected");
   assert.equal(rec.planRemove({ slots: [], data: [] }, 0), null, "empty carve remove rejected");
+  // APP 删除必须按 playId 级联删除 DATA，不能留下孤儿记录；其他 APP 的 DATA 保留。
+  const ownedDataCarve = {
+    slots: [
+      emptySlot(0x180000, 0x40000, { state: rec.SLOT_STATE.VALID, playId: 42, name: "Owner" }),
+      emptySlot(0x360000, 0x40000, { state: rec.SLOT_STATE.VALID, playId: 43, name: "Other" }),
+    ],
+    data: [
+      { playId: 42, offset: 0x1c0000, size: 0x10000, state: 0, subtype: 0x40, type: 1, label: "e2edata" },
+      { playId: 43, offset: 0x3a0000, size: 0x10000, state: 0, subtype: 0x41, type: 1, label: "assets" },
+    ],
+  };
+  assert.equal(rec.carveValid(ownedDataCarve), true);
+  const cascade = rec.planRemove(ownedDataCarve, 0);
+  assert.ok(cascade);
+  assert.deepEqual(cascade.carve.slots.map((s) => s.playId), [43]);
+  assert.deepEqual(cascade.carve.data.map((d) => d.playId), [43],
+    "remove APP playId=42 also removes all owned DATA records");
+  assert.equal(rec.carveValid(cascade.carve), true, "cascade result remains a valid carve");
+  const zeroOwner = rec.removeSlot({
+    slots: [emptySlot(0x180000, 0x40000, { playId: 0 })],
+    data: [{ playId: 42, offset: 0x200000, size: 0x10000, state: 0, subtype: 0x41, type: 1, label: "assets" }],
+  }, 0);
+  assert.equal(zeroOwner.data.length, 1, "unassigned slot must not delete unrelated DATA");
+  console.log("PASS 9a: APP removal cascades only to DATA with the same nonzero playId");
   console.log("PASS 9: planInstall / planRemove (reuse-first, create, diagnostics, storage guard)");
 }
 
