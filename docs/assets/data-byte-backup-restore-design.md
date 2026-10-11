@@ -11,7 +11,7 @@ Branch: `feat/storage`
 
 Align DATA lifecycle semantics between the USB service page and the embedded mobile page: install DATA, back up its actual bytes, restore those bytes, and delete DATA owned by an APP when that APP is uninstalled.
 
-**End-to-end backup/restore is not implemented yet.** USB dynslot v2 export includes actual bytes for all DATA reservations owned by selected APPs, including PRISTINE reservations, with per-file SHA-256 validation and a post-read A/B ownership-record consistency check. Legacy/v1 layouts remain APP/NVS-only. Mobile export now reads the full allocated APP slot and all owned DATA reservations in 4 KiB authenticated chunks, rechecks ownership metadata, validates every length/SHA-256, and emits a ZIP. DATA restore is not implemented, so a v2 archive must not be treated as restorable yet.
+**End-to-end backup/restore is not implemented yet.** USB dynslot v2 export includes actual bytes for all DATA reservations owned by selected APPs, including PRISTINE reservations, with per-file SHA-256 validation and a post-read A/B ownership-record consistency check. Legacy/v1 layouts remain APP/NVS-only. Mobile export now reads the full allocated APP slot and all owned DATA reservations in 4 KiB authenticated chunks, rechecks ownership metadata, validates every length/SHA-256, and emits a ZIP. DATA restore is not implemented: the USB UI explicitly rejects v2 archives before any device writes; only legacy v1 APP/NVS archives enter the existing restore path. A v2 archive must not be treated as restorable yet.
 
 ## Invariants
 
