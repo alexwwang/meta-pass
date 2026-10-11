@@ -253,7 +253,8 @@ export function parseSlots(text) {
     }
     slots.push({ slot: s.slot, state: s.state, name: s.name,
                  size: s.size, len: s.len, limit: s.limit, offset: s.offset,
-                 kind: s.kind, arc: s.arc || 0 });
+                 kind: s.kind, arc: s.arc || 0,
+                 play_id: Number.isInteger(s.play_id) && s.play_id > 0 ? s.play_id : 0 });
   }
   slots.sort((a, b) => a.slot - b.slot);
   // protocol_version: 1=fixed-slot(old), 2=dynslot, missing defaults to 1 for backward compat
