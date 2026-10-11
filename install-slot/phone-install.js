@@ -602,8 +602,12 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
       file.type === "raw" || file.name.endsWith("_raw.bin"));
     const appFiles = slot.files.filter((file) =>
       file.type === "app" || file.name.endsWith("_firmware.bin"));
-    if (rawFiles.length + appFiles.length !== 1 || slot.files.length !== 1) {
-      return fail("restore-preflight", "archive must contain exactly one raw-slot or installable APP image; auxiliary slot files are not supported by transactional restore");
+    const tailFiles = slot.files.filter((file) => file.name.endsWith("_tail.bin") || file.type === "tail");
+    const extraFiles = slot.files.filter((file) =>
+      !rawFiles.includes(file) && !appFiles.includes(file) && !tailFiles.includes(file));
+    if (rawFiles.length + appFiles.length !== 1 || extraFiles.length ||
+        tailFiles.length > 1 || (rawFiles.length && (slot.files.length !== 1 || tailFiles.length))) {
+      return fail("restore-preflight", "archive must contain one raw-slot or APP image and at most one tail metadata sector; extra slot payloads are unsupported");
     }
     const appFile = rawFiles[0] || appFiles[0];
     const rawApp = payloads instanceof Map ? payloads.get(appFile.name) : payloads?.[appFile.name];
@@ -612,9 +616,16 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
     }
     let extracted;
     try {
-      // A raw-slot backup starts with the ESP app image and may include erased
-      // tail bytes; extractAppImage validates chip/image structure and exact len.
+      // A raw-slot backup starts with the ESP app image and may include the tail
+      // sector; USB backups may store the firmware and tail as separate entries.
       extracted = extractAppImage(rawApp, 0x7ffff000);
+      if (tailFiles.length) {
+        const tail = payloads instanceof Map ? payloads.get(tailFiles[0].name) : payloads?.[tailFiles[0].name];
+        if (!(tail instanceof Uint8Array) || tail.length !== 4096) {
+          return fail("restore-preflight", "tail metadata payload must be exactly one 4 KiB sector");
+        }
+        extracted = { ...extracted, tailSector: tail, tailSectorOffset: Math.ceil(extracted.length / 4096) * 4096 };
+      }
     } catch (error) {
       return fail("restore-preflight", "APP image invalid: " + (error?.message || String(error)));
     }
