@@ -35,7 +35,7 @@ assert "当前版本尚不支持导入恢复" in PHONE
 assert "v2 restore before any device writes" in (ROOT / "tests/test_data_child_firmware_contract.py").read_text(encoding="utf-8")
 
 # USB-only local firmware installation remains a required asymmetric capability.
-assert "local firmware" in USB.lower() or "本地固件" in USB
+assert 'data-tab="local"' in USB and 'id="file-input"' in USB, "USB must retain its local-file firmware installation path"
 assert "TAG_LABEL \"e2edata\"" in CHILD
 assert "esp_partition_find_first" in CHILD
 assert "REBOOT" in CHILD
