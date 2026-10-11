@@ -1358,7 +1358,7 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">数据备份</h4>
-      <p class=mp-sub>当前版本尚不支持包含真实 DATA 字节的完整备份与恢复。旧版归档导出仅包含元数据，不能用于恢复数据。卸载 APP 会永久删除其全部 DATA。</p>`;
+      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256；但当前版本尚不支持导入恢复。备份文件暂不能在本页恢复，卸载 APP 仍会永久删除设备上的数据。</p>`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -1366,6 +1366,9 @@ export function boot(opts = {}) {
             <b>槽位 ${s.slot}</b> ${esc(s.name || "")}<br>
             <span style="font-size:12.5px;color:var(--ink2)">${MGMT_STATE[s.state] || s.state}${s.kind === "storage" ? " · 存储预留" : ""} · ${fmtMB(s.size)}${s.state !== "empty" ? ` · 已装 ${fmtMB(s.len)}` : ""}</span>
           </span>
+          ${s.kind === "app" && s.state !== "empty" && s.play_id > 0
+            ? `<button class="mp-btn ghost" data-bk="${s.slot}" style="padding:6px 12px;font-size:13px" ${busy || archiveBusy ? "disabled" : ""}>备份</button>`
+            : ""}
           <button class="mp-btn ghost" data-rm="${s.slot}" style="padding:6px 12px;font-size:13px">删除</button>
         </div>`).join("")
       : `<p class=mp-sub>设备上还没有已分配槽位</p>`;
@@ -1375,6 +1378,7 @@ export function boot(opts = {}) {
       ${busy ? `<p class=mp-sub style="color:var(--red)">安装进行中 —— 请先完成或取消安装，再删除槽位</p>` : ""}
       ${rows}
       ${backupSection}
+      <p id=mp-backup-status class=mp-sub>${esc(archiveMessage)}</p>
       <div class=mp-actions>
         <button id=mp-mgmt-re class=mp-btn>刷新</button>
         <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
@@ -1382,6 +1386,10 @@ export function boot(opts = {}) {
     </section>`);
     $("mp-mgmt-x").onclick = clearPanel;
     $("mp-mgmt-re").onclick = showMgmt;
+    root.querySelectorAll("[data-bk]").forEach((b) => {
+      b.disabled = busy || archiveBusy;
+      b.onclick = () => doBackup(Number(b.dataset.bk));
+    });
     root.querySelectorAll("[data-rm]").forEach((b) => {
       if (busy) { b.disabled = true; return; }
       b.onclick = () => {
