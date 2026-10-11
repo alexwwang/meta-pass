@@ -333,7 +333,7 @@ static bool idempotent_backfill_data(const meta_install_manifest_t *m,
         rec.play_id = pid;
         rec.offset = off;
         rec.size = m->data[d].size;
-        rec.state = META_DATA_PRISTINE;
+        rec.state = m->restore_data ? META_DATA_DIRTY : META_DATA_PRISTINE;
         rec.type = 1;
         rec.subtype = m->data[d].subtype;
         strncpy(rec.label, label, sizeof(rec.label) - 1);
@@ -459,7 +459,7 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         rec.play_id = pid;
         rec.offset = off;
         rec.size = m->data[d].size;
-        rec.state = META_DATA_PRISTINE;
+        rec.state = m->restore_data ? META_DATA_DIRTY : META_DATA_PRISTINE;
         rec.type = 1;
         rec.subtype = m->data[d].subtype;
         strncpy(rec.label, label, sizeof(rec.label) - 1);
