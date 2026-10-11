@@ -2595,6 +2595,18 @@ async function restoreV2ArchiveUsb() {
   const rawApp = payloads.get(appFile.name);
   if (!(rawApp instanceof Uint8Array)) throw new Error("APP payload missing");
   let image = extractAppImage(rawApp, 0x7ffff000);
+  if (rawFiles.length) {
+    const tailStart = image.tailSectorOffset;
+    const tailEnd = tailStart + 4096;
+    if (rawApp.length < tailEnd) throw new Error("Raw-slot archive is shorter than its APP tail metadata sector.");
+    const tailBytes = rawApp.subarray(tailStart, tailEnd);
+    if (!image.tailSector && tailBytes.some((b) => b !== 0xff)) {
+      throw new Error("Raw-slot archive contains an unrecognized non-erased tail sector.");
+    }
+    if (rawApp.subarray(tailEnd).some((b) => b !== 0xff)) {
+      throw new Error("Raw-slot archive contains unsupported non-erased extra bytes after the tail sector.");
+    }
+  }
   if (tailFiles.length) {
     const tail = payloads.get(tailFiles[0].name);
     if (!(tail instanceof Uint8Array) || tail.length !== 4096) {
