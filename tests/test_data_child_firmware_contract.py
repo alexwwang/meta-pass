@@ -83,6 +83,7 @@ for token, label in [
     ("length > INSTALL_IO_BUF", "APP reads are capped at 4 KiB"),
     ("offset > match->size || length > match->size - offset", "APP reads cannot cross slot bounds"),
     ("slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP", "APP reads resolve an APP slot, not DATA or storage"),
+    ("slot->state != META_SLOT_EMPTY", "APP reads cannot expose an empty slot reservation"),
     ("esp_flash_read(NULL, read_buf, address, length)", "APP reads return actual flash bytes"),
     ("s_session.confirmed || s_session.session_opened", "APP reads are rejected during install activity"),
     ("install_busy", "APP reads check the install-session safety gate"),
