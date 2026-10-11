@@ -2306,7 +2306,7 @@ static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
     if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "z", target->size);
     if (e == ESP_OK) e = nvs_set_u8(nvs, "dc", data_count);
     for (uint8_t i = 0; e == ESP_OK && i < data_count; i++) {
-        char op[4], sp[4];
+        char op[8], sp[8];
         snprintf(op, sizeof(op), "do%u", (unsigned)i);
         snprintf(sp, sizeof(sp), "ds%u", (unsigned)i);
         e = remove_nvs_set_u32(nvs, op, data_offsets[i]);
@@ -2350,7 +2350,7 @@ static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
     }
     if (e == ESP_OK && count > META_DATA_MAX) e = ESP_ERR_INVALID_STATE;
     for (uint8_t i = 0; e == ESP_OK && i < count; i++) {
-        char op[4], sp[4];
+        char op[8], sp[8];
         snprintf(op, sizeof(op), "do%u", (unsigned)i);
         snprintf(sp, sizeof(sp), "ds%u", (unsigned)i);
         e = remove_nvs_get_u32(nvs, op, &data_offsets[i]);
