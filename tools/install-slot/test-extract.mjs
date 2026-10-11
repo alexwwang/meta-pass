@@ -182,6 +182,27 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   console.log("PASS 3d-LittleFS: subtype 0x83 accepted as Child DATA");
 }
 
+// The dedicated raw-sector E2E fixture is the only custom subtype admitted;
+// an arbitrary label using the same subtype must remain rejected.
+{
+  const app = buildAppImage();
+  const dataOff = 0x20000;
+  const raw = buildManifestImage(app, dataOff, 0x10000, 0x40, "e2edata");
+  raw.fill(0x6b, dataOff, dataOff + 0x100);
+  const manifest = parseFirmwareManifest(raw);
+  assert.equal(manifest.supported, true);
+  assert.equal(manifest.data.length, 1);
+  assert.equal(manifest.data[0].subtype, 0x40);
+  const images = extractDataImages(raw);
+  assert.equal(images[0].data.length, 0x100);
+  assert.ok(images[0].data.every((b) => b === 0x6b));
+
+  const unregistered = buildManifestImage(app, dataOff, 0x10000, 0x40, "custom");
+  const rejected = parseFirmwareManifest(unregistered);
+  assert.equal(rejected.supported, false, "subtype 0x40 with an unregistered label stays fail-closed");
+  console.log("PASS 3d-E2E: explicit raw DATA fixture accepted; other subtype-0x40 labels rejected");
+}
+
 // 3e. Initial DATA payload extraction is bounded by the actual non-erased image extent.
 {
   const app = buildAppImage();
