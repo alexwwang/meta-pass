@@ -135,4 +135,19 @@ assert.equal(new DataView(zip.buffer, zip.byteOffset, zip.byteLength).getUint32(
 assert.throws(() => buildDataArchiveZip([{ name: "../escape", data }]), /invalid or duplicate ZIP entry/);
 console.log("PASS 6: shared ZIP writer emits valid local/central directory signatures and rejects unsafe paths");
 
+// Optional NVS is also a real archive payload, not an unchecked manifest-only claim.
+const withNvs = { ...pristineManifest, nvs: {
+  file: "nvs.bin", bytes: data.length, sha256: digest(data), source_offset: 0x9000,
+} };
+assert.deepEqual(
+  await validateDataArchivePayloads(withNvs,
+    new Map([["slot2_raw.bin", app], ["data/321/0.bin", data], ["nvs.bin", data]]),
+    async (bytes) => digest(bytes)),
+  { ok: true, fileCount: 3, dataCount: 1 },
+);
+await assert.rejects(() => validateDataArchivePayloads(withNvs,
+  new Map([["slot2_raw.bin", app], ["data/321/0.bin", data]]),
+  async (bytes) => digest(bytes)), /missing archive payload: nvs.bin/);
+console.log("PASS 7: optional NVS bytes are included in archive payload validation");
+
 console.log("ALL DATA BYTE ARCHIVE TESTS PASSED");
