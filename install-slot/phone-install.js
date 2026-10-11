@@ -1446,7 +1446,7 @@ export function boot(opts = {}) {
 
   async function doRemove(slot) {
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>
-      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部数据。当前版本不能提供完整的字节级备份；如需保留数据，请先取消卸载。此操作不可恢复。</p>
+      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部数据。虽然可以导出真实字节备份，但当前尚不能导入恢复；如需保留可恢复的数据，请先取消卸载。此操作不可恢复。</p>
       <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>删除 APP 及全部数据</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
