@@ -51,6 +51,8 @@
 
 static const char *TAG = "install_local";
 
+static esp_err_t remove_recover_pending(bool *did_recover);
+
 // ---- 常量 ----
 
 // chunk 流式落盘的单次读缓冲(设备内部按 flash 写尺度拆块,§6.5)。
