@@ -619,6 +619,20 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
       // A raw-slot backup starts with the ESP app image and may include the tail
       // sector; USB backups may store the firmware and tail as separate entries.
       extracted = extractAppImage(rawApp, 0x7ffff000);
+      if (rawFiles.length) {
+        const tailStart = extracted.tailSectorOffset;
+        const tailEnd = tailStart + 4096;
+        if (rawApp.length < tailEnd) {
+          return fail("restore-preflight", "raw-slot archive is shorter than its APP tail metadata sector");
+        }
+        const tailBytes = rawApp.subarray(tailStart, tailEnd);
+        if (!extracted.tailSector && tailBytes.some((b) => b !== 0xff)) {
+          return fail("restore-preflight", "raw-slot archive contains an unrecognized non-erased tail sector");
+        }
+        if (rawApp.subarray(tailEnd).some((b) => b !== 0xff)) {
+          return fail("restore-preflight", "raw-slot archive contains unsupported non-erased extra bytes after the tail sector");
+        }
+      }
       if (tailFiles.length) {
         const tail = payloads instanceof Map ? payloads.get(tailFiles[0].name) : payloads?.[tailFiles[0].name];
         if (!(tail instanceof Uint8Array) || tail.length !== 4096) {
