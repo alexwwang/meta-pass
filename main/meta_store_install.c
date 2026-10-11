@@ -1305,14 +1305,11 @@ static esp_err_t finalize_locked(void)
     // 保持 PRISTINE —— 新建区域刚擦除无用户数据,且全标 DIRTY 会让
     // reclaimablePristine 恒 0(状态只在 finish 翻转 + 单会话 ⇒ PRISTINE
     // 不可见于任何 no-fit 决策点),tier 4 回收阶梯死代码。
-    if (s_session.manifest_valid &&
-        (s_session.data_dirty_mask || s_session.manifest.restore_data)) {
+    if (s_session.manifest_valid && s_session.data_dirty_mask) {
         meta_carve_data_key_t keys[META_DATA_MAX];
         uint8_t n_keys = 0;
         for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
-            const bool existing_user_data = (s_session.data_dirty_mask & (1u << i)) != 0;
-            const bool imported_user_data = s_session.manifest.restore_data;
-            if (!existing_user_data && !imported_user_data) continue;
+            if (!(s_session.data_dirty_mask & (1u << i))) continue;
             keys[n_keys].play_id = s_session.manifest.data[i].play_id;
             strncpy(keys[n_keys].label, s_session.manifest.data[i].label,
                     META_DATA_LABEL_MAX);
