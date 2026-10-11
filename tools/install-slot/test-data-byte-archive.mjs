@@ -10,6 +10,7 @@ import {
   readDataReservation,
   readAppSlotReservation,
   buildDataArchiveZip,
+  readDataArchiveZip,
 } from "../../install-slot/data-byte-archive.js";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
