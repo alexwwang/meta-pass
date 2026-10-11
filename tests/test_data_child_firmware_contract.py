@@ -122,6 +122,8 @@ for token, label in [
     ("esp_flash_read(NULL, read_buf, address, length)", "APP reads return actual flash bytes"),
     ("s_session.confirmed || s_session.session_opened", "APP reads are rejected during install activity"),
     ("install_busy", "APP reads check the install-session safety gate"),
+    ("remove_recover_pending(&recovered_remove)", "APP reads recover pending uninstall before exposing bytes"),
+    ("previous uninstall recovered; refresh slot list", "APP reads stop after recovery changes slot state"),
 ]:
     assert token in slot_read_handler, f"missing APP read API contract: {label}"
 assert "arc_records, s->play_id" in install_server, "mobile slot listing must expose APP play_id for archive ownership"
@@ -139,6 +141,8 @@ for token, label in [
     ("offset > match->size || length > match->size - offset", "DATA reads cannot cross reservation bounds"),
     ("d->play_id == play_id && strcmp(d->label, label) == 0", "DATA reads resolve the ownership key"),
     ("esp_flash_read(NULL, read_buf, address, length)", "DATA bytes are read only after reservation lookup"),
+    ("remove_recover_pending(&recovered_remove)", "DATA reads recover pending uninstall before exposing bytes"),
+    ("previous uninstall recovered; refresh slot list", "DATA reads stop after recovery changes ownership"),
 ]:
     assert token in read_handler, f"missing DATA read API contract: {label}"
 assert "httpd_resp_set_hdr(req, \"Cache-Control\", \"no-store\")" in read_handler, "DATA read responses must not be cached"
