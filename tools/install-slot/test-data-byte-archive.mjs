@@ -36,9 +36,9 @@ console.log("PASS 1: v2 manifest + exact APP/DATA payload digest validation");
 
 // A metadata-only or old v1 archive must never be treated as DATA backup.
 assert.throws(() => validateDataArchiveManifest({ ...manifest, manifest_version: 1 }), /v1 archives do not contain DATA bytes/);
-assert.throws(() => validateDataArchivePayloads(manifest, new Map([[appPath, app]]), async (b) => digest(b)), /missing archive payload/);
-assert.throws(() => validateDataArchivePayloads(manifest, new Map([[appPath, app], [dataPath, new Uint8Array([1])]]), async (b) => digest(b)), /payload length mismatch/);
-assert.throws(() => validateDataArchivePayloads(manifest, new Map([[appPath, app], [dataPath, new Uint8Array([1, 2, 3, 4])]]), async (b) => digest(b)), /payload SHA-256 mismatch/);
+await assert.rejects(() => validateDataArchivePayloads(manifest, new Map([[appPath, app]]), async (b) => digest(b)), /missing archive payload/);
+await assert.rejects(() => validateDataArchivePayloads(manifest, new Map([[appPath, app], [dataPath, new Uint8Array([1])]]), async (b) => digest(b)), /payload length mismatch/);
+await assert.rejects(() => validateDataArchivePayloads(manifest, new Map([[appPath, app], [dataPath, new Uint8Array([1, 2, 3, 4])]]), async (b) => digest(b)), /payload SHA-256 mismatch/);
 console.log("PASS 2: v1, missing, truncated and corrupted payloads rejected");
 
 // Ownership and path safety are logical identifiers, not source Flash addresses.
