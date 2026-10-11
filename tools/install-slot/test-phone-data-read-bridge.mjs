@@ -28,6 +28,20 @@ try {
   console.log("PASS 1: mobile bridge preserves arbitrary DATA bytes and sends identity/range/session headers");
 
   calls = [];
+  const appBytes = await bridge.slotRead(321, 8, 4);
+  assert.equal(appBytes.ok, true);
+  assert.deepEqual([...appBytes.bytes], [0x00, 0xff, 0x80, 0x41]);
+  assert.equal(calls[0].url, "http://device.local/api/install/slot/read");
+  assert.equal(calls[0].options.headers["X-Meta-Session"], "session-secret");
+  assert.equal(calls[0].options.headers["X-Meta-Play-Id"], "321");
+  assert.equal(calls[0].options.headers["X-Meta-Offset"], "8");
+  assert.equal(calls[0].options.headers["X-Meta-Length"], "4");
+  assert.equal((await bridge.slotRead(0, 0, 4)).ok, false);
+  assert.equal((await bridge.slotRead(321, 0, 4097)).ok, false);
+  assert.equal(calls.length, 1);
+  console.log("PASS 1B: APP byte bridge is authenticated, binary-safe, and locally range-bounded");
+
+  calls = [];
   const invalid = await bridge.dataRead(123, "../cfg", 0, 4);
   assert.equal(invalid.ok, false);
   assert.equal(invalid.status, 400);
