@@ -30,7 +30,7 @@ import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
-import { buildDataArchiveManifest, validateDataArchiveManifest, validateDataArchivePayloads, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
+import { buildDataArchiveManifest, validateDataArchiveManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -1468,10 +1468,65 @@ export function boot(opts = {}) {
     }
   }
 
+  async function doRestoreArchive(file) {
+    if (!file || archiveBusy) return;
+    archiveBusy = true;
+    archiveMessage = "正在校验备份归档…";
+    try {
+      const zipEntries = readDataArchiveZip(new Uint8Array(await file.arrayBuffer()));
+      const manifestBytes = zipEntries.get("manifest.json");
+      if (!manifestBytes) throw new Error("备份缺少 manifest.json");
+      let manifest;
+      try { manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)); }
+      catch { throw new Error("manifest.json 不是有效 UTF-8 JSON"); }
+      zipEntries.delete("manifest.json");
+      const expectedFiles = new Set([
+        ...(Array.isArray(manifest?.slots) ? manifest.slots.flatMap((s) => Array.isArray(s.files) ? s.files.map((f) => f.name) : []) : []),
+        ...(Array.isArray(manifest?.data) ? manifest.data.map((d) => d.file) : []),
+        ...(manifest?.nvs?.file ? [manifest.nvs.file] : []),
+      ]);
+      for (const name of zipEntries.keys()) {
+        if (!expectedFiles.has(name)) throw new Error("归档包含未声明文件：" + name);
+      }
+      const [statusReply, listingReply] = await Promise.all([bridge.status(), bridge.slots()]);
+      if (!statusReply.ok || !listingReply.ok) throw new Error("无法读取设备状态/分区清单");
+      let state;
+      try { state = JSON.parse(statusReply.text); } catch { throw new Error("设备状态格式无效"); }
+      if (state.offer || state.confirmed || state.session) throw new Error("设备正在安装；请结束安装后再恢复");
+      const listing = parseSlots(listingReply.text);
+      if (!listing) throw new Error("设备分区清单格式无效");
+      archiveMessage = "已校验归档结构，准备通过设备安装事务恢复…";
+      await showMgmt();
+      const result = await restoreDataArchive(bridge, listing, manifest, zipEntries, {
+        stage: (stage) => {
+          archiveMessage = "恢复阶段：" + stage;
+          const node = $("mp-backup-status");
+          if (node) node.textContent = archiveMessage;
+        },
+        progress: (offset, total) => {
+          archiveMessage = "正在恢复 APP：" + Math.floor(offset * 100 / Math.max(1, total)) + "%";
+          const node = $("mp-backup-status");
+          if (node) node.textContent = archiveMessage;
+        },
+      });
+      if (!result.ok) throw new Error(result.reason || (result.stage + " failed"));
+      archiveMessage = `恢复成功：play_id ${result.playId}，DATA 分区 ${result.restoredData} 个。请等待设备完成状态更新后再启动玩法。`;
+      log(archiveMessage, "ok");
+    } catch (error) {
+      archiveMessage = "恢复失败：" + (error?.message || String(error));
+      log(archiveMessage, "error");
+    } finally {
+      archiveBusy = false;
+      await showMgmt();
+      const status = $("mp-backup-status");
+      if (status) status.textContent = archiveMessage;
+    }
+  }
+
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">数据备份</h4>
-      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256；当前版本尚不支持导入恢复。卸载 APP 会永久删除设备上的关联数据。</p>
+      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256。恢复目前支持完整的单个 APP+DATA 组；多 APP 原子恢复和包含全局 NVS 的归档会被拒绝。卸载 APP 会永久删除设备上的关联数据。</p>\n      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-restore-pick class="mp-btn ghost" type=button>从备份恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
@@ -1500,6 +1555,17 @@ export function boot(opts = {}) {
     </section>`);
     $("mp-mgmt-x").onclick = clearPanel;
     $("mp-mgmt-re").onclick = showMgmt;
+    const restorePick = $("mp-restore-pick");
+    const restoreInput = $("mp-restore-input");
+    if (restorePick && restoreInput) {
+      restorePick.disabled = busy || archiveBusy;
+      restorePick.onclick = () => restoreInput.click();
+      restoreInput.onchange = () => {
+        const file = restoreInput.files?.[0];
+        restoreInput.value = "";
+        if (file) doRestoreArchive(file);
+      };
+    }
     root.querySelectorAll("[data-bk]").forEach((b) => {
       b.disabled = busy || archiveBusy;
       b.onclick = () => doBackup(Number(b.dataset.bk));
