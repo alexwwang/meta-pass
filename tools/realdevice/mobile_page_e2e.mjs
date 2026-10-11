@@ -373,7 +373,9 @@ async function installPlay(playId, name, label) {
   if (outcome.startsWith("FAIL:")) throw new Error(outcome);
   record(label + ": UI reports install complete", true, `playId=${playId}; name=${name}`);
   const slot = await waitFor(async () => (await readSlots()).slots.find((s) => s.name === name && s.state === "valid"), label + " device slot commit", 120000);
-  assertIdle(await readStatus(), label);
+  if (!assertIdle(await readStatus(), label)) {
+    throw new Error(label + ": installer did not return to idle after install; refusing further device mutations");
+  }
   await dismissPanel();
   return slot;
 }
@@ -667,6 +669,7 @@ try {
         "A=" + runtimeA.dataAddress + "; B=" + runtimeB.dataAddress);
     } catch (error) {
       record("M05C A/B DATA physical extents isolated", false, error.message);
+      throw new Error("A/B DATA physical isolation could not be verified; refusing further device mutations");
     }
   }
 
