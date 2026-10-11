@@ -66,6 +66,8 @@ assert "record.offset, record.size" in usb_page and "readFlashChunked(record.off
 assert "validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex)" in usb_page, "USB DATA archive must validate byte lengths and SHA-256 before save"
 assert "stable.rec.seq !== slotModel.seq" in usb_page, "USB DATA backup must reject ownership metadata changes during export"
 assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA bytes' in usb_page, "USB UI must distinguish DATA export from incomplete DATA restore"
+assert "Backs up selected APP images and owned DATA bytes" in usb_page, "USB backup fallback copy must match the implemented DATA export path"
+assert "Restores APP images only. DATA bytes in v2 archives are not restored yet." in usb_page, "USB restore fallback copy must not imply DATA restore exists"
 assert "buildDataArchiveManifest({ slots: v2Slots, data: dataInputs })" in usb_page, "USB dynslot backup must use the versioned DATA archive manifest"
 assert "archiveDownload = { url, filename }" in phone_page and "download=\"${esc(archiveDownload.filename)}\"" in phone_page, "mobile backup must expose a user-activated download link after async reads"
 assert "link.click()" not in phone_page, "mobile archive export must not rely on a delayed synthetic download click"
