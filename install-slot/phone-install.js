@@ -29,8 +29,8 @@ import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
-import { POOL, META_SLOT_COUNT, geomFromListing, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
-import { buildDataArchiveManifest, validateDataArchivePayloads, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
+import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
+import { buildDataArchiveManifest, validateDataArchiveManifest, validateDataArchivePayloads, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -571,6 +571,103 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     offer.carveSize = geom.proposal.carveSize;
   }
   return { ok: true, offer, merged, ext, dataImages, analyze: a, play };
+}
+
+// Restore one complete MPTB v2 APP+DATA group through the same device-side
+// install transaction used for a normal install. Raw Flash addresses never leave
+// the device; allocation is re-derived from the live listing and the device
+// independently validates the carve proposal.
+export async function restoreDataArchive(bridge, listing, manifest, payloads, hooks = {}) {
+  const fail = (stage, reason, extra = {}) => ({ ok: false, stage, reason, ...extra });
+  try {
+    validateDataArchiveManifest(manifest);
+    if (manifest.complete !== true || (manifest.missing_slots || []).length) {
+      return fail("restore-preflight", "incomplete archives cannot be restored");
+    }
+    // NVS is a global partition, not owned by an APP+DATA allocation group.
+    // Do not silently ignore or separately overwrite it outside the transaction.
+    if (manifest.nvs) {
+      return fail("restore-preflight", "archive includes global NVS; transactional NVS restore is not supported");
+    }
+    if (manifest.slots.length !== 1) {
+      return fail("restore-preflight", "restore one APP+DATA group at a time; multi-APP atomic restore is not supported");
+    }
+    const slot = manifest.slots[0];
+    if (listing?.slots?.some((item) => item.play_id === slot.play_id) ||
+        listing?.data?.some((item) => item.play_id === slot.play_id)) {
+      return fail("restore-preflight", "play_id already exists on this device; remove the existing APP group before restore");
+    }
+    await validateDataArchivePayloads(manifest, payloads, sha256Hex);
+    const rawFiles = slot.files.filter((file) =>
+      file.type === "raw" || file.name.endsWith("_raw.bin"));
+    const appFiles = slot.files.filter((file) =>
+      file.type === "app" || file.name.endsWith("_firmware.bin"));
+    if (rawFiles.length + appFiles.length !== 1 || slot.files.length !== 1) {
+      return fail("restore-preflight", "archive must contain exactly one raw-slot or installable APP image; auxiliary slot files are not supported by transactional restore");
+    }
+    const appFile = rawFiles[0] || appFiles[0];
+    const rawApp = payloads instanceof Map ? payloads.get(appFile.name) : payloads?.[appFile.name];
+    if (!(rawApp instanceof Uint8Array)) {
+      return fail("restore-preflight", "APP payload missing");
+    }
+    let extracted;
+    try {
+      // A raw-slot backup starts with the ESP app image and may include erased
+      // tail bytes; extractAppImage validates chip/image structure and exact len.
+      extracted = extractAppImage(rawApp, 0x7ffff000);
+    } catch (error) {
+      return fail("restore-preflight", "APP image invalid: " + (error?.message || String(error)));
+    }
+    const appSha = await sha256Hex(extracted.data);
+    const dataImages = [];
+    for (const record of manifest.data) {
+      const bytes = payloads instanceof Map ? payloads.get(record.file) : payloads?.[record.file];
+      if (!(bytes instanceof Uint8Array)) return fail("restore-preflight", "DATA payload missing: " + record.file);
+      if (bytes.length !== record.bytes || await sha256Hex(bytes) !== record.sha256) {
+        return fail("restore-preflight", "DATA payload verification failed: " + record.file);
+      }
+      const requiredSize = Math.ceil(record.bytes / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+      if (requiredSize !== record.bytes) {
+        return fail("restore-preflight", "DATA payload length is not 4 KiB aligned: " + record.file);
+      }
+      dataImages.push({
+        playId: slot.play_id, label: record.label, subtype: record.subtype,
+        required_size: requiredSize, initial_image_size: bytes.length, data: bytes,
+        sha256: record.sha256,
+      });
+    }
+    const geom = geomFromListing(listing, extracted.length);
+    if (!geom.proposal) {
+      return fail("restore-preflight",
+        `no fresh APP carve fits: need ${carveNeed(extracted.length)} bytes; largest contiguous gap ${geom.maxGap}, total free ${geom.totalFree}`);
+    }
+    const offer = {
+      protocol: PROTOCOL_V1, playId: slot.play_id, revisionId: 0,
+      name: pickDisplayName(slot.name, slot.play_id),
+      storeSha256: appSha, imageLen: extracted.length, sha256: appSha,
+      suggestedSlot: geom.proposal.slot, slot: geom.proposal.slot,
+      slots: geom.placed, reason: "archive-restore", restoreData: true,
+      carveOffset: geom.proposal.carveOffset, carveSize: geom.proposal.carveSize,
+      data: dataImages.map((item) => ({
+        playId: slot.play_id, size: item.required_size, label: item.label,
+        subtype: item.subtype, initialImageSize: item.initial_image_size,
+        sha256: item.sha256,
+      })),
+    };
+    const result = await runInstall(bridge, offer, extracted.data, {
+      ...hooks,
+      dataImages,
+    });
+    if (!result.ok) {
+      // runInstall reports the exact stage; cancel asks firmware to roll back
+      // newly-carved APP/DATA and preserve the pre-restore carve on failure.
+      try { await bridge.cancel(); } catch { /* retain original result */ }
+      return { ...result, stage: "restore-" + result.stage };
+    }
+    return { ok: true, slot: result.slot, playId: slot.play_id, restoredData: dataImages.length };
+  } catch (error) {
+    return fail("restore-preflight", error?.message || String(error));
+  }
 }
 
 export async function preflight(id, hooks = {}) {
