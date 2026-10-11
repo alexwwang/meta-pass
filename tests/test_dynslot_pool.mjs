@@ -175,6 +175,7 @@ const { POOL, POOL_TOTAL, META_SLOT_COUNT, carveNeed, appLimit,
   assert.equal(b.min, 1024 * 1024);
   assert.equal(b.step, DATA_SIZE_STEP);
   assert.ok(b.max > b.min);
+  assert.ok(b.available > b.max, "fixed cardid/store partitions fragment the pool: total free must exceed the largest contiguous gap");
   assert.equal(b.max % DATA_SIZE_GRANULE, 0);
   assert.equal(normalizeDataSize(b.min, b), b.min);
   assert.equal(normalizeDataSize(b.max, b), b.max);
