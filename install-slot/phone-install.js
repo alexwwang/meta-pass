@@ -1455,7 +1455,7 @@ export function boot(opts = {}) {
       // activation. Render a real download link so the user can tap it explicitly.
       if (archiveDownload?.url) URL.revokeObjectURL(archiveDownload.url);
       archiveDownload = { url, filename };
-      archiveMessage = "备份已生成并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。请点击下方下载链接保存；当前版本尚不支持导入恢复。";
+      archiveMessage = "备份已生成并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。请点击下方下载链接保存；可在空间管理中恢复单个完整 APP+DATA 组。";
       log(archiveMessage, "ok");
     } catch (error) {
       archiveMessage = "备份失败：" + (error && error.message ? error.message : String(error));
