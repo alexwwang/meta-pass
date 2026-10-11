@@ -212,6 +212,18 @@ export function createBridge(deviceOrigin, token) {
     // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
     // 记录+物化表、200 后 150ms 复位 —— 重启窗口内 status 不可达)。
     slots: () => call("/api/install/slots"),
+    slotRead: (playId, offset, length) => {
+      if (!Number.isSafeInteger(playId) || playId <= 0 ||
+          !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid APP read request", bytes: null });
+      }
+      return callBytes("/api/install/slot/read", { headers: {
+        "X-Meta-Play-Id": String(playId),
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
     dataRead: (playId, label, offset, length) => {
       if (!Number.isSafeInteger(playId) || playId <= 0 ||
           typeof label !== "string" || !/^[A-Za-z0-9_-]{1,16}$/.test(label) ||
