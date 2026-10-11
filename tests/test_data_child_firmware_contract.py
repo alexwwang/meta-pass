@@ -63,6 +63,23 @@ assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB
 assert "await writeDataPayload(dataImage, dataImage)" in usb_page, "USB DATA payload must be written and read-back verified before commit"
 assert 'data_backup_unavailable: "DATA byte-level backup/restore is not supported yet.' in usb_page, "USB UI must not imply DATA byte-level backup/restore exists"
 assert "DATA partition bytes are not included" in usb_page, "APP slot archive must clearly exclude DATA bytes"
+install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+assert '"/api/install/data/read",HTTP_GET,  h_install_data_read' in install_server, "DATA read endpoint must be registered"
+read_start = install_server.index("static esp_err_t h_install_data_read")
+read_end = install_server.index("// POST /api/install/finalize", read_start)
+read_handler = install_server[read_start:read_end]
+for token, label in [
+    ("origin_allowed(req)", "DATA reads enforce existing Origin policy"),
+    ("req_token_ok(req)", "DATA reads require session authentication"),
+    ('"X-Meta-Play-Id"', "DATA reads identify APP ownership"),
+    ('"X-Meta-Data-Label"', "DATA reads identify DATA label"),
+    ('length > INSTALL_IO_BUF', "DATA reads are capped at 4 KiB"),
+    ("offset > match->size || length > match->size - offset", "DATA reads cannot cross reservation bounds"),
+    ("d->play_id == play_id && strcmp(d->label, label) == 0", "DATA reads resolve the ownership key"),
+    ("esp_flash_read(NULL, read_buf, address, length)", "DATA bytes are read only after reservation lookup"),
+]:
+    assert token in read_handler, f"missing DATA read API contract: {label}"
+assert "httpd_resp_set_hdr(req, \"Cache-Control\", \"no-store\")" in read_handler, "DATA read responses must not be cached"
 assert "不会包含 DATA 分区的实际字节" in usb_page, "Chinese APP archive description must disclose DATA omission"
 assert "commitCarve(nextCarve, { materialize: deferredDataInstall })" in usb_page, "DATA-bearing APP install must commit APP+DATA as one carve/table transaction"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
