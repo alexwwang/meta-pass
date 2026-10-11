@@ -1367,6 +1367,159 @@ function refreshInstallButton() {
   $("btn-upgrade").disabled = busy || !loader || !upgradeLoaded;
 }
 
+function dataSizingListing(carve) {
+  return {
+    slots: carve.slots.map((s, slot) => ({
+      slot, offset: s.offset, size: s.size,
+      limit: s.kind === SLOT_KIND.APP ? Math.max(0, s.size - 0x1000) : 0,
+      kind: s.kind === SLOT_KIND.APP ? "app" : "storage",
+      state: s.state === SLOT_STATE.EMPTY ? "empty" : "valid",
+    })),
+    data: carve.data.map((d) => ({ ...d, play_id: d.playId })),
+  };
+}
+
+// Capacity selector mirrors the phone installer: declared minimums and every
+// selected size are revalidated against the shared pool before any flash write.
+async function chooseUsbDataSizes(dataImages, carve) {
+  if (!dataImages.length) return [];
+  const dialog = $("data-size-dialog");
+  const rows = $("data-size-rows");
+  const error = $("data-size-error");
+  const listing = dataSizingListing(carve);
+  const minimums = dataImages.map((d) => dataPartitionMinimum(d));
+  if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
+    throw new Error("DATA partition has an invalid declared minimum size");
+  }
+  for (let i = 0; i < dataImages.length; i++) {
+    for (let j = 0; j < carve.data.length; j++) {
+      const d = carve.data[j];
+      if (d.label === dataImages[i].label && d.subtype === dataImages[i].subtype) {
+        throw new Error(`DATA label/subtype already exists: ${dataImages[i].label} (remove or back up the existing owner first)`);
+      }
+    }
+    for (let j = 0; j < i; j++) {
+      if (dataImages[i].label === dataImages[j].label &&
+          dataImages[i].subtype === dataImages[j].subtype) {
+        throw new Error(`duplicate DATA label/subtype: ${dataImages[i].label}`);
+      }
+    }
+  }
+
+  const options = dataImages.map((d, i) => {
+    const bounds = dataSizeBounds(listing, null, minimums[i],
+      minimums.filter((_, j) => j !== i));
+    const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+    const min = minimums[i];
+    if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest available ${fmtBytes(max)}`);
+    const values = [min];
+    let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
+    while (next <= max) { values.push(next); next += DATA_SIZE_STEP; }
+    const declared = Number(d.required_size);
+    if (Number.isSafeInteger(declared) && declared >= min && declared <= max) values.push(declared);
+    if (max > min) values.push(max);
+    return { min, max, values: [...new Set(values)].sort((a, b) => a - b),
+      selected: Number.isSafeInteger(declared) && declared >= min && declared <= max ? declared : min };
+  });
+
+  rows.replaceChildren();
+  options.forEach((o, i) => {
+    const label = document.createElement("label");
+    label.style.display = "block";
+    label.style.margin = "12px 0 4px";
+    label.textContent = `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} maximum`;
+    const select = document.createElement("select");
+    select.dataset.dataSize = String(i);
+    select.style.width = "100%";
+    select.style.padding = "8px";
+    for (const size of o.values) {
+      const option = document.createElement("option");
+      option.value = String(size);
+      option.textContent = `${(size / (1024 * 1024)).toFixed(size % (1024 * 1024) ? 3 : 0)} MiB`;
+      option.selected = size === o.selected;
+      select.appendChild(option);
+    }
+    rows.append(label, select);
+  });
+  error.textContent = "";
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dialog.close();
+      resolve(value);
+    };
+    $("data-size-cancel").onclick = () => finish(null);
+    $("data-size-confirm").onclick = () => {
+      const sizes = [...rows.querySelectorAll("select[data-data-size]")].map((el) => Number(el.value));
+      let planned = carve;
+      for (let i = 0; i < dataImages.length; i++) {
+        const size = normalizeDataSize(sizes[i], { min: options[i].min, max: options[i].max });
+        if (size === null || size < minimums[i]) {
+          error.textContent = `Invalid size for DATA ${dataImages[i].label}`;
+          return;
+        }
+        const place = placeNewData(planned, size);
+        if (!place) {
+          error.textContent = "These DATA sizes do not fit together in the current partition layout. Reduce one or more sizes.";
+          return;
+        }
+        planned = {
+          slots: planned.slots.slice(),
+          data: [...planned.data, {
+            playId: 0xfffffffe, offset: place.offset, size,
+            state: DATA_STATE.PRISTINE, subtype: dataImages[i].subtype,
+            type: 1, label: dataImages[i].label,
+          }],
+        };
+        if (!carveValid(planned)) {
+          error.textContent = `Invalid DATA allocation for ${dataImages[i].label}`;
+          return;
+        }
+      }
+      finish(sizes);
+    };
+    dialog.oncancel = (ev) => { ev.preventDefault(); finish(null); };
+    dialog.showModal();
+  });
+}
+
+function nextDataPlayId(carve) {
+  const used = new Set([
+    ...carve.slots.map((s) => Number(s.playId) >>> 0).filter((n) => n > 0),
+    ...carve.data.map((d) => Number(d.playId) >>> 0).filter((n) => n > 0),
+  ]);
+  for (let id = 1; id < 0xffffffff; id++) if (!used.has(id)) return id;
+  throw new Error("no free APP/DATA installation identifier remains");
+}
+
+async function writeDataPayload(image, record) {
+  // Erase the complete new extent first so a reused free extent cannot expose
+  // stale bytes past the initial image payload.
+  await wipeRange(record.offset, record.size);
+  const bytes = image.data;
+  for (let off = 0; off < bytes.length; off += 0x10000) {
+    const chunk = bytes.subarray(off, Math.min(bytes.length, off + 0x10000));
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(chunk), address: record.offset + off }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+    });
+  }
+  if (bytes.length === 0) {
+    const head = await loader.readFlash(record.offset, Math.min(4096, record.size));
+    if (head.some((b) => b !== 0xff)) throw new Error(`DATA ${record.label} erase verification failed`);
+    return;
+  }
+  for (let off = 0; off < bytes.length; off += 4096) {
+    const n = Math.min(4096, bytes.length - off);
+    const got = await loader.readFlash(record.offset + off, n);
+    if (!bytesEqual(got, bytes.subarray(off, off + n))) {
+      throw new Error(`DATA ${record.label} read-back mismatch at +${hex(off)}`);
+    }
+  }
+}
+
 // ===== 7. 升级 launcher(仅写 factory/分区表/bootloader/otadata;NVS 与子固件槽零接触)=====
 function setUpgradeProgress(pct) { $("upgrade-bar").style.width = `${Math.max(0, Math.min(100, pct))}%`; }
 
