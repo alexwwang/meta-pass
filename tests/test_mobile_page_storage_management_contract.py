@@ -41,6 +41,14 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                 self.assertIn(token, runtime_preflight)
         self.assertLess(runtime_start, RUNNER.index('const urlArg = String(args.url'))
 
+    def test_realdevice_requires_explicit_dedicated_play_ids_and_data_reservations(self):
+        self.assertIn('process.env.MOBILE_E2E_PLAY_A || ""', RUNNER)
+        self.assertIn('process.env.MOBILE_E2E_PLAY_B || ""', RUNNER)
+        self.assertIn("there are no default IDs", RUNNER)
+        self.assertIn("Pass --require-data-reservation", RUNNER)
+        self.assertNotIn('MOBILE_E2E_PLAY_A || "1"', RUNNER)
+        self.assertNotIn('MOBILE_E2E_PLAY_B || "2"', RUNNER)
+
     def test_install_uninstall_and_space_accounting_are_end_to_end(self):
         for token in ("M04 install A", "M05 install B", "assertDynamicSlotGeometry",
                       "assertBaselineDataPreserved", "M06 UI delete releases test-created DATA reservations",
