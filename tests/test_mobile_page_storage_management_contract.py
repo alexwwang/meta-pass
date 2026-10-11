@@ -149,7 +149,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "不提供单独删除 DATA 的用户操作",
                       "不允许用户选择卸载时保留 DATA",
                       "删除中断后重启",
-                      "真实字节级备份未实现"):
+                      "导出可以保存真实字节，但尚不能在产品内恢复"):
             with self.subTest(token=token):
                 self.assertIn(token, LIFECYCLE)
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
