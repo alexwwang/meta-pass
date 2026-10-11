@@ -10,6 +10,7 @@ DRIVER = (ROOT / "tools/realdevice/mobile_page_runtime_driver.py").read_text(enc
 SERIAL = (ROOT / "tools/realdevice/data_child_serial.py").read_text(encoding="utf-8")
 DESIGN = (ROOT / "docs/assets/mobile-page-storage-e2e-design.zh_CN.md").read_text(encoding="utf-8")
 LIFECYCLE = (ROOT / "docs/assets/app-data-lifecycle-design.zh_CN.md").read_text(encoding="utf-8")
+DEVICE = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 
 
 class MobilePageStorageManagementContract(unittest.TestCase):
@@ -62,6 +63,22 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("const listingWithoutTarget = (i) =>", installer)
         self.assertIn("Math.max(declaredMin, existingSizes[i])", installer)
         self.assertIn("existingSizes[i] != null && editable[i]", installer)
+
+    def test_mobile_data_read_api_is_authenticated_bounded_and_identity_scoped(self):
+        start = DEVICE.index("static esp_err_t h_install_data_read(")
+        end = DEVICE.index("// POST /api/install/finalize", start)
+        handler = DEVICE[start:end]
+        for token in ("origin_allowed(req)", "req_token_ok(req)",
+                      '"X-Meta-Play-Id"', '"X-Meta-Data-Label"',
+                      "length > INSTALL_IO_BUF", "d->play_id == play_id",
+                      'strcmp(d->label, label) == 0',
+                      "offset > match->size || length > match->size - offset",
+                      "esp_flash_read(NULL, read_buf, address, length)",
+                      '"Cache-Control", "no-store"'):
+            with self.subTest(token=token):
+                self.assertIn(token, handler)
+        self.assertIn('{ "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL }', DEVICE)
+        self.assertIn('dataRead: (playId, label, offset, length)', (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8"))
 
     def test_in_place_data_growth_erases_only_new_free_tail(self):
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
