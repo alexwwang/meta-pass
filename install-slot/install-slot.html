@@ -2565,6 +2565,124 @@ $("restore-input").addEventListener("change", async (ev) => {
   }
 });
 
+async function restoreV2ArchiveUsb() {
+  const manifest = restoreZip?.manifest;
+  const payloads = restoreZip?.v2Payloads;
+  if (!manifest || manifest.manifest_version !== 2 || !(payloads instanceof Map)) {
+    throw new Error("No validated v2 archive is loaded");
+  }
+  if (!isDynMode(slotModel.mode) || !slotModel.carve || !carveValid(slotModel.carve)) {
+    throw new Error("Transactional APP+DATA restore requires a valid dynamic carve record");
+  }
+  const archivedSlot = manifest.slots[0];
+  if (slotModel.carve.slots.some((s) => s.playId === archivedSlot.play_id) ||
+      slotModel.carve.data.some((d) => d.playId === archivedSlot.play_id)) {
+    throw new Error("This play_id already exists on the device. Remove the existing APP group before restore.");
+  }
+  const rawFiles = archivedSlot.files.filter((f) => f.type === "raw" || f.name.endsWith("_raw.bin"));
+  const appFiles = archivedSlot.files.filter((f) => f.type === "app" || f.name.endsWith("_firmware.bin"));
+  if (rawFiles.length + appFiles.length !== 1 || archivedSlot.files.length !== 1) {
+    throw new Error("Restore accepts exactly one raw-slot or installable APP image; auxiliary slot files are not supported.");
+  }
+  const appFile = rawFiles[0] || appFiles[0];
+  const rawApp = payloads.get(appFile.name);
+  if (!(rawApp instanceof Uint8Array)) throw new Error("APP payload missing");
+  const image = extractAppImage(rawApp, 0x7ffff000);
+  const plan = planInstall(slotModel.carve, image.length, { target: "auto" });
+  if (plan.action !== PLAN.CREATE) {
+    throw new Error(`No fresh APP slot fits: need ${fmtBytes(plan.need)}, largest contiguous gap ${fmtBytes(plan.largestGap)}, total free ${fmtBytes(plan.totalFree)}`);
+  }
+  let nextCarve = insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size });
+  const dataImages = manifest.data.map((record) => {
+    const bytes = payloads.get(record.file);
+    if (!(bytes instanceof Uint8Array) || bytes.length !== record.bytes ||
+        record.bytes % DATA_SIZE_GRANULE !== 0) {
+      throw new Error("DATA payload missing or not 4 KiB aligned: " + record.file);
+    }
+    return { label: record.label, subtype: record.subtype, required_size: record.bytes,
+      initial_image_size: bytes.length, data: bytes, sha256: record.sha256 };
+  });
+  let plannedData = [];
+  if (dataImages.length) {
+    const dataPlan = planDataReservations(nextCarve, dataImages,
+      dataImages.map((d) => d.required_size), archivedSlot.play_id);
+    if (!dataPlan.ok) throw new Error(`DATA allocation failed (${dataPlan.reason})`);
+    plannedData = dataPlan.records;
+    nextCarve = {
+      slots: dataPlan.carve.slots,
+      data: dataPlan.carve.data.map((record) =>
+        record.playId === archivedSlot.play_id ? { ...record, state: DATA_STATE.DIRTY } : record),
+    };
+    if (!carveValid(nextCarve)) throw new Error("Restore allocation produced an invalid carve");
+  }
+
+  let commitStarted = false;
+  try {
+    for (const record of plannedData) {
+      log(`Staging restored DATA ${record.label} · ${fmtBytes(record.size)} at ${hex(record.offset)}`);
+      await writeDataPayload(record, record);
+      log(`DATA ${record.label} write/read-back verified`, "ok");
+    }
+
+    const addr = plan.offset;
+    const tailOffset = Math.ceil(image.length / 4096) * 4096;
+    if (tailOffset + 4096 < plan.size) {
+      await wipeSlotResidue({ offset: plan.offset, size: plan.size },
+        addr + tailOffset + 4096, plan.offset + plan.size, (p) => setRestoreProgress(p * 10));
+    }
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(image.data), address: addr }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      reportProgress: (_i, written, total) => setRestoreProgress(10 + written / total * 75),
+    });
+    for (let off = 0; off < image.data.length; off += 4096) {
+      const part = image.data.subarray(off, Math.min(image.data.length, off + 4096));
+      const readback = await loader.readFlash(addr + off, part.length);
+      if (!bytesEqual(readback, part)) throw new Error(`APP read-back mismatch at +${hex(off)}`);
+    }
+
+    const name = sanitizeDisplayName(archivedSlot.name) || `play ${archivedSlot.play_id}`;
+    let tail = image.tailSector ? new Uint8Array(image.tailSector) : new Uint8Array(4096).fill(0xff);
+    const nameWindow = packNameBlobTail(name);
+    if (!nameWindow) throw new Error("Could not encode restored APP display name");
+    tail.set(nameWindow, 4056);
+    const tailAddr = addr + image.tailSectorOffset;
+    if (tailAddr + tail.length > addr + plan.size) throw new Error("APP tail metadata exceeds allocated slot");
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(tail), address: tailAddr }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+    });
+    const tailReadback = await loader.readFlash(tailAddr, tail.length);
+    if (!bytesEqual(tailReadback, tail)) throw new Error("APP tail metadata read-back mismatch");
+
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", image.data));
+    const slots = nextCarve.slots.slice();
+    slots[plan.index] = { ...slots[plan.index], state: SLOT_STATE.VALID,
+      imageLen: image.length, sha: digest, name, playId: archivedSlot.play_id };
+    const finalCarve = { slots, data: nextCarve.data };
+    if (!carveValid(finalCarve)) throw new Error("Final APP+DATA carve is invalid");
+    commitStarted = true;
+    const committed = await commitCarve(finalCarve, { materialize: true });
+    setRestoreProgress(100);
+    log(`Restore committed: source play_id ${archivedSlot.play_id}, new slot ${plan.index}, ${plannedData.length} DATA partition(s), record ${committed.from}→${committed.to}`, "ok");
+    $("restore-status").textContent = "APP+DATA 恢复成功。已验证 APP/DATA 写入，并提交新的分区记录。";
+    $("restore-status").className = "ok";
+    restoreZip = null;
+    await loadSlotModel();
+    renderSlotView();
+  } catch (error) {
+    if (!commitStarted) {
+      for (const record of plannedData) {
+        try { await wipeRange(record.offset, record.size); }
+        catch (cleanupError) { log(`Staged DATA cleanup failed at ${hex(record.offset)}: ${cleanupError.message}`, "warn"); }
+      }
+    } else {
+      log("Restore metadata commit status is uncertain; staged DATA bytes were preserved for recovery.", "warn");
+    }
+    throw error;
+  }
+}
+
 $("btn-restore").addEventListener("click", async () => {
   if (busy || !loader || !restoreZip) return;
   busy = true;
@@ -2572,6 +2690,10 @@ $("btn-restore").addEventListener("click", async () => {
   $("restore-status").textContent = "";
   setRestoreProgress(0);
   try {
+    if (restoreZip.manifest.manifest_version === 2) {
+      await restoreV2ArchiveUsb();
+      return;
+    }
     const jobs = restoreZip.manifest.slots.map((s) => ({
       from: s.slot,
       to: Number($(`restore-target-${s.slot}`).value),
