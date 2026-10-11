@@ -389,8 +389,8 @@ esp_err_t meta_carve_flash_remove(int slot)
 }
 
 /* Delete APP + all DATA records for its play_id with one durable metadata
- * commit. Callers erase extents before invoking this function, so a failed
- * commit leaves all extents reserved (even if their bytes are already erased). */
+ * commit. Callers must commit this metadata change before erasing the old extents;
+ * on commit failure the existing APP and DATA bytes must remain untouched. */
 esp_err_t meta_carve_flash_remove_app_and_data(int slot)
 {
     if (!s_active || slot < 0 || slot >= (int)s_carve.count) {
