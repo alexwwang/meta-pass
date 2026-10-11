@@ -301,7 +301,7 @@ import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
-import { buildDataArchiveManifest, validateDataArchivePayloads } from "./data-byte-archive.js";
+import { buildDataArchiveManifest, validateDataArchiveManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -2470,7 +2470,7 @@ $("restore-input").addEventListener("change", async (ev) => {
   const file = ev.target.files[0];
   if (!file) return;
   try {
-    const entries = readZipEntries(new Uint8Array(await file.arrayBuffer()));
+    const entries = readDataArchiveZip(new Uint8Array(await file.arrayBuffer()));
     const manifestBytes = entries.get(MANIFEST_NAME);
     if (!manifestBytes) throw new Error(t("msg_restore_manifest_missing", { name: MANIFEST_NAME }));
     const manifestText = new TextDecoder().decode(manifestBytes);
@@ -2481,7 +2481,33 @@ $("restore-input").addEventListener("change", async (ev) => {
       throw new Error(t("msg_restore_partial_archive", { slots: missing }));
     }
     if (rawManifest?.manifest_version === 2) {
-      throw new Error("This v2 archive contains APP+DATA bytes, but transactional DATA restore is not implemented yet. No device writes were performed.");
+      validateDataArchiveManifest(rawManifest);
+      if (rawManifest.complete !== true || (rawManifest.missing_slots || []).length) {
+        throw new Error("Incomplete v2 archive cannot be restored.");
+      }
+      if (rawManifest.nvs) {
+        throw new Error("This archive includes global NVS. USB APP+DATA restore does not restore global NVS; no device writes were performed.");
+      }
+      if (rawManifest.slots.length !== 1) {
+        throw new Error("USB transactional restore currently supports one APP+DATA group at a time.");
+      }
+      const payloads = new Map(entries);
+      payloads.delete(MANIFEST_NAME);
+      const expected = new Set([
+        ...rawManifest.slots.flatMap((slot) => slot.files.map((f) => f.name)),
+        ...rawManifest.data.map((record) => record.file),
+      ]);
+      for (const name of payloads.keys()) {
+        if (!expected.has(name)) throw new Error("Undeclared archive payload: " + name);
+      }
+      await validateDataArchivePayloads(rawManifest, payloads, sha256Hex);
+      restoreZip = { manifest: rawManifest, v2Payloads: payloads };
+      $("restore-info").textContent = "完整 APP+DATA 归档已校验。恢复将分配新的连续空间，并在写入与读回校验后一次提交 APP/DATA 元数据。";
+      $("restore-info").className = "ok";
+      $("restore-slots").innerHTML = "";
+      $("btn-restore").disabled = busy || !loader;
+      log("v2 APP+DATA archive preflight passed; waiting for explicit restore action.", "ok");
+      return;
     }
     const manifest = parseManifest(rawManifest);
     const filesBySlot = new Map();
