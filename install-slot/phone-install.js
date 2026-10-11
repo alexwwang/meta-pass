@@ -162,6 +162,32 @@ export function createBridge(deviceOrigin, token) {
     try { text = await resp.text(); } catch { /* empty body */ }
     return { ok: resp.ok, status: resp.status, text };
   }
+  // Binary read path: do not pass DATA bytes through Response.text(), which can
+  // corrupt arbitrary byte values. The device endpoint enforces the same 4 KiB
+  // bound and resolves (play_id, label) to a validated carve reservation.
+  async function callBytes(path, opt = {}) {
+    const headers = { ...(opt.headers || {}) };
+    if (token) headers["X-Meta-Session"] = token;
+    let resp;
+    try {
+      resp = await fetch(base + path, {
+        ...opt, headers,
+        signal: opt.signal || AbortSignal.timeout(opt.timeoutMs || 15000),
+      });
+    } catch (e) {
+      return { ok: false, status: 0, text: `network: ${e && e.message ? e.message : e}`, bytes: null };
+    }
+    if (!resp.ok) {
+      let text = "";
+      try { text = await resp.text(); } catch { /* empty body */ }
+      return { ok: false, status: resp.status, text, bytes: null };
+    }
+    try {
+      return { ok: true, status: resp.status, text: "", bytes: new Uint8Array(await resp.arrayBuffer()) };
+    } catch (e) {
+      return { ok: false, status: resp.status, text: `binary response read failed: ${e && e.message ? e.message : e}`, bytes: null };
+    }
+  }
   return {
     token: () => token || "",
     status: () => call("/api/install/status"),
@@ -186,6 +212,20 @@ export function createBridge(deviceOrigin, token) {
     // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
     // 记录+物化表、200 后 150ms 复位 —— 重启窗口内 status 不可达)。
     slots: () => call("/api/install/slots"),
+    dataRead: (playId, label, offset, length) => {
+      if (!Number.isSafeInteger(playId) || playId <= 0 ||
+          typeof label !== "string" || !/^[A-Za-z0-9_-]{1,16}$/.test(label) ||
+          !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid DATA read request", bytes: null });
+      }
+      return callBytes("/api/install/data/read", { headers: {
+        "X-Meta-Play-Id": String(playId),
+        "X-Meta-Data-Label": label,
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
     remove: (slot) => call("/api/install/remove", { method: "POST",
       json: { slot } }),
   };
