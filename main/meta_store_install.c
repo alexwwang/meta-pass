@@ -2140,10 +2140,11 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         off += snprintf(resp + off, sizeof(resp) - off,
             "{\"slot\":%d,\"state\":\"%s\",\"name\":\"%s\","
             "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ",\"limit\":%" PRIu32
-            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32 "}",
+            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32
+            ",\"play_id\":%" PRIu32 "}",
             j, state_str, s->name,
             s->size, s->image_len, s->size - 0x1000,
-            s->offset, kind_str, arc_records);
+            s->offset, kind_str, arc_records, s->play_id);
     }
 
     // dynslot P1-4:数据 carve 记录也占池空间,必须暴露给手机侧分配器 ——
