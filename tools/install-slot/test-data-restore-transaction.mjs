@@ -64,10 +64,17 @@ function fakeDevice({ failReadback = false, failCommit = false } = {}) {
   console.log("PASS 3: ambiguous commit preserves staging for recovery inspection");
 }
 {
+  const { device, events } = fakeDevice();
+  const mismatchedPlan = { ...plan, data: [] };
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }), /DATA identities do not match/);
+  assert.equal(events.length, 0, "plan mismatch must be rejected before device transaction");
+  console.log("PASS 4: plan identities must exactly match the archive manifest");
+}
+{
   const bad = new Map(payloads);
   bad.set("data/101/0.bin", new Uint8Array([1, 1, 1]));
   const { device, events } = fakeDevice();
   await assert.rejects(executeDataRestoreTransaction({ manifest, payloads: bad, plan, device, sha256Hex: async b => digest(b) }), /payload length changed/);
   assert.equal(events.length, 0, "invalid payload must be rejected before device writes");
-  console.log("PASS 4: mutated payload is rejected before opening device transaction");
+  console.log("PASS 5: mutated payload is rejected before opening device transaction");
 }
