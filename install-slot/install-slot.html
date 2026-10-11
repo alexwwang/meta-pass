@@ -900,7 +900,7 @@ const I18N = {
     restore_desc: "Restores legacy v1 APP/NVS archives only. v2 APP+DATA archive restore is not implemented yet.",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
-    data_backup_unavailable: "USB dynslot backups can include verified DATA bytes, but restoring DATA bytes is not implemented yet. Removing an APP also deletes its owned DATA.",
+    data_backup_unavailable: "USB dynslot backups can include verified DATA bytes. Restore supports one complete APP+DATA group; global NVS and multi-APP atomic restore are not supported. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
     msg_backup_start: "Backing up slots…",
