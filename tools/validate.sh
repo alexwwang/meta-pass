@@ -188,6 +188,16 @@ PY
         "$_ck_bin" --check tools/realdevice/mobile_webview_e2e.mjs
         "$_ck_bin" --check tools/realdevice/mobile_page_e2e.mjs
         "$_ck_bin" --check tools/realdevice/mobile_page_browser_smoke.mjs
+        # The USB page is an inline ES module; syntax-check the extracted source too.
+        python3 - "$repo_root/install-slot/install-slot.html" "$test_dir/install-slot-page.mjs" <<'USB_PAGE'
+import re, sys
+html = open(sys.argv[1], encoding="utf-8").read()
+modules = re.findall(r'<script type="module">\\s*(.*?)\\s*</script>', html, re.S)
+if len(modules) != 1:
+    raise SystemExit(f"expected exactly one inline USB page module, found {len(modules)}")
+open(sys.argv[2], "w", encoding="utf-8").write(modules[0])
+USB_PAGE
+        "$_ck_bin" --check "$test_dir/install-slot-page.mjs"
     else
         echo "WARNING: no real node found (only a Bun wrapper?); skipping harness syntax gate" >&2
     fi
