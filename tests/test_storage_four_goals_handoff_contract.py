@@ -48,7 +48,8 @@ assert "cleanupStaging" in TRANSACTION
 assert "post-commit ownership/geometry verification failed" in TRANSACTION
 assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
-assert "v2 restore before any device writes" in (ROOT / "tests/test_data_child_firmware_contract.py").read_text(encoding="utf-8")
+assert "await restoreV2ArchiveUsb()" in USB
+assert "export async function restoreDataArchive" in PHONE
 
 # USB-only local firmware installation remains a required asymmetric capability.
 assert 'data-tab="local"' in USB and 'id="file-input"' in USB, "USB must retain its local-file firmware installation path"
