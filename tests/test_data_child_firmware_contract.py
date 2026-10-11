@@ -73,6 +73,15 @@ assert "nvs_set_u8(nvs, \"dc\", data_count)" in install_net, "uninstall intent m
 assert "remove_nvs_set_u32(nvs, op, data_offsets[i])" in install_net, "uninstall intent must persist DATA offsets for post-commit recovery"
 assert "remove_nvs_set_u32(nvs, sp, data_sizes[i])" in install_net, "uninstall intent must persist DATA sizes for post-commit recovery"
 assert "Metadata was committed before power loss/erase failure" in install_net, "recovery must retry erases after metadata is already removed"
+prepare_start = install_net.index("static esp_err_t h_install_prepare(")
+prepare_end = install_net.index("// POST /api/install/session", prepare_start)
+prepare_handler = install_net[prepare_start:prepare_end]
+assert "remove_recover_pending(&recovered_remove)" in prepare_handler, "new install must recover or block on pending uninstall"
+slots_start = install_net.index("static esp_err_t h_install_slots(")
+slots_end = install_net.index("static esp_err_t h_install_remove(httpd_req_t *req);", slots_start)
+slots_handler = install_net[slots_start:slots_end]
+assert "remove_recover_pending(&recovered_remove)" in slots_handler, "slot listing must not expose stale state during uninstall recovery"
+assert "cannot uninstall during an install session" in install_net, "uninstall must not race an active install session"
 assert "if (e != ESP_OK) return e;" in install_net[install_net.index("static esp_err_t remove_recover_pending"):install_net.index("// POST /api/install/remove")], "failed cleanup must keep durable intent pending"
 assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
 assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
