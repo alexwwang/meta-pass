@@ -51,10 +51,28 @@ jobs:
             -e IDF_CCACHE_ENABLE=1
           command: ./tools/validate.sh --firmware
 
-      - name: Upload verified firmware
+      - name: Build E2E launcher and dedicated DATA child firmware
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.5.3
+          target: esp32c3
+          extra_docker_args: >-
+            -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
+            -e IDF_CCACHE_ENABLE=1
+          command: >-
+            idf.py -B build-e2e -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults' reconfigure &&
+            idf.py -B build-e2e build &&
+            cd tests/realdevice/data-child &&
+            idf.py -B build-e2e set-target esp32c3 &&
+            idf.py -B build-e2e build
+
+      - name: Upload verified firmware and E2E fixtures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: firmware-${{ github.run_id }}
-          path: build/meta-pass_v*.bin
+          path: |
+            build/meta-pass_v*.bin
+            build-e2e/meta-pass_v*.bin
+            tests/realdevice/data-child/build-e2e/data_child.bin
           if-no-files-found: error
           retention-days: 7
