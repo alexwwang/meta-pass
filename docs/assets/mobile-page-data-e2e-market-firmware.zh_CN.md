@@ -25,7 +25,9 @@
 
 Play 28 的完整声明为 app 约 1.5 MiB + `recordings` 约 6.4 MiB，超出当前动态池对单个玩法可提供的容量。研究提出将空白的 `recordings` carve 缩至约 4 MiB；标准 IDF FAT 挂载会从实际分区条目推导大小，因此这是合理候选，默认安装链路仍按固件声明的 DATA size 计算需求；本分支已加入显式 opt-in 测试配置，但尚不能据此宣称真实设备兼容。
 
-实现状态：已加入 `?mp_test_data_profile=play28-recordings-4m` 测试配置（仅 Play ID 28），服务端 analyze 与手机安装 offer 共用相同 profile；必须同时显式设置服务端环境变量 `ENABLE_TEST_DATA_PROFILES=1`，默认环境禁用。后续仍需用真实市场镜像证明分区表确实为空白且运行时挂载大小为 4 MiB。
+**2026-10-11 真机实测修订**：动态池被固定 `cardid`(0x356000)/`store`(0x35A000) 条目分为约 1.88 MiB + 4.61 MiB 两段，单段连续 carve 上限约 4.6 MiB（不是池总量 6.44 MiB）。`play28-recordings-4m`（总计约 5.5 MiB）放不下单段；新增 `play28-recordings-3m`（3 MiB，总计约 4.5 MiB）后经真实手机页面安装成功，设备端 `recordings` DATA reservation 按 3 MiB 创建。4 MiB 变体仅在 APP 恰好落入前段且无第二个 APP 时可能成立，不能作为通用结论。
+
+实现状态：已加入 `?mp_test_data_profile=play28-recordings-4m` 与 `play28-recordings-3m` 测试配置（仅 Play ID 28），服务端 analyze 与手机安装 offer 共用相同 profile；必须同时显式设置服务端环境变量 `ENABLE_TEST_DATA_PROFILES=1`，默认环境禁用。后续仍需用真实市场镜像证明分区表确实为空白且运行时挂载大小为 3/4 MiB。
 
 该配置的安全边界：
 
