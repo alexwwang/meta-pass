@@ -43,7 +43,7 @@ const read = await readDataReservation({
     readCalls.push({ playId, label, offset, length });
     return { ok: true, status: 200, bytes: data.slice(offset, offset + length) };
   },
-}, { play_id: 123, label: "cfg_save", bytes: data.length }, {
+}, { play_id: 123, label: "cfg_save", size: data.length }, {
   chunkSize: 2,
   sha256Hex: async (bytes) => digest(bytes),
   onProgress: (p) => progress.push(p),
@@ -54,10 +54,10 @@ assert.deepEqual(readCalls.map((x) => [x.offset, x.length]), [[0, 2], [2, 2]]);
 assert.equal(progress.at(-1).completed, data.length);
 await assert.rejects(() => readDataReservation({
   async dataRead() { return { ok: false, status: 416, text: "out of bounds" }; },
-}, { play_id: 123, label: "cfg_save", bytes: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /DATA read failed at offset 0/);
+}, { play_id: 123, label: "cfg_save", size: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /DATA read failed at offset 0/);
 await assert.rejects(() => readDataReservation({
   async dataRead() { throw new Error("must not be called"); },
-}, { play_id: 123, label: "../cfg", bytes: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /invalid DATA reservation identity/);
+}, { play_id: 123, label: "../cfg", size: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /invalid DATA reservation identity/);
 console.log("PASS 1B: chunked DATA reads enforce identity, exact lengths, progress, and full-content digest");
 
 // A metadata-only or old v1 archive must never be treated as DATA backup.
