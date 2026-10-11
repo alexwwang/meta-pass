@@ -301,6 +301,7 @@ PATHCHECK
         "${node_bin}" tests/test_dynslot_pool.mjs
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
         "${node_bin}" tools/install-slot/test-backup-data.mjs
+        "${node_bin}" tools/install-slot/test-data-byte-archive.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs
         # dynslot carve 记录编解码 / 安装与删除规划 / 视图模型 / mock 设备交互
