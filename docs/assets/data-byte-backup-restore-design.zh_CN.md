@@ -11,7 +11,7 @@
 
 统一 USB 服务页与手机内嵌页的 DATA 生命周期语义：安装时创建 DATA、备份实际字节、恢复实际字节、卸载 APP 时删除关联 DATA。
 
-**当前状态：尚未完成端到端备份/恢复。** USB dynslot v2 导出会包含所选 APP 关联的全部 DATA 实际字节（包括 PRISTINE 分区），并执行逐文件 SHA-256 校验及导出后 A/B 所有权记录复核；旧布局/v1 仍仅备份 APP/NVS。手机端现已支持以 4 KiB 鉴权分块读取完整 APP 槽位和全部关联 DATA，复核所有权元数据，校验长度/SHA-256 并生成 ZIP。手机内嵌页面现可恢复完整的单 APP+DATA v2 归档：STORE ZIP 解析器先限制大小/路径/压缩方式并校验 CRC；随后校验 manifest 与载荷 SHA-256，通过现有设备安装事务分块写 APP 和 DATA，设备端再次校验数据镜像哈希并在 finalize 后把导入 DATA 标记为 DIRTY。此集成不接受客户端 Flash 绝对地址。USB 页面仍拒绝 v2 恢复；多 APP 原子恢复、全局 NVS 与真机验收仍未实现。
+**当前状态：尚未完成端到端备份/恢复。** USB dynslot v2 导出会包含所选 APP 关联的全部 DATA 实际字节（包括 PRISTINE 分区），并执行逐文件 SHA-256 校验及导出后 A/B 所有权记录复核；旧布局/v1 仍仅备份 APP/NVS。手机端现已支持以 4 KiB 鉴权分块读取完整 APP 槽位和全部关联 DATA，复核所有权元数据，校验长度/SHA-256 并生成 ZIP。手机内嵌页面现可恢复完整的单 APP+DATA v2 归档：STORE ZIP 解析器先限制大小/路径/压缩方式并校验 CRC；随后校验 manifest 与载荷 SHA-256，通过现有设备安装事务分块写 APP 和 DATA，设备端再次校验数据镜像哈希并在 finalize 后把导入 DATA 标记为 DIRTY。此集成不接受客户端 Flash 绝对地址。USB 页面也已接入 v2 单组恢复：先写 DATA 暂存区并读回验证，再写 APP 并校验，最后一次提交 APP/DATA carve 与分区表。提交前失败清理未引用的 DATA，提交状态不确定时保留字节。多 APP 原子恢复、全局 NVS 与真机验收仍未实现。
 
 ## 不可破坏的约束
 
