@@ -2456,7 +2456,7 @@ esp_err_t meta_install_net_start(void)
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 16;    // / + pair/status/prepare/session/chunk/data/read/finalize/cancel
+    hcfg.max_uri_handlers = 16;    // boot/pair/status/prepare/session/chunk/data/read/slot-read/finalize/cancel/remove/backup/slots/favicon
                                    // + remove/backup-import/slots/favicon(真机 2026-10-11:
                                    // 13 > 12 时末位注册失败会令整个 install 服务启动失败)
     hcfg.max_open_sockets = 3;
