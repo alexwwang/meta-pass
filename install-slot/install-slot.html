@@ -2631,10 +2631,15 @@ $("btn-install").addEventListener("click", async () => {
     if (!target) throw new Error(t("err_pick_slot_first"));
 
     const dynMode = isDynMode(slotModel.mode);
+    const dataImages = Array.isArray(image.dataImages) ? image.dataImages : [];
     let plan = null;
     let s;
     let slot;
     let slotLimit;
+    let carveForInstall = null;
+    let dataPlayId = 0;
+    let plannedData = [];
+    let deferredDataInstall = false;
     if (dynMode) {
       await loadSlotModel();   // 记录可能已过期:重读后再规划(设计 §6 step 1)
       plan = planInstall(slotModel.carve, image.length, target);
@@ -2642,7 +2647,13 @@ $("btn-install").addEventListener("click", async () => {
       s = { offset: plan.offset, size: plan.size };
       slot = plan.index;
       slotLimit = plan.limit;
+      carveForInstall = plan.action === PLAN.CREATE
+        ? insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size })
+        : slotModel.carve;
     } else {
+      if (dataImages.length) {
+        throw new Error("This firmware declares DATA partitions, but the device does not expose the dynamic DATA allocation contract. No flash was written.");
+      }
       if (target.target !== "slot") throw new Error(t("err_pick_slot_first"));
       slot = target.index;
       s = deviceSlots[slot];
@@ -2655,8 +2666,41 @@ $("btn-install").addEventListener("click", async () => {
       }));
     }
 
-    // 覆盖已安装子固件(VALID 槽)必须显式确认:占用槽绝不被默认选中
-    // (见 renderSlotView),但用户可主动选中 —— 与删除同一「解释再动手」原则(§6)。
+    // Existing APP DATA cannot be overwritten in place: the old bytes are a
+    // rollback source until the replacement has been fully written and committed.
+    // Refuse this ambiguous case rather than creating duplicate labels or orphaning
+    // the old instance's DATA.
+    if (dataImages.length) {
+      if (!dynMode || !carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
+      const oldTarget = slotModel.carve.slots[plan.index];
+      if (plan.action === PLAN.REUSE && oldTarget?.playId &&
+          slotModel.carve.data.some((d) => d.playId === oldTarget.playId)) {
+        throw new Error("The selected APP already owns DATA. Back it up and remove that APP before replacing it with a DATA-bearing firmware.");
+      }
+      const sizes = await chooseUsbDataSizes(dataImages, carveForInstall);
+      if (!sizes) { log(t("msg_install_cancelled"), "warn"); return; }
+      dataPlayId = nextDataPlayId(carveForInstall);
+      let next = carveForInstall;
+      for (let i = 0; i < dataImages.length; i++) {
+        const img = dataImages[i];
+        const size = sizes[i];
+        const place = placeNewData(next, size);
+        if (!place) throw new Error(`DATA ${img.label} no longer fits after capacity validation`);
+        next = {
+          slots: next.slots.slice(),
+          data: [...next.data, {
+            playId: dataPlayId, offset: place.offset, size,
+            state: DATA_STATE.PRISTINE, subtype: img.subtype, type: 1, label: img.label,
+          }],
+        };
+        if (!carveValid(next)) throw new Error(`Invalid DATA allocation for ${img.label}`);
+        plannedData.push({ ...img, size, offset: place.offset });
+      }
+      carveForInstall = next;
+      deferredDataInstall = true;
+    }
+
+    // 覆盖已安装子固件(VALID 槽)必须显式确认。
     if (plan && plan.action === PLAN.REUSE) {
       const cur = slotModel.carve.slots[plan.index];
       if (cur && cur.state === SLOT_STATE.VALID) {
@@ -2668,12 +2712,11 @@ $("btn-install").addEventListener("click", async () => {
       }
     }
 
-    // 2) 几何步(仅新建槽):记录先写 + 表物化,均读回校验(设计 §6 / E3)。
-    if (plan && plan.action === PLAN.CREATE) {
-      const nextCarve = insertSlot(slotModel.carve, plan.index, {
-        offset: plan.offset, size: plan.size,
-      });
-      const info = await commitCarve(nextCarve, { materialize: true });
+    // DATA-bearing install commits the APP + DATA carve together after every
+    // payload has been written and verified. APP-only installs keep the existing
+    // geometry-first flow.
+    if (plan && plan.action === PLAN.CREATE && !deferredDataInstall) {
+      const info = await commitCarve(carveForInstall, { materialize: true });
       log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
       log(t("msg_table_materialized"), "ok");
     }
