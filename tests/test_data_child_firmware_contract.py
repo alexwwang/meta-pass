@@ -68,6 +68,7 @@ assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA 
 assert "buildDataArchiveManifest({ slots: v2Slots, data: dataInputs })" in usb_page, "USB dynslot backup must use the versioned DATA archive manifest"
 assert "isDynMode(slotModel.mode) && v2Slots.length > 0" in usb_page, "USB DATA backup must recognize the actual dynslot mode enum"
 install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+assert "arc_records, s->play_id" in install_server, "mobile slot listing must expose APP play_id for archive ownership"
 assert '"/api/install/data/read",HTTP_GET,  h_install_data_read' in install_server, "DATA read endpoint must be registered"
 read_start = install_server.index("static esp_err_t h_install_data_read")
 read_end = install_server.index("// POST /api/install/finalize", read_start)
