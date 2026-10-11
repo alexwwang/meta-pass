@@ -29,6 +29,7 @@ import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
+import { buildDataArchiveManifest, validateDataArchivePayloads, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
