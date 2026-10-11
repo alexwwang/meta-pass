@@ -300,6 +300,7 @@ import {
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
+import { buildDataSizeOptions } from "./data-size-options.js";
 import { buildDataArchiveManifest, validateDataArchivePayloads } from "./data-byte-archive.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
@@ -1426,14 +1427,9 @@ async function chooseUsbDataSizes(dataImages, carve) {
     const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
     const min = minimums[i];
     if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest available ${fmtBytes(max)}`);
-    const values = [min];
-    let next = Math.ceil((min + 1) / DATA_SIZE_STEP) * DATA_SIZE_STEP;
-    while (next <= max) { values.push(next); next += DATA_SIZE_STEP; }
     const declared = Number(d.required_size);
-    if (Number.isSafeInteger(declared) && declared >= min && declared <= max) values.push(declared);
-    if (max > min) values.push(max);
-    return { min, max, values: [...new Set(values)].sort((a, b) => a - b),
-      selected: Number.isSafeInteger(declared) && declared >= min && declared <= max ? declared : min };
+    const optionSet = buildDataSizeOptions(min, max, declared, DATA_SIZE_STEP);
+    return { ...optionSet, selected: optionSet.defaultSize };
   });
 
   rows.replaceChildren();
