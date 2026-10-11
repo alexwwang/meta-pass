@@ -95,7 +95,7 @@ Use the repository's documented arguments and runtime driver; do not invent flag
 | Legacy v1 archive | Explicitly disclosed as not containing DATA |
 | v2 restore not implemented | Must fail closed; never report restore success |
 
-**Restore limitation:** `install-slot/data-restore-plan.js` only builds an address-free preflight plan. It does not write Flash and is not a complete restore implementation. Do not mark restore as passed until the transactional device implementation and failure/reboot tests exist.
+**Restore limitation:** `install-slot/data-restore-plan.js` only builds an address-free preflight plan. `install-slot/data-restore-transaction.js` now defines staged DATA writes/readback checks, APP verification, commit and post-commit ownership checks through a trusted adapter, with mocked-adapter tests. It is not wired to device write APIs, so end-to-end restore is still incomplete. Do not mark restore as passed until the transactional device implementation and failure/reboot tests exist.
 
 ## Layout analysis requirements
 
