@@ -1,5 +1,9 @@
 # DATA 字节级备份与恢复设计
 
+<p align="right">
+  <a href="data-byte-backup-restore-design.md">English</a> · <strong>简体中文</strong>
+</p>
+
 日期：2026-10-11  
 分支：`feat/storage`
 
