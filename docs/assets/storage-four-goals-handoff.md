@@ -1,5 +1,7 @@
 # Handoff: Storage Four Goals — Implementation and Device Validation
 
+English | [简体中文](storage-four-goals-handoff.zh_CN.md)
+
 Date: 2026-10-11  
 Repository: `alexwwang/meta-pass`  
 Branch: `feat/storage`  
