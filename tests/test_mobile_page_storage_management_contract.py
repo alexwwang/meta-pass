@@ -149,7 +149,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "不提供单独删除 DATA 的用户操作",
                       "不允许用户选择卸载时保留 DATA",
                       "删除中断后重启",
-                      "导出可以保存真实字节，但尚不能在产品内恢复"):
+                      "UI 支持完整单 APP+DATA v2 归档恢复"):
             with self.subTest(token=token):
                 self.assertIn(token, LIFECYCLE)
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
@@ -157,7 +157,9 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("永久删除此 APP 及其全部数据", installer)
         self.assertNotIn("mp-rm-erase", installer)
         self.assertIn("可导出所选 APP 槽位及关联 DATA 的真实字节", installer)
-        self.assertIn("当前版本尚不支持导入恢复", installer)
+        self.assertIn("export async function restoreDataArchive", installer)
+        self.assertIn("readDataArchiveZip", installer)
+        self.assertIn("可在空间管理中恢复单个完整 APP+DATA 组", installer)
         self.assertIn("readAppSlotReservation", installer)
         self.assertIn("readDataReservation", installer)
         self.assertIn("validateDataArchivePayloads(manifest, payloadMap, sha256Hex)", installer)
