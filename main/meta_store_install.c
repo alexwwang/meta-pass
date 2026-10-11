@@ -1997,6 +1997,60 @@ static esp_err_t h_install_data(httpd_req_t *req)
     return reply(req, "200 OK", "ok");
 }
 
+// GET /api/install/data/read: authenticated, bounded reads of registered DATA bytes.
+// The caller identifies a carve record by (play_id, label), never by raw Flash address.
+// At most 4 KiB per request; clients can stream larger archives in verified chunks.
+static esp_err_t h_install_data_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    char pid_str[16], label[META_DATA_LABEL_MAX + 1] = {0};
+    char off_str[16], len_str[16];
+    uint32_t play_id = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Play-Id",
+                                    pid_str, sizeof(pid_str)) != ESP_OK ||
+        !parse_u32(pid_str, &play_id) || play_id == 0 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Data-Label",
+                                    label, sizeof(label)) != ESP_OK ||
+        label[0] == '\\0' ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR,
+                                    off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length",
+                                    len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad DATA read headers");
+    }
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+    const meta_carve_data_t *match = NULL;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *d = &carve->data[i];
+        if (d->play_id == play_id && strcmp(d->label, label) == 0) {
+            if (match) return reply(req, "409 Conflict", "ambiguous DATA identity");
+            match = d;
+        }
+    }
+    if (!match) return reply(req, "404 Not Found", "DATA record not found");
+    if (offset > match->size || length > match->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "DATA read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const uint32_t address = match->offset + offset;
+    const esp_err_t e = esp_flash_read(NULL, read_buf, address, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "DATA read failed play_id=%" PRIu32 " label=%s off=%" PRIu32 ": %s",
+                 play_id, label, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "DATA flash read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (ssize_t)length);
+}
+
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
@@ -2340,7 +2394,7 @@ esp_err_t meta_install_net_start(void)
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 16;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
+    hcfg.max_uri_handlers = 16;    // / + pair/status/prepare/session/chunk/data/read/finalize/cancel
                                    // + remove/backup-import/slots/favicon(真机 2026-10-11:
                                    // 13 > 12 时末位注册失败会令整个 install 服务启动失败)
     hcfg.max_open_sockets = 3;
@@ -2368,6 +2422,7 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/session", HTTP_POST, h_install_session, NULL },
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
         { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
+        { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
