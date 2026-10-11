@@ -2018,7 +2018,7 @@ static esp_err_t h_install_data_read(httpd_req_t *req)
         !parse_u32(pid_str, &play_id) || play_id == 0 ||
         httpd_req_get_hdr_value_str(req, "X-Meta-Data-Label",
                                     label, sizeof(label)) != ESP_OK ||
-        label[0] == '\\0' ||
+        label[0] == '\0' ||
         httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR,
                                     off_str, sizeof(off_str)) != ESP_OK ||
         !parse_u32(off_str, &offset) ||
@@ -2053,7 +2053,7 @@ static esp_err_t h_install_data_read(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, (const char *)read_buf, (ssize_t)length);
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
 
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
