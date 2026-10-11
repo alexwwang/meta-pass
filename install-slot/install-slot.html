@@ -300,6 +300,7 @@ import {
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
+import { buildDataArchiveManifest, validateDataArchivePayloads } from "./data-byte-archive.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -2173,6 +2174,16 @@ async function resyncAfterReadError(chunkSize, attempt = 2) {
     throw new Error("L3 整机复位恢复失败: " + e3.message);
   }
 }
+function archiveSlotIdentity(slot, physicalSlot) {
+  const carveSlot = slotModel.carve?.slots?.find((candidate) => candidate.offset === physicalSlot.offset);
+  return {
+    slot,
+    play_id: Number.isSafeInteger(carveSlot?.playId) ? carveSlot.playId : 0,
+    name: typeof carveSlot?.name === "string" && carveSlot.name
+      ? carveSlot.name
+      : (typeof physicalSlot.name === "string" && physicalSlot.name ? physicalSlot.name : `slot-${slot}`),
+  };
+}
 async function readFlashChunked(start, size, onProgress, onRetry) {
   const buf = new Uint8Array(size);
   let got = 0;
@@ -2266,7 +2277,7 @@ $("btn-backup").addEventListener("click", async () => {
         }
         entries.push({ name: rawMirrorFileName(slot), data: raw });
         manifestEntries.push({
-          slot,
+          ...archiveSlotIdentity(slot, s),
           files: [{ name: rawMirrorFileName(slot), sha256: await sha256Hex(raw), bytes: raw.length, type: "raw" }],
         });
         backedUp.push(slot);
@@ -2287,7 +2298,7 @@ $("btn-backup").addEventListener("click", async () => {
         entries.push({ name, data: part });
         slotFiles.push({ name, sha256: await sha256Hex(part), bytes: part.length });
       }
-      manifestEntries.push({ slot, files: slotFiles });
+      manifestEntries.push({ ...archiveSlotIdentity(slot, s), files: slotFiles });
       backedUp.push(slot);
       log(t("msg_backup_slot_done", {
         slot,
