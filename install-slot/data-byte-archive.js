@@ -72,7 +72,7 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
     seenOwnership.add(ownership);
     if (!Number.isInteger(record.type) || record.type < 0 || record.type > 255 ||
         !Number.isInteger(record.subtype) || record.subtype < 0 || record.subtype > 255 ||
-        !Number.isInteger(record.state) || record.state < 1 || record.state > 2) {
+        !Number.isInteger(record.state) || record.state < 0 || record.state > 2) {
       fail("invalid DATA type, subtype, or state");
     }
     if (!Number.isSafeInteger(record.bytes) || record.bytes <= 0) fail("invalid DATA byte length");
@@ -140,7 +140,7 @@ export function validateDataArchiveManifest(manifest) {
     ownership.add(key);
     if (!Number.isInteger(record.type) || record.type < 0 || record.type > 255 ||
         !Number.isInteger(record.subtype) || record.subtype < 0 || record.subtype > 255 ||
-        !Number.isInteger(record.state) || record.state < 1 || record.state > 2 ||
+        !Number.isInteger(record.state) || record.state < 0 || record.state > 2 ||
         !Number.isSafeInteger(record.bytes) || record.bytes <= 0 ||
         typeof record.sha256 !== "string" || !SHA256_RE.test(record.sha256)) {
       fail("invalid DATA record fields");
@@ -213,4 +213,92 @@ export async function readDataReservation(bridge, record, {
   const sha256 = await sha256Hex(bytes);
   if (typeof sha256 !== "string" || !SHA256_RE.test(sha256)) fail("SHA-256 implementation returned an invalid digest");
   return { bytes, sha256 };
+}
+
+// Read an APP slot through the authenticated bridge using relative offsets only.
+// Export the full allocated slot as a raw mirror so firmware/tail/extra bytes survive.
+export async function readAppSlotReservation(bridge, record, {
+  chunkSize = 4096, sha256Hex, onProgress = () => {}, maxBytes = 32 * 1024 * 1024,
+} = {}) {
+  if (!bridge || typeof bridge.slotRead !== "function") fail("mobile APP read bridge is required");
+  const size = record && Number.isSafeInteger(record.bytes) ? record.bytes : record?.size;
+  if (!record || !Number.isSafeInteger(record.play_id) || record.play_id <= 0 ||
+      !Number.isSafeInteger(size) || size <= 0 || size > maxBytes) {
+    fail("invalid APP reservation identity or size");
+  }
+  if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 4096) {
+    fail("APP read chunk size must be between 1 and 4096 bytes");
+  }
+  if (typeof sha256Hex !== "function") fail("SHA-256 implementation is required");
+  const bytes = new Uint8Array(size);
+  for (let offset = 0; offset < size; offset += chunkSize) {
+    const length = Math.min(chunkSize, size - offset);
+    const result = await bridge.slotRead(record.play_id, offset, length);
+    if (!result || !result.ok || !(result.bytes instanceof Uint8Array) || result.bytes.byteLength !== length) {
+      const status = result && result.status ? " (HTTP " + result.status + ")" : "";
+      fail("APP read failed at offset " + offset + status + ": " +
+        (result && result.text ? result.text : "invalid binary response"));
+    }
+    bytes.set(result.bytes, offset);
+    onProgress({ play_id: record.play_id, completed: offset + length, total: size });
+  }
+  const sha256 = await sha256Hex(bytes);
+  if (typeof sha256 !== "string" || !SHA256_RE.test(sha256)) fail("SHA-256 implementation returned an invalid digest");
+  return { bytes, sha256 };
+}
+
+function zipCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let bit = 0; bit < 8; bit++) crc = (crc & 1) ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// Minimal ZIP writer using STORE (no compression), matching the USB page format.
+export function buildDataArchiveZip(entries) {
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 128) fail("invalid ZIP entry count");
+  const enc = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const seen = new Set();
+  for (const entry of entries) {
+    if (!entry || !safeFileName(entry.name) || seen.has(entry.name) || !(entry.data instanceof Uint8Array)) fail("invalid or duplicate ZIP entry");
+    seen.add(entry.name);
+    const nameBytes = enc.encode(entry.name);
+    if (nameBytes.length > 65535 || entry.data.length > 0xffffffff) fail("ZIP entry exceeds format limits");
+    const crc = zipCrc32(entry.data);
+    const local = new Uint8Array(30 + nameBytes.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0x0800, true); lv.setUint16(8, 0, true);
+    lv.setUint16(10, 0, true); lv.setUint16(12, 0x21, true);
+    lv.setUint32(14, crc, true); lv.setUint32(18, entry.data.length, true);
+    lv.setUint32(22, entry.data.length, true); lv.setUint16(26, nameBytes.length, true);
+    lv.setUint16(28, 0, true); local.set(nameBytes, 30);
+    chunks.push(local, entry.data);
+    central.push({ nameBytes, crc, size: entry.data.length, offset });
+    offset += local.length + entry.data.length;
+  }
+  const centralStart = offset;
+  for (const entry of central) {
+    const rec = new Uint8Array(46 + entry.nameBytes.length);
+    const v = new DataView(rec.buffer);
+    v.setUint32(0, 0x02014b50, true); v.setUint16(4, 20, true); v.setUint16(6, 20, true);
+    v.setUint16(8, 0x0800, true); v.setUint16(10, 0, true); v.setUint16(12, 0, true);
+    v.setUint16(14, 0x21, true); v.setUint32(16, entry.crc, true);
+    v.setUint32(20, entry.size, true); v.setUint32(24, entry.size, true);
+    v.setUint16(28, entry.nameBytes.length, true); v.setUint32(42, entry.offset, true);
+    rec.set(entry.nameBytes, 46); chunks.push(rec); offset += rec.length;
+  }
+  const end = new Uint8Array(22); const ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, central.length, true);
+  ev.setUint16(10, central.length, true); ev.setUint32(12, offset - centralStart, true);
+  ev.setUint32(16, centralStart, true); chunks.push(end);
+  const total = chunks.reduce((n, part) => n + part.length, 0);
+  const zip = new Uint8Array(total); let cursor = 0;
+  for (const part of chunks) { zip.set(part, cursor); cursor += part.length; }
+  return zip;
 }
