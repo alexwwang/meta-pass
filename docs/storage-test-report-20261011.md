@@ -9,7 +9,7 @@
 **Final commit**: `f708a2f` (tree identical to the tested firmware; the flashed app was built at `60fc73c`, the later two commits touch docs only)
 **Firmware**: local ESP-IDF 5.5.3 build with `CONFIG_META_E2E_TEST_CONTROL=y` overlay (`sdkconfig.defaults` + `sdkconfig.e2e-test.defaults`)
 **Firmware SHA-256**: `3e7ae68a4b138b59ed2d465eac46651f76c3fc6008a65c93c50748d945e05f89` (1,133,184 bytes, app image at 0x10000; on-device version string `v2.1.0-668-g115efd9-dirty`)
-**Device**: dedicated test unit, 192.168.0.24 (STA), serial `/dev/tty.usbmodem142401`, no user data to preserve
+**Device**: dedicated test unit (network address and host serial identifier intentionally omitted), no user data to preserve
 **Handoff**: [mobile-page-storage-local-test-handoff](assets/mobile-page-storage-local-test-handoff.md), baseline `8259c37`
 **Raw evidence**: `tools/realdevice/logs/mobile-page-e2e-2026-10-11T04-21-15-137Z/` (best run; earlier runs' logs in sibling timestamped directories)
 
@@ -33,10 +33,10 @@ node tools/realdevice/mobile_page_browser_smoke.mjs \
 # Session token negotiated unattended via the test-only serial channel:
 #   E2E SESSION_RESET  ->  "pair ready: code=… token=…" on UART
 
-META_PASS_E2E_SERIAL_PORT=/dev/tty.usbmodem142401 \
+META_PASS_E2E_SERIAL_PORT=<launcher-serial-port> \
 META_PASS_SESSION=<token from UART> \
 node tools/realdevice/mobile_page_e2e.mjs --real-device \
-  --url 'http://192.168.0.24/?mp_test_data_profile=play28-recordings-3m#s=<token>' \
+  --url 'http://<device-host>/?mp_test_data_profile=play28-recordings-3m#s=<token>' \
   --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \
   --require-data-reservation --play-a 28 --play-b 582
 ```
