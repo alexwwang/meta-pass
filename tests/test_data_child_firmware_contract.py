@@ -68,6 +68,21 @@ assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA 
 assert "buildDataArchiveManifest({ slots: v2Slots, data: dataInputs })" in usb_page, "USB dynslot backup must use the versioned DATA archive manifest"
 assert "isDynMode(slotModel.mode) && v2Slots.length > 0" in usb_page, "USB DATA backup must recognize the actual dynslot mode enum"
 install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+assert '"/api/install/slot/read",HTTP_GET,  h_install_slot_read' in install_server, "APP byte read endpoint must be registered"
+slot_read_start = install_server.index("static esp_err_t h_install_slot_read")
+slot_read_end = install_server.index("// POST /api/install/finalize", slot_read_start)
+slot_read_handler = install_server[slot_read_start:slot_read_end]
+for token, label in [
+    ("origin_allowed(req)", "APP reads enforce Origin policy"),
+    ("req_token_ok(req)", "APP reads require session authentication"),
+    ('"X-Meta-Play-Id"', "APP reads identify stable ownership"),
+    ("length > INSTALL_IO_BUF", "APP reads are capped at 4 KiB"),
+    ("offset > match->size || length > match->size - offset", "APP reads cannot cross slot bounds"),
+    ("slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP", "APP reads resolve an APP slot, not DATA or storage"),
+    ("esp_flash_read(NULL, read_buf, address, length)", "APP reads return actual flash bytes"),
+]:
+    assert token in slot_read_handler, f"missing APP read API contract: {label}"
+assert "arc_records, s->play_id" in install_server, "mobile slot listing must expose APP play_id for archive ownership"
 assert "arc_records, s->play_id" in install_server, "mobile slot listing must expose APP play_id for archive ownership"
 assert '"/api/install/data/read",HTTP_GET,  h_install_data_read' in install_server, "DATA read endpoint must be registered"
 read_start = install_server.index("static esp_err_t h_install_data_read")
