@@ -61,8 +61,11 @@ assert "slot.playId" in remove_action and "ownedData" in remove_action, "USB del
 assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
 assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
 assert "await writeDataPayload(dataImage, dataImage)" in usb_page, "USB DATA payload must be written and read-back verified before commit"
-assert 'data_backup_unavailable: "DATA byte-level backup/restore is not supported yet.' in usb_page, "USB UI must not imply DATA byte-level backup/restore exists"
-assert "DATA partition bytes are not included" in usb_page, "APP slot archive must clearly exclude DATA bytes"
+assert "record.offset, record.size" in usb_page and "readFlashChunked(record.offset, record.size" in usb_page, "USB DATA backup must read actual bytes from owned reservations"
+assert "validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex)" in usb_page, "USB DATA archive must validate byte lengths and SHA-256 before save"
+assert "stable.rec.seq !== slotModel.seq" in usb_page, "USB DATA backup must reject ownership metadata changes during export"
+assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA bytes' in usb_page, "USB UI must distinguish DATA export from incomplete DATA restore"
+assert "buildDataArchiveManifest({ slots: v2Slots, data: dataInputs })" in usb_page, "USB dynslot backup must use the versioned DATA archive manifest"
 install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 assert '"/api/install/data/read",HTTP_GET,  h_install_data_read' in install_server, "DATA read endpoint must be registered"
 read_start = install_server.index("static esp_err_t h_install_data_read")
@@ -80,7 +83,7 @@ for token, label in [
 ]:
     assert token in read_handler, f"missing DATA read API contract: {label}"
 assert "httpd_resp_set_hdr(req, \"Cache-Control\", \"no-store\")" in read_handler, "DATA read responses must not be cached"
-assert "不会包含 DATA 分区的实际字节" in usb_page, "Chinese APP archive description must disclose DATA omission"
+assert "USB 的 dynslot 备份可包含经校验的 DATA 字节" in usb_page, "Chinese UI must disclose DATA export/restore boundary"
 assert "commitCarve(nextCarve, { materialize: deferredDataInstall })" in usb_page, "DATA-bearing APP install must commit APP+DATA as one carve/table transaction"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
