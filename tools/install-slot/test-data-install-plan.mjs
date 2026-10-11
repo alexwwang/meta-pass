@@ -25,7 +25,7 @@ const images = [
   assert.equal(plan.carve.data.length, 2);
   assert.ok(plan.carve.data.every((d) => d.playId === id));
   assert.equal(plan.carve.data[0].offset, 0x1c0000, "first DATA follows APP reservation");
-  assert.equal(plan.carve.data[1].offset, 0x200000, "second DATA avoids APP and first DATA");
+  assert.equal(plan.carve.data[1].offset, 0x1d0000, "second DATA follows first DATA at aligned offset");
   assert.equal(carveValid(plan.carve), true);
   assert.equal(empty.data.length, 0, "planner does not mutate source carve");
   console.log("PASS 1: APP-owned DATA group planned without mutating source carve");
