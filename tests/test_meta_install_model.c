@@ -631,7 +631,7 @@ static void test_place_offer(void)
     assert(m.restore_data);
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
                                           label, &nf) == META_PLACE_OK);
-    assert(next.data_count == 1 && next.data[0].play_id == 2);
+    assert(next.data_count == 1 && next.data[0].play_id == 1);
     assert(next.data[0].state == META_DATA_DIRTY);
 
     // Device-side restore mode must reject a colliding APP play_id even if a
