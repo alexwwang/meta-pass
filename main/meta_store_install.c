@@ -2089,7 +2089,8 @@ static esp_err_t h_install_slot_read(httpd_req_t *req)
     const meta_carve_slot_t *match = NULL;
     for (uint8_t i = 0; i < carve->count; i++) {
         const meta_carve_slot_t *slot = &carve->slot[i];
-        if (slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP) {
+        if (slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP &&
+            slot->state != META_SLOT_EMPTY) {
             if (match) return reply(req, "409 Conflict", "ambiguous APP identity");
             match = slot;
         }
