@@ -43,7 +43,7 @@ console.log("PASS 2: v1, missing, truncated and corrupted payloads rejected");
 
 // Ownership and path safety are logical identifiers, not source Flash addresses.
 assert.throws(() => buildDataArchiveManifest({
-  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [] }],
+  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [{ name: appPath, bytes: app.length, sha256: digest(app), type: "app" }] }],
   data: [{ play_id: 999, label: "cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) }],
 }), /no matching APP payload/);
 assert.throws(() => buildDataArchiveManifest({
@@ -51,14 +51,14 @@ assert.throws(() => buildDataArchiveManifest({
   data: [{ play_id: 123, label: "cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) }],
 }), /no matching APP payload/);
 assert.throws(() => buildDataArchiveManifest({
-  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [] }],
+  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [{ name: appPath, bytes: app.length, sha256: digest(app), type: "app" }] }],
   data: [
     { play_id: 123, label: "cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) },
     { play_id: 123, label: "cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) },
   ],
 }), /duplicate DATA ownership key/);
 assert.throws(() => buildDataArchiveManifest({
-  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [] }],
+  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [{ name: appPath, bytes: app.length, sha256: digest(app), type: "app" }] }],
   data: [{ play_id: 123, label: "../cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) }],
 }), /invalid DATA label/);
 assert.throws(() => validateDataArchiveManifest({
