@@ -45,7 +45,11 @@ console.log("PASS 2: v1, missing, truncated and corrupted payloads rejected");
 assert.throws(() => buildDataArchiveManifest({
   slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [] }],
   data: [{ play_id: 999, label: "cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) }],
-}), /no matching APP play_id/);
+}), /no matching APP payload/);
+assert.throws(() => buildDataArchiveManifest({
+  slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [{ name: "notes.txt", bytes: 4, sha256: digest(data) }] }],
+  data: [{ play_id: 123, label: "cfg", type: 1, subtype: 64, state: 1, bytes: 4, sha256: digest(data) }],
+}), /no matching APP payload/);
 assert.throws(() => buildDataArchiveManifest({
   slots: [{ play_id: 123, source_slot: 0, name: "demo", files: [] }],
   data: [
