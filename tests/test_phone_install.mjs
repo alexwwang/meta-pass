@@ -992,13 +992,14 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   assert.equal(meta.ok, true, JSON.stringify(meta));
   const info = phone.parseSlots(JSON.stringify({ count: 3, free: 1000000, slots: [
     { slot: 0, state: "valid", name: "a", size: 0x1d6000, len: 100,
-      limit: 0x1d5000, offset: 0x180000, kind: "app" },
+      limit: 0x1d5000, offset: 0x180000, kind: "app", play_id: 123 },
     { slot: 1, state: "empty", name: "", size: 0x200000, len: 0,
       limit: 0x1ff000, offset: 0x360000, kind: "app" },
     { slot: 2, state: "empty", name: "", size: 0x29e000, len: 0,
       limit: 0x29d000, offset: 0x560000, kind: "app" },
   ] }));
   assert.ok(info);
+  assert.equal(info.slots[0].play_id, 123, "mobile slot listing must preserve stable APP ownership");
   const geom = dyn.geomFromListing(info, APP.length);
   assert.equal(geom.proposal, null);            // legacy 全占,无处新建
   assert.equal(geom.suggestedSlot, 1);          // 建议 = 首个 empty(占用槽不再可装)
