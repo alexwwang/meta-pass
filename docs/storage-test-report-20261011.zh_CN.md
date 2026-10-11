@@ -9,7 +9,7 @@
 **最终 commit**:`f708a2f`(被测固件对应工作树一致;烧录的 app 构建于 `60fc73c`,之后两个 commit 仅文档)
 **固件**:本地 ESP-IDF 5.5.3 构建,叠加 `CONFIG_META_E2E_TEST_CONTROL=y`(`sdkconfig.defaults` + `sdkconfig.e2e-test.defaults`)
 **固件 SHA-256**:`3e7ae68a4b138b59ed2d465eac46651f76c3fc6008a65c93c50748d945e05f89`(1,133,184 字节,app 镜像位于 0x10000;设备上版本串 `v2.1.0-668-g115efd9-dirty`)
-**设备**:专用测试机,192.168.0.24(STA),串口 `/dev/tty.usbmodem142401`,机上无需要保留的用户数据
+**设备**:专用测试机(网络地址与本机串口标识不公开),机上无需要保留的用户数据
 **Handoff**:[mobile-page-storage-local-test-handoff](assets/mobile-page-storage-local-test-handoff.zh_CN.md),基线 `8259c37`
 **原始证据**:`tools/realdevice/logs/mobile-page-e2e-2026-10-11T04-21-15-137Z/`(最佳一轮;更早轮次见同级时间戳目录)
 
@@ -33,10 +33,10 @@ node tools/realdevice/mobile_page_browser_smoke.mjs \
 # session token 由测试专用串口通道无人值守协商:
 #   E2E SESSION_RESET  ->  串口输出 "pair ready: code=… token=…"
 
-META_PASS_E2E_SERIAL_PORT=/dev/tty.usbmodem142401 \
+META_PASS_E2E_SERIAL_PORT=<launcher-serial-port> \
 META_PASS_SESSION=<串口取得的 token> \
 node tools/realdevice/mobile_page_e2e.mjs --real-device \
-  --url 'http://192.168.0.24/?mp_test_data_profile=play28-recordings-3m#s=<token>' \
+  --url 'http://<device-host>/?mp_test_data_profile=play28-recordings-3m#s=<token>' \
   --runtime-driver tools/realdevice/mobile_page_runtime_driver.py \
   --require-data-reservation --play-a 28 --play-b 582
 ```
