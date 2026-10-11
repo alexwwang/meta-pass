@@ -51,6 +51,10 @@ remove_end = usb_page.index("// mock 连接", remove_start)
 remove_action = usb_page[remove_start:remove_end]
 assert remove_action.index("commitCarve(rm.carve") < remove_action.index("wipeRange(d.offset, d.size)"), "USB deletion must commit lifecycle metadata before erasing owned DATA bytes"
 assert "slot.playId" in remove_action and "ownedData" in remove_action, "USB deletion must resolve DATA ownership by playId, not slot index"
+assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
+assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
+assert "await writeDataPayload(dataImage, dataImage)" in usb_page, "USB DATA payload must be written and read-back verified before commit"
+assert "commitCarve(nextCarve, { materialize: deferredDataInstall })" in usb_page, "DATA-bearing APP install must commit APP+DATA as one carve/table transaction"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
 assert "USB Serial/JTAG" in doc and "尚未在 ESP-IDF 环境编译" in doc, "document hardware validation limitation"
