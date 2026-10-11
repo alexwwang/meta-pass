@@ -90,8 +90,8 @@ slots_end = install_net.index("static esp_err_t h_install_remove(httpd_req_t *re
 slots_handler = install_net[slots_start:slots_end]
 assert "remove_recovery_gate(&recovered_remove)" in slots_handler, "slot listing must not expose stale state during uninstall recovery"
 assert "cannot uninstall during an install session" in install_net, "uninstall must not race an active install session"
-gate_start = install_net.index("static esp_err_t remove_recovery_gate(bool *did_recover)\\n{")
-gate_end = install_net.index("static esp_err_t remove_recover_pending(bool *did_recover)\\n{", gate_start)
+gate_start = install_net.index("static esp_err_t remove_recovery_gate(bool *did_recover)\n{")
+gate_end = install_net.index("static esp_err_t remove_recover_pending(bool *did_recover)\n{", gate_start)
 gate_handler = install_net[gate_start:gate_end]
 assert "if (!s_remove_recovery_needed)" in gate_handler and "return ESP_OK;" in gate_handler, "steady-state DATA chunk reads must not reopen NVS for each 4 KiB request"
 assert "if (e != ESP_OK) return e;" in install_net[install_net.index("static esp_err_t remove_recover_pending"):install_net.index("// POST /api/install/remove")], "failed cleanup must keep durable intent pending"
