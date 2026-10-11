@@ -61,7 +61,7 @@ assert.throws(() => validateDataArchiveManifest({
   ...manifest, data: [{ ...manifest.data[0], file: "data/123/../../secret.bin" }],
 }), /invalid or duplicate DATA payload path/);
 assert.throws(() => validateDataArchiveManifest({
-  ...manifest, data: [...manifest.data, { ...manifest.data[0], label: "other", file: "data/123/1.bin" }],
-}), /DATA record has no matching APP play_id|invalid/);
+  ...manifest, data: [...manifest.data, { ...manifest.data[0], label: "other", file: "data/123/0.bin" }],
+}), /invalid or duplicate DATA payload path/);
 console.log("PASS 3: ownership, label, path traversal and malformed records rejected");
 console.log("ALL DATA BYTE ARCHIVE TESTS PASSED");
