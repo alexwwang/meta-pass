@@ -192,7 +192,7 @@ PY
         python3 - "$repo_root/install-slot/install-slot.html" "$test_dir/install-slot-page.mjs" <<'USB_PAGE'
 import re, sys
 html = open(sys.argv[1], encoding="utf-8").read()
-modules = re.findall(r'<script type="module">\\s*(.*?)\\s*</script>', html, re.S)
+modules = re.findall(r'<script type="module">\s*(.*?)\s*</script>', html, re.S)
 if len(modules) != 1:
     raise SystemExit(f"expected exactly one inline USB page module, found {len(modules)}")
 open(sys.argv[2], "w", encoding="utf-8").write(modules[0])
