@@ -2207,8 +2207,9 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         if (j) off += snprintf(resp + off, sizeof(resp) - off, ",");
         off += snprintf(resp + off, sizeof(resp) - off,
             "{\"play_id\":%" PRIu32 ",\"offset\":%" PRIu32
-            ",\"size\":%" PRIu32 ",\"state\":%u,\"label\":\"%s\"}",
-            d->play_id, d->offset, d->size, (unsigned)d->state, label_esc);
+            ",\"size\":%" PRIu32 ",\"state\":%u,\"type\":%u,\"subtype\":%u,\"label\":\"%s\"}",
+            d->play_id, d->offset, d->size, (unsigned)d->state,
+            (unsigned)d->type, (unsigned)d->subtype, label_esc);
     }
     off += snprintf(resp + off, sizeof(resp) - off, "]}");
     httpd_resp_set_type(req, "application/json");
