@@ -50,8 +50,11 @@
 #include "meta_carve_flash.h"
 
 static const char *TAG = "install_local";
+/* Fast-path latch: after boot, inspect durable uninstall intent once; avoid NVS I/O on every 4 KiB archive read. */
+static volatile bool s_remove_recovery_needed = true;
 
 static esp_err_t remove_recover_pending(bool *did_recover);
+static esp_err_t remove_recovery_gate(bool *did_recover);
 
 // ---- 常量 ----
 
@@ -1616,7 +1619,7 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
     bool recovered_remove = false;
-    const esp_err_t remove_recovery = remove_recover_pending(&recovered_remove);
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
     if (remove_recovery != ESP_OK) {
         return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
     }
@@ -2021,7 +2024,7 @@ static esp_err_t h_install_data_read(httpd_req_t *req)
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
 
     bool recovered_remove = false;
-    const esp_err_t remove_recovery = remove_recover_pending(&recovered_remove);
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
     if (remove_recovery != ESP_OK) {
         return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
     }
@@ -2088,7 +2091,7 @@ static esp_err_t h_install_slot_read(httpd_req_t *req)
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
 
     bool recovered_remove = false;
-    const esp_err_t remove_recovery = remove_recover_pending(&recovered_remove);
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
     if (remove_recovery != ESP_OK) {
         return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
     }
@@ -2172,7 +2175,7 @@ static esp_err_t h_install_slots(httpd_req_t *req)
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
     bool recovered_remove = false;
-    const esp_err_t remove_recovery = remove_recover_pending(&recovered_remove);
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
     if (remove_recovery != ESP_OK) {
         return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
     }
@@ -2353,6 +2356,7 @@ static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
     if (e == ESP_OK) e = nvs_set_u8(nvs, "active", 1);
     if (e == ESP_OK) e = nvs_commit(nvs);
     nvs_close(nvs);
+    if (e == ESP_OK) s_remove_recovery_needed = true;
     return e;
 }
 
@@ -2407,6 +2411,7 @@ static esp_err_t remove_intent_clear(void)
     e = nvs_set_u8(nvs, "active", 0);
     if (e == ESP_OK) e = nvs_commit(nvs);
     nvs_close(nvs);
+    if (e == ESP_OK) s_remove_recovery_needed = false;
     return e;
 }
 
@@ -2464,6 +2469,16 @@ static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
     return first_error;
 }
 
+static esp_err_t remove_recovery_gate(bool *did_recover)
+{
+    if (!s_remove_recovery_needed) {
+        if (did_recover) *did_recover = false;
+        return ESP_OK;
+    }
+    const esp_err_t e = remove_recover_pending(did_recover);
+    if (e == ESP_OK) s_remove_recovery_needed = false;
+    return e;
+}
 static esp_err_t remove_recover_pending(bool *did_recover)
 {
     if (did_recover) *did_recover = false;
@@ -2522,7 +2537,7 @@ static esp_err_t h_install_remove(httpd_req_t *req)
         return reply(req, "400 Bad Request", "invalid remove request");
     }
     bool recovered = false;
-    const esp_err_t recovery = remove_recover_pending(&recovered);
+    const esp_err_t recovery = remove_recovery_gate(&recovered);
     if (recovery != ESP_OK) {
         return reply(req, "500 Internal Server Error", "previous uninstall recovery failed; retry");
     }
