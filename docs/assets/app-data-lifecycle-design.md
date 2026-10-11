@@ -31,7 +31,7 @@ Uninstall is irreversible cascade deletion. The UI exposes one action: “Delete
 Recommended state machine:
 
 1. **PRECHECK**: reject concurrent install/restore sessions; enumerate the APP and all associated DATA; validate records and pool bounds.
-2. **BACKUP NOTICE**: if real byte-level backup is unavailable, clearly state that data cannot currently be backed up. Metadata-only export is not a backup. Require explicit confirmation of permanent deletion.
+2. **BACKUP NOTICE**: byte-level APP/DATA export now exists, but import/restore is not implemented. Tell users that a ZIP can preserve actual bytes but cannot yet be restored through the product; require explicit confirmation of permanent deletion.
 3. **DELETE_INTENT**: persist and verify a transaction record containing target APP, DATA extents, transaction ID, and stage before destructive operations.
 4. **ERASE DATA**: erase each associated DATA extent and verify it. Persist progress so reboot recovery can resume.
 5. **ERASE APP HEADER**: erase the APP image header sector so boot-time scanning cannot resurrect the deleted APP.
@@ -61,7 +61,7 @@ A complete backup contains actual DATA bytes, not just offset/size/state/label m
 
 The archive must not depend on source slot numbers or Flash offsets. Restore validates the archive, allocates fresh extents, writes and verifies every object, and only then commits DATA records. Failed restore releases uncommitted extents. The target APP and format compatibility must be explicit.
 
-**Implementation boundary:** the current `backup-data.js` / `meta_backup.h` path must be treated as incomplete unless actual DATA bytes are included. Until byte-level backup is implemented, UI must warn that uninstall permanently deletes data and must not claim backup/restore is available.
+**Implementation boundary:** USB and mobile pages now export actual APP-slot and owned DATA bytes with SHA-256 validation into MPTB v2 ZIPs. Import/restore and the atomic staged write transaction are still missing. UI must not imply that an exported archive is currently restorable.
 
 ## 6. Safety invariants
 
@@ -81,5 +81,5 @@ The archive must not depend on source slot numbers or Flash offsets. Restore val
 5. Interrupted uninstall recovers idempotently after reboot; deleted APP is not resurrected by image scanning.
 6. Other APPs and their DATA bytes/records remain unchanged.
 7. Every new install receives a fresh carve; old data is restored only from a complete backup.
-8. Until byte-level backup exists, UI warns of permanent data loss.
+8. Until archive restore exists, UI warns that export preserves bytes but cannot yet restore them in-product.
 9. Host tests cover normal uninstall, multiple DATA labels, erase/commit failure, repeated recovery, and record/extent consistency. Real-device evidence is tracked separately.
