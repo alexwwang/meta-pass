@@ -186,9 +186,10 @@ export async function readDataReservation(bridge, record, {
   maxBytes = 32 * 1024 * 1024,
 } = {}) {
   if (!bridge || typeof bridge.dataRead !== "function") fail("mobile DATA read bridge is required");
+  const size = record && Number.isSafeInteger(record.bytes) ? record.bytes : record?.size;
   if (!record || !Number.isSafeInteger(record.play_id) || record.play_id <= 0 ||
-      !safeLabel(record.label) || !Number.isSafeInteger(record.bytes) ||
-      record.bytes <= 0 || record.bytes > maxBytes) {
+      !safeLabel(record.label) || !Number.isSafeInteger(size) ||
+      size <= 0 || size > maxBytes) {
     fail("invalid DATA reservation identity or size");
   }
   if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 4096) {
@@ -196,9 +197,9 @@ export async function readDataReservation(bridge, record, {
   }
   if (typeof sha256Hex !== "function") fail("SHA-256 implementation is required");
 
-  const bytes = new Uint8Array(record.bytes);
-  for (let offset = 0; offset < record.bytes; offset += chunkSize) {
-    const length = Math.min(chunkSize, record.bytes - offset);
+  const bytes = new Uint8Array(size);
+  for (let offset = 0; offset < size; offset += chunkSize) {
+    const length = Math.min(chunkSize, size - offset);
     const result = await bridge.dataRead(record.play_id, record.label, offset, length);
     if (!result || !result.ok || !(result.bytes instanceof Uint8Array) ||
         result.bytes.byteLength !== length) {
@@ -207,7 +208,7 @@ export async function readDataReservation(bridge, record, {
         (result && result.text ? result.text : "invalid binary response"));
     }
     bytes.set(result.bytes, offset);
-    onProgress({ play_id: record.play_id, label: record.label, completed: offset + length, total: record.bytes });
+    onProgress({ play_id: record.play_id, label: record.label, completed: offset + length, total: size });
   }
   const sha256 = await sha256Hex(bytes);
   if (typeof sha256 !== "string" || !SHA256_RE.test(sha256)) fail("SHA-256 implementation returned an invalid digest");
