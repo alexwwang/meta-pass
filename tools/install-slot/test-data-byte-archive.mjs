@@ -8,6 +8,8 @@ import {
   validateDataArchiveManifest,
   validateDataArchivePayloads,
   readDataReservation,
+  readAppSlotReservation,
+  buildDataArchiveZip,
 } from "../../install-slot/data-byte-archive.js";
 
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -94,4 +96,43 @@ assert.throws(() => validateDataArchiveManifest({
   ...manifest, data: [...manifest.data, { ...manifest.data[0], label: "other", file: "data/123/0.bin" }],
 }), /invalid or duplicate DATA payload path/);
 console.log("PASS 3: ownership, label, path traversal and malformed records rejected");
+// PRISTINE reservations are also archived: they contain real bytes (usually erased 0xFF)
+// and preserve the reservation identity/size needed for a complete future restore.
+const pristineManifest = buildDataArchiveManifest({
+  createdUtc: "2026-10-11T00:00:00.000Z",
+  slots: [{ play_id: 321, source_slot: 2, name: "fresh", files: [
+    { name: "slot2_raw.bin", bytes: app.length, sha256: digest(app), type: "raw" },
+  ] }],
+  data: [{ play_id: 321, label: "cfg", type: 1, subtype: 64, state: 0, bytes: data.length, sha256: digest(data) }],
+});
+assert.equal(pristineManifest.data[0].state, 0);
+console.log("PASS 4: PRISTINE DATA reservation identity is retained in byte archives");
+
+// APP slot bytes use the same relative, bounded chunk contract as DATA bytes.
+const appCalls = [];
+const appRead = await readAppSlotReservation({
+  async slotRead(playId, offset, length) {
+    appCalls.push({ playId, offset, length });
+    return { ok: true, status: 200, bytes: app.slice(offset, offset + length) };
+  },
+}, { play_id: 123, size: app.length }, {
+  chunkSize: 2, sha256Hex: async (bytes) => digest(bytes),
+});
+assert.deepEqual([...appRead.bytes], [...app]);
+assert.equal(appRead.sha256, digest(app));
+assert.deepEqual(appCalls.map((x) => [x.offset, x.length]), [[0, 2], [2, 2]]);
+await assert.rejects(() => readAppSlotReservation({
+  async slotRead() { return { ok: false, status: 416, text: "out of bounds" }; },
+}, { play_id: 123, size: 4 }, { sha256Hex: async (bytes) => digest(bytes) }), /APP read failed/);
+console.log("PASS 5: APP slot archive reader validates bounded chunks and full-content digest");
+
+const zip = buildDataArchiveZip([
+  { name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(pristineManifest)) },
+  { name: "data/321/0.bin", data },
+]);
+assert.equal(new DataView(zip.buffer, zip.byteOffset, zip.byteLength).getUint32(0, true), 0x04034b50);
+assert.equal(new DataView(zip.buffer, zip.byteOffset, zip.byteLength).getUint32(zip.length - 22, true), 0x06054b50);
+assert.throws(() => buildDataArchiveZip([{ name: "../escape", data }]), /invalid or duplicate ZIP entry/);
+console.log("PASS 6: shared ZIP writer emits valid local/central directory signatures and rejects unsafe paths");
+
 console.log("ALL DATA BYTE ARCHIVE TESTS PASSED");
