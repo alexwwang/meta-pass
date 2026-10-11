@@ -634,6 +634,15 @@ static void test_place_offer(void)
     assert(next.data_count == 1 && next.data[0].play_id == 2);
     assert(next.data[0].state == META_DATA_DIRTY);
 
+    // Device-side restore mode must reject a colliding APP play_id even if a
+    // client bypasses the UI's preflight collision check.
+    meta_carve_t collision;
+    memset(&collision, 0, sizeof(collision));
+    assert(meta_carve_place(&collision, 0x20000, META_CARVE_KIND_APP, &collision) == 0);
+    collision.slot[0].play_id = 1;
+    assert(meta_install_model_place_offer(&m, &collision, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_REJECTED);
+
     // 纯槽位、无数据 → OK。
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
                              "\"carveOffset\":1572864,\"carveSize\":131072,", 0));
