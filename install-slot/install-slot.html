@@ -190,7 +190,7 @@
 
   <section>
     <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">Backs up the selected slots to a verified zip file on this computer.</p>
+    <p class="subtitle" data-i18n="backup_desc">Backs up selected APP images and owned DATA bytes when dynslot ownership metadata is available; legacy layouts remain APP-only.</p>
     <p>
       <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
       <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restores a backup zip onto the device slots, with automatic space and integrity checks.</p>
+    <p class="subtitle" data-i18n="restore_desc">Restores APP images only. DATA bytes in v2 archives are not restored yet.</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
@@ -217,7 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
-    <p class="hint" data-i18n="data_backup_unavailable">DATA byte-level backup/restore is not supported yet. Removing an APP also deletes its owned DATA; do not uninstall if you need to preserve that data.</p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB dynslot backups can include verified DATA bytes, but restoring DATA bytes is not implemented yet. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
