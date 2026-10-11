@@ -2010,6 +2010,11 @@ static esp_err_t h_install_data_read(httpd_req_t *req)
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
 
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "APP/DATA read unavailable during installation");
+
     char pid_str[16], label[META_DATA_LABEL_MAX + 1] = {0};
     char off_str[16], len_str[16];
     uint32_t play_id = 0, offset = 0, length = 0;
@@ -2062,6 +2067,11 @@ static esp_err_t h_install_slot_read(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "APP/DATA read unavailable during installation");
 
     char pid_str[16], off_str[16], len_str[16];
     uint32_t play_id = 0, offset = 0, length = 0;
