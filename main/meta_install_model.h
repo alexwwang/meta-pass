@@ -44,6 +44,7 @@ typedef struct {
     // carveOffset/carveSize 必须成对出现;缺省 = 无提案(复用现有槽)。
     // 设备用 meta_install_model_carve_ok 重跑分配器拒绝几何分歧(L4)。
     bool     has_carve;
+    bool     restore_data;                       // true = imported user DATA must be DIRTY, never reclaimable as pristine
     uint32_t carve_offset;                      // 提案槽偏移(64KB 对齐,由分配器复核)
     uint32_t carve_size;                        // 提案槽尺寸(必须 = meta_carve_need(image_len))
     uint8_t  slots_count;                       // 下方 slots 长度(1..META_SLOT_COUNT)
