@@ -354,6 +354,27 @@ const emptySlot = (offset, size, extra = {}) => ({
   assert.equal(rec.placeNewSlot({ slots: [], data: [] }, 0x1f000), null, "below minSlot");
   assert.equal(rec.placeNewSlot({ slots: [], data: [] }, 0x20001), null, "granule");
   assert.equal(rec.placeNewSlot({ slots: [], data: [] }, 0x20000 + 1), null, "granule 2");
+  // DATA allocator shares the same APP+DATA occupancy scan and 64 KiB offset alignment.
+  let dp = rec.placeNewData({ slots: [], data: [] }, 0x1000);
+  assert.deepEqual(dp, { offset: 0x180000, size: 0x1000 }, "minimum 4 KiB DATA fits at pool start");
+  dp = rec.placeNewData({
+    slots: [emptySlot(0x180000, 0x20000)],
+    data: [],
+  }, 0x10000);
+  assert.deepEqual(dp, { offset: 0x1a0000, size: 0x10000 }, "DATA avoids existing APP extent");
+  dp = rec.placeNewData({
+    slots: [],
+    data: [{ playId: 42, offset: 0x180000, size: 0x10000, state: 0, subtype: 0x40, type: 1, label: "e2edata" }],
+  }, 0x10000);
+  assert.deepEqual(dp, { offset: 0x190000, size: 0x10000 }, "DATA avoids existing DATA extent");
+  assert.equal(rec.placeNewData({ slots: [], data: [] }, 0xfff), null, "DATA below 4 KiB rejected");
+  assert.equal(rec.placeNewData({ slots: [], data: [] }, 0x1001), null, "DATA not 4 KiB granular rejected");
+  const eightData = { slots: [], data: Array.from({ length: 8 }, (_, i) => ({
+    playId: i + 1, offset: 0x180000 + i * 0x10000, size: 0x10000,
+    state: 0, subtype: 0x40 + i, type: 1, label: `data${i}`,
+  })) };
+  assert.equal(rec.placeNewData(eightData, 0x10000), null, "DATA record count cap enforced");
+  console.log("PASS 8a: placeNewData (shared occupancy / 4 KiB minimum / 64 KiB offset / cap)");
   console.log("PASS 8: placeNewSlot (first-fit / data avoidance / caps / device slot-count rule)");
 }
 
