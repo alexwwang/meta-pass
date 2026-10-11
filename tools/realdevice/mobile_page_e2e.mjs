@@ -286,8 +286,12 @@ function requireSafeStorageState(listing, label) {
 }
 
 function assertIdle(status, label) {
-  const ok = status.protocol === 1 && !status.active && !status.session && !status.offer && !status.confirmed;
-  record(label + ": installer idle", ok, `protocol=${status.protocol}; active=${Boolean(status.active)}; session=${Boolean(status.session)}`);
+  // "空闲" = 无在途 offer/confirmed/session(upload);active 是"店内会话存活"
+  // 标志(进店 token_start 置位、离店 token_stop 清除),手机页带 token 工作时
+  // 它恒为 true,不能作为空闲判据(首次真机运行实证:c442c75 的 !active
+  // 条件在现有固件下不可满足)。
+  const ok = status.protocol === 1 && !status.session && !status.offer && !status.confirmed;
+  record(label + ": installer idle", ok, `protocol=${status.protocol}; active=${Boolean(status.active)}; session=${Boolean(status.session)}; offer=${Boolean(status.offer)}; confirmed=${Boolean(status.confirmed)}`);
   return ok;
 }
 async function waitFor(fn, label, ms = timeout) {

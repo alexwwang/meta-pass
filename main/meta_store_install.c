@@ -1547,6 +1547,15 @@ static esp_err_t h_install_pair(httpd_req_t *req)
     return httpd_resp_sendstr(req, out);
 }
 
+// GET /favicon.ico —— 浏览器自动请求;真机 E2E 的 console 噪声检查把 404
+// 记为错误,204 空响应消掉噪声(无任何状态/副作用)。
+static esp_err_t h_favicon(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 // GET /api/install/status —— loader 兼容性握手(protocol)与轮询快照。
 static esp_err_t h_install_status(httpd_req_t *req)
 {
@@ -2331,7 +2340,9 @@ esp_err_t meta_install_net_start(void)
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
+    hcfg.max_uri_handlers = 16;    // / + pair/status/prepare/session/chunk/data/finalize/cancel
+                                   // + remove/backup-import/slots/favicon(真机 2026-10-11:
+                                   // 13 > 12 时末位注册失败会令整个 install 服务启动失败)
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
@@ -2362,6 +2373,7 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
         { "/api/backup/import",   HTTP_POST, h_backup_import,   NULL },
         { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
+        { "/favicon.ico",         HTTP_GET,  h_favicon,         NULL },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {

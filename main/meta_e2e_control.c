@@ -17,6 +17,7 @@
 #include "meta_carve_flash.h"
 #include "meta_store.h"
 #include "meta_slots.h"
+#include "meta_store_install.h"
 
 static const char *TAG = "meta_e2e";
 static meta_slot_info_t *s_slots;
@@ -140,6 +141,20 @@ static void handle_command(char *line)
         fflush(stdout);
         vTaskDelay(pdMS_TO_TICKS(150));
         esp_restart();
+        return;
+    }
+    if (strcmp(line, "E2E SESSION_RESET") == 0) {
+        // 测试通道专用:远程兑换入口。token_stop 作废并擦除持久化 token,
+        // token_start 重新生成并打 UART("pair ready: code=... token=..."),
+        // 免读屏完成自动化取 token —— 与 token_generate 的 UART 日志设计意图一致。
+        // 仅限 CONFIG_META_E2E_TEST_CONTROL 构建;生产无此通道。
+        meta_install_token_stop();
+        if (meta_install_token_start() != ESP_OK) {
+            response_error("SESSION_RESET_FAILED");
+            return;
+        }
+        printf("{\"ok\":true,\"command\":\"SESSION_RESET\"}\n");
+        fflush(stdout);
         return;
     }
     response_error("UNKNOWN_COMMAND");
