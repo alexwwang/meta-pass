@@ -614,6 +614,21 @@ static void test_place_offer(void)
     assert(next.data[0].play_id == 1 && next.data[0].state == META_DATA_PRISTINE);
     assert(next.data[0].subtype == 130);
     assert(strcmp(next.data[0].label, "rec") == 0);
+
+    // Restore mode marks newly allocated DATA as user-owned in the same carve
+    // commit, so the PRISTINE reclamation policy can never discard imported bytes.
+    assert(build_carve_offer(js, sizeof(js), 0x1F000,
+        "\\"carveOffset\\":1572864,\\"carveSize\\":131072,\\"restoreData\\":true,"
+        "\\"data\\":[{\\"playId\\":2,\\"size\\":4096,\\"initialImageSize\\":4096,"
+        "\\"subtype\\":130,\\"sha256\\":\\"0000000000000000000000000000000000000000000000000000000000000000\\","
+        "\\"label\\":\\"restored\\"}],", 0));
+    assert(meta_install_model_parse(js, strlen(js), &m));
+    assert(m.restore_data);
+    assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
+                                          label, &nf) == META_PLACE_OK);
+    assert(next.data_count == 1 && next.data[0].play_id == 2);
+    assert(next.data[0].state == META_DATA_DIRTY);
+
     // 数据 first-fit 落在槽位之后(pool_0 先填):rec 紧邻槽尾(0x1A0000);
     // 数据偏移按 META_CARVE_OFFSET_ALIGN(64KB)对齐 → cfg 跳到下一 64KB 界。
     assert(next.data[0].offset == 0x1A0000);
