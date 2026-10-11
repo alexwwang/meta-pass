@@ -28,9 +28,17 @@ if (!args["real-device"]) {
   console.error("Refusing to mutate hardware: pass --real-device explicitly.");
   process.exit(2);
 }
-const playA = String(args["play-a"] || process.env.MOBILE_E2E_PLAY_A || "1");
-const playB = String(args["play-b"] || process.env.MOBILE_E2E_PLAY_B || "2");
+const playA = String(args["play-a"] || process.env.MOBILE_E2E_PLAY_A || "");
+const playB = String(args["play-b"] || process.env.MOBILE_E2E_PLAY_B || "");
 const requireDataReservation = Boolean(args["require-data-reservation"]);
+if (!/^\d+$/.test(playA) || !/^\d+$/.test(playB) || playA === playB) {
+  console.error("Provide two distinct dedicated test play IDs via --play-a/--play-b or MOBILE_E2E_PLAY_A/MOBILE_E2E_PLAY_B; there are no default IDs.");
+  process.exit(2);
+}
+if (!requireDataReservation) {
+  console.error("Pass --require-data-reservation; storage E2E must verify child DATA reservation creation and release.");
+  process.exit(2);
+}
 const runtimeDriver = String(args["runtime-driver"] || process.env.MOBILE_E2E_RUNTIME_DRIVER || "");
 const manualAssist = Boolean(args["manual-assist"]);
 if (!runtimeDriver && !manualAssist) {
@@ -88,8 +96,8 @@ const viewportMatrix = String(args.viewports || "320x720,360x800,390x844,430x932
 const timeout = Number(args.timeout || process.env.MOBILE_E2E_TIMEOUT_MS || 600000);
 const cdpUrl = String(args["cdp-url"] || process.env.MOBILE_E2E_CDP_URL || "http://127.0.0.1:9222");
 const logDir = path.resolve(String(args.logdir || path.join(LOGROOT, "mobile-page-e2e-" + new Date().toISOString().replace(/[:.]/g, "-"))));
-if (!urlArg || !/^\d+$/.test(playA) || !/^\d+$/.test(playB) || playA === playB) {
-  console.error("Usage: node tools/realdevice/mobile_page_e2e.mjs --real-device --url http://<device-ip>/ (--runtime-driver <path> | --manual-assist) [--token <32hex>] [--play-a 1] [--play-b 2]");
+if (!urlArg) {
+  console.error("Usage: node tools/realdevice/mobile_page_e2e.mjs --real-device --url http://<device-ip>/ (--runtime-driver <path> | --manual-assist) --require-data-reservation --play-a <dedicated-test-play-id-a> --play-b <dedicated-test-play-id-b> [--token <32hex>]");
   process.exit(2);
 }
 let target;
