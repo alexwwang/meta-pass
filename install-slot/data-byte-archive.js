@@ -151,6 +151,9 @@ export function validateDataArchiveManifest(manifest) {
     }
     seenNames.add(record.file);
   });
+  if (manifest.nvs != null) {
+    validateFileRecord({ name: manifest.nvs.file, bytes: manifest.nvs.bytes, sha256: manifest.nvs.sha256 }, seenNames);
+  }
   return manifest;
 }
 
@@ -163,6 +166,7 @@ export async function validateDataArchivePayloads(manifest, fileBytes, sha256Hex
   const records = [
     ...manifest.slots.flatMap((slot) => slot.files),
     ...manifest.data.map((d) => ({ name: d.file, bytes: d.bytes, sha256: d.sha256 })),
+    ...(manifest.nvs ? [{ name: manifest.nvs.file, bytes: manifest.nvs.bytes, sha256: manifest.nvs.sha256 }] : []),
   ];
   for (const record of records) {
     const bytes = get(record.name);
