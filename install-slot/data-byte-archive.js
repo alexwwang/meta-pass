@@ -323,3 +323,72 @@ export function buildDataArchiveZip(entries) {
   for (const part of chunks) { zip.set(part, cursor); cursor += part.length; }
   return zip;
 }
+
+export function readDataArchiveZip(input, {
+  maxArchiveBytes = 64 * 1024 * 1024,
+  maxEntries = 128,
+  maxEntryBytes = 32 * 1024 * 1024,
+} = {}) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  if (bytes.byteLength < 22 || bytes.byteLength > maxArchiveBytes) fail("ZIP archive size is outside the allowed range");
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const u8 = bytes;
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65535); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0 || eocd + 22 > bytes.length) fail("ZIP end record missing");
+  const disk = view.getUint16(eocd + 4, true);
+  const centralDisk = view.getUint16(eocd + 6, true);
+  const countDisk = view.getUint16(eocd + 8, true);
+  const count = view.getUint16(eocd + 10, true);
+  const centralSize = view.getUint32(eocd + 12, true);
+  const centralOffset = view.getUint32(eocd + 16, true);
+  const commentLength = view.getUint16(eocd + 20, true);
+  if (disk !== 0 || centralDisk !== 0 || countDisk !== count ||
+      count < 1 || count > maxEntries || eocd + 22 + commentLength !== bytes.length ||
+      centralOffset + centralSize !== eocd) fail("unsupported or malformed ZIP directory");
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const entries = new Map();
+  let cursor = centralOffset;
+  let totalPayloadBytes = 0;
+  for (let i = 0; i < count; i++) {
+    if (cursor + 46 > eocd || view.getUint32(cursor, true) !== 0x02014b50) fail("invalid ZIP central entry");
+    const flags = view.getUint16(cursor + 8, true);
+    const method = view.getUint16(cursor + 10, true);
+    const crc = view.getUint32(cursor + 16, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const size = view.getUint32(cursor + 24, true);
+    const nameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLen = view.getUint16(cursor + 32, true);
+    const localOffset = view.getUint32(cursor + 42, true);
+    const recordEnd = cursor + 46 + nameLength + extraLength + commentLen;
+    if (recordEnd > eocd || flags & 0x0001 || flags & 0x0040 || method !== 0 ||
+        compressedSize !== size || size > maxEntryBytes) fail("unsupported ZIP entry flags/compression/size");
+    const name = decoder.decode(u8.subarray(cursor + 46, cursor + 46 + nameLength));
+    if (!safeFileName(name) || entries.has(name)) fail("unsafe or duplicate ZIP path");
+    if (localOffset + 30 > centralOffset || view.getUint32(localOffset, true) !== 0x04034b50) fail("invalid ZIP local header");
+    const localFlags = view.getUint16(localOffset + 6, true);
+    const localMethod = view.getUint16(localOffset + 8, true);
+    const localCrc = view.getUint32(localOffset + 14, true);
+    const localSize = view.getUint32(localOffset + 18, true);
+    const localCompressed = view.getUint32(localOffset + 22, true);
+    const localNameLen = view.getUint16(localOffset + 26, true);
+    const localExtraLen = view.getUint16(localOffset + 28, true);
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+    const dataEnd = dataStart + size;
+    const localName = decoder.decode(u8.subarray(localOffset + 30, localOffset + 30 + localNameLen));
+    if (localFlags !== flags || localMethod !== method || localCrc !== crc ||
+        localSize !== size || localCompressed !== compressedSize || localName !== name ||
+        dataStart < localOffset || dataEnd > centralOffset) fail("ZIP local/central metadata mismatch");
+    const payload = u8.slice(dataStart, dataEnd);
+    if (zipCrc32(payload) !== crc) fail("ZIP CRC mismatch: " + name);
+    entries.set(name, payload);
+    totalPayloadBytes += size;
+    if (totalPayloadBytes > maxArchiveBytes) fail("ZIP uncompressed payload exceeds limit");
+    cursor = recordEnd;
+  }
+  if (cursor !== eocd) fail("ZIP central directory length mismatch");
+  return entries;
+}
