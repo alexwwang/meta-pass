@@ -1282,6 +1282,78 @@ export function boot(opts = {}) {
 
   // ── 已安装管理(dynslot §4.5 Remove):清单 + 两步确认删除 + 重启回连 ──
   const MGMT_STATE = { valid: "有固件", invalid: "无固件", empty: "空" };
+  let archiveBusy = false;
+  let archiveMessage = "";
+
+  async function doBackup(slotIndex) {
+    if (archiveBusy) return;
+    archiveBusy = true;
+    archiveMessage = "正在读取 APP 与关联 DATA 字节…";
+    try {
+      const listing = await bridge.slots();
+      if (!listing.ok) throw new Error("设备清单读取失败 (HTTP " + listing.status + ")");
+      const info = parseSlots(listing.text);
+      if (!info) throw new Error("设备槽位清单格式无效");
+      const slot = info.slots.find((item) => item.slot === slotIndex);
+      if (!slot || slot.kind !== "app" || slot.state === "empty" ||
+          !Number.isSafeInteger(slot.play_id) || slot.play_id <= 0) {
+        throw new Error("该槽位没有可用于备份的稳定 APP 所有权标识");
+      }
+      const appFile = "slot" + slot.slot + "_raw.bin";
+      const appRead = await readAppSlotReservation(bridge, { play_id: slot.play_id, size: slot.size }, {
+        sha256Hex,
+        onProgress: (p) => { archiveMessage = "正在备份 APP 字节 " + Math.floor(p.completed * 100 / p.total) + "%"; },
+      });
+      const owned = info.data.filter((record) => record.play_id === slot.play_id);
+      const dataPayloads = [];
+      const dataInputs = [];
+      for (let i = 0; i < owned.length; i++) {
+        const record = owned[i];
+        const read = await readDataReservation(bridge, record, {
+          sha256Hex,
+          onProgress: (p) => { archiveMessage = "正在备份 DATA " + record.label + " " + Math.floor(p.completed * 100 / p.total) + "%"; },
+        });
+        dataPayloads.push(read.bytes);
+        dataInputs.push({ play_id: record.play_id, label: record.label, type: record.type,
+          subtype: record.subtype, state: record.state, bytes: read.bytes.length, sha256: read.sha256 });
+      }
+      // Re-fetch ownership after byte reads. A changed mapping invalidates the archive.
+      const afterResponse = await bridge.slots();
+      const after = afterResponse.ok ? parseSlots(afterResponse.text) : null;
+      const afterSlot = after?.slots.find((item) => item.slot === slotIndex);
+      const afterData = after?.data.filter((record) => record.play_id === slot.play_id) || [];
+      if (!afterSlot || afterSlot.play_id !== slot.play_id || afterSlot.offset !== slot.offset ||
+          afterSlot.size !== slot.size || JSON.stringify(afterData) !== JSON.stringify(owned)) {
+        throw new Error("APP/DATA 所有权或分区几何在备份期间发生变化；已放弃归档");
+      }
+      const manifest = buildDataArchiveManifest({
+        slots: [{ play_id: slot.play_id, source_slot: slot.slot, name: slot.name,
+          files: [{ name: appFile, bytes: appRead.bytes.length, sha256: appRead.sha256, type: "raw" }] }],
+        data: dataInputs,
+      });
+      const entries = [{ name: appFile, data: appRead.bytes }];
+      for (let i = 0; i < manifest.data.length; i++) entries.push({ name: manifest.data[i].file, data: dataPayloads[i] });
+      const payloadMap = new Map(entries.map((entry) => [entry.name, entry.data]));
+      await validateDataArchivePayloads(manifest, payloadMap, sha256Hex);
+      entries.push({ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+      const zip = buildDataArchiveZip(entries);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = "metapass-data-backup-" + slot.play_id + "-" + stamp + ".zip";
+      const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+      const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
+      URL.revokeObjectURL(url);
+      archiveMessage = "备份已导出并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。注意：当前版本尚不支持导入恢复。";
+      log(archiveMessage, "ok");
+    } catch (error) {
+      archiveMessage = "备份失败：" + (error && error.message ? error.message : String(error));
+      log(archiveMessage, "error");
+    } finally {
+      archiveBusy = false;
+      await showMgmt();
+      const status = $("mp-backup-status");
+      if (status) status.textContent = archiveMessage;
+    }
+  }
 
   function renderMgmt(info, busy) {
     const backupSection = `
