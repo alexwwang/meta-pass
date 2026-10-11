@@ -2335,7 +2335,7 @@ $("btn-backup").addEventListener("click", async () => {
     const v2Slots = manifestEntries.map((entry) => ({
       play_id: entry.play_id, source_slot: entry.slot, name: entry.name, files: entry.files,
     }));
-    const canArchiveData = slotModel.mode === MODE.DYN && v2Slots.length > 0 &&
+    const canArchiveData = isDynMode(slotModel.mode) && v2Slots.length > 0 &&
       v2Slots.every((entry) => Number.isSafeInteger(entry.play_id) && entry.play_id > 0);
     if (canArchiveData) {
       const selectedPlayIds = new Set(v2Slots.map((entry) => entry.play_id));
