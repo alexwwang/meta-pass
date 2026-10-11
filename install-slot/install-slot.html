@@ -2622,6 +2622,9 @@ $("btn-install").addEventListener("click", async () => {
   let plan = null;
   let deferredDataInstall = false;
   let geometryCommitted = false;
+  let dataCommitStarted = false;
+  let dataCommitComplete = false;
+  let plannedData = [];
   try {
     // 1) 镜像先取(社区下载可能耗时),再解析目标与几何 —— 设计 §6。
     let image;
@@ -2641,7 +2644,6 @@ $("btn-install").addEventListener("click", async () => {
     let slotLimit;
     let carveForInstall = null;
     let dataPlayId = 0;
-    let plannedData = [];
     if (dynMode) {
       await loadSlotModel();   // 记录可能已过期:重读后再规划(设计 §6 step 1)
       plan = planInstall(slotModel.carve, image.length, target);
@@ -2675,9 +2677,8 @@ $("btn-install").addEventListener("click", async () => {
     if (dataImages.length) {
       if (!dynMode || !carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
       const oldTarget = slotModel.carve.slots[plan.index];
-      if (plan.action === PLAN.REUSE && oldTarget?.playId &&
-          slotModel.carve.data.some((d) => d.playId === oldTarget.playId)) {
-        throw new Error("The selected APP already owns DATA. Back it up and remove that APP before replacing it with a DATA-bearing firmware.");
+      if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY) {
+        throw new Error("For a recoverable APP+DATA install, choose an empty slot or Auto. Remove the existing APP first rather than overwriting a live installation.");
       }
       const sizes = await chooseUsbDataSizes(dataImages, carveForInstall);
       if (!sizes) { log(t("msg_install_cancelled"), "warn"); return; }
@@ -2788,7 +2789,9 @@ $("btn-install").addEventListener("click", async () => {
         slots,
         data: deferredDataInstall ? carveForInstall.data : slotModel.carve.data,
       };
+      if (deferredDataInstall) dataCommitStarted = true;
       const info = await commitCarve(nextCarve, { materialize: deferredDataInstall });
+      if (deferredDataInstall) dataCommitComplete = true;
       log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
       if (deferredDataInstall) log(t("msg_table_materialized"), "ok");
     }
@@ -2805,7 +2808,19 @@ $("btn-install").addEventListener("click", async () => {
     $("install-status").textContent = err.message;
     $("install-status").className = "error";
     log(t("msg_install_failed", { err: err.message }), "error");
-    // N3: install CREATE — commitCarve 成功但 payload 写失败 → 槽位已分配但无镜像
+    if (deferredDataInstall && !dataCommitStarted && plannedData.length) {
+      // Payload failed before metadata commit: best-effort erase every staged
+      // DATA extent. Once commitCarve starts, its result can be ambiguous after
+      // a torn write, so preserve staged bytes for the boot-time recovery path.
+      for (const d of plannedData) {
+        try { await wipeRange(d.offset, d.size); }
+        catch (cleanupErr) {
+          log(`Staged DATA cleanup failed at ${hex(d.offset)}: ${cleanupErr.message}`, "warn");
+        }
+      }
+    } else if (deferredDataInstall && dataCommitStarted && !dataCommitComplete) {
+      log("DATA commit status is uncertain; staged DATA bytes were preserved for recovery.", "warn");
+    }
     if (geometryCommitted) {
       log(t("msg_orphan_slot_warning"), "warn");
     }
