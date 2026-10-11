@@ -88,10 +88,10 @@ static void test_parse_happy(void)
     // 交互 v2:slot 可选,缺省 -1(设备物理确认旧流程)。
     assert(m.phone_slot == -1);
     assert(!m.restore_data);
-    assert(mutated_offer(&mu, "\\"reason\\": \\"ok\\"", "\\"reason\\": \\"ok\\", \\"restoreData\\": true"));
+    assert(mutated_offer(&mu, "\"reason\": \"ok\"", "\"reason\": \"ok\", \"restoreData\": true"));
     assert(meta_install_model_parse(mu.buf, mu.len, &m));
     assert(m.restore_data);
-    assert(mutated_offer(&mu, "\\"reason\\": \\"ok\\"", "\\"reason\\": \\"ok\\", \\"restoreData\\": false"));
+    assert(mutated_offer(&mu, "\"reason\": \"ok\"", "\"reason\": \"ok\", \"restoreData\": false"));
     assert(meta_install_model_parse(mu.buf, mu.len, &m));
     assert(!m.restore_data);
     assert(mutated_offer(&mu, "  \"suggestedSlot\": 0,", "  \"suggestedSlot\": 0, \"slot\": 2,"));
