@@ -1341,7 +1341,8 @@ export function boot(opts = {}) {
       const filename = "metapass-data-backup-" + slot.play_id + "-" + stamp + ".zip";
       const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
       const link = document.createElement("a"); link.href = url; link.download = filename; link.click();
-      URL.revokeObjectURL(url);
+      // iOS Safari may resolve the download asynchronously; keep the URL alive until consumed.
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
       archiveMessage = "备份已导出并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。注意：当前版本尚不支持导入恢复。";
       log(archiveMessage, "ok");
     } catch (error) {
