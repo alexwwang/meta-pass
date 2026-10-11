@@ -626,7 +626,7 @@ static void test_place_offer(void)
         "\"carveOffset\":1572864,\"carveSize\":131072,\"restoreData\":true,"
         "\"data\":[{\"playId\":1,\"size\":4096,\"initialImageSize\":4096,"
         "\"subtype\":130,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\","
-        "\"label\":\"restored\"}],",
+        "\"label\":\"restored\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(m.restore_data);
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
