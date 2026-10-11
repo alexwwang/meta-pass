@@ -60,11 +60,9 @@ jobs:
             -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
             -e IDF_CCACHE_ENABLE=1
           command: >-
-            idf.py -B build-e2e -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults' reconfigure &&
-            idf.py -B build-e2e build &&
+            idf.py -B build-e2e -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults' build &&
             cd tests/realdevice/data-child &&
-            idf.py -B build-e2e set-target esp32c3 &&
-            idf.py -B build-e2e build
+            idf.py -B build-e2e set-target esp32c3 build
 
       - name: Upload verified firmware and E2E fixtures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
