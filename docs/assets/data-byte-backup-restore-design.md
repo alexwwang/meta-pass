@@ -11,7 +11,7 @@ Branch: `feat/storage`
 
 Align DATA lifecycle semantics between the USB service page and the embedded mobile page: install DATA, back up its actual bytes, restore those bytes, and delete DATA owned by an APP when that APP is uninstalled.
 
-**End-to-end backup/restore is not implemented yet.** USB dynslot v2 export now includes actual bytes for selected APPs' DIRTY/ARCHIVED DATA reservations, with per-file SHA-256 validation and a post-read A/B ownership-record consistency check. Legacy/v1 layouts remain APP/NVS-only. DATA restore is not implemented, and the mobile page still lacks complete archive export/restore; a v2 archive must not be treated as restorable yet.
+**End-to-end backup/restore is not implemented yet.** USB dynslot v2 export now includes actual bytes for selected APPs' DIRTY/ARCHIVED DATA reservations, with per-file SHA-256 validation and a post-read A/B ownership-record consistency check. Legacy/v1 layouts remain APP/NVS-only. Mobile export now reads the full allocated APP slot and all owned DATA reservations in 4 KiB authenticated chunks, rechecks ownership metadata, validates every length/SHA-256, and emits a ZIP. DATA restore is not implemented, so a v2 archive must not be treated as restorable yet.
 
 ## Invariants
 
@@ -86,9 +86,9 @@ A read-only endpoint has been added:
 
 Still required:
 
-- Mobile chunked archive UI, full-length/digest validation, and file export.
+- Mobile DATA restore/import UI and the device-side write transaction.
 - Restore endpoint with authorization, capacity preflight, staged writes, readback verification, and atomic metadata commit.
-- USB ZIP v2 DATA export is implemented for selected dynslot APPs and non-PRISTINE DATA; still required: v2 restore transaction and mobile UI export/restore.
+- USB and mobile v2 export now include real APP-slot/DATA bytes with validation; still required: v2 restore transaction, recovery semantics, and repeatable mock-device/hardware tests.
 - Repeatable mock-device tests for the device API, USB ZIP, and mobile UI, plus dedicated hardware tests.
 
 ## Acceptance Matrix
