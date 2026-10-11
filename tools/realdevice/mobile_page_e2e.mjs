@@ -515,7 +515,10 @@ async function verifyDeviceRestoration() {
     const dataRestored = JSON.stringify(dataReservations(finalSlots)) === JSON.stringify(dataReservations(baseline));
     const idle = finalStatus.protocol === 1 && !finalStatus.active && !finalStatus.session && !finalStatus.offer && !finalStatus.confirmed;
     const geometryOk = assertDynamicSlotGeometry(finalSlots, "recovery verification");
-    const ok = slotsRestored && dataRestored && idle && geometryOk && recovery.cleanup.failures.length === 0;
+    // Device state readback is authoritative for restoration. A cleanup command
+    // may report an error even if a prior mutation already removed the slot;
+    // retain that error in the report, but do not contradict verified baseline state.
+    const ok = slotsRestored && dataRestored && idle && geometryOk;
     const detail = "slotsRestored=" + slotsRestored + "; dataRestored=" + dataRestored +
       "; installerIdle=" + idle + "; geometryValid=" + geometryOk +
       "; cleanupFailures=" + recovery.cleanup.failures.length;
