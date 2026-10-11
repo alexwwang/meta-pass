@@ -72,6 +72,14 @@ assert "if (commit != ESP_OK) return commit;" in remove_handler, "metadata commi
 assert "nvs_set_u8(nvs, \"dc\", data_count)" in install_net, "uninstall intent must persist owned DATA extent count before commit"
 assert "remove_nvs_set_u32(nvs, op, data_offsets[i])" in install_net, "uninstall intent must persist DATA offsets for post-commit recovery"
 assert "remove_nvs_set_u32(nvs, sp, data_sizes[i])" in install_net, "uninstall intent must persist DATA sizes for post-commit recovery"
+intent_start = install_net.index("static esp_err_t remove_intent_write(")
+intent_end = install_net.index("static esp_err_t remove_intent_read(", intent_start)
+intent_writer = install_net[intent_start:intent_end]
+assert intent_writer.index('nvs_set_u8(nvs, "active", 0)') < intent_writer.index('nvs_set_u8(nvs, "dc", data_count)') < intent_writer.rindex('nvs_set_u8(nvs, "active", 1)'), "intent activation must happen only after the full extent snapshot is durable"
+recovery_start = install_net.index("static esp_err_t remove_recover_pending(bool *did_recover)")
+recovery_end = install_net.index("// POST /api/install/remove", recovery_start)
+recovery_handler = install_net[recovery_start:recovery_end]
+assert recovery_handler.index("esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i])") < recovery_handler.index("return remove_intent_clear()"), "recovery intent must remain active until every cleanup erase succeeds"
 assert "Metadata was committed before power loss/erase failure" in install_net, "recovery must retry erases after metadata is already removed"
 prepare_start = install_net.index("static esp_err_t h_install_prepare(")
 prepare_end = install_net.index("// POST /api/install/session", prepare_start)
