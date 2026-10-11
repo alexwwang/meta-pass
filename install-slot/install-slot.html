@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restores APP images only. DATA bytes in v2 archives are not restored yet.</p>
+    <p class="subtitle" data-i18n="restore_desc">Restores legacy v1 APP/NVS archives only. v2 APP+DATA archive restore is not implemented yet.</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
@@ -896,7 +896,7 @@ const I18N = {
     backup_desc: "Backs up selected APP images and owned DATA bytes when dynslot ownership metadata is available; legacy layouts remain APP-only.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "Restores APP images only. DATA bytes in v2 archives are not restored yet.",
+    restore_desc: "Restores legacy v1 APP/NVS archives only. v2 APP+DATA archive restore is not implemented yet.",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
     data_backup_unavailable: "USB dynslot backups can include verified DATA bytes, but restoring DATA bytes is not implemented yet. Removing an APP also deletes its owned DATA.",
@@ -1107,7 +1107,7 @@ const I18N = {
     backup_desc: "有 dynslot 所有权元数据时，会备份所选 APP 镜像及其关联 DATA 字节；旧布局仍仅备份 APP。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "当前仅恢复 APP 镜像；v2 归档中的 DATA 字节尚不能恢复。",
+    restore_desc: "当前仅支持旧版 v1 APP/NVS 归档恢复；v2 APP+DATA 归档恢复尚未实现。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
     data_backup_unavailable: "USB 的 dynslot 备份可包含经校验的 DATA 字节，但尚未实现 DATA 字节恢复。删除 APP 会同时删除其关联 DATA。",
@@ -2464,7 +2464,13 @@ $("restore-input").addEventListener("change", async (ev) => {
     const entries = readZipEntries(new Uint8Array(await file.arrayBuffer()));
     const manifestBytes = entries.get(MANIFEST_NAME);
     if (!manifestBytes) throw new Error(t("msg_restore_manifest_missing", { name: MANIFEST_NAME }));
-    const manifest = parseManifest(new TextDecoder().decode(manifestBytes));
+    const manifestText = new TextDecoder().decode(manifestBytes);
+    let rawManifest;
+    try { rawManifest = JSON.parse(manifestText); } catch { throw new Error("manifest.json is not valid JSON"); }
+    if (rawManifest?.manifest_version === 2) {
+      throw new Error("This v2 archive contains APP+DATA bytes, but transactional DATA restore is not implemented yet. No device writes were performed.");
+    }
+    const manifest = parseManifest(rawManifest);
     const filesBySlot = new Map();
     for (const s of manifest.slots) {
       const m = new Map();
