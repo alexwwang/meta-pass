@@ -17,6 +17,7 @@ driver = DRIVER.read_text(encoding="utf-8")
 runtime = RUNTIME.read_text(encoding="utf-8")
 control = CONTROL.read_text(encoding="utf-8")
 config = CONFIG.read_text(encoding="utf-8")
+install_net = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 doc = DOC.read_text(encoding="utf-8")
 record = (ROOT / "install-slot/dynslot-record.js").read_text(encoding="utf-8")
 usb_page = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
@@ -39,6 +40,12 @@ extractor = (ROOT / "install-slot/extract-app-image.js").read_text(encoding="utf
 assert '(subtype === 0x40 && label === "e2edata")' in extractor, "only the explicitly named raw DATA E2E fixture may use subtype 0x40"
 assert "other custom DATA is rejected" in extractor, "unregistered custom DATA subtypes must remain fail-closed"
 assert "esp_partition_write(" not in driver, "host client must not write flash directly"
+assert "static esp_err_t h_install_data_read(httpd_req_t *req)" in install_net, "mobile DATA backup needs a real byte-read endpoint"
+assert "if (!origin_allowed(req))" in install_net and "if (!req_token_ok(req))" in install_net, "DATA read API must enforce origin and session token"
+assert "length > INSTALL_IO_BUF" in install_net and "length > match->size - offset" in install_net, "DATA reads must be chunk-bounded and range-checked"
+assert "esp_flash_read(NULL, read_buf, address, length)" in install_net, "DATA API must return actual Flash bytes, not metadata"
+assert '{ "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL }' in install_net, "DATA read handler must be registered"
+assert "function bridgeBytes(path,opt)" in install_net and "dataRead:function(playId,label,offset,length)" in install_net, "phone bridge must expose binary DATA reads"
 assert "expected_digest" in driver and "hashlib.sha256" in driver, "host independently checks digest"
 assert "does not select/boot launcher slots" in driver, "serial client must not claim full runtime-driver coverage"
 assert "CONFIG_META_E2E_TEST_CONTROL" in control and "default n" in config, "launcher control must be opt-in"
