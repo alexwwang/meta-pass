@@ -30,6 +30,7 @@ Child-firmware serial client: `tools/realdevice/data_child_serial.py`
 | M06C reinstall after deletion | After deleting A, reinstall A's play ID under a fresh random name C; run and remove C | C gets a fresh APP carve distinct from surviving B; stale A name does not return; when required, C gets a fresh DATA reservation; removal explicitly releases C's APP slot and new DATA reservation while preserving B's DATA reservation and APP slot |
 | M07 remove B | Delete through UI and verify | B absent; device evidence proves deleted image is not bootable and DATA is released |
 | M08 restore baseline | Re-read slots, reservations and status | Installer idle; slots, reservations and free bytes exactly match baseline |
+| Failure recovery readback | After a failed run, remove only this run's generated names and independently re-read device state | Report distinguishes RESTORED, NOT_RESTORED and UNKNOWN; unreadable state is never called restored |
 
 ## Distinct assertion layers
 
@@ -71,14 +72,16 @@ node tools/realdevice/mobile_page_e2e.mjs \
 
 Before touching the device, the runner checks the driver file, Python/pyserial, serial-port configuration, and session format. The device must also pass installer-idle, slot-geometry, and baseline safety gates. If any gate fails, stop; do not delete existing slots or bypass the checks to force the run.
 
-The report defaults to `tools/realdevice/logs/mobile-page-e2e-<timestamp>/report.json`. Count the automated E2E as passed only when `verdict` is `PASS` and all required runtime evidence fields are true. Successful CI host tests and firmware builds are not evidence of a real-device E2E pass. After a failed run, inspect the report and cleanup outcome before retrying.
+The report defaults to `tools/realdevice/logs/mobile-page-e2e-<timestamp>/report.json`. Count the automated E2E as passed only when `verdict` is `PASS` and all required runtime evidence fields are true. Successful CI host tests and firmware builds are not evidence of a real-device E2E pass. After a failed run, inspect `deviceRecovery` and the recovery snapshots in `report.json`. Only `deviceRecovery.status=RESTORED` confirms recovery. For `NOT_RESTORED` or `UNKNOWN`, manually inspect the device and do not immediately rerun.
 
 ## Safety and reproducibility
 
 - Hardware mutation requires explicit `--real-device`; destructive tests must never run by default.
 - Only create uniquely named test slots and never remove baseline user slots.
 - If the installer is busy, slot geometry is invalid, or a test name collides, stop instead of attempting automatic repair.
-- On failure, clean up only slots created by this run and record cleanup failures.
+- On failure, clean up only slots created by this run, then independently re-read device state and compare the full baseline.
+- `deviceRecovery.status` must be `RESTORED` to confirm recovery. `NOT_RESTORED` or `UNKNOWN` means manual inspection is required before another run.
+- `FAIL_DEVICE_NOT_RESTORED` is a high-priority recovery alert; test outcome and device recovery are separate results.
 - Logs must not contain session tokens, full device URLs, LAN IPs or sensitive host paths.
 - `--manual-assist` may only report `PASS_WITH_MANUAL_STEPS`; DATA persistence and deleted-image non-bootability without device evidence must remain uncovered.
 - This is an explicitly dispatched hardware test, not an automatic flash operation in ordinary CI.
