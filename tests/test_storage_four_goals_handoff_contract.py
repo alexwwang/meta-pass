@@ -9,6 +9,7 @@ PHONE = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
 USB = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
 POOL = (ROOT / "install-slot/dynslot-pool.js").read_text(encoding="utf-8")
 RESTORE = (ROOT / "install-slot/data-restore-plan.js").read_text(encoding="utf-8")
+TRANSACTION = (ROOT / "install-slot/data-restore-transaction.js").read_text(encoding="utf-8")
 CHILD = (ROOT / "tests/realdevice/data-child/main/test_main.c").read_text(encoding="utf-8")
 DRIVER = (ROOT / "tools/realdevice/data_child_serial.py").read_text(encoding="utf-8")
 
@@ -35,6 +36,11 @@ assert "当前版本尚不支持导入恢复" in PHONE
 assert 'from "./data-size-options.js"' in PHONE
 assert 'from "./data-size-options.js"' in USB
 assert "tools/install-slot/test-data-size-options.mjs" in VALIDATE
+assert "tools/install-slot/test-data-restore-transaction.mjs" in VALIDATE
+assert "executeDataRestoreTransaction" in TRANSACTION
+assert "commitStarted" in TRANSACTION
+assert "cleanupStaging" in TRANSACTION
+assert "post-commit ownership/geometry verification failed" in TRANSACTION
 assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
 assert "v2 restore before any device writes" in (ROOT / "tests/test_data_child_firmware_contract.py").read_text(encoding="utf-8")
