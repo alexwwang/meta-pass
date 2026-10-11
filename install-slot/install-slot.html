@@ -2618,6 +2618,8 @@ $("btn-install").addEventListener("click", async () => {
   refreshInstallButton();
   $("install-status").textContent = "";
   setProgress(0);
+  let plan = null;
+  let deferredDataInstall = false;
   try {
     // 1) 镜像先取(社区下载可能耗时),再解析目标与几何 —— 设计 §6。
     let image;
@@ -2632,14 +2634,12 @@ $("btn-install").addEventListener("click", async () => {
 
     const dynMode = isDynMode(slotModel.mode);
     const dataImages = Array.isArray(image.dataImages) ? image.dataImages : [];
-    let plan = null;
     let s;
     let slot;
     let slotLimit;
     let carveForInstall = null;
     let dataPlayId = 0;
     let plannedData = [];
-    let deferredDataInstall = false;
     if (dynMode) {
       await loadSlotModel();   // 记录可能已过期:重读后再规划(设计 §6 step 1)
       plan = planInstall(slotModel.carve, image.length, target);
@@ -2813,7 +2813,7 @@ $("btn-install").addEventListener("click", async () => {
     $("install-status").className = "error";
     log(t("msg_install_failed", { err: err.message }), "error");
     // N3: install CREATE — commitCarve 成功但 payload 写失败 → 槽位已分配但无镜像
-    if (plan && plan.action === PLAN.CREATE) {
+    if (plan && plan.action === PLAN.CREATE && !deferredDataInstall) {
       log(t("msg_orphan_slot_warning"), "warn");
     }
   } finally {
