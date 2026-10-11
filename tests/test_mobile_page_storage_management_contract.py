@@ -152,7 +152,9 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "baseline APP slots preserved", "refusing subsequent mutations",
                       "runtimeAResult?.ok", "A/B install and runtime safety gates did not pass",
                       "required DATA reservation for child A was not created",
-                      "device API did not confirm install A as VALID"):
+                      "device API did not confirm install A as VALID",
+                      "installer did not return to idle after install; refusing further device mutations",
+                      "A/B DATA physical isolation could not be verified; refusing further device mutations"):
             with self.subTest(token=token):
                 self.assertIn(token, RUNNER)
 
