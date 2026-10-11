@@ -60,7 +60,7 @@ jobs:
             -e CCACHE_DIR=/app/${{ github.repository }}/.ccache
             -e IDF_CCACHE_ENABLE=1
           command: >-
-            idf.py -B build-e2e -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults' build &&
+            idf.py -B build-e2e -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.e2e-test.defaults" build &&
             cd tests/realdevice/data-child &&
             idf.py -B build-e2e set-target esp32c3 build
 
