@@ -2581,13 +2581,24 @@ async function restoreV2ArchiveUsb() {
   }
   const rawFiles = archivedSlot.files.filter((f) => f.type === "raw" || f.name.endsWith("_raw.bin"));
   const appFiles = archivedSlot.files.filter((f) => f.type === "app" || f.name.endsWith("_firmware.bin"));
-  if (rawFiles.length + appFiles.length !== 1 || archivedSlot.files.length !== 1) {
-    throw new Error("Restore accepts exactly one raw-slot or installable APP image; auxiliary slot files are not supported.");
+  const tailFiles = archivedSlot.files.filter((f) => f.name.endsWith("_tail.bin") || f.type === "tail");
+  const extraFiles = archivedSlot.files.filter((f) =>
+    !rawFiles.includes(f) && !appFiles.includes(f) && !tailFiles.includes(f));
+  if (rawFiles.length + appFiles.length !== 1 || extraFiles.length || tailFiles.length > 1 ||
+      (rawFiles.length && (archivedSlot.files.length !== 1 || tailFiles.length))) {
+    throw new Error("Restore accepts one raw-slot or APP image plus at most one tail metadata sector; extra slot payloads are unsupported.");
   }
   const appFile = rawFiles[0] || appFiles[0];
   const rawApp = payloads.get(appFile.name);
   if (!(rawApp instanceof Uint8Array)) throw new Error("APP payload missing");
-  const image = extractAppImage(rawApp, 0x7ffff000);
+  let image = extractAppImage(rawApp, 0x7ffff000);
+  if (tailFiles.length) {
+    const tail = payloads.get(tailFiles[0].name);
+    if (!(tail instanceof Uint8Array) || tail.length !== 4096) {
+      throw new Error("Tail metadata payload must be exactly one 4 KiB sector.");
+    }
+    image = { ...image, tailSector: tail, tailSectorOffset: Math.ceil(image.length / 4096) * 4096 };
+  }
   const plan = planInstall(slotModel.carve, image.length, { target: "auto" });
   if (plan.action !== PLAN.CREATE) {
     throw new Error(`No fresh APP slot fits: need ${fmtBytes(plan.need)}, largest contiguous gap ${fmtBytes(plan.largestGap)}, total free ${fmtBytes(plan.totalFree)}`);
