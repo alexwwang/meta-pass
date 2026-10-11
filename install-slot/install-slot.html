@@ -2721,7 +2721,18 @@ $("btn-install").addEventListener("click", async () => {
       log(t("msg_table_materialized"), "ok");
     }
 
-    // 3) payload(既有路径不变:清残留 → 写镜像 → 尾扇区 MSIG/MAEG/MNAM)。
+    // 3) DATA payloads first. Their extents are still unreferenced until the
+    // final APP+DATA record/table commit; each extent is erased and read back.
+    if (deferredDataInstall) {
+      for (let i = 0; i < plannedData.length; i++) {
+        const dataImage = plannedData[i];
+        log(`Writing DATA ${dataImage.label} · ${fmtBytes(dataImage.size)} at ${hex(dataImage.offset)}`);
+        await writeDataPayload(dataImage, dataImage);
+        log(`DATA ${dataImage.label} read-back verified`, "ok");
+      }
+    }
+
+    // 4) APP payload (clear residue → write image → tail sector MSIG/MAEG/MNAM).
     const address = s.offset;
     const tailOffset = Math.ceil(image.length / 4096) * 4096 + 4096;
     if (tailOffset < s.size) {
@@ -2768,20 +2779,25 @@ $("btn-install").addEventListener("click", async () => {
       if (dispName) log(t("msg_blob_written", { name: dispName }), "ok");
     }
 
-    // 4) 元数据提交(仅 dynslot;几何未变 → 不写表 = meta_carve_flash_set_valid
-    //    镜像;play_id 原样保留,USB 安装恒为 0)。
+    // 5) Commit APP + DATA together only after all DATA payloads pass read-back.
     if (plan) {
       const sha = new Uint8Array(await crypto.subtle.digest("SHA-256", image.data));
-      const slots = slotModel.carve.slots.slice();
+      const slots = carveForInstall.slots.slice();
       slots[plan.index] = {
         ...slots[plan.index],
         state: SLOT_STATE.VALID,
         imageLen: image.length,
         sha,
         name: dispName,
+        playId: deferredDataInstall ? dataPlayId : slots[plan.index].playId,
       };
-      const info = await commitCarve({ slots, data: slotModel.carve.data }, { materialize: false });
+      const nextCarve = {
+        slots,
+        data: deferredDataInstall ? carveForInstall.data : slotModel.carve.data,
+      };
+      const info = await commitCarve(nextCarve, { materialize: deferredDataInstall });
       log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+      if (deferredDataInstall) log(t("msg_table_materialized"), "ok");
     }
 
     setProgress(100);
