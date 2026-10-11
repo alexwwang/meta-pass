@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restores legacy v1 APP/NVS archives only. v2 APP+DATA archive restore is not implemented yet.</p>
+    <p class="subtitle" data-i18n="restore_desc">Restores complete single-group v2 APP+DATA archives or legacy v1 APP/NVS archives. Multi-APP atomic restore and global NVS restore are not supported.</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
@@ -217,7 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
-    <p class="hint" data-i18n="data_backup_unavailable">USB dynslot backups can include verified DATA bytes, but restoring DATA bytes is not implemented yet. Removing an APP also deletes its owned DATA.</p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB dynslot backups can include verified DATA bytes. Restore supports one complete APP+DATA group; global NVS and multi-APP atomic restore are not supported. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -1109,10 +1109,10 @@ const I18N = {
     backup_desc: "有 dynslot 所有权元数据时，会备份所选 APP 镜像及其关联 DATA 字节；旧布局仍仅备份 APP。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "当前仅支持旧版 v1 APP/NVS 归档恢复；v2 APP+DATA 归档恢复尚未实现。",
+    restore_desc: "支持完整的单个 v2 APP+DATA 组或旧版 v1 APP/NVS 归档；暂不支持多 APP 原子恢复和全局 NVS 恢复。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
-    data_backup_unavailable: "USB 的 dynslot 备份可包含经校验的 DATA 字节，但尚未实现 DATA 字节恢复。删除 APP 会同时删除其关联 DATA。",
+    data_backup_unavailable: "USB 的 dynslot 备份可包含经校验的 DATA 字节；恢复支持单个完整 APP+DATA 组，暂不支持全局 NVS 和多 APP 原子恢复。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_start: "开始备份槽位…",
