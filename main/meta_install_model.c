@@ -125,6 +125,10 @@ bool meta_install_model_parse(const char *json, size_t len,
         out->carve_offset = (uint32_t)v_off;
         out->carve_size = (uint32_t)v_sz;
     }
+    bool restore_data = false;
+    if (meta_store_json_get_bool(json, len, "restoreData", &restore_data)) {
+        out->restore_data = restore_data;
+    }
 
     // M5: data[] 迁移声明(可选,仅升级路径携带)
     size_t data_count = 0;
