@@ -311,6 +311,7 @@ PATHCHECK
         "${node_bin}" tools/install-slot/test-dynslot-record.mjs
         "${node_bin}" tools/install-slot/test-data-install-plan.mjs
         "${node_bin}" tools/install-slot/test-data-restore-plan.mjs
+        "${node_bin}" tools/install-slot/test-data-size-options.mjs
     else
         echo "WARN: node not found; skipping install-slot mjs tests" >&2
     fi
