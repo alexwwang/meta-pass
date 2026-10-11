@@ -2571,6 +2571,9 @@ async function restoreV2ArchiveUsb() {
   if (!manifest || manifest.manifest_version !== 2 || !(payloads instanceof Map)) {
     throw new Error("No validated v2 archive is loaded");
   }
+  // Re-read the durable carve after file selection; another action may have
+  // changed ownership or free space before the user confirms restore.
+  await loadSlotModel();
   if (!isDynMode(slotModel.mode) || !slotModel.carve || !carveValid(slotModel.carve)) {
     throw new Error("Transactional APP+DATA restore requires a valid dynamic carve record");
   }
