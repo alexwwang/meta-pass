@@ -30,6 +30,7 @@
 | M06C 删除后重新安装 | A 删除后，用 A 的 play ID、不同随机名称 C 重新安装；运行并卸载 C | C 必须获得独立于仍存活 B 的新 APP 槽位；旧 A 名称不能复活；按要求创建新的 DATA reservation；卸载后明确确认 C 的 APP 槽和新 DATA reservation 均已释放，B 的 DATA reservation 仍保留且 B 不受影响 |
 | M07 卸载 B | 同样从 UI 删除并验证 | B 从槽表消失；设备侧证明已删除镜像不可启动且 DATA 已释放 |
 | M08 恢复基线 | 再读 slots、reservations 和 status | 安装器空闲；槽表、DATA reservations 和 free bytes 与测试前完全一致 |
+| 异常恢复复核 | 测试失败后仅清理本轮随机名称，再次独立读取设备状态 | 报告明确区分 RESTORED、NOT_RESTORED、UNKNOWN；无法读回时不能声称已恢复 |
 
 ## 数据与空间管理断言
 
@@ -73,14 +74,16 @@ node tools/realdevice/mobile_page_e2e.mjs \
 
 执行前，runner 会检查 driver 文件、Python/pyserial、串口配置和 session 格式；设备端还必须通过安装器空闲状态、槽表几何和基线校验。任一门禁失败时应停止，不要通过删掉现有槽位或绕过检查来继续。
 
-报告默认写入 `tools/realdevice/logs/mobile-page-e2e-<timestamp>/report.json`。只有报告的 `verdict` 为 `PASS` 且所有运行证据字段成立，才可视为自动化 E2E 通过；CI 的 host tests 和固件构建成功不等于真机 E2E 成功。若执行失败，先检查报告和清理结果，再决定是否重跑。
+报告默认写入 `tools/realdevice/logs/mobile-page-e2e-<timestamp>/report.json`。只有报告的 `verdict` 为 `PASS` 且所有运行证据字段成立，才可视为自动化 E2E 通过；CI 的 host tests 和固件构建成功不等于真机 E2E 成功。若执行失败，先检查 `report.json` 中的 `deviceRecovery` 与恢复快照。只有 `deviceRecovery.status=RESTORED` 才可确认设备恢复；若为 `NOT_RESTORED` 或 `UNKNOWN`，先人工检查设备，禁止直接重跑。
 
 ## 安全与可复现性
 
 - 真机写操作必须显式传入 `--real-device`；禁止默认执行破坏性测试。
 - 只允许测试运行器创建带随机后缀的专属测试名称，不能卸载基线中已有的用户槽位。
 - 测试前若安装器非空闲、槽位几何非法或测试名称冲突，必须停止，不得尝试“自动修复”设备。
-- 失败后仅清理本轮创建的测试槽位；最终报告必须记录清理失败。
+- 失败后仅清理本轮创建的测试槽位；清理后必须再次读取设备状态并对比完整基线。
+- 报告的 `deviceRecovery.status` 必须为 `RESTORED` 才表示已验证恢复；`NOT_RESTORED` 或 `UNKNOWN` 表示设备状态未恢复或无法确认，需人工检查，不得直接重跑。
+- `FAIL_DEVICE_NOT_RESTORED` 是高优先级恢复告警；测试失败与设备恢复状态分别判断。
 - 日志不得包含 session token、完整设备 URL、局域网 IP 或主机敏感路径。
 - `--manual-assist` 只能报告 `PASS_WITH_MANUAL_STEPS`，不得宣称全自动通过；没有设备侧证据的 DATA 持久性和删除不可启动性必须标记为未覆盖。
 - 该 E2E 是显式派发的硬件测试，不应在普通 CI 中自动烧写设备。
