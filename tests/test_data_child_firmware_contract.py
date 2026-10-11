@@ -67,7 +67,8 @@ assert "validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex)" in usb_
 assert "stable.rec.seq !== slotModel.seq" in usb_page, "USB DATA backup must reject ownership metadata changes during export"
 assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA bytes' in usb_page, "USB UI must distinguish DATA export from incomplete DATA restore"
 assert "buildDataArchiveManifest({ slots: v2Slots, data: dataInputs })" in usb_page, "USB dynslot backup must use the versioned DATA archive manifest"
-assert "setTimeout(() => URL.revokeObjectURL(url), 60_000)" in phone_page, "mobile archive download URL must survive asynchronous browser download handling"
+assert "archiveDownload = { url, filename }" in phone_page and "download=\"${esc(archiveDownload.filename)}\"" in phone_page, "mobile backup must expose a user-activated download link after async reads"
+assert "link.click()" not in phone_page, "mobile archive export must not rely on a delayed synthetic download click"
 assert "当前版本尚不支持导入恢复" in phone_page, "mobile DATA export must not imply restore is implemented"
 assert "isDynMode(slotModel.mode) && v2Slots.length > 0" in usb_page, "USB DATA backup must recognize the actual dynslot mode enum"
 install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
