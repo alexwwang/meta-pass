@@ -170,7 +170,11 @@ export function parseFirmwareManifest(buf) {
       subtype === 0x82 || // SPIFFS
       subtype === 0x83 || // LittleFS
       subtype === 0x02 || // NVS (global in MVP)
-      subtype === 0x01;   // PHY (global in MVP)
+      subtype === 0x01 || // PHY (global in MVP)
+      // Dedicated raw-sector E2E fixture only. Do not generalize acceptance of
+      // arbitrary custom subtypes: production DATA must have a registered
+      // format/semantics before it can be allocated or initialized.
+      (subtype === 0x40 && label === "e2edata");
     const meta = {
       kind: "data",
       label,
