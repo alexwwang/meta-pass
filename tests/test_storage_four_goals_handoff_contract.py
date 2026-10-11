@@ -37,7 +37,7 @@ assert "readDataArchiveZip" in PHONE
 assert "restoreData: true" in PHONE
 assert "tools/install-slot/test-data-restore-device-integration.mjs" in VALIDATE
 assert "restore_data" in (ROOT / "main/meta_install_model.h").read_text(encoding="utf-8")
-assert "s_session.manifest.restore_data" in (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
+assert "m->restore_data ? META_DATA_DIRTY : META_DATA_PRISTINE" in (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
 assert 'from "./data-size-options.js"' in PHONE
 assert 'from "./data-size-options.js"' in USB
 assert "tools/install-slot/test-data-size-options.mjs" in VALIDATE
