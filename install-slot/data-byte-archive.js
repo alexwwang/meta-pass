@@ -39,8 +39,14 @@ function validateFileRecord(file, seenNames) {
   seenNames.add(file.name);
 }
 
-export function buildDataArchiveManifest({ createdUtc = new Date().toISOString(), slots, data }) {
+export function buildDataArchiveManifest({ createdUtc = new Date().toISOString(), slots, data, complete = true, missingSlots = [] }) {
   if (!Array.isArray(slots) || !Array.isArray(data)) fail("slots and data must be arrays");
+  if (typeof complete !== "boolean" || !Array.isArray(missingSlots) ||
+      missingSlots.some((slot) => !Number.isInteger(slot) || slot < 0) ||
+      new Set(missingSlots).size !== missingSlots.length ||
+      (complete && missingSlots.length !== 0) || (!complete && missingSlots.length === 0)) {
+    fail("invalid archive completeness metadata");
+  }
   if (data.length > DATA_ARCHIVE_MAX_FILES) fail("too many DATA records");
   const slotIds = new Set();
   const sourceSlots = new Set();
@@ -88,6 +94,8 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
     manifest_version: DATA_ARCHIVE_MANIFEST_VERSION,
     kind: DATA_ARCHIVE_KIND,
     created_utc: createdUtc,
+    complete,
+    ...(missingSlots.length ? { missing_slots: [...missingSlots].sort((a, b) => a - b) } : {}),
     slots: normalizedSlots,
     data: normalizedData,
   };
@@ -102,6 +110,15 @@ export function validateDataArchiveManifest(manifest) {
   }
   if (typeof manifest.created_utc !== "string" || !Number.isFinite(Date.parse(manifest.created_utc))) {
     fail("invalid archive creation timestamp");
+  }
+  if (manifest.complete !== undefined || manifest.missing_slots !== undefined) {
+    const missing = manifest.missing_slots ?? [];
+    if (typeof manifest.complete !== "boolean" || !Array.isArray(missing) ||
+        missing.some((slot) => !Number.isInteger(slot) || slot < 0) ||
+        new Set(missing).size !== missing.length ||
+        (manifest.complete && missing.length !== 0) || (!manifest.complete && missing.length === 0)) {
+      fail("invalid archive completeness metadata");
+    }
   }
   if (!Array.isArray(manifest.slots) || manifest.slots.length === 0 || !Array.isArray(manifest.data)) {
     fail("manifest must contain slots and data arrays");
