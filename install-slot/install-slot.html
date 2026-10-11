@@ -1490,8 +1490,10 @@ function nextDataPlayId(carve) {
     ...carve.slots.map((s) => Number(s.playId) >>> 0).filter((n) => n > 0),
     ...carve.data.map((d) => Number(d.playId) >>> 0).filter((n) => n > 0),
   ]);
-  for (let id = 1; id < 0xffffffff; id++) if (!used.has(id)) return id;
-  throw new Error("no free APP/DATA installation identifier remains");
+  // Keep locally installed firmware in the high-bit namespace so it is
+  // unlikely to collide with small marketplace play IDs added in the future.
+  for (let id = 0x80000000; id < 0xffffffff; id++) if (!used.has(id)) return id;
+  throw new Error("no free local APP/DATA installation identifier remains");
 }
 
 async function writeDataPayload(image, record) {
