@@ -601,7 +601,7 @@ static void test_place_offer(void)
     // ── 全新放置:槽位 + 两条数据,一次 OK ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1572864,\"carveSize\":131072,"
-        "\\"data\\":[{\\"playId\\":1,\\"size\\":4096,\\"initialImageSize\\":4096,
+        "\\"data\\":[{\\"playId\\":1,\\"size\\":4096,\\"initialImageSize\\":4096,"
         "{\"playId\":1,\"size\":8192,\"label\":\"cfg\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(m.data_count == 2);
@@ -624,7 +624,7 @@ static void test_place_offer(void)
     // commit, so the PRISTINE reclamation policy can never discard imported bytes.
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\\"carveOffset\\":1572864,\\"carveSize\\":131072,\\"restoreData\\":true,"
-        "\\"data\\":[{\\"playId\\":1,\\"size\\":4096,\\"initialImageSize\\":4096,
+        "\\"data\\":[{\\"playId\\":1,\\"size\\":4096,\\"initialImageSize\\":4096,"
         "\\"subtype\\":130,\\"sha256\\":\\"0000000000000000000000000000000000000000000000000000000000000000\\","
         "\\"label\\":\\"restored\\"}],", 0));
     assert(meta_install_model_parse(js, strlen(js), &m));
