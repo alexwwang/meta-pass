@@ -59,7 +59,7 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
       play_id: slot.play_id,
       source_slot: slot.source_slot,
       name: slot.name,
-      files: slot.files.map((f) => ({ name: f.name, bytes: f.bytes, sha256: f.sha256, type: f.type || "app" })),
+      files: slot.files.map((f) => ({ name: f.name, bytes: f.bytes, sha256: f.sha256, type: f.type || (f.name.endsWith("_firmware.bin") ? "app" : f.name.endsWith("_raw.bin") ? "raw" : "other") })),
     };
   });
   const seenOwnership = new Set();
