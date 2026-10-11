@@ -106,6 +106,7 @@ assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA 
 assert "Backs up selected APP images and owned DATA bytes" in usb_page, "USB backup fallback copy must match the implemented DATA export path"
 assert "Restores legacy v1 APP/NVS archives only. v2 APP+DATA archive restore is not implemented yet." in usb_page, "USB restore fallback copy must disclose that current v2 archives cannot be restored"
 assert "rawManifest?.manifest_version === 2" in usb_page and "No device writes were performed." in usb_page, "USB must reject v2 restore before any device writes until transactional DATA import exists"
+assert "rawManifest?.complete === false" in usb_page and "msg_restore_partial_archive" in usb_page, "USB restore must reject partial archives before writing any slot"
 assert "buildDataArchiveManifest({" in usb_page and "complete: missingSlots.length === 0, missingSlots" in usb_page, "USB v2 backup must mark incomplete slot reads in the manifest"
 assert "archiveDownload = { url, filename }" in phone_page and "download=\"${esc(archiveDownload.filename)}\"" in phone_page, "mobile backup must expose a user-activated download link after async reads"
 assert "link.click()" not in phone_page, "mobile archive export must not rely on a delayed synthetic download click"
