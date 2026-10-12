@@ -350,6 +350,7 @@ export function readDataArchiveZip(input, {
       centralOffset + centralSize !== eocd) fail("unsupported or malformed ZIP directory");
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const entries = new Map();
+  const localRanges = [];
   let cursor = centralOffset;
   let totalPayloadBytes = 0;
   for (let i = 0; i < count; i++) {
@@ -378,6 +379,10 @@ export function readDataArchiveZip(input, {
     const localExtraLen = view.getUint16(localOffset + 28, true);
     const dataStart = localOffset + 30 + localNameLen + localExtraLen;
     const dataEnd = dataStart + size;
+    if (localRanges.some(([start, end]) => localOffset < end && dataEnd > start)) {
+      fail("overlapping ZIP local records");
+    }
+    localRanges.push([localOffset, dataEnd]);
     const localName = decoder.decode(u8.subarray(localOffset + 30, localOffset + 30 + localNameLen));
     if (localFlags !== flags || localMethod !== method || localCrc !== crc ||
         localSize !== size || localCompressed !== compressedSize || localName !== name ||
