@@ -424,6 +424,17 @@ function dispatchFetch(mp, device) {
 
 const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
 
+// NVS reads are client-bounded too; invalid ranges must fail without issuing a request.
+{
+  const before = calls.length;
+  const invalid = await bridge.nvsRead(0, 4097);
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.status, 400);
+  assert.equal(calls.length, before);
+  console.log("PASS NVS bridge rejects oversized read without network access");
+}
+
+
 // ── 3. preflight:正常路径 + 三道拒绝门 ──────────────────────────────────
 {
   globalThis.fetch = installMockFetch();
