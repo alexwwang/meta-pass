@@ -38,7 +38,7 @@ const listing = {
   data: [],
 };
 
-function fakeBridge() {
+function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status: 200, text: "ok" } } = {}) {
   let state = "idle";
   let offer;
   const events = [];
@@ -60,7 +60,7 @@ function fakeBridge() {
     },
     async chunk(offset, bytes) { events.push(["app", offset, bytes.length]); return { ok: true, status: 200, text: "ok" }; },
     async dataChunk(index, offset, bytes) { events.push(["data", index, offset, bytes.length]); return { ok: true, status: 200, text: "ok" }; },
-    async finalize() { events.push(["finalize"]); state = "done"; return { ok: true, status: 200, text: "ok" }; },
+    async finalize() { events.push(["finalize"]); state = finalizeState; return finalizeReply; },
     async cancel() { events.push(["cancel"]); state = "cancelled"; return { ok: true, status: 200, text: "ok" }; },
     get events() { return events; },
     get offer() { return offer; },
@@ -160,6 +160,26 @@ function fakeBridge() {
   assert.match(result.reason, /incomplete archives/);
   assert.equal(bridge.events.length, 0);
   console.log("PASS 6: incomplete archive is rejected before device I/O");
+}
+{
+  const bridge = fakeBridge({ finalizeState: "finalizing" });
+  const result = await restoreDataArchive(bridge, listing, manifest, payloads, { doneTimeoutMs: 1 });
+  assert.equal(result.ok, false);
+  assert.equal(result.commitUncertain, true);
+  assert.match(result.reason, /finalize accepted but no confirmation/);
+  assert.ok(bridge.events.some((e) => e[0] === "finalize"));
+  assert.equal(bridge.events.some((e) => e[0] === "cancel"), false,
+    "uncertain finalize must not cancel possibly committed APP/DATA");
+  console.log("PASS 8: finalize timeout preserves possibly committed APP/DATA and skips cancel");
+}
+{
+  const bridge = fakeBridge({ finalizeState: "failed" });
+  const result = await restoreDataArchive(bridge, listing, manifest, payloads, { doneTimeoutMs: 1 });
+  assert.equal(result.ok, false);
+  assert.equal(result.commitUncertain, undefined);
+  assert.ok(bridge.events.some((e) => e[0] === "cancel"),
+    "explicit device terminal failure remains eligible for rollback");
+  console.log("PASS 9: explicit device finalize failure remains eligible for rollback");
 }
 {
   const bridge = fakeBridge();
