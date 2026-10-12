@@ -148,6 +148,23 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
   console.log("PASS 11: DATA subtype drift is rejected before device I/O");
 }
 {
+  const nvs = new Uint8Array([0x4e, 0x56, 0x53]);
+  const manifestWithNvs = {
+    ...manifest,
+    nvs: { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) },
+  };
+  const archiveWithNvs = new Map([...payloads, ["nvs.bin", nvs]]);
+  const { device, events } = fakeDevice();
+  const result = await executeDataRestoreTransaction({
+    manifest: manifestWithNvs, payloads: archiveWithNvs, plan, device,
+    sha256Hex: async b => digest(b), chunkSize: 4,
+  });
+  assert.equal(result.committed, true);
+  assert.equal(events.some(e => /nvs/i.test(e[0])), false,
+    "NVS payload must be validated but never sent to device write methods");
+  console.log("PASS 14: NVS archive integrity is checked while destination NVS remains untouched");
+}
+{
   const { device, events } = fakeDevice();
   const duplicateAppPlan = { ...plan, playIds: [101, 101] };
   await assert.rejects(
