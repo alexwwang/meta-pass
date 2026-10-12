@@ -2627,15 +2627,6 @@ async function restoreV2ArchiveUsb() {
     throw new Error(`No fresh APP slot fits: need ${fmtBytes(plan.need)}, largest contiguous gap ${fmtBytes(plan.largestGap)}, total free ${fmtBytes(plan.totalFree)}`);
   }
   let nextCarve = insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size });
-  const dataImages = manifest.data.map((record) => {
-    const bytes = payloads.get(record.file);
-    if (!(bytes instanceof Uint8Array) || bytes.length !== record.bytes ||
-        record.bytes % DATA_SIZE_GRANULE !== 0) {
-      throw new Error("DATA payload missing or not 4 KiB aligned: " + record.file);
-    }
-    return { label: record.label, subtype: record.subtype, required_size: record.bytes,
-      initial_image_size: bytes.length, data: bytes, sha256: record.sha256 };
-  });
   let plannedData = [];
   if (dataImages.length) {
     const dataPlan = planDataReservations(nextCarve, dataImages,
