@@ -35,6 +35,25 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("multi-APP restore is not atomic", usb)
         self.assertIn("多 APP 恢复不具备原子性", usb)
 
+    def test_usb_v2_restore_revalidates_single_app_data_group_before_mutation(self):
+        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+        start = usb.index("async function restoreV2ArchiveUsb()")
+        end = usb.index('$("btn-restore").addEventListener', start)
+        restore = usb[start:end]
+        for token in (
+            "validateDataArchiveManifest(manifest)",
+            "manifest.complete !== true",
+            "manifest.slots.length !== 1",
+            "record.play_id !== archivedSlot.play_id",
+            "await validateDataArchivePayloads(manifest, payloads, sha256Hex)",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, restore)
+        self.assertLess(restore.index("manifest.slots.length !== 1"),
+                        restore.index("await loadSlotModel()"))
+        self.assertLess(restore.index("await validateDataArchivePayloads"),
+                        restore.index("await loadSlotModel()"))
+
     def test_mobile_viewport_and_page_health_are_checked(self):
         for token in ("M01 no horizontal page overflow", "responsive layout", "no console errors",
                       "no failed network requests", "320x720,360x800,390x844,430x932"):
