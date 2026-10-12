@@ -30,7 +30,8 @@ import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
-import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
+import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
+import { prepareDataArchiveRestore } from "./data-archive-restore.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -592,76 +593,24 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
   const fail = (stage, reason, extra = {}) => ({ ok: false, stage, reason, ...extra });
   try {
     const slot = validateSingleGroupRestoreManifest(manifest);
-    // NVS is global, not owned by an APP+DATA group. Validate any archived NVS
-    // bytes as part of archive integrity, but preserve the destination device's NVS:
-    // this APP/DATA transaction has no safe global-NVS commit operation.
+    // NVS is global, not owned by an APP+DATA group. The shared archive
+    // preparation validates its bytes but never writes it to the destination.
     if (listing?.slots?.some((item) => item.play_id === slot.play_id) ||
         listing?.data?.some((item) => item.play_id === slot.play_id)) {
       return fail("restore-preflight", "play_id already exists on this device; remove the existing APP group before restore");
     }
-    await validateDataArchivePayloads(manifest, payloads, sha256Hex);
-    const rawFiles = slot.files.filter((file) =>
-      file.type === "raw" || file.name.endsWith("_raw.bin"));
-    const appFiles = slot.files.filter((file) =>
-      file.type === "app" || file.name.endsWith("_firmware.bin"));
-    const tailFiles = slot.files.filter((file) => file.name.endsWith("_tail.bin") || file.type === "tail");
-    const extraFiles = slot.files.filter((file) =>
-      !rawFiles.includes(file) && !appFiles.includes(file) && !tailFiles.includes(file));
-    if (rawFiles.length + appFiles.length !== 1 || extraFiles.length ||
-        tailFiles.length > 1 || (rawFiles.length && (slot.files.length !== 1 || tailFiles.length))) {
-      return fail("restore-preflight", "archive must contain one raw-slot or APP image and at most one tail metadata sector; extra slot payloads are unsupported");
-    }
-    const appFile = rawFiles[0] || appFiles[0];
-    const rawApp = payloads instanceof Map ? payloads.get(appFile.name) : payloads?.[appFile.name];
-    if (!(rawApp instanceof Uint8Array)) {
-      return fail("restore-preflight", "APP payload missing");
-    }
     let extracted;
+    let dataImages;
+    let appSha;
     try {
-      // A raw-slot backup starts with the ESP app image and may include the tail
-      // sector; USB backups may store the firmware and tail as separate entries.
-      extracted = extractAppImage(rawApp, 0x7ffff000);
-      if (rawFiles.length) {
-        const tailStart = extracted.tailSectorOffset;
-        const tailEnd = tailStart + 4096;
-        if (rawApp.length < tailEnd) {
-          return fail("restore-preflight", "raw-slot archive is shorter than its APP tail metadata sector");
-        }
-        const tailBytes = rawApp.subarray(tailStart, tailEnd);
-        if (!extracted.tailSector && tailBytes.some((b) => b !== 0xff)) {
-          return fail("restore-preflight", "raw-slot archive contains an unrecognized non-erased tail sector");
-        }
-        if (rawApp.subarray(tailEnd).some((b) => b !== 0xff)) {
-          return fail("restore-preflight", "raw-slot archive contains unsupported non-erased extra bytes after the tail sector");
-        }
-      }
-      if (tailFiles.length) {
-        const tail = payloads instanceof Map ? payloads.get(tailFiles[0].name) : payloads?.[tailFiles[0].name];
-        if (!(tail instanceof Uint8Array) || tail.length !== 4096) {
-          return fail("restore-preflight", "tail metadata payload must be exactly one 4 KiB sector");
-        }
-        extracted = { ...extracted, tailSector: tail, tailSectorOffset: Math.ceil(extracted.length / 4096) * 4096 };
-      }
-    } catch (error) {
-      return fail("restore-preflight", "APP image invalid: " + (error?.message || String(error)));
-    }
-    const appSha = await sha256Hex(extracted.data);
-    const dataImages = [];
-    for (const record of manifest.data) {
-      const bytes = payloads instanceof Map ? payloads.get(record.file) : payloads?.[record.file];
-      if (!(bytes instanceof Uint8Array)) return fail("restore-preflight", "DATA payload missing: " + record.file);
-      if (bytes.length !== record.bytes || await sha256Hex(bytes) !== record.sha256) {
-        return fail("restore-preflight", "DATA payload verification failed: " + record.file);
-      }
-      const requiredSize = Math.ceil(record.bytes / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-      if (requiredSize !== record.bytes) {
-        return fail("restore-preflight", "DATA payload length is not 4 KiB aligned: " + record.file);
-      }
-      dataImages.push({
-        playId: slot.play_id, label: record.label, subtype: record.subtype,
-        required_size: requiredSize, initial_image_size: bytes.length, data: bytes,
-        sha256: record.sha256,
+      const prepared = await prepareDataArchiveRestore(manifest, payloads, {
+        sha256Hex, extractAppImage, dataSizeGranule: DATA_SIZE_GRANULE,
       });
+      extracted = prepared.image;
+      dataImages = prepared.dataImages;
+      appSha = prepared.appSha256;
+    } catch (error) {
+      return fail("restore-preflight", error?.message || String(error));
     }
     const geom = geomFromListing(listing, extracted.length);
     if (!geom.proposal) {
