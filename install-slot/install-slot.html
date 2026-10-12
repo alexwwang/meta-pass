@@ -302,6 +302,7 @@ import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRAN
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { buildDataArchiveManifest, validateDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
+import { prepareDataArchiveRestore } from "./data-archive-restore.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -2601,10 +2602,15 @@ async function restoreV2ArchiveUsb() {
   if (!manifest || manifest.manifest_version !== 2 || !(payloads instanceof Map)) {
     throw new Error("No validated v2 archive is loaded");
   }
-  // Revalidate at the mutation boundary. Archive parsing happened when the file
-  // was selected, but the restore path must not rely on UI-time validation alone.
-  const archivedSlot = validateSingleGroupRestoreManifest(manifest);
-  await validateDataArchivePayloads(manifest, payloads, sha256Hex);
+  // Revalidate archive bytes at the mutation boundary using the same pure
+  // preparation path as the mobile page. Transport-specific allocation/write/
+  // commit logic remains below, but archive semantics must not drift.
+  const prepared = await prepareDataArchiveRestore(manifest, payloads, {
+    sha256Hex, extractAppImage, dataSizeGranule: DATA_SIZE_GRANULE,
+  });
+  const archivedSlot = prepared.slot;
+  const image = prepared.image;
+  const dataImages = prepared.dataImages;
 
   // Re-read the durable carve after file selection; another action may have
   // changed ownership or free space before the user confirms restore.
@@ -2615,38 +2621,6 @@ async function restoreV2ArchiveUsb() {
   if (slotModel.carve.slots.some((s) => s.playId === archivedSlot.play_id) ||
       slotModel.carve.data.some((d) => d.playId === archivedSlot.play_id)) {
     throw new Error("This play_id already exists on the device. Remove the existing APP group before restore.");
-  }
-  const rawFiles = archivedSlot.files.filter((f) => f.type === "raw" || f.name.endsWith("_raw.bin"));
-  const appFiles = archivedSlot.files.filter((f) => f.type === "app" || f.name.endsWith("_firmware.bin"));
-  const tailFiles = archivedSlot.files.filter((f) => f.name.endsWith("_tail.bin") || f.type === "tail");
-  const extraFiles = archivedSlot.files.filter((f) =>
-    !rawFiles.includes(f) && !appFiles.includes(f) && !tailFiles.includes(f));
-  if (rawFiles.length + appFiles.length !== 1 || extraFiles.length || tailFiles.length > 1 ||
-      (rawFiles.length && (archivedSlot.files.length !== 1 || tailFiles.length))) {
-    throw new Error("Restore accepts one raw-slot or APP image plus at most one tail metadata sector; extra slot payloads are unsupported.");
-  }
-  const appFile = rawFiles[0] || appFiles[0];
-  const rawApp = payloads.get(appFile.name);
-  if (!(rawApp instanceof Uint8Array)) throw new Error("APP payload missing");
-  let image = extractAppImage(rawApp, 0x7ffff000);
-  if (rawFiles.length) {
-    const tailStart = image.tailSectorOffset;
-    const tailEnd = tailStart + 4096;
-    if (rawApp.length < tailEnd) throw new Error("Raw-slot archive is shorter than its APP tail metadata sector.");
-    const tailBytes = rawApp.subarray(tailStart, tailEnd);
-    if (!image.tailSector && tailBytes.some((b) => b !== 0xff)) {
-      throw new Error("Raw-slot archive contains an unrecognized non-erased tail sector.");
-    }
-    if (rawApp.subarray(tailEnd).some((b) => b !== 0xff)) {
-      throw new Error("Raw-slot archive contains unsupported non-erased extra bytes after the tail sector.");
-    }
-  }
-  if (tailFiles.length) {
-    const tail = payloads.get(tailFiles[0].name);
-    if (!(tail instanceof Uint8Array) || tail.length !== 4096) {
-      throw new Error("Tail metadata payload must be exactly one 4 KiB sector.");
-    }
-    image = { ...image, tailSector: tail, tailSectorOffset: Math.ceil(image.length / 4096) * 4096 };
   }
   const plan = planInstall(slotModel.carve, image.length, { target: "auto" });
   if (plan.action !== PLAN.CREATE) {
