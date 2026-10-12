@@ -23,6 +23,7 @@ record = (ROOT / "install-slot/dynslot-record.js").read_text(encoding="utf-8")
 usb_page = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
 phone_page = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
 smoke = (ROOT / "tools/realdevice/smoke.py").read_text(encoding="utf-8")
+run_smoke = (ROOT / "tools/realdevice/run_smoke.py").read_text(encoding="utf-8")
 
 for token, label in [
     ("esp_partition_find_first", "DATA must be resolved by label through IDF partition API"),
@@ -56,6 +57,7 @@ for token in ('stage("S1b 系统 NVS 只读 API")', 'NVS info 拒绝未认证请
     assert token in smoke, f"real-device smoke must verify NVS API safety: {token}"
 assert "expected_digest" in driver and "hashlib.sha256" in driver, "host independently checks digest"
 assert "does not select/boot launcher slots" in driver, "serial client must not claim full runtime-driver coverage"
+assert 'r"=== (S\\d+[a-z]? .+?) ==="' in run_smoke, "real-device report parser must include S1b and future lettered stages"
 assert "CONFIG_META_E2E_TEST_CONTROL" in control and "default n" in config, "launcher control must be opt-in"
 assert "meta_store_boot_slot(slot)" in control, "test control must reuse the validated production boot path"
 assert "E2E BOOT_PLAY" in control and "expect_rejection" in runtime, "deleted play ID must be rejected by launcher boot policy"
