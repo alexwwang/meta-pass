@@ -449,3 +449,15 @@ smoke 失败后不得只输出“FAIL”。
 6. 对不带 has_carve 的直接 HTTP prepare 请求验证返回 400 fresh APP carve required，且 carve 记录、分区表和既有 APP/DATA 均不改变。
 
 这项改动改变了原有“优先安装到现有空槽”的行为，因此必须重新跑受影响的 CI 和真机路径；如果当前环境没有真机，明确记录为未验证，不得用旧报告代替。
+
+
+## 15. 2026-10-12 新增：恢复事务故障注入覆盖
+
+`tools/install-slot/test-data-restore-transaction.mjs` 已纳入 `tools/validate.sh`，新增并验证以下故障边界：
+
+- APP 写入失败发生在 commit 前：不得进入 commit，必须尝试清理临时 staging。
+- commit 请求超时：结果视为不确定，不得清理 staging。
+- 模拟设备已完成持久化 commit、但响应在传输中超时：仍不得清理可能已被引用的 extent。
+- commit 返回成功后，所有权/几何读回校验失败：不得清理可能已发布的数据，必须保留状态供恢复检查。
+
+这些是 host fake-device 的事务语义测试，**不是**真实设备协议端点或 Flash 原子性的证明。云端 CI 通过后，仍需本地 agent 在目标固件上检查真实 prepare/session/chunk/finalize 路径；如果需要声称断电持久性，仍必须单独执行物理断电测试。不得把 fake-device 的 durable-commit 模拟写成真机证据。
