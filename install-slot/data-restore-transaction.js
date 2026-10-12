@@ -1,3 +1,5 @@
+import { validateDataArchiveManifest } from "./data-byte-archive.js";
+
 // install-slot/data-restore-transaction.js
 // Device-adapter orchestration for MPTB v2 restore. The adapter must resolve all
 // storage locations from device-side ownership/allocation records; callers never
