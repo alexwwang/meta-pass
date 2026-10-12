@@ -63,7 +63,7 @@ function parseArgs(argv) {
 const argv = parseArgs(process.argv.slice(2));
 if (!argv["real-device"]) {
   console.error("Refusing to touch hardware: pass --real-device explicitly.");
-  console.error("Usage: node usb_web_e2e_multi.mjs --real-device --ip <ip> --token <32hex> --serial-port <serial-port> [--play-a 1] [--play-b 2] [--port 4191]");
+  console.error("usage: node usb_web_e2e_multi.mjs --real-device --ip <ip> --token <32hex> --serial-port <serial-port> [--play-a 1] [--play-b 2] [--port 4191] [--image <merged.bin>  (R1/R2 install this local image twice via the Local file tab, no marketplace)]");
   process.exit(2);
 }
 
@@ -73,6 +73,10 @@ const PORT = Number(argv.port || process.env.META_PASS_PORT || 4191);
 const SERIAL_PORT = String(argv["serial-port"] || process.env.USB_SERIAL_PORT || "");
 const PLAY_A = String(argv["play-a"] || process.env.USB_E2E_PLAY_A || "1");
 const PLAY_B = String(argv["play-b"] || process.env.USB_E2E_PLAY_B || "2");
+// 本地固件模式:提供 --image 后 R1/R2 改用 USB 页 Local file 页签安装该
+// 镜像(两次、不同显示名),不依赖市场。专用 DATA 测试子固件
+// (tests/realdevice/data-child 合并镜像)即走此路径。
+const IMAGE = String(argv.image || process.env.USB_E2E_IMAGE || "");
 const BROWSER_CHANNEL = String(argv["browser-channel"] || "chrome");
 const PROFILE = path.resolve(String(argv.profile || path.join(LOGROOT, "usb-e2e-chrome-profile")));
 const LOGDIR = path.join(LOGROOT, "usb-web-e2e-multi-" + new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z"));
@@ -387,8 +391,60 @@ async function uiInstallPlay(playId, displayName) {
   return installLog;
 }
 
-async function uiRemoveSlot(displayName) {
-  // Override window.confirm to auto-accept
+// 本地固件安装:Local file 页签 → 选文件 → 校验 → 自动槽 → DATA 容量
+// 对话框(页面内 <dialog>,默认容量直接确认)→ 等待完成。与市场路径共用
+// 同一安装执行体,仅镜像来源不同。
+async function uiInstallLocal(imagePath, displayName) {
+  const { existsSync } = await import("node:fs");
+  if (!existsSync(imagePath)) throw new Error(`local image not found: ${imagePath}`);
+
+  await page.locator('[data-tab="local"]').click();
+  await new Promise((r) => setTimeout(r, 400));
+
+  await page.locator("#file-input").setInputFiles(imagePath);
+  await waitFor(async () => {
+    return (await page.locator("#file-info").getAttribute("class")) === "ok";
+  }, 30000, "local image validated");
+  const fileInfo = ((await page.locator("#file-info").textContent()) || "").replace(/\s+/g, " ").trim();
+  record("R", "local image validated", true, fileInfo.slice(0, 160));
+
+  await page.locator("#disp-name").fill(displayName);
+  await waitFor(async () => page.locator("#btn-install").isEnabled(), 15000, "Install enabled");
+
+  const auto = page.locator('.slot-row.auto input[name="slot"]:not([disabled])');
+  if (!(await auto.count())) throw new Error("dynslot Auto unavailable — no space for this image");
+  await auto.first().click();
+  if ((await page.locator('input[name="slot"]:checked').count()) !== 1) {
+    throw new Error("UI did not select exactly one install target");
+  }
+
+  await page.locator("#btn-install").click();
+
+  // DATA 容量对话框(镜像声明 DATA 分区时出现):默认容量 → Confirm。
+  const dialogOpened = await waitFor(async () => {
+    return page.evaluate(() => document.getElementById("data-size-dialog")?.open === true);
+  }, 15000, "data-size dialog").then(() => true).catch(() => false);
+  if (dialogOpened) {
+    await page.locator("#data-size-confirm").click();
+    record("R", "DATA sizes confirmed (defaults)", true);
+  }
+
+  await waitFor(async () => {
+    const text = await page.locator("#install-status").textContent();
+    return text && /done|success|完成|成功/i.test(text);
+  }, 240000, "UI install completion");
+
+  const installLog = (await page.locator("#log").textContent()) || "";
+  // 本地流程无商店哈希可校验,证据口径:DATA 读回校验 + 槽写入 + carve 提交。
+  if (!/read-back verified|writing slot|carve record committed|partition table materialized/i.test(installLog)) {
+    throw new Error("install log lacks flash write / carve commit / DATA read-back evidence");
+  }
+  record("R", `local image installed`, true, `displayName=${displayName}`);
+
+  return installLog;
+}
+
+async function uiRemoveSlot(displayName) {  // Override window.confirm to auto-accept
   await page.evaluate(() => {
     window.__origConfirm = window.confirm;
     window.confirm = () => true;
@@ -432,7 +488,9 @@ async function runInstallRound(roundLabel, playId, displayName, baselineSlots) {
   record(roundLabel, "connected", true, `mode=${model.mode} seq=${model.seq} carve=${model.carve}`);
 
   // Install
-  const installLog = await uiInstallPlay(playId, displayName);
+  const installLog = IMAGE
+    ? await uiInstallLocal(IMAGE, displayName)
+    : await uiInstallPlay(playId, displayName);
   writeText(`${roundLabel}-install-log.txt`, installLog);
   await page.screenshot({ path: path.join(LOGDIR, `${roundLabel}-installed.png`), fullPage: true });
 
@@ -686,6 +744,10 @@ try {
 } finally {
   await finish();
   if (page) await page.close().catch(() => {});
+  // 断开 Web Serial 后再关浏览器:避免传输层随浏览器进程被杀,
+  // 把设备留在 esptool-js/stub 半开状态(真机 2026-10-12 两次
+  // "设备整体静默、复位才恢复"的根因)。
+  try { if (page) await uiDisconnect(); } catch {}
   if (context) await context.close().catch(() => {});
   if (server) server.kill("SIGTERM");
 }
