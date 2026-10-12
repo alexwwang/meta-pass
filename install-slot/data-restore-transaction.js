@@ -47,13 +47,34 @@ export async function executeDataRestoreTransaction({
       manifestPlayIds.some((id) => !plan.playIds.includes(id))) {
     fail("restore plan APP identities do not match the manifest", "INVALID_RESTORE_PLAN");
   }
+  if (!Array.isArray(manifest.slots) || !Array.isArray(manifest.data)) {
+    fail("restore manifest is missing APP or DATA records", "INVALID_RESTORE_TRANSACTION");
+  }
+  const plannedDataByKey = new Map();
+  for (const planned of plan.data) {
+    if (!planned || !Number.isSafeInteger(planned.play_id) ||
+        typeof planned.label !== "string") {
+      fail("restore plan contains an invalid DATA identity", "INVALID_RESTORE_PLAN");
+    }
+    const key = planned.play_id + ":" + planned.label;
+    if (plannedDataByKey.has(key)) {
+      fail("restore plan contains duplicate DATA identities", "INVALID_RESTORE_PLAN");
+    }
+    plannedDataByKey.set(key, planned);
+  }
   if (manifest.data.length !== plan.data.length ||
-      manifest.data.some((record) => !plan.data.some((planned) =>
-        planned.play_id === record.play_id && planned.label === record.label &&
-        planned.bytes === record.bytes && planned.sha256 === record.sha256 &&
-        planned.file === record.file &&
-        planned.allocatedBytes === Math.ceil(record.bytes / 4096) * 4096))) {
-    fail("restore plan DATA identities do not match the manifest (including sizes)", "INVALID_RESTORE_PLAN");
+      manifest.data.some((record) => {
+        const planned = plannedDataByKey.get(record.play_id + ":" + record.label);
+        return !planned ||
+          planned.type !== record.type ||
+          planned.subtype !== record.subtype ||
+          planned.state !== record.state ||
+          planned.bytes !== record.bytes ||
+          planned.sha256 !== record.sha256 ||
+          planned.file !== record.file ||
+          planned.allocatedBytes !== Math.ceil(record.bytes / 4096) * 4096;
+      })) {
+    fail("restore plan DATA identities do not match the manifest (including types and sizes)", "INVALID_RESTORE_PLAN");
   }
   const expectedDataBytes = manifest.data.reduce((sum, record) =>
     sum + Math.ceil(record.bytes / 4096) * 4096, 0);
