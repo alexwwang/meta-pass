@@ -73,3 +73,31 @@ async function fixture(dataBytes) {
   );
   console.log("PASS 4: malformed APP extractor metadata is rejected before restore mutation");
 }
+
+
+{
+  const data = new Uint8Array(4096).fill(0x5a);
+  const { manifest, payloads } = await fixture(data);
+  await assert.rejects(
+    prepareDataArchiveRestore(manifest, payloads, {
+      sha256Hex,
+      maxImageBytes: 4,
+      extractAppImage: (bytes) => ({ data: bytes.slice(0, 5), length: 5, tailSector: null, tailSectorOffset: 4096 }),
+    }),
+    /APP image extractor returned invalid image metadata/,
+  );
+  console.log("PASS 5: extracted APP payload cannot exceed the destination image limit");
+}
+
+{
+  const data = new Uint8Array(4096).fill(0x5a);
+  const { manifest, payloads } = await fixture(data);
+  await assert.rejects(
+    prepareDataArchiveRestore(manifest, payloads, {
+      sha256Hex,
+      extractAppImage: (bytes) => ({ data: bytes.slice(0, 4), length: 4, tailSector: null, tailSectorOffset: 8192 }),
+    }),
+    /APP image extractor returned invalid image metadata/,
+  );
+  console.log("PASS 6: extracted APP tail metadata offset must match the aligned image end");
+}
