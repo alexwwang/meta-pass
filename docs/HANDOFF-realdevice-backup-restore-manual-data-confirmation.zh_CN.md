@@ -26,8 +26,8 @@ Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.m
 
 - 代码工作仍在 `feat/storage`，不要切换到 `main` 上开发。
 - 最近一轮加入了共享 v2 归档恢复预处理模块 `install-slot/data-archive-restore.js`，由手机端和 USB 页面共同使用，并加入宿主测试 `tools/install-slot/test-data-archive-restore.mjs`。
-- 这轮静态 CI 曾报告失败，失败日志涉及 USB 恢复 contract test 仍在断言旧的内联验证实现；仓库当前测试已调整为检查共享预处理路径。必须在当前最新 HEAD 重新运行验证，并确认最新 CI 结果，不能引用旧 run 作为通过证据。
-- 固件构建在最近一次检查时仍处于进行中；以当前 commit 对应的最新 CI 结果为准。
+- 近期 CI 曾先后出现旧版 USB 恢复 contract 断言不匹配，以及静态检查发现本中文 handoff 缺少英文默认文档的问题。共享预处理 contract 已更新，并已补齐英文文档及双向语言链接；仍必须在当前最新 HEAD 重新确认静态检查结果，不能把修复前的失败或旧 commit 的 PASS 当作当前结论。
+- 最新代码改动的静态检查与固件构建状态尚未全部确认；以当前 commit 对应的最新 CI 结果为准。
 - 进入真机测试前，先确认当前工作区/commit、宿主测试和固件构建状态。若静态检查或构建失败，先修复代码并重新验证，不要用真机测试掩盖代码门禁失败。
 
 建议开始命令：
