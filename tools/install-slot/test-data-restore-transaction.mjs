@@ -192,3 +192,25 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
   assert.equal(events.length, 0, "invalid payload must be rejected before device writes");
   console.log("PASS 9: mutated payload is rejected before opening device transaction");
 }
+
+for (const rejection of ["transport reset", null]) {
+  const { device: baseDevice, events, staged } = fakeDevice();
+  const device = {
+    ...baseDevice,
+    async commitRestore() { events.push(["commitNonErrorRejection"]); throw rejection; },
+  };
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b) }),
+    (error) => {
+      assert.equal(error instanceof Error, true);
+      assert.equal(error.restoreStateUncertain, true);
+      assert.equal(error.code, "RESTORE_COMMIT_UNCERTAIN");
+      assert.match(error.message, /commit may have started/);
+      return true;
+    },
+  );
+  assert.equal(events.some(e => e[0] === "cleanup"), false,
+    "non-Error commit rejection must not trigger staging cleanup");
+  assert.equal(staged(), true);
+}
+console.log("PASS 15: string/null commit rejections are normalized without losing uncertain-state protection");
