@@ -103,10 +103,10 @@ idf.py -p /dev/ttyACM0 monitor --timestamps
 
 ## 5. 真机自动化入口
 
-主入口：
+主入口必须使用包装器，以生成独立证据目录和机器可读报告：
 
 ```bash
-python3 tools/realdevice/smoke.py \
+python3 tools/realdevice/run_smoke.py \
   --ip <PASSPORT_IP> \
   --port /dev/cu.usbmodemXXXX
 ```
@@ -114,11 +114,13 @@ python3 tools/realdevice/smoke.py \
 首次干净环境：
 
 ```bash
-python3 tools/realdevice/smoke.py \
+python3 tools/realdevice/run_smoke.py \
   --ip <PASSPORT_IP> \
   --port /dev/cu.usbmodemXXXX \
   --fresh
 ```
+
+只有在调试 smoke 脚本本身时才直接调用 `smoke.py`；直接调用不会生成完整的 `report.json/report.md`。
 
 `--fresh` 会擦除 WiFi/NVS；只有在允许重新配网时使用。
 
