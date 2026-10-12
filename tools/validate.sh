@@ -303,6 +303,7 @@ PATHCHECK
         "${node_bin}" tools/install-slot/test-slot-backup.mjs
         "${node_bin}" tools/install-slot/test-backup-data.mjs
         "${node_bin}" tools/install-slot/test-data-byte-archive.mjs
+        "${node_bin}" tools/install-slot/test-data-archive-zip.mjs
         "${node_bin}" tools/install-slot/test-phone-data-read-bridge.mjs
         "${node_bin}" tools/install-slot/test-launcher-upgrade.mjs
         "${node_bin}" tools/install-slot/test-readflash-protocol.mjs
