@@ -195,9 +195,12 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
 {
   const bridge = fakeBridge();
   const withNvs = { ...manifest, nvs: { file: "nvs.bin", bytes: 4096, sha256: sha(data) } };
-  const result = await restoreDataArchive(bridge, listing, withNvs, payloads);
-  assert.equal(result.ok, false);
-  assert.match(result.reason, /global NVS/);
-  assert.equal(bridge.events.length, 0);
-  console.log("PASS 10: global NVS is never silently restored outside the APP/DATA transaction");
+  const withNvsPayload = new Map(payloads);
+  withNvsPayload.set("nvs.bin", data);
+  const result = await restoreDataArchive(bridge, listing, withNvs, withNvsPayload);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.nvsPreserved, true);
+  assert.ok(bridge.events.some((e) => e[0] === "finalize"));
+  assert.equal(bridge.events.some((e) => e[0] === "nvs-write"), false);
+  console.log("PASS 10: v2 archive NVS bytes are verified but destination NVS is preserved");
 }
