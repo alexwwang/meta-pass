@@ -102,6 +102,51 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
   console.log("PASS 8: plan identities must exactly match the archive manifest");
 }
 {
+  const secondData = new Uint8Array([2, 4, 6]);
+  const digest2 = digest(secondData);
+  const manifestWithTwoData = {
+    ...manifest,
+    data: [
+      manifest.data[0],
+      { play_id: 101, label: "other_cfg", type: 1, subtype: 64, state: 1,
+        bytes: secondData.length, sha256: digest2, file: "data/101/1.bin" },
+    ],
+  };
+  // Same length as the manifest, but duplicates the first identity and omits
+  // the second. A length + Array.some comparison would incorrectly accept this.
+  const duplicatePlan = {
+    ...plan,
+    dataBytes: 8192,
+    data: [plan.data[0], { ...plan.data[0] }],
+  };
+  const { device, events } = fakeDevice();
+  await assert.rejects(
+    executeDataRestoreTransaction({
+      manifest: manifestWithTwoData,
+      payloads: new Map([...payloads, ["data/101/1.bin", secondData]]),
+      plan: duplicatePlan,
+      device,
+      sha256Hex: async b => digest(b),
+    }),
+    /duplicate DATA identities|DATA identities do not match/,
+  );
+  assert.equal(events.length, 0, "duplicate plan identities must fail before device I/O");
+  console.log("PASS 10: duplicate DATA plan identities cannot stand in for a missing reservation");
+}
+{
+  const mismatchedPlan = {
+    ...plan,
+    data: [{ ...plan.data[0], subtype: 65 }],
+  };
+  const { device, events } = fakeDevice();
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }),
+    /DATA identities do not match/,
+  );
+  assert.equal(events.length, 0, "DATA type metadata must match before device I/O");
+  console.log("PASS 11: DATA subtype drift is rejected before device I/O");
+}
+{
   const bad = new Map(payloads);
   bad.set("data/101/0.bin", new Uint8Array([1, 1, 1]));
   const { device, events } = fakeDevice();
