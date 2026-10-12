@@ -43,6 +43,16 @@ export async function prepareDataArchiveRestore(manifest, payloads, {
   if (!(rawApp instanceof Uint8Array)) throw new Error("APP payload missing");
 
   let image = extractAppImage(rawApp, maxImageBytes);
+  // The extractor is transport-supplied, but its output is a trust boundary:
+  // malformed metadata must fail before either restore path allocates or writes.
+  if (!image || !(image.data instanceof Uint8Array) || image.data.length === 0 ||
+      image.length !== image.data.length ||
+      !Number.isSafeInteger(image.tailSectorOffset) ||
+      image.tailSectorOffset < image.length || image.tailSectorOffset % 4096 !== 0 ||
+      (image.tailSector != null &&
+        (!(image.tailSector instanceof Uint8Array) || image.tailSector.length !== 4096))) {
+    throw new Error("APP image extractor returned invalid image metadata");
+  }
   if (rawFiles.length) {
     const tailStart = image.tailSectorOffset;
     const tailEnd = tailStart + 4096;
