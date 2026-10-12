@@ -2597,13 +2597,27 @@ async function restoreV2ArchiveUsb() {
   if (!manifest || manifest.manifest_version !== 2 || !(payloads instanceof Map)) {
     throw new Error("No validated v2 archive is loaded");
   }
+  // Revalidate at the mutation boundary. Archive parsing happened when the file
+  // was selected, but the restore path must not rely on UI-time validation alone.
+  validateDataArchiveManifest(manifest);
+  if (manifest.complete !== true || (manifest.missing_slots || []).length) {
+    throw new Error("Incomplete archives cannot be restored.");
+  }
+  if (manifest.slots.length !== 1) {
+    throw new Error("Restore one complete APP+DATA group at a time; multi-APP atomic restore is not supported.");
+  }
+  const archivedSlot = manifest.slots[0];
+  if (manifest.data.some((record) => record.play_id !== archivedSlot.play_id)) {
+    throw new Error("Every DATA record must belong to the archived APP group.");
+  }
+  await validateDataArchivePayloads(manifest, payloads, sha256Hex);
+
   // Re-read the durable carve after file selection; another action may have
   // changed ownership or free space before the user confirms restore.
   await loadSlotModel();
   if (!isDynMode(slotModel.mode) || !slotModel.carve || !carveValid(slotModel.carve)) {
     throw new Error("Transactional APP+DATA restore requires a valid dynamic carve record");
   }
-  const archivedSlot = manifest.slots[0];
   if (slotModel.carve.slots.some((s) => s.playId === archivedSlot.play_id) ||
       slotModel.carve.data.some((d) => d.playId === archivedSlot.play_id)) {
     throw new Error("This play_id already exists on the device. Remove the existing APP group before restore.");
