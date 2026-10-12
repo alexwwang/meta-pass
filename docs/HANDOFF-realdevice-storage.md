@@ -124,7 +124,7 @@ Read partition table, carve store and DATA extent from flash. Byte-compare the D
 
 On failure preserve:
 - full stdout/stderr;
-- UART log and tail;
+- UART log and tail (persisted UART logs must redact session tokens; pairing still uses the unredacted in-memory line);
 - slots/status observations;
 - executed commands and exit codes;
 - partition/store/DATA dumps when safe;
@@ -132,7 +132,7 @@ On failure preserve:
 - failure category.
 
 Suggested categories:
-ENV_MISSING, USB_PORT, USB_BUSY, FIRMWARE_FLASH, BOOT, AUTH, CAPACITY, CARVE, APP_UPLOAD, DATA_UPLOAD, DATA_RESUME, DATA_FINALIZE, ARCHIVE, REBOOT_RECOVERY, FLASH_VERIFY, POWER_LOSS_UNTESTED, UNKNOWN.
+ENV_MISSING, USB_PORT, USB_BUSY, FIRMWARE_FLASH, BOOT, AUTH, NVS_API, CAPACITY, CARVE, APP_UPLOAD, DATA_UPLOAD, DATA_RESUME, DATA_FINALIZE, ARCHIVE, REBOOT_RECOVERY, FLASH_VERIFY, POWER_LOSS_UNTESTED, UNKNOWN.
 
 ## Attribution
 
