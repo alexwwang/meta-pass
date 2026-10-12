@@ -29,7 +29,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("Legacy v1 archives retain sequential APP/NVS restore compatibility", usb)
         self.assertIn("v2 恢复支持单个完整 APP+DATA 组并拒绝全局 NVS", usb)
         self.assertIn("旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径", usb)
-        self.assertIn("Multi-APP restores are not atomic", usb)
+        self.assertIn("multi-APP restore is not atomic", usb)
         self.assertIn("多 APP 恢复不具备原子性", usb)
 
     def test_mobile_viewport_and_page_health_are_checked(self):
