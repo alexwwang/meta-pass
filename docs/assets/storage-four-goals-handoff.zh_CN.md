@@ -113,9 +113,9 @@ node tools/realdevice/usb_web_e2e_multi.mjs --help
 | 备份 | manifest 与所有 APP/DATA 载荷的长度和 SHA-256 相符 | ZIP 校验报告 |
 | 恢复 | 完整预检、地址由设备端分配、写后读回、提交后重读验证 | 模拟故障矩阵 + 真机证据 |
 | v1 旧归档 | 明确标识不含 DATA | UI/测试断言 |
-| MPTB v2 恢复暂未实现 | 必须 fail-closed，不能提示恢复成功 | 自动化测试 |
+| APP+DATA v2 恢复实现 | 当前手机页/USB 页均有分阶段恢复事务；仍需真机恢复 E2E 验证 | 自动化测试 + 真机证据 |
 
-**恢复功能特别说明：** `install-slot/data-restore-plan.js` 当前只是纯预检计划，不执行 Flash 写入，也不是完整恢复实现。若端到端恢复尚未实现，必须将第 1 项标为未完成，不得通过改 UI 文案或预检测试来宣称完成。
+**恢复功能特别说明：** `install-slot/data-restore-plan.js` 是地址无关的预检辅助模块，不单独执行 Flash 写入；实际恢复入口已分别存在于手机页 `phone-install.js::restoreDataArchive()` 和 USB 页 `restoreV2ArchiveUsb()`，通过设备端安装事务写入 APP/DATA 并在提交前读回验证。代码/自动化测试存在不等于真机恢复验收完成：本轮报告中的真机备份/恢复仍为 NOT RUN，必须保留此状态，直到真机恢复 E2E 有完整证据。
 
 ## 5. 分区布局评估要求
 
