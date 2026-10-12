@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restores complete single-group v2 APP+DATA archives or legacy v1 APP/NVS archives. Multi-APP atomic restore and global NVS restore are not supported.</p>
+    <p class="subtitle" data-i18n="restore_desc">v2 restores one complete APP+DATA group and rejects global NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility; multi-APP restores are not atomic.</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
