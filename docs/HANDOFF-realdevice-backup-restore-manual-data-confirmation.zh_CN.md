@@ -1,5 +1,7 @@
 # Handoff｜feat/storage 备份/恢复真机验收（含人工 DATA 确认门禁）
 
+Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.md)
+
 日期：2026-10-12  
 目标分支：`feat/storage`  
 适用范围：手机内嵌页面、USB 服务页面的 APP + DATA 备份/恢复，以及真实设备上 DATA 存取确认。
