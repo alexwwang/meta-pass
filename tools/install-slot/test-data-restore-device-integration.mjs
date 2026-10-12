@@ -170,7 +170,7 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
   assert.ok(bridge.events.some((e) => e[0] === "finalize"));
   assert.equal(bridge.events.some((e) => e[0] === "cancel"), false,
     "uncertain finalize must not cancel possibly committed APP/DATA");
-  console.log("PASS 8: finalize timeout preserves possibly committed APP/DATA and skips cancel");
+  console.log("PASS 7: finalize timeout preserves possibly committed APP/DATA and skips cancel");
 }
 {
   const bridge = fakeBridge({ finalizeState: "done", finalizeThrows: true });
@@ -181,7 +181,7 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
   assert.match(result.reason, /commit state is uncertain/);
   assert.equal(bridge.events.some((e) => e[0] === "cancel"), false,
     "transport failure after finalize dispatch must not trigger rollback");
-  console.log("PASS 9: finalize transport exception is reported as uncertain and skips cancel");
+  console.log("PASS 8: finalize transport exception is reported as uncertain and skips cancel");
 }
 {
   const bridge = fakeBridge({ finalizeState: "failed" });
@@ -190,7 +190,7 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
   assert.equal(result.commitUncertain, undefined);
   assert.ok(bridge.events.some((e) => e[0] === "cancel"),
     "explicit device terminal failure remains eligible for rollback");
-  console.log("PASS 10: explicit device finalize failure remains eligible for rollback");
+  console.log("PASS 9: explicit device finalize failure remains eligible for rollback");
 }
 {
   const bridge = fakeBridge();
@@ -199,5 +199,5 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
   assert.equal(result.ok, false);
   assert.match(result.reason, /global NVS/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 7: global NVS is never silently restored outside the APP/DATA transaction");
+  console.log("PASS 10: global NVS is never silently restored outside the APP/DATA transaction");
 }
