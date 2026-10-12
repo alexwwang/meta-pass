@@ -190,7 +190,7 @@
 
   <section>
     <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">Backs up selected APP images and owned DATA bytes when dynslot ownership metadata is available; legacy layouts remain APP-only.</p>
+    <p class="subtitle" data-i18n="backup_desc">In dynamic mode, back up one complete APP+DATA group per archive; legacy layouts remain APP-only.</p>
     <p>
       <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
       <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
@@ -894,15 +894,16 @@ const I18N = {
     msg_orphan_slot_warning: "Warning: slot geometry was committed but firmware write failed. The slot is allocated but empty — reinstall or delete it to avoid boot issues.",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
-    backup_desc: "Backs up selected APP images and owned DATA bytes when dynslot ownership metadata is available; legacy layouts remain APP-only.",
+    backup_desc: "In dynamic mode, back up one complete APP+DATA group per archive; legacy layouts remain APP-only.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "v2 restores one complete APP+DATA group and rejects global NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility; multi-APP restores are not atomic.",
+    restore_desc: "v2 restores one complete APP+DATA group and rejects global NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility (multi-APP restore is not atomic).",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
-    data_backup_unavailable: "USB dynslot backups can include verified DATA bytes. v2 restore supports one complete APP+DATA group and rejects global NVS; legacy v1 archives retain sequential APP/NVS restore compatibility. Multi-APP restores are not atomic. Removing an APP also deletes its owned DATA.",
+    data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive. v2 restore rejects global NVS; legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
+    msg_backup_single_group: "Dynamic-mode backup supports one APP+DATA group per archive. Select exactly one APP slot.",
     msg_backup_start: "Backing up slots…",
     msg_backup_reading: "Reading slot {slot} ({size} at {addr})… this can take a minute per slot.",
     msg_backup_slot_done: "Slot {slot}: {firmware}",
@@ -1106,15 +1107,16 @@ const I18N = {
     msg_orphan_slot_warning: "警告:槽位几何已提交但固件写入失败。槽位已分配但为空——请重新安装或删除该槽位,以免设备启动异常。",
     // 备份/恢复流程
     step_backup: "5. 备份子固件(读取槽位 → zip)",
-    backup_desc: "有 dynslot 所有权元数据时，会备份所选 APP 镜像及其关联 DATA 字节；旧布局仍仅备份 APP。",
+    backup_desc: "动态存储模式下每个归档备份一个完整 APP+DATA 组；旧布局仍仅备份 APP。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组，并拒绝全局 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径，多 APP 恢复不具备原子性。",
+    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组，并拒绝全局 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径（多 APP 恢复不具备原子性）。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
-    data_backup_unavailable: "USB 的 dynslot 备份可包含经校验的 DATA 字节；v2 恢复支持单个完整 APP+DATA 组并拒绝全局 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径，多 APP 恢复不具备原子性。删除 APP 会同时删除其关联 DATA。",
+    data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。v2 恢复拒绝全局 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
+    msg_backup_single_group: "动态存储模式下每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
     msg_backup_start: "开始备份槽位…",
     msg_backup_reading: "读取槽位 {slot}({size} @ {addr})… 每个槽位可能需要一分钟。",
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
@@ -2231,6 +2233,13 @@ $("btn-backup").addEventListener("click", async () => {
   const slots = deviceSlots.map((_, i) => i).filter((i) => $(`bk-slot${i}`)?.checked);
   if (slots.length === 0) {
     $("backup-status").textContent = t("msg_backup_pick_slot");
+    return;
+  }
+  // v2 restore is deliberately one APP+DATA transaction, matching the mobile page.
+  // Do not create a multi-group v2 archive that this UI cannot restore.
+  if (isDynMode(slotModel.mode) && slots.length !== 1) {
+    $("backup-status").textContent = t("msg_backup_single_group");
+    log(t("msg_backup_single_group"), "warn");
     return;
   }
   busy = true;
