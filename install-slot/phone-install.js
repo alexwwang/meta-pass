@@ -1507,6 +1507,14 @@ export function boot(opts = {}) {
         return bytes;
       };
       const nvsBytes = await readNvsSnapshot();
+      // Raw partition reads are chunked, so reject an obvious concurrent NVS mutation
+      // instead of packaging a mixed snapshot. This is a stability check, not a
+      // flash-level atomic snapshot guarantee.
+      const nvsVerification = await readNvsSnapshot();
+      if (nvsBytes.length !== nvsVerification.length ||
+          nvsBytes.some((byte, index) => byte !== nvsVerification[index])) {
+        throw new Error("备份期间系统 NVS 发生变化；为避免生成混合快照，请稍后重试");
+      }
       const nvsSha256 = await sha256Hex(nvsBytes);
 
       // Re-fetch ownership and install state after byte reads. A changed mapping or
@@ -1610,7 +1618,7 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">数据备份</h4>
-      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256。恢复支持完整的单个 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。多 APP 原子恢复暂不支持。卸载 APP 会永久删除设备上的关联数据。</p>\n      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-restore-pick class="mp-btn ghost" type=button>从备份恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
+      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256。恢复支持完整的单个 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。多 APP 原子恢复暂不支持。卸载 APP 会永久删除设备上的关联数据。 系统 NVS 可能包含 Wi-Fi 凭证等敏感配置，请妥善保管备份文件。</p>\n      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-restore-pick class="mp-btn ghost" type=button>从备份恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
