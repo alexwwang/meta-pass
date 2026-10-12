@@ -282,5 +282,23 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                 self.assertIn(token, DESIGN)
 
 
+    def test_mobile_nvs_reads_are_fixed_partition_authenticated_and_bounded(self):
+        mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+        for token in ('"/api/install/nvs/info"', '"/api/install/nvs/read"',
+                      "nvsInfo: () => call", "nvsRead: (offset, length)",
+                      "length > 4096", 'nvs: { file: "nvs.bin"',
+                      "正在备份系统 NVS", "NVS 只校验、不写入"):
+            with self.subTest(token=token):
+                self.assertIn(token, mobile)
+        for token in ("h_install_nvs_info", "h_install_nvs_read",
+                      "ESP_PARTITION_SUBTYPE_DATA_NVS, \"nvs\"",
+                      "origin_allowed(req)", "req_token_ok(req)",
+                      "length > INSTALL_IO_BUF", "esp_partition_read(part, offset, read_buf, length)",
+                      "offset > part->size || length > part->size - offset",
+                      '"/api/install/nvs/info"', '"/api/install/nvs/read"'):
+            with self.subTest(token=token):
+                self.assertIn(token, DEVICE)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
