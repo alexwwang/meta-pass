@@ -158,7 +158,7 @@ for token, label in [
 ]:
     assert token in read_handler, f"missing DATA read API contract: {label}"
 assert "httpd_resp_set_hdr(req, \"Cache-Control\", \"no-store\")" in read_handler, "DATA read responses must not be cached"
-assert "USB 的 dynslot 备份可包含经校验的 DATA 字节" in usb_page, "Chinese UI must disclose DATA export/restore boundary"
+assert "USB 动态存储模式备份可包含经校验的 DATA 字节" in usb_page, "Chinese UI must disclose DATA export/restore boundary"
 assert "commitCarve(nextCarve, { materialize: deferredDataInstall })" in usb_page, "DATA-bearing APP install must commit APP+DATA as one carve/table transaction"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
