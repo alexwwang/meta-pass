@@ -1778,25 +1778,27 @@ $("btn-connect").addEventListener("click", async () => {
       log(t("msg_slot_table_read_failed", { err: err.message }), "warn");
     }
   } catch (err) {
-    // 失败必须释放本轮已打开的串口:否则下次 open 同一端口会抛
-    // "The port is already open",设备从此连不上(只能重开页面)。
-    // 用户在 requestPort 取消选择时不碰已有连接。
-    try { await newTransport?.disconnect(); } catch { /* 已断开则忽略 */ }
     // 连接握手(esptool-js sync)会先把芯片置进 ROM 下载模式再回 app;
     // 链路中途失败(读超时/拔线)时芯片被留在 stub——app 不跑、WiFi 不起、
     // 无串口输出,表象如"设备死机",esptool 硬复位才恢复(真机 2026-10-12
-    // 多回定案)。这里在失败时主动 DTR/RTS 复位回应用固件,免用户手动断电。
+    // 多回定案)。必须在 disconnect() 关闭 Web Serial 端口前发复位信号；
+    // 关闭后 setSignals 会失败，不能完成恢复。
     // 仅在已拿到端口并尝试过同步(newTransport 存在)时执行;用户取消端口
     // 选择器(newTransport 为空)绝不复位用户设备。
     const failedPort = newTransport?.device;
     if (failedPort) {
       try {
+        // Match esptool-js's ESP32 reset pulse: hold EN, release with boot pin high.
         await failedPort.setSignals({ dataTerminalReady: false, requestToSend: true });
         await new Promise((r) => setTimeout(r, 120));
-        await failedPort.setSignals({ requestToSend: false });
+        await failedPort.setSignals({ dataTerminalReady: true, requestToSend: false });
+        await new Promise((r) => setTimeout(r, 120));
+        await failedPort.setSignals({ dataTerminalReady: false, requestToSend: false });
         log(t("msg_reset_to_app"), "warn");
-      } catch { /* 端口已被系统回收则设备多半已自行恢复 */ }
+      } catch { /* cable/port may already be gone; still release transport below */ }
     }
+    // 复位尝试后再释放串口，否则下次 open 同一端口会抛 "The port is already open"。
+    try { await newTransport?.disconnect(); } catch { /* 已断开则忽略 */ }
     if (transport === newTransport) { transport = null; loader = null; }  // 已提交过则整体回滚
     if (!transport) {   // 没有存活连接才把状态行置为失败,避免覆盖有效连接的显示
       $("chip-status").textContent = t("msg_connect_failed", { err: err.message });
