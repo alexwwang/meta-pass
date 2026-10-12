@@ -38,6 +38,11 @@ export async function executeDataRestoreTransaction({
       !Array.isArray(plan.data) || !device || typeof sha256Hex !== "function") {
     fail("invalid restore transaction inputs", "INVALID_RESTORE_TRANSACTION");
   }
+  try {
+    validateDataArchiveManifest(manifest);
+  } catch (error) {
+    fail("invalid restore manifest: " + (error?.message || String(error)), "INVALID_RESTORE_TRANSACTION");
+  }
   if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 4096) {
     fail("restore chunk size must be between 1 and 4096 bytes", "INVALID_RESTORE_TRANSACTION");
   }
@@ -46,6 +51,7 @@ export async function executeDataRestoreTransaction({
   }
   const manifestPlayIds = manifest.slots.map((slot) => slot.play_id);
   if (new Set(manifestPlayIds).size !== manifestPlayIds.length ||
+      new Set(plan.playIds).size !== plan.playIds.length ||
       manifestPlayIds.length !== plan.playIds.length ||
       manifestPlayIds.some((id) => !plan.playIds.includes(id))) {
     fail("restore plan APP identities do not match the manifest", "INVALID_RESTORE_PLAN");
