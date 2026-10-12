@@ -150,7 +150,7 @@ function fakeBridge() {
   assert.equal(result.ok, false);
   assert.match(result.reason, /play_id already exists/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 3: conflicting play_id is rejected before device I/O");
+  console.log("PASS 5: conflicting play_id is rejected before device I/O");
 }
 {
   const bridge = fakeBridge();
@@ -159,7 +159,7 @@ function fakeBridge() {
   assert.equal(result.ok, false);
   assert.match(result.reason, /incomplete archives/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 4: incomplete archive is rejected before device I/O");
+  console.log("PASS 6: incomplete archive is rejected before device I/O");
 }
 {
   const bridge = fakeBridge();
@@ -168,5 +168,5 @@ function fakeBridge() {
   assert.equal(result.ok, false);
   assert.match(result.reason, /global NVS/);
   assert.equal(bridge.events.length, 0);
-  console.log("PASS 5: global NVS is never silently restored outside the APP/DATA transaction");
+  console.log("PASS 7: global NVS is never silently restored outside the APP/DATA transaction");
 }
