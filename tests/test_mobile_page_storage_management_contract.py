@@ -298,6 +298,10 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       '"/api/install/nvs/info"', '"/api/install/nvs/read"'):
             with self.subTest(token=token):
                 self.assertIn(token, DEVICE)
+        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+        self.assertIn("Backup ZIP files are unencrypted", usb)
+        self.assertIn("备份 ZIP 未加密", usb)
+        self.assertIn("备份 ZIP 未加密", mobile)
 
 
 if __name__ == "__main__":
