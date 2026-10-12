@@ -143,13 +143,23 @@ class Api:
             h["X-Meta-Session"] = self.token
         return h | (extra or {})
 
-    def get(self, path):
-        req = urllib.request.Request(self.base + path, headers=self._hdr())
+    def get_response(self, path, extra=None):
+        req = urllib.request.Request(self.base + path, headers=self._hdr(extra))
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status, r.read()
+                return r.status, r.read(), dict(r.headers.items())
         except urllib.error.HTTPError as e:
-            return e.code, e.read()
+            return e.code, e.read(), dict(e.headers.items())
+
+    def get(self, path):
+        status, body, _ = self.get_response(path)
+        return status, body
+
+    def nvs_read(self, offset, length):
+        return self.get_response("/api/install/nvs/read", {
+            "X-Meta-Offset": str(offset),
+            "X-Meta-Length": str(length),
+        })
 
     def post(self, path, body=b"", ctype="application/json"):
         req = urllib.request.Request(self.base + path, data=body,
@@ -454,6 +464,40 @@ def main():
             die("pair 返回的 token 与串口不一致", mon)
         api.token = token1
         ok("pair → token(一次性)")
+
+    # ── S1b 手机备份底层 NVS 只读 API 安全边界 ────────────────────────
+    stage("S1b 系统 NVS 只读 API")
+    unauth = Api(args.ip)
+    st, body = unauth.get("/api/install/nvs/info")
+    if st != 401:
+        die(f"NVS info 未认证应返回 401，实际 {st} {body[:120]!r}", mon)
+    ok("NVS info 拒绝未认证请求")
+    st, body = api.get("/api/install/nvs/info")
+    if st != 200:
+        die(f"NVS info {st} {body[:160]!r}", mon)
+    try:
+        nvs_info = json.loads(body)
+        nvs_size = nvs_info["size"]
+    except (ValueError, KeyError, TypeError):
+        die(f"NVS info JSON 无效: {body[:160]!r}", mon)
+    if not isinstance(nvs_size, int) or isinstance(nvs_size, bool) or not 0 < nvs_size <= 1024 * 1024:
+        die(f"NVS size 超出允许范围: {nvs_size!r}", mon)
+    st, first, headers = api.nvs_read(0, min(16, nvs_size))
+    if st != 200 or len(first) != min(16, nvs_size):
+        die(f"NVS 首块读取失败: HTTP {st}, bytes={len(first)}", mon)
+    if headers.get("Cache-Control", "").lower() != "no-store":
+        die(f"NVS 读取未设置 Cache-Control: no-store: {headers.get('Cache-Control')!r}", mon)
+    tail_len = min(16, nvs_size)
+    st, last, _ = api.nvs_read(nvs_size - tail_len, tail_len)
+    if st != 200 or len(last) != tail_len:
+        die(f"NVS 尾块读取失败: HTTP {st}, bytes={len(last)}", mon)
+    st, body, _ = api.nvs_read(nvs_size - 1, 2)
+    if st != 416:
+        die(f"NVS 越界读取应返回 416，实际 {st} {body[:120]!r}", mon)
+    st, body, _ = unauth.nvs_read(0, 16)
+    if st != 401:
+        die(f"NVS read 未认证应返回 401，实际 {st} {body[:120]!r}", mon)
+    ok(f"NVS 固定分区读取/边界/未认证/no-store 检查通过(size={nvs_size}；不记录 NVS 原始字节)")
 
     def slots():
         st, body = api.get("/api/install/slots")
