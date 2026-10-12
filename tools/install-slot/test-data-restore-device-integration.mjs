@@ -105,6 +105,45 @@ function fakeBridge() {
   console.log("PASS 2: USB-style firmware + tail archive is restored through the same mobile transaction");
 }
 {
+  const tailStart = Math.ceil(app.length / 4096) * 4096;
+  const corruptTailSlot = rawSlot.slice();
+  corruptTailSlot[tailStart] = 0x00;
+  const corruptManifest = buildDataArchiveManifest({
+    slots: [{ play_id: 565, source_slot: 0, name: "corrupt-tail",
+      files: [{ name: "slot0_raw.bin", bytes: corruptTailSlot.length,
+        sha256: sha(corruptTailSlot), type: "raw" }] }],
+    data: [{ play_id: 565, label: "cfg_save", type: 1, subtype: 0x82,
+      state: 1, bytes: data.length, sha256: sha(data) }],
+  });
+  const bridge = fakeBridge();
+  const result = await restoreDataArchive(bridge, listing, corruptManifest, new Map([
+    ["slot0_raw.bin", corruptTailSlot], [corruptManifest.data[0].file, data],
+  ]));
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /unrecognized non-erased tail sector/);
+  assert.equal(bridge.events.length, 0);
+  console.log("PASS 3: raw-slot restore rejects an unrecognized non-erased tail sector before device I/O");
+}
+{
+  const extraTailSlot = rawSlot.slice();
+  extraTailSlot[Math.ceil(app.length / 4096) * 4096 + 4096] = 0x00;
+  const extraManifest = buildDataArchiveManifest({
+    slots: [{ play_id: 566, source_slot: 0, name: "extra-tail",
+      files: [{ name: "slot0_raw.bin", bytes: extraTailSlot.length,
+        sha256: sha(extraTailSlot), type: "raw" }] }],
+    data: [{ play_id: 566, label: "cfg_save", type: 1, subtype: 0x82,
+      state: 1, bytes: data.length, sha256: sha(data) }],
+  });
+  const bridge = fakeBridge();
+  const result = await restoreDataArchive(bridge, listing, extraManifest, new Map([
+    ["slot0_raw.bin", extraTailSlot], [extraManifest.data[0].file, data],
+  ]));
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /unsupported non-erased extra bytes/);
+  assert.equal(bridge.events.length, 0);
+  console.log("PASS 4: raw-slot restore rejects non-erased bytes after the tail sector before device I/O");
+}
+{
   const bridge = fakeBridge();
   const collision = { ...listing, slots: [...listing.slots, { ...listing.slots[0], slot: 1, play_id: 563 }] };
   const result = await restoreDataArchive(bridge, collision, manifest, payloads);
