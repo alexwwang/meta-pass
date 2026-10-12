@@ -301,7 +301,7 @@ import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
-import { buildDataArchiveManifest, validateDataArchiveManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
+import { buildDataArchiveManifest, validateDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -2603,17 +2603,7 @@ async function restoreV2ArchiveUsb() {
   }
   // Revalidate at the mutation boundary. Archive parsing happened when the file
   // was selected, but the restore path must not rely on UI-time validation alone.
-  validateDataArchiveManifest(manifest);
-  if (manifest.complete !== true || (manifest.missing_slots || []).length) {
-    throw new Error("Incomplete archives cannot be restored.");
-  }
-  if (manifest.slots.length !== 1) {
-    throw new Error("Restore one complete APP+DATA group at a time; multi-APP atomic restore is not supported.");
-  }
-  const archivedSlot = manifest.slots[0];
-  if (manifest.data.some((record) => record.play_id !== archivedSlot.play_id)) {
-    throw new Error("Every DATA record must belong to the archived APP group.");
-  }
+  const archivedSlot = validateSingleGroupRestoreManifest(manifest);
   await validateDataArchivePayloads(manifest, payloads, sha256Hex);
 
   // Re-read the durable carve after file selection; another action may have
