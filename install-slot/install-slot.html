@@ -897,7 +897,7 @@ const I18N = {
     backup_desc: "Backs up selected APP images and owned DATA bytes when dynslot ownership metadata is available; legacy layouts remain APP-only.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "Restores legacy v1 APP/NVS archives only. v2 APP+DATA archive restore is not implemented yet.",
+    restore_desc: "Restores one complete v2 APP+DATA group or legacy v1 APP/NVS archives. Multi-APP atomic restore and global NVS restore are not supported.",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
     data_backup_unavailable: "USB dynslot backups can include verified DATA bytes. Restore supports one complete APP+DATA group; global NVS and multi-APP atomic restore are not supported. Removing an APP also deletes its owned DATA.",
