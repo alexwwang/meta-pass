@@ -87,7 +87,7 @@ def main():
 
     stage_names = {}
     for line in stdout.splitlines():
-        m = re.match(r"=== (S\d+ .+?) ===", line)
+        m = re.match(r"=== (S\d+[a-z]? .+?) ===", line)
         if m:
             name = m.group(1)
             stage_names[name] = {"name": name, "status": "PASS"}
