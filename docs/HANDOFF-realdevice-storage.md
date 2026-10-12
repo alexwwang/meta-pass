@@ -20,7 +20,7 @@ A real power-loss test is separate from a soft reset. Never report soft reset as
 
 ## passport-sim regression (optional, not a merge blocker)
 
-passport-sim remains a useful boot/runtime regression layer, but the final firmware has already passed real ESP32-C3 S0-S6 validation. **Do not block merge solely because simulator was not rerun on the final firmware commit.**
+passport-sim remains a useful boot/runtime regression layer, but historical S0-S6 evidence does not cover the subsequently added mobile NVS backup API and S1b checks. Do not treat historical hardware results as validation of the current HEAD; track simulator and current-HEAD real-device validation separately.
 
 If a local agent has the simulator environment, run:
 
@@ -150,24 +150,33 @@ ENV_MISSING, USB_PORT, USB_BUSY, FIRMWARE_FLASH, BOOT, AUTH, CAPACITY, CARVE, AP
 
 Do not change code before collecting evidence and classifying the failure.
 
-## Final code/test audit — required local-agent work
+## Current-branch validation discipline
 
-The final real-device-tested firmware corresponds to commit `5eed4b87a984a88485509a4ac2a0d577a506e55e`.
+The fixed “final real-device-tested commit” and S0-S6 PASS statements in older handoff text are historical evidence only; they do not certify the current `feat/storage` HEAD. The branch has since added restore-transaction fault injection, USB v2 archive/NVS semantics, the mobile system-NVS read-only API, and real-device S1b checks. Validate these changes against the current commit.
 
-Before making further changes, the local agent must:
+Before testing, the local agent must:
 
-1. Review the final diff from `90c66f3` to the final commit and remove/flag unrelated changes.
-2. Audit ownership of every field in `meta_carve_slot_t` and especially `meta_carve_flash_sync_states()`. Runtime reconstruction must not zero durable record-owned fields such as `play_id`.
-3. Verify the regression test in `tests/test_meta_carve_flash.c` actually covers the `sync_states/play_id` bug.
-4. Check `docs/storage-test-report-20261008.zh_CN.md` and the English report for traceability to final commit `5eed4b8...`; do not describe the final firmware as an uncommitted working tree on an older commit.
-5. Verify the three fixes found during real-device testing: truncated HTTP status JSON, lost `play_id` during state sync, and the S6 hexadecimal flash-read length. Each must have a test or direct evidence.
-6. Verify final static and firmware CI are green.
-7. Do not rerun the entire real-device suite merely because simulator was not rerun. If the audit finds no new code issue, reuse the existing final-firmware S0-S6 evidence.
-8. Keep physical power loss separate: soft reset proves RAM-loss recovery only. If no controlled power-cut setup exists, retain `POWER_LOSS_UNTESTED` and do not claim full P0-5 durability.
+1. Confirm a clean worktree and record `git rev-parse HEAD`, `git status --short`, and firmware SHA-256.
+2. Run `./tools/validate.sh` and build the firmware at the current HEAD, recording commands and exit codes.
+3. If hardware is available, run the wrapper below. S1b must pass before any install/removal mutation.
+4. Ensure the report's git commit matches the tested worktree. If firmware was built from a different commit, record that separately.
+5. On failure, preserve stdout/stderr, UART, HTTP observations and stage number before attributing or fixing; rerun affected tests after each fix.
+6. Soft reset is not physical power loss. If actual power-cut testing was not performed, report `POWER_LOSS_UNTESTED`.
 
-The audit output must answer: new defect? additional test needed? code/design change needed? final commit/firmware hash/CI/S0-S6 evidence traceable? physical power loss tested?
+Never present historical S0-S6 results, old simulator results, or host fake-device tests as current-HEAD real-device PASS.
 
-Only if a concrete defect is found should the agent enter code-change → regression-test → affected-layer rerun.
+## Current smoke coverage and NVS stage
+
+`tools/realdevice/smoke.py` runs S1b after pairing and before install/removal:
+
+- Unauthenticated NVS info/read requests must return HTTP 401.
+- Authenticated requests query the fixed system `nvs` partition and read small first/last chunks.
+- Out-of-range reads must return 416; zero-length and over-4-KiB reads must return 400.
+- Successful reads must include `Cache-Control: no-store`.
+- Logs include status and byte lengths only, never raw NVS bytes.
+- Partition size must be within 1 byte to 1 MiB.
+
+The wrapper `tools/realdevice/run_smoke.py` generates `report.json` and `report.md`. Green CI only proves the automated checks actually included in CI; S1b and archive/restore behavior still require execution on the real device.
 
 ## Report
 
