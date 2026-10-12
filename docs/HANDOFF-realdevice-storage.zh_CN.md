@@ -460,6 +460,8 @@ smoke 失败后不得只输出“FAIL”。
 - 模拟设备已完成持久化 commit、但响应在传输中超时：仍不得清理可能已被引用的 extent。
 - commit 返回成功后，所有权/几何读回校验失败：不得清理可能已发布的数据，必须保留状态供恢复检查。
 
+此外，DATA ZIP 解析器现在会跟踪每个 local record 的字节范围，拒绝 central directory 中多个条目指向重叠/相同 local record 的归档；`tools/install-slot/test-data-archive-zip.mjs` 增加了 central-offset aliasing 的恶意 ZIP 回归测试。
+
 同时，`restoreDataArchive()` 曾在所有安装失败后无条件调用 `cancel()`；这会把 finalize 已被接受、但设备终态轮询超时的情况错误地当作可安全回滚。当前实现将此类结果标记为 `commitUncertain` 并跳过 cancel；只有设备明确报告终态 `failed` 时，才继续走回滚路径。现在也覆盖 finalize 请求本身抛出传输异常的情况：因为请求可能已抵达设备，同样标记为不确定提交并跳过 cancel，提示先检查设备状态，不应盲目重试恢复。集成测试覆盖“finalize 无确认时不 cancel”“finalize 传输异常不 cancel”和“明确 failed 时允许 cancel”。
 
 这些测试仍不能证明真实 Flash 原子性或物理断电持久性。云端 CI 通过后，本地 agent 仍需在目标固件上检查真实 prepare/session/chunk/finalize 路径；不得把 fake-device 测试写成真机证据。
