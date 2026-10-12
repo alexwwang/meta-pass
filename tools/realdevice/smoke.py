@@ -147,9 +147,9 @@ class Api:
         req = urllib.request.Request(self.base + path, headers=self._hdr(extra))
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
-                return r.status, r.read(), dict(r.headers.items())
+                return r.status, r.read(), {k.lower(): v for k, v in r.headers.items()}
         except urllib.error.HTTPError as e:
-            return e.code, e.read(), dict(e.headers.items())
+            return e.code, e.read(), {k.lower(): v for k, v in e.headers.items()}
 
     def get(self, path):
         status, body, _ = self.get_response(path)
@@ -485,7 +485,7 @@ def main():
     st, first, headers = api.nvs_read(0, min(16, nvs_size))
     if st != 200 or len(first) != min(16, nvs_size):
         die(f"NVS 首块读取失败: HTTP {st}, bytes={len(first)}", mon)
-    if headers.get("Cache-Control", "").lower() != "no-store":
+    if headers.get("cache-control", "").lower() != "no-store":
         die(f"NVS 读取未设置 Cache-Control: no-store: {headers.get('Cache-Control')!r}", mon)
     tail_len = min(16, nvs_size)
     st, last, _ = api.nvs_read(nvs_size - tail_len, tail_len)
