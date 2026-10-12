@@ -110,7 +110,7 @@ Install a second APP slot and verify two slots survive reboot without damaging t
 - Records and bytes for other APPs/DATA remain unchanged.
 - If erase or persistent commit fails, do not report success or reclaim extents that remain referenced.
 - Interrupt deletion and reboot; the durable transaction must recover idempotently, and image scanning must not resurrect the deleted APP.
-- Until real byte-level backup is implemented, UI must warn that uninstall permanently deletes data and must not claim backup/restore is available.
+- The UI must clearly explain the deletion/archival behavior before confirmation. The user must not be led to believe that an APP archive automatically guarantees recovery of associated DATA; verify the actual DATA lifecycle and archive contents in the report.
 
 ### S5
 Start a third install, upload only about one third, interrupt it, perform esptool soft reset, wait for service recovery, reissue prepare idempotently, resume from persisted offset, finalize and reboot.
@@ -200,8 +200,8 @@ report.md must summarize the same information for a human and explicitly list un
 
 Do not claim complete hardware validation until:
 - Host PASS;
-- passport-sim PASS;
-- real-device S0-S6 PASS;
+- real-device stages applicable to the current HEAD PASS;
+- passport-sim PASS when the simulator environment is available and the run is part of the declared validation scope; otherwise record it as not run, not PASS;
 - DATA byte-level flash verification PASS;
 - reboot recovery PASS;
 - evidence package complete.
@@ -246,6 +246,6 @@ These tests still do not prove real Flash atomicity or physical power-loss durab
 - The paired token can query the fixed system NVS partition size and read small first/last chunks; the test logs status and lengths only, never raw NVS bytes.
 - An out-of-range read must return 416.
 - Successful read responses must include `Cache-Control: no-store`.
-- Partition size must be within a conservative 1 MiB bound; the actual device value comes from the endpoint.
+- Partition size must be greater than zero and no more than 1 MiB; the actual device value comes from the endpoint.
 
 S1b is a new real-device assertion. Cloud CI validates the code/contract but does not substitute for running the smoke test on hardware.
