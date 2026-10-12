@@ -229,3 +229,14 @@ These tests still do not prove real Flash atomicity or physical power-loss durab
 - NVS may contain Wi-Fi credentials and other device configuration. Reads require a valid paired session, an explicit user backup action, and an idle install transaction. Responses are marked no-store. Do not expose unauthenticated or arbitrary-partition reads.
 - Restore still validates archive NVS bytes without writing them to the destination device. This API is read-only; it does not implement NVS restore.
 - Cloud host/contract tests do not prove the real device partition label, size, or read behavior. On hardware, verify NVS info size, first/last chunk reads, out-of-range and unauthenticated rejection, archived `nvs.bin` size/hash, and that restore leaves destination NVS untouched.
+
+## Real-device NVS API safety checks
+
+`tools/realdevice/smoke.py` now runs S1b after pairing and before any install/removal mutation:
+- Requests without a session token must receive 401 for both NVS info and read.
+- The paired token can query the fixed system NVS partition size and read small first/last chunks; the test logs status and lengths only, never raw NVS bytes.
+- An out-of-range read must return 416.
+- Successful read responses must include `Cache-Control: no-store`.
+- Partition size must be within a conservative 1 MiB bound; the actual device value comes from the endpoint.
+
+S1b is a new real-device assertion. Cloud CI validates the code/contract but does not substitute for running the smoke test on hardware.
