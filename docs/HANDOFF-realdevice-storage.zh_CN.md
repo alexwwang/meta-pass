@@ -62,7 +62,7 @@ python3 -m serial.tools.list_ports -v
 
 ## 3. passport-sim 回归测试（可选，不再作为当前合并阻塞）
 
-passport-sim 仍然是有价值的 boot/runtime 回归层，但本轮最终固件已经完成真实 ESP32-C3 真机 S0-S6 验证，因此**不得因为未在最终固件提交上重跑 simulator 就阻塞合并**。
+passport-sim 仍然是有价值的 boot/runtime 回归层，但历史 S0-S6 报告不覆盖当前新增的手机 NVS 备份 API 与 S1b 检查。不得把历史硬件结果当作当前 HEAD 的验收结果；是否运行 simulator 与当前 HEAD 的真机验收分开记录。
 
 如果本地 agent 具备 simulator 环境，仍建议执行：
 
@@ -356,78 +356,43 @@ smoke 失败后不得只输出“FAIL”。
 - 不得把 soft reset 写成 power-loss PASS。
 - 最终输出必须包含真实执行过的命令、结果、报告路径和未完成项。
 
-## 11. 最终代码与测试结果审核——本地 Agent 必做
+## 11. 当前分支验收纪律
 
-当前最终真机验证对应提交：
+此前文档中的固定“最终真机验证提交”与 S0-S6 通过声明属于历史证据，不代表当前 `feat/storage` HEAD。当前分支后续增加了恢复事务故障注入、USB v2 归档/NVS 语义、手机端 NVS 只读 API 和真机 S1b 检查；这些新变更必须按当前 commit 单独验证。
 
-`5eed4b87a984a88485509a4ac2a0d577a506e55e`
+本地 agent 开始前必须：
 
-本地 agent 在继续修改前必须先完成以下审核：
+1. 确认工作区干净，记录 `git rev-parse HEAD`、`git status --short` 和固件 SHA-256。
+2. 在当前 HEAD 执行 `./tools/validate.sh`，并构建固件；记录真实命令与退出码。
+3. 如果设备可用，使用第 5 节的 `run_smoke.py` 执行真机测试。S1b 必须在任何安装/删除操作前通过。
+4. 检查报告中的 git commit 与实际工作区一致。若固件由不同 commit 构建，必须分别记录，不能混为同一证据。
+5. 失败先收集 stdout/stderr、UART、HTTP 状态和阶段编号，再归因并修复；每次修改后重跑受影响测试。
+6. soft reset 不等于物理断电。未执行真实断电时，必须标记 `POWER_LOSS_UNTESTED`。
 
-1. **检查最终 diff**：比较 `90c66f3` 与最终提交，确认所有修改都与 storage 设计目标或测试可靠性直接相关，没有无关改动。
-2. **检查 carve slot 字段所有权**：重点审计 `meta_carve_slot_t` 以及 `meta_carve_flash_sync_states()`。runtime table 重建只能重新计算 runtime 派生字段；`play_id` 等 durable record-owned 字段必须从持久化 carve state 保留。不得再次出现“重建 runtime state 把 durable metadata 清零”的问题。
-3. **检查回归测试**：确认 `tests/test_meta_carve_flash.c` 中的 `sync_states/play_id` 回归测试确实覆盖该 bug，而不是只验证正常路径。
-4. **检查报告可追溯性**：`docs/storage-test-report-20261008.zh_CN.md` 应以最终实际测试提交 `5eed4b8...` 作为 firmware/git commit；不能把最终固件描述成仅仅“在旧 commit 工作树上测试”。这是证据链问题，不是功能问题。
-5. **检查三处已修复问题**：HTTP status JSON 截断、`sync_states` 丢失 `play_id`、S6 esptool read length 十六进制参数。确认每一处都有对应测试或真实证据，并没有回归。
-6. **检查最终 CI**：最终提交的 static/firmware workflow 应为成功状态。
-7. **不要重复无价值的整套真机测试**：如果审核没有发现新的代码问题，不需要因为 simulator 未重跑而重新执行 S0-S6；已有最终固件真机证据应直接复用。
-8. **真正未完成的 P0-5 证据是 physical power loss**：soft reset 只证明 RAM loss 后持久化状态恢复，不能替代物理断电。若本地没有可控断电设备，明确保留 `POWER_LOSS_UNTESTED`，不要修改代码伪造 PASS。
+不得把历史提交的 S0-S6 结果、旧 simulator 结果或 host fake-device 测试写成当前 HEAD 的真机 PASS。
 
-审核输出必须回答：
+## 12. 当前 smoke 覆盖与新增 NVS 阶段
 
-- 是否发现新的代码缺陷？
-- 是否需要补测试？
-- 是否需要修改设计/实现？
-- 最终提交、firmware SHA-256、CI、真机 S0-S6 是否一致可追溯？
-- physical power loss 是否仍未测试？
+`tools/realdevice/smoke.py` 在配对后、安装/删除前执行 S1b：
 
-只有发现具体缺陷时才进入“改代码 → 补测试 → 重跑受影响层”；否则进入 merge recommendation。
+- 未认证的 NVS info/read 请求应返回 HTTP 401。
+- 已认证请求读取固定系统 `nvs` 分区信息，并读取首尾小块。
+- NVS read 越界返回 416；零长度和超过 4 KiB 的请求返回 400。
+- 成功读取响应包含 `Cache-Control: no-store`。
+- 日志只记录状态与字节长度，不输出 NVS 原始字节。
+- 分区大小必须在 1 到 1 MiB 范围内。
 
-## 12. 当前代码状态
+包装器 `tools/realdevice/run_smoke.py` 会生成 `report.json` 与 `report.md`。当前 CI 通过仅证明 CI 覆盖的自动化检查成功；S1b 和备份/恢复在真机上的行为仍需由本地 agent 实际执行确认。
 
-`tools/realdevice/smoke.py` 已覆盖：
+## 13. 当前完成定义
 
-- APP + DATA 安装。
-- DATA resume checkpoint。
-- DATA done 幂等跳过。
-- ARCHIVED DATA 生命周期。
-- DATA Flash 字节级比对。
-- reboot / resume 基础链路。
+- 当前 HEAD 的 host tests 与 firmware build PASS。
+- 当前 HEAD 的真机 smoke 已执行，并且报告中的 S1b 与所需存储阶段结果可追溯。
+- DATA Flash 字节比对与重启恢复证据完整。
+- 没有未解释的 panic、HTTP、存储或恢复失败。
+- 若没有实际执行物理断电，明确保留 `POWER_LOSS_UNTESTED`。
 
-`tools/realdevice/run_smoke.py` 已提供本地验收包装层，负责：
-
-1. 每次运行独立 evidence directory。
-2. 保存命令、stdout/stderr、UART 与 HTTP observations。
-3. 记录 git branch/commit、固件 SHA-256、工具版本、USB port/IP。
-4. 生成 `report.json` 与 `report.md`。
-5. 失败时输出 failure category，并保留诊断证据。
-6. 明确区分 soft reset 与真实 physical power loss。
-
-当前已完成的最终固件真机证据包括 S0-S6、DATA Flash byte comparison 和 soft-reset recovery；最终提交为 `5eed4b87...`。
-
-仍需区分两类证据：
-- passport-sim：可作为可选回归测试；未针对最终固件提交重跑时，不得声称最终提交 simulator PASS。
-- physical power-loss：仍未执行则必须标记 `POWER_LOSS_UNTESTED`。
-
-因此，当前本地 agent 的重点从“继续盲目跑测试”转为“完成最终 diff / 字段所有权 / 回归测试 / 报告可追溯性审核”；只有发现具体问题才继续改代码。
-
-## 13. 最终完成定义
-
-只有以下条件全部满足，才能说本轮真机验收完成：
-
-- L1 Host PASS。
-- L2 passport-sim PASS。
-- L3 real-device smoke S0-S6 PASS。
-- DATA Flash byte comparison PASS。
-- reboot recovery PASS。
-- report + logs + flash evidence 完整。
-- 没有未解释的 panic/reboot/HTTP/storage failure。
-
-如果没有真实 power-loss 设备控制能力，必须明确标记：
-
-`POWER_LOSS_UNTESTED`
-
-而不能把它隐含为 PASS。
+passport-sim 可作为额外回归层；如未对当前提交执行，不得报告为当前提交 PASS。
 
 ## 14. 2026-10-10 新增验收要求：每次安装必须新建 APP carve
 
