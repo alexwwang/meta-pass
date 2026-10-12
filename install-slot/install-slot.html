@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">v2 restores one complete APP+DATA group and rejects global NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility; multi-APP restores are not atomic.</p>
+    <p class="subtitle" data-i18n="restore_desc">v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 archives retain sequential APP/NVS restore compatibility (multi-APP restore is not atomic).</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
@@ -217,7 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
-    <p class="hint" data-i18n="data_backup_unavailable">USB dynslot backups can include verified DATA bytes. Restore supports one complete APP+DATA group; global NVS and multi-APP atomic restore are not supported. Removing an APP also deletes its owned DATA.</p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB dynamic-mode backup includes verified DATA bytes for one APP+DATA group per archive. v2 restore verifies archived NVS bytes but preserves the destination device NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -897,10 +897,10 @@ const I18N = {
     backup_desc: "In dynamic mode, back up one complete APP+DATA group per archive; legacy layouts remain APP-only.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "v2 restores one complete APP+DATA group and rejects global NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility (multi-APP restore is not atomic).",
+    restore_desc: "v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 archives retain sequential APP/NVS restore compatibility (multi-APP restore is not atomic).",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
-    data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive. v2 restore rejects global NVS; legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.",
+    data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive. v2 restore verifies any archived NVS bytes but preserves the destination device NVS; legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
     msg_backup_single_group: "Dynamic-mode backup supports one APP+DATA group per archive. Select exactly one APP slot.",
@@ -1110,10 +1110,10 @@ const I18N = {
     backup_desc: "动态存储模式下每个归档备份一个完整 APP+DATA 组；旧布局仍仅备份 APP。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组，并拒绝全局 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径（多 APP 恢复不具备原子性）。",
+    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径（多 APP 恢复不具备原子性）。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
-    data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。v2 恢复拒绝全局 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径。删除 APP 会同时删除其关联 DATA。",
+    data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。v2 恢复会校验归档中的 NVS 字节，但保留目标设备现有 NVS、不写入归档 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_single_group: "动态存储模式下每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
@@ -2494,9 +2494,6 @@ $("restore-input").addEventListener("change", async (ev) => {
       if (rawManifest.complete !== true || (rawManifest.missing_slots || []).length) {
         throw new Error("Incomplete v2 archive cannot be restored.");
       }
-      if (rawManifest.nvs) {
-        throw new Error("This archive includes global NVS. USB APP+DATA restore does not restore global NVS; no device writes were performed.");
-      }
       if (rawManifest.slots.length !== 1) {
         throw new Error("USB transactional restore currently supports one APP+DATA group at a time.");
       }
@@ -2511,7 +2508,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       }
       await validateDataArchivePayloads(rawManifest, payloads, sha256Hex);
       restoreZip = { manifest: rawManifest, v2Payloads: payloads };
-      $("restore-info").textContent = "完整 APP+DATA 归档已校验。恢复将分配新的连续空间，并在写入与读回校验后一次提交 APP/DATA 元数据。";
+      $("restore-info").textContent = "完整 APP+DATA 归档已校验。恢复将分配新的连续空间，并在写入与读回校验后一次提交 APP/DATA 元数据；归档 NVS 不会写入，目标设备现有 NVS 保持不变。";
       $("restore-info").className = "ok";
       $("restore-slots").innerHTML = "";
       $("btn-restore").disabled = busy || !loader;
@@ -2700,7 +2697,7 @@ async function restoreV2ArchiveUsb() {
     const committed = await commitCarve(finalCarve, { materialize: true });
     setRestoreProgress(100);
     log(`Restore committed: source play_id ${archivedSlot.play_id}, new slot ${plan.index}, ${plannedData.length} DATA partition(s), record ${committed.from}→${committed.to}`, "ok");
-    $("restore-status").textContent = "APP+DATA 恢复成功。已验证 APP/DATA 写入，并提交新的分区记录。";
+    $("restore-status").textContent = "APP+DATA 恢复成功。已验证 APP/DATA 写入，并提交新的分区记录；目标设备现有 NVS 保持不变。";
     $("restore-status").className = "ok";
     restoreZip = null;
     await loadSlotModel();
