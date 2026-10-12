@@ -200,13 +200,15 @@ Do not claim complete hardware validation until:
 If physical power loss was not actually performed, report POWER_LOSS_UNTESTED.
 
 
-## 15. Added 2026-10-12: restore transaction failure-injection coverage
+## 15. Added 2026-10-12: restore failure injection and uncertain finalize state
 
-`tools/install-slot/test-data-restore-transaction.mjs` is registered in `tools/validate.sh` and now covers these failure boundaries:
+`tools/install-slot/test-data-restore-transaction.mjs` is registered in `tools/validate.sh` and covers:
 
 - APP write failure before commit: commit must not run; temporary staging cleanup must be attempted.
 - Commit request timeout: treat the result as uncertain and do not clean staging.
 - Simulated durable commit followed by a transport timeout: do not clean extents that may already be referenced.
 - Ownership/geometry readback failure after a successful commit response: do not clean possibly published data; preserve state for recovery inspection.
 
-These are host fake-device transaction-semantics tests, **not** proof of the real device endpoints or Flash atomicity. After cloud CI passes, the local agent must still inspect the real prepare/session/chunk/finalize path on the target firmware. Physical power-loss durability remains a separate test; never present the fake-device durable-commit simulation as real-device evidence.
+The review also found that `restoreDataArchive()` unconditionally called `cancel()` after any install failure. That could treat an accepted finalize with a timed-out terminal-state poll as safe to roll back. The implementation now marks such outcomes `commitUncertain` and skips cancellation; rollback remains enabled when the device explicitly reports terminal `failed`. Integration tests cover both branches.
+
+These tests still do not prove real Flash atomicity or physical power-loss durability. After cloud CI passes, the local agent must inspect the real prepare/session/chunk/finalize path on target firmware. Never present fake-device tests as real-device evidence.
