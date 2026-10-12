@@ -1,5 +1,7 @@
 # Storage 四项功能真机测试报告
 
+简体中文 | [English](storage-four-goals-test-report-2026-10-12.md)
+
 日期：2026-10-12
 执行：本地 Agent（无人工按键/读屏，全部经 LAN API、USB Serial/JTAG 测试控制通道、Chromium CDP）
 基线分支：`feat/storage` @ `302c466`（+ 修复提交 `e472d24`，本报告的代码变更随该提交）
