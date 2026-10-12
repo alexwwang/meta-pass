@@ -197,6 +197,34 @@ static int peek_pending_slot(uint32_t ota_offset, uint32_t ota_count)
     return found ? (int)best_slot : -1;
 }
 
+/* 冷启动:识别启动器刚写入的引导请求(状态 NEW)。语义镜像
+ * peek_pending_slot(深睡/PENDING),共用 crc 与 seq 选取规则。 */
+static int peek_boot_request_slot(uint32_t ota_offset, uint32_t ota_count)
+{
+    if (ota_count == 0) return -1;
+    bool found = false;
+    uint32_t best_seq = 0;
+    uint32_t best_slot = 0;
+    for (uint32_t i = 0; i < 2u; i++) {
+        const uint32_t addr =
+            ota_offset + i * 4096u;
+        esp_ota_select_entry_t entry;
+        if (bootloader_flash_read(addr, &entry, sizeof(entry), false) != ESP_OK) {
+            continue;
+        }
+        const meta_otadata_entry_t *mirror =
+            (const meta_otadata_entry_t *)&entry;
+        if (!meta_boot_policy_entry_is_boot_request(mirror)) continue;
+        if (entry.crc != bootloader_common_ota_select_crc(&entry)) continue;
+        if (!found || (int32_t)(entry.ota_seq - best_seq) > 0) {
+            found = true;
+            best_seq = entry.ota_seq;
+            best_slot = (entry.ota_seq - 1u) % ota_count;
+        }
+    }
+    return found ? (int)best_slot : -1;
+}
+
 static void enforce_carve_table(int active_slot)
 {
     bool have = false;
@@ -335,14 +363,20 @@ void bootloader_after_init(void)
     /*
      * Peek the PENDING target only for deep-sleep resume. This is not an OTA
      * policy decision: it merely tells the carve gate which derived runtime
-     * table is expected. Cold boot deliberately uses launcher view (-1).
+     * table is expected. Cold boot uses the launcher view (-1) UNLESS the
+     * launcher just requested a child boot (otadata state NEW — written by
+     * esp_ota_set_boot_partition right before esp_restart); that request must
+     * select the child view, otherwise the restore below would wipe both the
+     * child table and otadata and children could never boot (2026-10-12
+     * real-device finding: UI boot and E2E BOOT_SLOT both use esp_restart,
+     * and this branch has no deep-sleep launch path).
      */
     uint32_t ota_offset = 0;
     uint32_t ota_count = 0;
     int active_slot = -1;
-    if (deep_sleep_wake && scan_partition_table(&ota_offset, &ota_count) &&
-        ota_count > 0) {
-        active_slot = peek_pending_slot(ota_offset, ota_count);
+    if (scan_partition_table(&ota_offset, &ota_count) && ota_count > 0) {
+        active_slot = deep_sleep_wake ? peek_pending_slot(ota_offset, ota_count)
+                                      : peek_boot_request_slot(ota_offset, ota_count);
     }
 
     /* 第一优先级:dynslot carve 表校验/修复(§4.4)——必须先于 otadata 决策,

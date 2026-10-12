@@ -2663,9 +2663,10 @@ esp_err_t meta_install_net_start(void)
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 16;    // boot/pair/status/prepare/session/chunk/data/read/slot-read/finalize/cancel/remove/backup/slots/favicon
-                                   // + remove/backup-import/slots/favicon(真机 2026-10-11:
-                                   // 13 > 12 时末位注册失败会令整个 install 服务启动失败)
+    // 17 个 handler(2026-10-12 真机:新增 nvs/info+nvs/read 后 17 > 16,
+    // 末位注册失败令整个 install 服务启动失败,resume 路径报
+    // "install service resume failed")。留 3 个余量,再加端点不必同步改这里。
+    hcfg.max_uri_handlers = 20;
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;

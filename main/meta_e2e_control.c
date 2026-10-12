@@ -17,6 +17,7 @@
 #include "meta_carve_flash.h"
 #include "meta_store.h"
 #include "meta_slots.h"
+#include "meta_store_net.h"
 #include "meta_store_install.h"
 
 static const char *TAG = "meta_e2e";
@@ -153,7 +154,29 @@ static void handle_command(char *line)
             response_error("SESSION_RESET_FAILED");
             return;
         }
+        // INSTALL_STOP 之后 httpd 已停:测试通道的"换发会话"语义包含
+        // 把 LAN install 服务拉回在线(幂等,已在线时立即返回)。
+        // store_net 同理:生产里服务只活在商店页(net 已上线),e2e 通道
+        // 绕过了页面流转,必须自己把 STA 拉起来,否则 LAN 校验全断。
+        if (meta_store_net_begin() != ESP_OK) {
+            response_error("SESSION_RESET_FAILED");
+            return;
+        }
+        if (meta_install_net_start() != ESP_OK) {
+            response_error("SESSION_RESET_FAILED");
+            return;
+        }
         printf("{\"ok\":true,\"command\":\"SESSION_RESET\"}\n");
+        fflush(stdout);
+        return;
+    }
+    if (strcmp(line, "E2E INSTALL_STOP") == 0) {
+        // 测试通道专用:走产品 teardown 同款 meta_install_net_stop()
+        // (httpd 排干停服 + token 作废 + 清 inst_active 续连标志),
+        // 把设备恢复"列表页安装服务未激活"的冷态 —— USB Web Serial E2E 的
+        // E1 安全门要求 installer idle;真机无按键自动化只能走这里。
+        meta_install_net_stop();
+        printf("{\"ok\":true,\"command\":\"INSTALL_STOP\"}\n");
         fflush(stdout);
         return;
     }

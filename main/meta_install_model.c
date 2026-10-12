@@ -408,7 +408,15 @@ meta_install_place_verdict_t meta_install_model_place_offer(
         const uint32_t pid = m->data[d].play_id;
         const char *label = m->data[d].label;
         if (pid == 0) continue;                                     // 声明占位,忽略
-        if (m->data[d].subtype != 0x81 && m->data[d].subtype != 0x82 && m->data[d].subtype != 0x83) {
+        // 与 install-slot/extract-app-image.js parseFirmwareManifest 同一白名单:
+        // 文件系统 0x81/0x82/0x83 + 仅测试 fixture e2edata(0x40)。
+        // 2026-10-12 真机:缺 0x40 分支时专用子固件 prepare 被
+        // "carve proposal rejected (label=e2edata)" 拒,JS/C 契约不一致。
+        const bool fixture_e2edata =
+            m->data[d].subtype == 0x40 &&
+            strncmp(label, "e2edata", META_DATA_LABEL_MAX) == 0;
+        if (m->data[d].subtype != 0x81 && m->data[d].subtype != 0x82 &&
+            m->data[d].subtype != 0x83 && !fixture_e2edata) {
             if (out_label) {
                 strncpy(out_label, label, META_DATA_LABEL_MAX);
                 out_label[META_DATA_LABEL_MAX] = '\0';

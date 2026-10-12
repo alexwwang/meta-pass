@@ -185,13 +185,19 @@ async function readStatus() {
 }
 
 function assertInstallerIdle(status, where) {
-  if (status.protocol !== 1 || status.active || status.session) {
+  // "idle" = 无在途安装事务(USB 路径隔离的前提)。active=true 只表示
+  // LAN install 服务在线(httpd 存活 ⇒ token_start 已执行 ⇒ active 恒真,
+  // 2026-10-12 真机定案:旧断言 active||session 在本分支永远不满足,
+  // 且服务在线正是后续 LAN 只读校验的前提)。在途判定看
+  // session/offer/confirmed。
+  if (status.protocol !== 1 || status.session || status.offer || status.confirmed) {
     throw new Error(`HTTP installer is not idle at ${where}: ${JSON.stringify({
-      protocol: status.protocol, active: status.active, session: status.session, state: status.state,
+      protocol: status.protocol, active: status.active, session: status.session,
+      offer: status.offer, confirmed: status.confirmed, state: status.state,
     })}`);
   }
   record(where, "HTTP installer idle / USB path isolated", true,
-    `protocol=${status.protocol}; state=${status.state}; active/session=false`);
+    `protocol=${status.protocol}; state=${status.state}; session/offer/confirmed=false`);
 }
 
 function stableSlots(v) {

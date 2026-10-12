@@ -420,8 +420,14 @@ bool meta_carve_valid(const meta_carve_t *c)
         if (d->play_id == 0 || d->type != 1 || d->state > META_DATA_ARCHIVED) {
             return false;
         }
-        if (d->subtype != 0x81 && d->subtype != 0x82 && d->subtype != 0x83) {
-            return false;   // only child filesystem DATA is allocatable in MVP
+        // 与 install-slot/extract-app-image.js parseFirmwareManifest 同一白名单:
+        // 文件系统 0x81/0x82/0x83 + 仅测试 fixture e2edata(0x40)。
+        const bool fixture_e2edata =
+            d->subtype == 0x40 &&
+            strncmp(d->label, "e2edata", META_DATA_LABEL_MAX) == 0;
+        if (d->subtype != 0x81 && d->subtype != 0x82 &&
+            d->subtype != 0x83 && !fixture_e2edata) {
+            return false;   // only child filesystem DATA + named E2E fixture
         }
         if (d->size < META_CARVE_MIN_DATA || d->size % POOL.size_granule != 0) {
             return false;
