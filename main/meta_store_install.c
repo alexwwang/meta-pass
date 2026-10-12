@@ -1501,6 +1501,8 @@ static const char SHELL_HTML[] =
 "headers:{'X-Meta-Data-Index':String(i),'X-Meta-Offset':String(off),"
 "'Content-Type':'application/octet-stream'},body:buf});},"
 "dataRead:function(playId,label,offset,length){return bridgeBytes('/api/install/data/read',{headers:{'X-Meta-Play-Id':String(playId),'X-Meta-Data-Label':label,'X-Meta-Offset':String(offset),'X-Meta-Length':String(length)}});},"
+"nvsInfo:function(){return bridge('/api/install/nvs/info');},"
+"nvsRead:function(offset,length){return bridgeBytes('/api/install/nvs/read',{headers:{'X-Meta-Offset':String(offset),'X-Meta-Length':String(length)}});},"
 "cancel:function(){return bridge('/api/install/cancel',{method:'POST'});}};"
 "function doPair(){ps.textContent='...';"
 "fetch('/api/install/pair',{method:'POST',headers:{'Content-Type':'application/json'},"
@@ -2145,6 +2147,63 @@ static esp_err_t h_install_slot_read(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
+// GET /api/install/nvs/info: expose only the fixed system NVS partition, never arbitrary labels/addresses.
+static const esp_partition_t *install_nvs_partition(void)
+{
+    return esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                    ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs");
+}
+
+static esp_err_t h_install_nvs_info(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "NVS read unavailable during installation");
+    const esp_partition_t *part = install_nvs_partition();
+    if (!part || part->size == 0) return reply(req, "404 Not Found", "system NVS partition not found");
+    char body[64];
+    snprintf(body, sizeof(body), "{\\"size\\":%" PRIu32 "}", (uint32_t)part->size);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, body);
+}
+
+// GET /api/install/nvs/read: authenticated, fixed-partition read, bounded to 4 KiB and partition geometry.
+static esp_err_t h_install_nvs_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "NVS read unavailable during installation");
+    char off_str[16], len_str[16];
+    uint32_t offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad NVS read headers");
+    }
+    const esp_partition_t *part = install_nvs_partition();
+    if (!part || part->size == 0) return reply(req, "404 Not Found", "system NVS partition not found");
+    if (offset > part->size || length > part->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "NVS read range out of bounds");
+    }
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const esp_err_t e = esp_partition_read(part, offset, read_buf, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "NVS read failed off=%" PRIu32 ": %s", offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "NVS partition read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
+
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
@@ -2633,6 +2692,8 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
         { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
         { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
+        { "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL },
+        { "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL },
         { "/api/install/slot/read",HTTP_GET,  h_install_slot_read,NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
