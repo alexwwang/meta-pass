@@ -110,6 +110,7 @@ assert "msg_backup_single_group" in usb_page, "USB must explain the single-group
 assert "v2 restores one complete APP+DATA group and preserves the destination device NVS" in usb_page, "USB restore fallback copy must disclose v2 destination NVS preservation"
 assert "Legacy v1 archives retain sequential APP/NVS restore compatibility" in usb_page, "USB restore fallback copy must disclose legacy v1 compatibility"
 assert "rawManifest?.manifest_version === 2" in usb_page and "await restoreV2ArchiveUsb()" in usb_page, "USB v2 restore must route through the staged APP/DATA transaction"
+assert "...(rawManifest.nvs?.file ? [rawManifest.nvs.file] : [])" in usb_page, "USB v2 restore must recognize and validate the optional archived NVS payload without applying it"
 assert "归档 NVS 不会写入，目标设备现有 NVS 保持不变" in usb_page, "USB v2 restore must explain that archived NVS is verified but not applied"
 assert "commitStarted = true" in usb_page and "commitCarve(finalCarve, { materialize: true })" in usb_page, "USB v2 restore must publish APP/DATA metadata only after verified payload writes"
 assert "state: DATA_STATE.DIRTY" in usb_page, "USB imported DATA must not be reclaimed as pristine"
