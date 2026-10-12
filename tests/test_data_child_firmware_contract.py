@@ -22,6 +22,7 @@ doc = DOC.read_text(encoding="utf-8")
 record = (ROOT / "install-slot/dynslot-record.js").read_text(encoding="utf-8")
 usb_page = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
 phone_page = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+smoke = (ROOT / "tools/realdevice/smoke.py").read_text(encoding="utf-8")
 
 for token, label in [
     ("esp_partition_find_first", "DATA must be resolved by label through IDF partition API"),
@@ -47,6 +48,12 @@ assert "length > INSTALL_IO_BUF" in install_net and "length > match->size - offs
 assert "esp_flash_read(NULL, read_buf, address, length)" in install_net, "DATA API must return actual Flash bytes, not metadata"
 assert '{ "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL }' in install_net, "DATA read handler must be registered"
 assert "function bridgeBytes(path,opt)" in install_net and "dataRead:function(playId,label,offset,length)" in install_net, "phone bridge must expose binary DATA reads"
+assert "h_install_nvs_info" in install_net and "h_install_nvs_read" in install_net, "mobile NVS API handlers must exist"
+assert 'ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs"' in install_net, "NVS API must resolve only the fixed system partition"
+assert "length > INSTALL_IO_BUF" in install_net and "length > part->size - offset" in install_net, "NVS reads must be bounded and range checked"
+assert '{ "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL }' in install_net and '{ "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL }' in install_net, "NVS endpoints must be registered"
+for token in ('stage("S1b 系统 NVS 只读 API")', 'NVS info 拒绝未认证请求', 'NVS 首块读取失败', 'NVS 尾块读取失败', 'NVS 越界读取应返回 416', 'Cache-Control', '不记录 NVS 原始字节'):
+    assert token in smoke, f"real-device smoke must verify NVS API safety: {token}"
 assert "expected_digest" in driver and "hashlib.sha256" in driver, "host independently checks digest"
 assert "does not select/boot launcher slots" in driver, "serial client must not claim full runtime-driver coverage"
 assert "CONFIG_META_E2E_TEST_CONTROL" in control and "default n" in config, "launcher control must be opt-in"
