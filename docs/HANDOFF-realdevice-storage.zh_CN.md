@@ -83,7 +83,7 @@ smoke 必须独占 USB 串口，分阶段：
 - monitor 运行时负责持续收集 UART。
 - esptool 操作前停止 monitor。
 - esptool 完成后重新启动 monitor。
-- 所有 UART 输出保存到 run artifact 目录。
+- 所有 UART 输出保存到 run artifact 目录；持久化日志必须将配对 token 脱敏，内存中的配对流程仍使用原始值。
 - esptool stdout/stderr 也保存。
 - 失败时保存 UART tail、当前 slots/status、关键 Flash dump。
 
@@ -266,6 +266,7 @@ smoke 失败后不得只输出“FAIL”。
 - BOOT
 - HTTP
 - AUTH
+- NVS_API
 - CAPACITY
 - CARVE
 - APP_UPLOAD
