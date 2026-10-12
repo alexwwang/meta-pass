@@ -19,7 +19,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("目前支持恢复完整的单个 APP+DATA 组", mobile)
         self.assertNotIn("当前尚不能导入恢复", mobile)
-        self.assertIn("Restores one complete v2 APP+DATA group", usb)
+        self.assertIn("v2 restores one complete APP+DATA group and rejects global NVS", usb)
+        self.assertIn("Legacy v1 archives retain sequential APP/NVS restore compatibility", usb)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
 
     def test_usb_restore_copy_documents_legacy_v1_compatibility(self):
