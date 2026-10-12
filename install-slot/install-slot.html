@@ -2502,6 +2502,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       const expected = new Set([
         ...rawManifest.slots.flatMap((slot) => slot.files.map((f) => f.name)),
         ...rawManifest.data.map((record) => record.file),
+        ...(rawManifest.nvs?.file ? [rawManifest.nvs.file] : []),
       ]);
       for (const name of payloads.keys()) {
         if (!expected.has(name)) throw new Error("Undeclared archive payload: " + name);
