@@ -127,7 +127,7 @@ deviceRecovery.status = **RESTORED**（独立读回 + 基线比对一致）。
 | `mobile_page_e2e.mjs`（市场安装路径） | BLOCKED | handoff 要求的"两个已发布的专用测试 play 条目"不存在：市场搜不到任何 data-child/e2e 条目，既有 play 28（录音笔）/582（坑道守听）均为业务固件，不说 e2edata 行协议，runtime 步骤必失败。发布需市场管理权限。已用本地安装驱动 + runtime driver 覆盖同等真机生命周期（§5）。 |
 | `usb_web_e2e_multi.mjs` R1（Web Serial 链路） | **通过** | 原阻断均解除：Web Serial 授权无需人工——AppleScript 驱动系统端口选择器完成一次性授权（CDP 无 Serial 域，Chrome 154 实测），`getPorts()=1` 持久有效；`--image` 本地模式免市场。**R1 完整 PASS 且两次复现**：DYN_SLOT 连接 → 本地镜像校验（`app 165.0 KB · 1 DATA partition(s): e2edata`）→ DATA 容量对话框确认 → 安装 → USB 硬复位 → 引导日志 `carve loaded: slots=1` → LAN 恢复 → idle 门 PASS → 槽位跨复位存活（@0x180000+176128，free -241664 精确）。**R2–R4 自动化被串口链路间歇性失败阻断，根因已定案**：esptool-js 握手先把芯片置进 ROM 下载模式再回 app，链路中途失败（读超时）时芯片被留在 stub——app 不跑、WiFi 不起、无串口输出，表象如"设备挂死"，esptool 硬复位即恢复（与电池无关，系统电量 100%；此前"复位后静默"判断部分是测量假象：USB CDC 输出不重放，端口开后复位会错过 ROM 输出）。harness 已内置自愈（`reviveDevice`+连接重试+安装超时复活）。**页面侧健壮性改进已完成**（`install-slot.html`）：连接握手中断时主动 `setSignals(DTR/RTS)` 复位回应用固件，用户取消端口选择器时绝不复位设备；双语提示已加。 |
 | Play 28 录音业务 E2E | NOT RUN（保持 BLOCKED） | 按 `mobile-page-data-e2e-market-firmware.zh_CN.md`：需该玩法录音 UI 的 DOM/导出接口与版本固化，本轮未补齐，状态不变。 |
-| 备份/恢复端到端 | NOT RUN | 备份路径在 BLOCKED 的 USB E2E 内；恢复实现仍为预检计划（handoff 已声明，未以文案冒充完成）。 |
+| 备份/恢复端到端 | NOT RUN | 手机 `restoreDataArchive()` 与 USB `restoreV2ArchiveUsb()` 已有 APP+DATA 分阶段恢复实现；本轮未执行真机备份/恢复闭环，因此仍不能判定硬件验收通过。 |
 | `./tools/validate.sh --firmware` 本地全量 | 未完成 | 1200s 超时（三目标全量构建）；CI Firmware checks @302c466 成功，e472d24 以推送后 CI 为准。 |
 
 ## 8. 分区布局评估（handoff §5）
@@ -137,6 +137,14 @@ deviceRecovery.status = **RESTORED**（独立读回 + 基线比对一致）。
 ## 9. 未完成项与下一步
 
 1. 市场侧发布两个专用测试 play 条目（指向 data-child 合并镜像），解锁 `mobile_page_e2e.mjs` 全链路。
-2. 串口链路稳定性：esptool-js 握手失败会把芯片留在 ROM 下载模式（harness 已自愈）。可选的页面侧改进——连接失败时主动 DTR/RTS 复位回 app（生产页健壮性）；R2–R4 剩余覆盖（共存/UI 删除）已由 §5 LAN 生命周期测试等价覆盖，可择机重跑 `--image` 模式补齐 UI 路径证据。
+2. 串口链路稳定性：esptool-js 握手失败会把芯片留在 ROM 下载模式（harness 已自愈）。页面侧 DTR/RTS 复位已实现；后续代码审核发现必须先发复位信号再关闭串口，修正见审核补充。仍需用受控方式诱发一次握手失败，验证页面确实自动恢复；成功路径 R1 不覆盖此失败分支。R2–R4 的 LAN 生命周期覆盖不等于 USB 页面 UI 全路径覆盖。
 3. e472d24 推送后盯 CI Static/Firmware；本地 `--firmware` 建议在有 CI 兜底的前提下不重复跑全量。
 4. Play 28 业务 DATA 验收按 market-firmware handoff 补齐前置后单独立项。
+
+
+## 10. 代码审核补充（2026-10-12）
+
+- 审核 `d7bf08d` 时发现页面握手失败恢复的顺序缺陷：先调用 `Transport.disconnect()` 再调用 `SerialPort.setSignals()`。当前 vendored transport 的 `disconnect()` 会关闭 Web Serial 端口，因此后续复位信号会失败并被 catch 忽略。已在后续提交将复位脉冲移到 disconnect 之前，并按 esptool-js 的 DTR/RTS 时序补齐释放步骤；新增静态契约测试防止顺序回归。
+- 该修复仍需真实故障注入验证：目前 R1 成功安装证明的是成功路径，不证明“握手失败后页面自动复位”路径已通过。
+- 当前分支的手机与 USB 页均有 APP+DATA v2 恢复实现；真机备份/恢复 E2E 仍为 NOT RUN。
+- 本报告引用的 `tools/realdevice/logs/four-goals-2026-10-12/`、`runtime-A.json` 等原始证据文件未出现在当前 Git 提交树中。报告可供总结审阅，但独立复核原始设备证据仍需要从本地测试环境提供已脱敏的日志/快照。
