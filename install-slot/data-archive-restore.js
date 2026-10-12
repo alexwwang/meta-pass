@@ -18,6 +18,9 @@ export async function prepareDataArchiveRestore(manifest, payloads, {
       (dataSizeGranule & (dataSizeGranule - 1)) !== 0) {
     throw new Error("DATA size granule must be a positive power of two");
   }
+  if (!Number.isSafeInteger(maxImageBytes) || maxImageBytes < 1) {
+    throw new Error("maximum APP image size must be a positive safe integer");
+  }
 
   const slot = validateSingleGroupRestoreManifest(manifest);
   await validateDataArchivePayloads(manifest, payloads, sha256Hex);
@@ -46,9 +49,11 @@ export async function prepareDataArchiveRestore(manifest, payloads, {
   // The extractor is transport-supplied, but its output is a trust boundary:
   // malformed metadata must fail before either restore path allocates or writes.
   if (!image || !(image.data instanceof Uint8Array) || image.data.length === 0 ||
+      image.data.length > maxImageBytes ||
       image.length !== image.data.length ||
       !Number.isSafeInteger(image.tailSectorOffset) ||
-      image.tailSectorOffset < image.length || image.tailSectorOffset % 4096 !== 0 ||
+      image.tailSectorOffset !== Math.ceil(image.length / 4096) * 4096 ||
+      (image.tailSectorOffset + 4096) > Number.MAX_SAFE_INTEGER ||
       (image.tailSector != null &&
         (!(image.tailSector instanceof Uint8Array) || image.tailSector.length !== 4096))) {
     throw new Error("APP image extractor returned invalid image metadata");
