@@ -101,7 +101,7 @@ class Monitor:
             with self.lock:
                 self.buf += line
             # Keep the in-memory buffer intact for pairing, but never persist a reusable session token.
-            self.fw.write(re.sub(r"(token=)[0-9a-f]{32}", r"\\1<redacted>", line, flags=re.I))
+            self.fw.write(re.sub(r"(token=)[0-9a-f]{32}", r"\1<redacted>", line, flags=re.I))
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
