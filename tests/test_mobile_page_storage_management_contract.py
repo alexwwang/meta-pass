@@ -41,15 +41,21 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         end = usb.index('$("btn-restore").addEventListener', start)
         restore = usb[start:end]
         for token in (
-            "validateDataArchiveManifest(manifest)",
-            "manifest.complete !== true",
-            "manifest.slots.length !== 1",
-            "record.play_id !== archivedSlot.play_id",
+            "validateSingleGroupRestoreManifest(manifest)",
             "await validateDataArchivePayloads(manifest, payloads, sha256Hex)",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, restore)
-        self.assertLess(restore.index("manifest.slots.length !== 1"),
+        shared = (ROOT / "install-slot/data-byte-archive.js").read_text(encoding="utf-8")
+        for token in (
+            "export function validateSingleGroupRestoreManifest(manifest)",
+            "manifest.complete !== true",
+            "manifest.slots.length !== 1",
+            "record.play_id !== slot.play_id",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, shared)
+        self.assertLess(restore.index("validateSingleGroupRestoreManifest(manifest)"),
                         restore.index("await loadSlotModel()"))
         self.assertLess(restore.index("await validateDataArchivePayloads"),
                         restore.index("await loadSlotModel()"))
