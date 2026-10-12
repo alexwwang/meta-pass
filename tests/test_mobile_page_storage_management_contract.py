@@ -17,7 +17,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
     def test_restore_capability_copy_matches_supported_single_group_restore(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("目前支持恢复完整的单个 APP+DATA 组", mobile)
+        self.assertIn("恢复支持完整的单个 APP+DATA 组", mobile)
+        self.assertIn("归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变", mobile)
         self.assertNotIn("当前尚不能导入恢复", mobile)
         self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
         self.assertIn("Legacy v1 archives retain sequential APP/NVS restore compatibility", usb)
