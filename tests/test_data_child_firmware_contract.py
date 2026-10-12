@@ -102,7 +102,7 @@ assert "record.offset, record.size" in usb_page and "readFlashChunked(record.off
 assert "validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex)" in usb_page, "USB DATA archive must validate byte lengths and SHA-256 before save"
 assert "stable.rec.seq !== slotModel.seq" in usb_page, "USB DATA backup must reject ownership metadata changes during export"
 assert 'log(`INCOMPLETE BACKUP: slot(s) ${missingSlots.join(", ")} could not be read' in usb_page, "USB must visibly disclose partial archives instead of silently implying completeness"
-assert 'data_backup_unavailable: "USB dynslot backups can include verified DATA bytes. v2 restore supports one complete APP+DATA group and rejects global NVS' in usb_page, "USB UI must disclose v2 single-group DATA restore scope"
+assert 'data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive' in usb_page, "USB UI must disclose one-group-per-archive backup scope"
 assert "legacy v1 archives retain sequential APP/NVS restore compatibility" in usb_page, "USB UI must disclose legacy v1 restore compatibility"
 assert "In dynamic mode, back up one complete APP+DATA group per archive" in usb_page, "USB backup copy must match the single-group v2 restore contract"
 assert "if (isDynMode(slotModel.mode) && slots.length !== 1)" in usb_page, "USB must refuse to create a multi-group v2 archive that its restore path cannot consume"
