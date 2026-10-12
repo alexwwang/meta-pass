@@ -12,6 +12,14 @@ Work only on branch `feat/storage`; never develop directly on `main`.
 
 ## Test layers
 
+## Mobile system-NVS backup
+
+- The mobile page now reads only the fixed system partition labelled `nvs` through paired-session-authenticated `/api/install/nvs/info` and `/api/install/nvs/read`. Clients cannot choose a partition label or raw flash address.
+- Each read is limited to 1–4096 bytes and checked against partition bounds. The client reads in 4 KiB chunks and stores the exact bytes as `nvs.bin`, with size and SHA-256 in the archive manifest.
+- NVS may contain Wi-Fi credentials and other device configuration. Reads require a valid paired session, an explicit user backup action, and an idle install transaction. Responses are marked no-store. Do not expose unauthenticated or arbitrary-partition reads.
+- Restore still validates archive NVS bytes without writing them to the destination device. This API is read-only; it does not implement NVS restore.
+- Cloud host/contract tests do not prove the real device partition label, size, or read behavior. On hardware, verify NVS info size, first/last chunk reads, out-of-range and unauthenticated rejection, archived `nvs.bin` size/hash, and that restore leaves destination NVS untouched.
+
 1. Host TDD and firmware build.
 2. passport-sim using the real ESP32-C3 QEMU path.
 3. Real Passport hardware over USB Serial/JTAG + LAN HTTP.
