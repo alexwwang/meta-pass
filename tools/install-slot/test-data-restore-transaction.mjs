@@ -18,7 +18,7 @@ const plan = { manifestVersion: 2, playIds: [101], dataBytes: 4096,
     bytes: data.length, sha256: digest(data), file: "data/101/0.bin", allocatedBytes: 4096 }] };
 const payloads = new Map([["app.bin", app], ["data/101/0.bin", data]]);
 
-function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = false, commitAppliedThenTimeout = false } = {}) {
+function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = false, commitAppliedThenTimeout = false, failPostCommitState = false } = {}) {
   const events = [];
   const store = new Map();
   let staged = true;
@@ -35,7 +35,7 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
     async writeApp(token, slot, file, bytes) { events.push(["writeApp", slot.play_id]); if (failAppWrite) throw new Error("simulated APP write failure"); store.set("app", bytes.slice()); },
     async verifyApp(token, slot, file) { events.push(["verifyApp", slot.play_id]); },
     async commitRestore(token, value) { events.push(["commit", value]); if (failCommit) throw new Error("simulated timeout before durable commit"); staged = false; commitApplied = true; if (commitAppliedThenTimeout) throw new Error("simulated timeout after durable commit"); return { committed: true }; },
-    async readCommittedState(ids) { events.push(["verifyState", ids]); return { committed: true, playIds: ids, data: [{ play_id: 101, label: "cfg_save", bytes: data.length, sha256: digest(data) }] }; },
+    async readCommittedState(ids) { events.push(["verifyState", ids]); return failPostCommitState ? { committed: true, playIds: ids, data: [] } : { committed: true, playIds: ids, data: [{ play_id: 101, label: "cfg_save", bytes: data.length, sha256: digest(data) }] }; },
     async cleanupStaging(token) { events.push(["cleanup", token]); staged = false; },
   };
   return { device, events, staged: () => staged, commitApplied: () => commitApplied };
@@ -81,18 +81,25 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
   console.log("PASS 5: timeout after durable commit preserves state for recovery and never cleans staging");
 }
 {
+  const { device, events } = fakeDevice({ failPostCommitState: true });
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 }), /commit may have started/);
+  assert.ok(events.some(e => e[0] === "verifyState"), "post-commit state must be inspected");
+  assert.equal(events.some(e => e[0] === "cleanup"), false, "failed verification cannot clean possibly referenced extents");
+  console.log("PASS 6: ownership verification failure preserves possibly committed DATA and requests recovery inspection");
+}
+{
   const { device, events } = fakeDevice();
   const mismatchedPlan = { ...plan, dataBytes: 8192 };
   await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }), /capacity totals do not match/);
   assert.equal(events.length, 0, "capacity mismatch must be rejected before device transaction");
-  console.log("PASS 6: capacity totals are recomputed from the manifest before device I/O");
+  console.log("PASS 7: capacity totals are recomputed from the manifest before device I/O");
 }
 {
   const { device, events } = fakeDevice();
   const mismatchedPlan = { ...plan, data: [] };
   await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }), /DATA identities do not match/);
   assert.equal(events.length, 0, "plan mismatch must be rejected before device transaction");
-  console.log("PASS 7: plan identities must exactly match the archive manifest");
+  console.log("PASS 8: plan identities must exactly match the archive manifest");
 }
 {
   const bad = new Map(payloads);
@@ -100,5 +107,5 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
   const { device, events } = fakeDevice();
   await assert.rejects(executeDataRestoreTransaction({ manifest, payloads: bad, plan, device, sha256Hex: async b => digest(b) }), /payload length changed/);
   assert.equal(events.length, 0, "invalid payload must be rejected before device writes");
-  console.log("PASS 8: mutated payload is rejected before opening device transaction");
+  console.log("PASS 9: mutated payload is rejected before opening device transaction");
 }
