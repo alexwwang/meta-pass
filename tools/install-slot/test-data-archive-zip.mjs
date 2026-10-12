@@ -39,7 +39,7 @@ const good = buildDataArchiveZip([
   console.log("PASS 2: payload corruption fails CRC before archive entries are accepted");
 }
 {
-  const traversal = replaceAll(good, "payload", "../evil!");
+  const traversal = replaceAll(good, "payload", "../evil");
   assert.throws(() => readDataArchiveZip(traversal), /unsafe or duplicate ZIP path/);
   console.log("PASS 3: path traversal is rejected in ZIP entry names");
 }
