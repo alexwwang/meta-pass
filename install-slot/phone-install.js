@@ -909,7 +909,18 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   }
 
   hooks.stage?.("finalize");
-  const fin = await bridge.finalize();
+  let fin;
+  try {
+    fin = await bridge.finalize();
+  } catch (error) {
+    // The request may have reached the device even when the transport rejects.
+    // Treat this as an uncertain commit outcome and never let the restore caller
+    // interpret it as a preflight failure eligible for cancellation.
+    return fail("finalize",
+      "finalize transport failed; commit state is uncertain: " +
+        (error?.message || String(error)),
+      { commitUncertain: true });
+  }
   if (!fin.ok) {
     let msg = fin.text || `HTTP ${fin.status}`;
     let observedState = null;
