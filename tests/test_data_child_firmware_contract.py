@@ -50,6 +50,12 @@ assert "esp_flash_read(NULL, read_buf, address, length)" in install_net, "DATA A
 assert '{ "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL }' in install_net, "DATA read handler must be registered"
 assert "function bridgeBytes(path,opt)" in install_net and "dataRead:function(playId,label,offset,length)" in install_net, "phone bridge must expose binary DATA reads"
 assert "h_install_nvs_info" in install_net and "h_install_nvs_read" in install_net, "mobile NVS API handlers must exist"
+reset_start = usb_page.index("const failedPort = newTransport?.device;")
+reset_end = usb_page.index("if (transport === newTransport)", reset_start)
+reset_handler = usb_page[reset_start:reset_end]
+assert reset_handler.index("failedPort.setSignals") < reset_handler.index("newTransport?.disconnect()"), "failed handshake reset must pulse signals before disconnect closes the port"
+assert "dataTerminalReady: true, requestToSend: false" in reset_handler, "reset pulse must release EN with the boot strap inactive"
+assert "dataTerminalReady: false, requestToSend: false" in reset_handler, "reset pulse must return DTR to idle"
 assert 'self.fw.write(re.sub(r"(token=)[0-9a-f]{32}", r"\\1<redacted>", line, flags=re.I))' in smoke, "UART evidence must redact session tokens while retaining the in-memory pairing token"
 assert 'ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs"' in install_net, "NVS API must resolve only the fixed system partition"
 assert "length > INSTALL_IO_BUF" in install_net and "length > part->size - offset" in install_net, "NVS reads must be bounded and range checked"
