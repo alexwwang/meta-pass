@@ -75,6 +75,9 @@ export async function prepareDataArchiveRestore(manifest, payloads, {
     if (!Number.isSafeInteger(requiredSize) || requiredSize < record.bytes) {
       throw new Error("DATA allocation size overflow: " + record.file);
     }
+    if (requiredSize !== record.bytes) {
+      throw new Error("DATA payload length is not aligned to the allocation granule: " + record.file);
+    }
     return {
       playId: slot.play_id,
       label: record.label,
