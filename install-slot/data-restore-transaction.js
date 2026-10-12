@@ -92,7 +92,6 @@ export async function executeDataRestoreTransaction({
     "beginRestore", "allocateData", "writeData", "readData", "writeApp",
     "verifyApp", "commitRestore", "readCommittedState", "cleanupStaging",
   ];
-  if (manifest.nvs) requiredMethods.push("writeNvs", "verifyNvs");
   for (const name of requiredMethods) {
     if (typeof device[name] !== "function") fail("device adapter missing " + name, "INVALID_RESTORE_ADAPTER");
   }
@@ -156,10 +155,9 @@ export async function executeDataRestoreTransaction({
         play_id: slot.play_id, source_slot: slot.source_slot, name: slot.name,
       }, file);
     }
-    if (nvsItem) {
-      await device.writeNvs(token, nvsItem.file, nvsItem.bytes);
-      await device.verifyNvs(token, nvsItem.file);
-    }
+    // NVS is device-global, not owned by an APP+DATA group. Its archive bytes
+    // are integrity-checked above, but this transaction deliberately never writes
+    // them; restoring a play must preserve the destination device's NVS state.
 
     // From this point onward a timeout/error may mean the durable commit happened.
     // Never erase staging on an ambiguous commit result.
