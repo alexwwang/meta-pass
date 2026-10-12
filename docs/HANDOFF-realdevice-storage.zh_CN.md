@@ -465,3 +465,10 @@ smoke 失败后不得只输出“FAIL”。
 同时，`restoreDataArchive()` 曾在所有安装失败后无条件调用 `cancel()`；这会把 finalize 已被接受、但设备终态轮询超时的情况错误地当作可安全回滚。当前实现将此类结果标记为 `commitUncertain` 并跳过 cancel；只有设备明确报告终态 `failed` 时，才继续走回滚路径。现在也覆盖 finalize 请求本身抛出传输异常的情况：因为请求可能已抵达设备，同样标记为不确定提交并跳过 cancel，提示先检查设备状态，不应盲目重试恢复。集成测试覆盖“finalize 无确认时不 cancel”“finalize 传输异常不 cancel”和“明确 failed 时允许 cancel”。
 
 这些测试仍不能证明真实 Flash 原子性或物理断电持久性。云端 CI 通过后，本地 agent 仍需在目标固件上检查真实 prepare/session/chunk/finalize 路径；不得把 fake-device 测试写成真机证据。
+
+## 16. 2026-10-12 新增：USB v2 归档范围与 NVS 恢复语义
+
+- 动态存储模式下，USB 备份一次只允许选择一个 APP 槽位，与手机内嵌页的单个 APP+DATA 归档/恢复语义一致；避免生成 v2 多 APP 归档而恢复器拒绝导入。
+- v2 归档可以保留并校验自动备份的全局 NVS 字节，但 v2 APP+DATA 恢复不会写入全局 NVS；目标设备当前 NVS 保持不变。手机端恢复成功提示与 USB 恢复预检/结果提示均明确说明此行为。
+- 旧版 v1 归档的顺序 APP/NVS 恢复兼容路径保持不变。v2 NVS 字节被验证但不应用，是为了避免在 APP+DATA carve 事务之外覆盖全局 NVS；这不构成 NVS 原子恢复的证明。
+- 新增/更新的宿主测试覆盖 USB 单组归档门禁，以及含 NVS 的 v2 归档恢复仍可完成 APP+DATA 事务并保留目标 NVS。真机仍需确认恢复后的 DATA 字节和设备状态。
