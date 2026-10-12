@@ -7,7 +7,8 @@ const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const app = new Uint8Array([0xe9, 1, 2, 3, 4, 5]);
 const data = new Uint8Array([9, 8, 7, 6, 5, 4, 3]);
 const manifest = {
-  manifest_version: 2, complete: true, missing_slots: [],
+  manifest_version: 2, kind: "meta-pass-slot-backup",
+  created_utc: "2026-10-12T00:00:00.000Z", complete: true, missing_slots: [],
   slots: [{ play_id: 101, source_slot: 0, name: "demo",
     files: [{ name: "app.bin", bytes: app.length, sha256: digest(app), type: "app" }] }],
   data: [{ play_id: 101, label: "cfg_save", type: 1, subtype: 64, state: 1,
@@ -145,6 +146,26 @@ function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = f
   );
   assert.equal(events.length, 0, "DATA type metadata must match before device I/O");
   console.log("PASS 11: DATA subtype drift is rejected before device I/O");
+}
+{
+  const { device, events } = fakeDevice();
+  const duplicateAppPlan = { ...plan, playIds: [101, 101] };
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest, payloads, plan: duplicateAppPlan, device, sha256Hex: async b => digest(b) }),
+    /APP identities do not match/,
+  );
+  assert.equal(events.length, 0, "duplicate APP plan IDs must fail before device I/O");
+  console.log("PASS 12: duplicate APP plan identities are rejected");
+}
+{
+  const { device, events } = fakeDevice();
+  const malformedManifest = { ...manifest, data: [{ ...manifest.data[0], subtype: "64" }] };
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest: malformedManifest, payloads, plan, device, sha256Hex: async b => digest(b) }),
+    /invalid restore manifest/,
+  );
+  assert.equal(events.length, 0, "malformed manifest fields must fail before device I/O");
+  console.log("PASS 13: malformed manifest is rejected before device I/O");
 }
 {
   const bad = new Map(payloads);
