@@ -426,11 +426,17 @@ const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
 
 // NVS reads are client-bounded too; invalid ranges must fail without issuing a request.
 {
-  const before = calls.length;
-  const invalid = await bridge.nvsRead(0, 4097);
-  assert.equal(invalid.ok, false);
-  assert.equal(invalid.status, 400);
-  assert.equal(calls.length, before);
+  const originalFetch = globalThis.fetch;
+  let requested = false;
+  globalThis.fetch = async (...args) => { requested = true; return originalFetch(...args); };
+  try {
+    const invalid = await bridge.nvsRead(0, 4097);
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.status, 400);
+    assert.equal(requested, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
   console.log("PASS NVS bridge rejects oversized read without network access");
 }
 
