@@ -1660,7 +1660,7 @@ export function boot(opts = {}) {
 
   async function doRemove(slot) {
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>
-      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部数据。你可以先导出真实字节备份；目前支持恢复完整的单个 APP+DATA 组，但不支持多 APP 原子恢复或全局 NVS 恢复。请先确认已保存需要保留的归档。此操作不可恢复。</p>
+      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部数据。你可以先导出真实字节备份；恢复支持完整的单个 APP+DATA 组，多 APP 原子恢复暂不支持。归档中的 NVS 字节只校验、不写入，目标设备现有 NVS 保持不变。请先确认已保存需要保留的归档。此操作不可恢复。</p>
       <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>删除 APP 及全部数据</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
