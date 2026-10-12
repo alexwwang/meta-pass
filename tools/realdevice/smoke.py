@@ -472,9 +472,11 @@ def main():
     if st != 401:
         die(f"NVS info 未认证应返回 401，实际 {st} {body[:120]!r}", mon)
     ok("NVS info 拒绝未认证请求")
-    st, body = api.get("/api/install/nvs/info")
+    st, body, info_headers = api.get_response("/api/install/nvs/info")
     if st != 200:
         die(f"NVS info {st} {body[:160]!r}", mon)
+    if info_headers.get("cache-control", "").lower() != "no-store":
+        die(f"NVS info 未设置 Cache-Control: no-store: {info_headers.get('cache-control')!r}", mon)
     try:
         nvs_info = json.loads(body)
         nvs_size = nvs_info["size"]
@@ -494,6 +496,12 @@ def main():
     st, body, _ = api.nvs_read(nvs_size - 1, 2)
     if st != 416:
         die(f"NVS 越界读取应返回 416，实际 {st} {body[:120]!r}", mon)
+    st, body, _ = api.nvs_read(0, 0)
+    if st != 400:
+        die(f"NVS 零长度读取应返回 400，实际 {st} {body[:120]!r}", mon)
+    st, body, _ = api.nvs_read(0, 4097)
+    if st != 400:
+        die(f"NVS 超过 4 KiB 的读取应返回 400，实际 {st} {body[:120]!r}", mon)
     st, body, _ = unauth.nvs_read(0, 16)
     if st != 401:
         die(f"NVS read 未认证应返回 401，实际 {st} {body[:120]!r}", mon)
