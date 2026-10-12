@@ -2165,7 +2165,7 @@ static esp_err_t h_install_nvs_info(httpd_req_t *req)
     const esp_partition_t *part = install_nvs_partition();
     if (!part || part->size == 0) return reply(req, "404 Not Found", "system NVS partition not found");
     char body[64];
-    snprintf(body, sizeof(body), "{\\"size\\":%" PRIu32 "}", (uint32_t)part->size);
+    snprintf(body, sizeof(body), "{\"size\":%" PRIu32 "}", (uint32_t)part->size);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_sendstr(req, body);
