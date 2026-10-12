@@ -25,7 +25,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
 
     def test_usb_restore_copy_documents_legacy_v1_compatibility(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("v2 restores one complete APP+DATA group and rejects global NVS", usb)
+        self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
         self.assertIn("Legacy v1 archives retain sequential APP/NVS restore compatibility", usb)
         self.assertIn("归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变", usb)
         self.assertIn("旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径", usb)
