@@ -41,14 +41,14 @@ export async function executeDataRestoreTransaction({
   if (!Number.isInteger(chunkSize) || chunkSize < 1 || chunkSize > 4096) {
     fail("restore chunk size must be between 1 and 4096 bytes", "INVALID_RESTORE_TRANSACTION");
   }
+  if (!Array.isArray(manifest.slots) || !Array.isArray(manifest.data)) {
+    fail("restore manifest is missing APP or DATA records", "INVALID_RESTORE_TRANSACTION");
+  }
   const manifestPlayIds = manifest.slots.map((slot) => slot.play_id);
   if (new Set(manifestPlayIds).size !== manifestPlayIds.length ||
       manifestPlayIds.length !== plan.playIds.length ||
       manifestPlayIds.some((id) => !plan.playIds.includes(id))) {
     fail("restore plan APP identities do not match the manifest", "INVALID_RESTORE_PLAN");
-  }
-  if (!Array.isArray(manifest.slots) || !Array.isArray(manifest.data)) {
-    fail("restore manifest is missing APP or DATA records", "INVALID_RESTORE_TRANSACTION");
   }
   const plannedDataByKey = new Map();
   for (const planned of plan.data) {
