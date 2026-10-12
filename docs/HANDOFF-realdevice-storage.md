@@ -214,3 +214,10 @@ The DATA ZIP parser also now tracks local-record byte ranges and rejects central
 The review also found that `restoreDataArchive()` unconditionally called `cancel()` after any install failure. That could treat an accepted finalize with a timed-out terminal-state poll as safe to roll back. The implementation now marks such outcomes `commitUncertain` and skips cancellation; rollback remains enabled when the device explicitly reports terminal `failed`. A thrown transport error from the finalize request is also treated as uncertain because the request may have reached the device; the user must inspect device state before retrying. Integration tests cover timeout, transport exception, and explicit terminal failure.
 
 These tests still do not prove real Flash atomicity or physical power-loss durability. After cloud CI passes, the local agent must inspect the real prepare/session/chunk/finalize path on target firmware. Never present fake-device tests as real-device evidence.
+
+## 16. Added 2026-10-12: USB v2 archive scope and NVS restore semantics
+
+- In dynamic-storage mode, USB backup now accepts exactly one selected APP slot per archive, matching the mobile page's single APP+DATA archive/restore behavior. This prevents creating a multi-APP v2 archive that the restore path cannot consume.
+- A v2 archive may retain and validate the automatically backed-up global NVS bytes, but v2 APP+DATA restore does not write global NVS; the destination device's existing NVS remains unchanged. Mobile success copy and USB preflight/result copy explicitly disclose this.
+- Legacy v1 archives keep their sequential APP/NVS restore compatibility path. Verifying but not applying v2 NVS avoids overwriting global NVS outside the APP+DATA carve transaction; it does not prove atomic NVS restoration.
+- Host tests cover the USB single-group backup gate and successful APP+DATA restore from a v2 archive that also contains NVS, while preserving destination NVS. Real-device validation must still verify restored DATA bytes and device state.
