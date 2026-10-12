@@ -56,6 +56,7 @@ reset_handler = usb_page[reset_start:reset_end]
 assert reset_handler.index("failedPort.setSignals") < reset_handler.index("newTransport?.disconnect()"), "failed handshake reset must pulse signals before disconnect closes the port"
 assert "dataTerminalReady: true, requestToSend: false" in reset_handler, "reset pulse must release EN with the boot strap inactive"
 assert "dataTerminalReady: false, requestToSend: false" in reset_handler, "reset pulse must return DTR to idle"
+assert 'msg_reset_failed' in reset_handler, "automatic reset failure must be visible instead of silently swallowed"
 assert 'self.fw.write(re.sub(r"(token=)[0-9a-f]{32}", r"\\1<redacted>", line, flags=re.I))' in smoke, "UART evidence must redact session tokens while retaining the in-memory pairing token"
 assert 'ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs"' in install_net, "NVS API must resolve only the fixed system partition"
 assert "length > INSTALL_IO_BUF" in install_net and "length > part->size - offset" in install_net, "NVS reads must be bounded and range checked"
