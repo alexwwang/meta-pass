@@ -1573,7 +1573,7 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">数据备份</h4>
-      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256。恢复目前支持完整的单个 APP+DATA 组；多 APP 原子恢复和包含全局 NVS 的归档会被拒绝。卸载 APP 会永久删除设备上的关联数据。</p>\n      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-restore-pick class="mp-btn ghost" type=button>从备份恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
+      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256。恢复支持完整的单个 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。多 APP 原子恢复暂不支持。卸载 APP 会永久删除设备上的关联数据。</p>\n      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-restore-pick class="mp-btn ghost" type=button>从备份恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
