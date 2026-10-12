@@ -684,9 +684,13 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
       dataImages,
     });
     if (!result.ok) {
-      // runInstall reports the exact stage; cancel asks firmware to roll back
-      // newly-carved APP/DATA and preserve the pre-restore carve on failure.
-      try { await bridge.cancel(); } catch { /* retain original result */ }
+      // A pre-commit failure can be rolled back. If finalize may have taken
+      // effect but its terminal state is unknown, cancel could destroy data
+      // already referenced by durable ownership metadata; preserve state for
+      // recovery inspection instead.
+      if (result.commitUncertain !== true) {
+        try { await bridge.cancel(); } catch { /* retain original result */ }
+      }
       return { ...result, stage: "restore-" + result.stage };
     }
     return { ok: true, slot: result.slot, playId: slot.play_id, restoredData: dataImages.length };
@@ -908,11 +912,18 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   const fin = await bridge.finalize();
   if (!fin.ok) {
     let msg = fin.text || `HTTP ${fin.status}`;
+    let observedState = null;
     try {
       const s = parseJsonReply(await bridge.status());
+      observedState = s?.state ?? null;
       if (s?.message) msg = s.message;
     } catch { /* keep HTTP text */ }
-    return fail("finalize", msg, { status: fin.status });
+    // A failed HTTP response does not prove that finalize had no durable side
+    // effect. Only an explicit device "failed" terminal state is unambiguous.
+    return fail("finalize", msg, {
+      status: fin.status,
+      ...(observedState === "failed" ? {} : { commitUncertain: true }),
+    });
   }
 
   hooks.stage?.("done");
@@ -921,10 +932,12 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   const doneState = await pollUntil(bridge, (s) => s.state === "done" || s.state === "failed",
     hooks, Number(hooks.doneTimeoutMs) || 30000).catch(() => null);
   if (!doneState || doneState.state !== "done") {
+    const terminalFailure = doneState?.state === "failed";
     return fail("finalize",
-      doneState?.state === "failed"
+      terminalFailure
         ? (doneState.message || "device reported failure")
-        : "device did not reach done (finalize accepted but no confirmation)");
+        : "device did not reach done (finalize accepted but no confirmation)",
+      terminalFailure ? {} : { commitUncertain: true });
   }
   return { ok: true, slot };
 }
