@@ -60,3 +60,16 @@ async function fixture(dataBytes) {
   );
   console.log("PASS 3: missing transport-provided APP extractor is rejected");
 }
+
+{
+  const data = new Uint8Array(4096).fill(0x5a);
+  const { manifest, payloads } = await fixture(data);
+  await assert.rejects(
+    prepareDataArchiveRestore(manifest, payloads, {
+      sha256Hex,
+      extractAppImage: () => ({ data: new Uint8Array([1]), length: 2, tailSectorOffset: 0 }),
+    }),
+    /APP image extractor returned invalid image metadata/,
+  );
+  console.log("PASS 4: malformed APP extractor metadata is rejected before restore mutation");
+}
