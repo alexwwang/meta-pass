@@ -50,6 +50,7 @@ assert "esp_flash_read(NULL, read_buf, address, length)" in install_net, "DATA A
 assert '{ "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL }' in install_net, "DATA read handler must be registered"
 assert "function bridgeBytes(path,opt)" in install_net and "dataRead:function(playId,label,offset,length)" in install_net, "phone bridge must expose binary DATA reads"
 assert "h_install_nvs_info" in install_net and "h_install_nvs_read" in install_net, "mobile NVS API handlers must exist"
+assert 'self.fw.write(re.sub(r"(token=)[0-9a-f]{32}", r"\\1<redacted>", line, flags=re.I))' in smoke, "UART evidence must redact session tokens while retaining the in-memory pairing token"
 assert 'ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs"' in install_net, "NVS API must resolve only the fixed system partition"
 assert "length > INSTALL_IO_BUF" in install_net and "length > part->size - offset" in install_net, "NVS reads must be bounded and range checked"
 assert '{ "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL }' in install_net and '{ "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL }' in install_net, "NVS endpoints must be registered"
