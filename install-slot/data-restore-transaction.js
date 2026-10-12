@@ -181,12 +181,21 @@ export async function executeDataRestoreTransaction({
       fail("post-commit ownership/geometry verification failed", "RESTORE_POST_COMMIT_VERIFY_FAILED");
     }
     return Object.freeze({ committed: true, playIds: Object.freeze([...plan.playIds]) });
-  } catch (error) {
+  } catch (caught) {
     if (token != null && !commitStarted) {
       try { await device.cleanupStaging(token); } catch { /* retain original failure */ }
     }
+
+    // Adapters and transport shims may reject with non-Error values. Normalize
+    // before attaching uncertainty metadata so the original failure is not
+    // masked by a TypeError when commit may already be durable.
+    const error = caught instanceof Error
+      ? caught
+      : new Error(caught == null ? "unknown device adapter failure" : String(caught));
+
     if (commitStarted) {
       error.restoreStateUncertain = true;
+      error.code = error.code || "RESTORE_COMMIT_UNCERTAIN";
       error.message = "restore commit may have started; preserve staging and run recovery inspection: " + error.message;
     }
     throw error;
