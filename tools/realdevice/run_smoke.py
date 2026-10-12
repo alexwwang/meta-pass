@@ -32,7 +32,7 @@ def version_of(argv):
     """Best-effort tool version capture; missing optional tools must not block evidence collection."""
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
-        output = (r.stdout + "\\n" + r.stderr).strip().splitlines()
+        output = (r.stdout + "\n" + r.stderr).strip().splitlines()
         return output[0][:240] if r.returncode == 0 and output else "unavailable"
     except (OSError, subprocess.TimeoutExpired):
         return "unavailable"
@@ -65,7 +65,7 @@ def main():
             "idf": version_of(["idf.py", "--version"]),
             "node": version_of(["node", "--version"]),
             "esptool": version_of(["esptool.py", "version"]),
-            "pyserial": version_of([sys.executable, "-m", "serial.tools.list_ports", "--help"]),
+            "pyserial": version_of([sys.executable, "-c", "import serial; print(serial.VERSION)"]),
         },
         "serial_port": args.port, "device_ip": args.ip, "fresh": args.fresh,
         "soft_reset_tested": False, "physical_power_loss_tested": False,
@@ -151,6 +151,8 @@ def main():
         f.write("- Failure category: " + str(report["failure_category"]) + "\n")
         f.write("- Commit: " + report["git_commit"] + "\n")
         f.write("- Firmware SHA256: " + str(report["firmware_sha256"]) + "\n")
+        f.write("- Run ID: " + report["run_id"] + "\n")
+        f.write("- Tool versions: " + json.dumps(report["tool_versions"], ensure_ascii=False) + "\n")
         f.write("- Soft reset tested: " + str(report["soft_reset_tested"]) + "\n")
         f.write("- Physical power loss tested: NO\n\n")
         f.write("## Stages observed\n\n")
