@@ -14,6 +14,14 @@ DEVICE = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 
 
 class MobilePageStorageManagementContract(unittest.TestCase):
+    def test_restore_capability_copy_matches_supported_single_group_restore(self):
+        mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+        self.assertIn("目前支持恢复完整的单个 APP+DATA 组", mobile)
+        self.assertNotIn("当前尚不能导入恢复", mobile)
+        self.assertIn("Restores one complete v2 APP+DATA group", usb)
+        self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
+
     def test_mobile_viewport_and_page_health_are_checked(self):
         for token in ("M01 no horizontal page overflow", "responsive layout", "no console errors",
                       "no failed network requests", "320x720,360x800,390x844,430x932"):
