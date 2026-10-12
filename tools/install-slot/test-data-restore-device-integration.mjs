@@ -38,7 +38,7 @@ const listing = {
   data: [],
 };
 
-function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status: 200, text: "ok" } } = {}) {
+function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status: 200, text: "ok" }, finalizeThrows = false } = {}) {
   let state = "idle";
   let offer;
   const events = [];
@@ -60,7 +60,7 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
     },
     async chunk(offset, bytes) { events.push(["app", offset, bytes.length]); return { ok: true, status: 200, text: "ok" }; },
     async dataChunk(index, offset, bytes) { events.push(["data", index, offset, bytes.length]); return { ok: true, status: 200, text: "ok" }; },
-    async finalize() { events.push(["finalize"]); state = finalizeState; return finalizeReply; },
+    async finalize() { events.push(["finalize"]); state = finalizeState; if (finalizeThrows) throw new Error("simulated transport disconnect"); return finalizeReply; },
     async cancel() { events.push(["cancel"]); state = "cancelled"; return { ok: true, status: 200, text: "ok" }; },
     get events() { return events; },
     get offer() { return offer; },
@@ -173,13 +173,24 @@ function fakeBridge({ finalizeState = "done", finalizeReply = { ok: true, status
   console.log("PASS 8: finalize timeout preserves possibly committed APP/DATA and skips cancel");
 }
 {
+  const bridge = fakeBridge({ finalizeState: "done", finalizeThrows: true });
+  const result = await restoreDataArchive(bridge, listing, manifest, payloads);
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "restore-finalize");
+  assert.equal(result.commitUncertain, true);
+  assert.match(result.reason, /commit state is uncertain/);
+  assert.equal(bridge.events.some((e) => e[0] === "cancel"), false,
+    "transport failure after finalize dispatch must not trigger rollback");
+  console.log("PASS 9: finalize transport exception is reported as uncertain and skips cancel");
+}
+{
   const bridge = fakeBridge({ finalizeState: "failed" });
   const result = await restoreDataArchive(bridge, listing, manifest, payloads, { doneTimeoutMs: 1 });
   assert.equal(result.ok, false);
   assert.equal(result.commitUncertain, undefined);
   assert.ok(bridge.events.some((e) => e[0] === "cancel"),
     "explicit device terminal failure remains eligible for rollback");
-  console.log("PASS 9: explicit device finalize failure remains eligible for rollback");
+  console.log("PASS 10: explicit device finalize failure remains eligible for rollback");
 }
 {
   const bridge = fakeBridge();
