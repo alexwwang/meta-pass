@@ -41,8 +41,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         end = usb.index('$("btn-restore").addEventListener', start)
         restore = usb[start:end]
         for token in (
-            "validateSingleGroupRestoreManifest(manifest)",
-            "await validateDataArchivePayloads(manifest, payloads, sha256Hex)",
+            "prepareDataArchiveRestore(manifest, payloads",
+            "const archivedSlot = prepared.slot",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, restore)
@@ -55,9 +55,15 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         ):
             with self.subTest(token=token):
                 self.assertIn(token, shared)
-        self.assertLess(restore.index("validateSingleGroupRestoreManifest(manifest)"),
-                        restore.index("await loadSlotModel()"))
-        self.assertLess(restore.index("await validateDataArchivePayloads"),
+        preparation = (ROOT / "install-slot/data-archive-restore.js").read_text(encoding="utf-8")
+        for token in (
+            "validateSingleGroupRestoreManifest(manifest)",
+            "validateDataArchivePayloads(manifest, payloads, sha256Hex)",
+            "DATA payload length is not aligned to the allocation granule",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, preparation)
+        self.assertLess(restore.index("prepareDataArchiveRestore(manifest, payloads"),
                         restore.index("await loadSlotModel()"))
 
     def test_mobile_viewport_and_page_health_are_checked(self):
