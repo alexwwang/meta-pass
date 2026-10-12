@@ -30,7 +30,7 @@ import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
-import { buildDataArchiveManifest, validateDataArchiveManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
+import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -591,17 +591,10 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
 export async function restoreDataArchive(bridge, listing, manifest, payloads, hooks = {}) {
   const fail = (stage, reason, extra = {}) => ({ ok: false, stage, reason, ...extra });
   try {
-    validateDataArchiveManifest(manifest);
-    if (manifest.complete !== true || (manifest.missing_slots || []).length) {
-      return fail("restore-preflight", "incomplete archives cannot be restored");
-    }
+    const slot = validateSingleGroupRestoreManifest(manifest);
     // NVS is global, not owned by an APP+DATA group. Validate any archived NVS
     // bytes as part of archive integrity, but preserve the destination device's NVS:
     // this APP/DATA transaction has no safe global-NVS commit operation.
-    if (manifest.slots.length !== 1) {
-      return fail("restore-preflight", "restore one APP+DATA group at a time; multi-APP atomic restore is not supported");
-    }
-    const slot = manifest.slots[0];
     if (listing?.slots?.some((item) => item.play_id === slot.play_id) ||
         listing?.data?.some((item) => item.play_id === slot.play_id)) {
       return fail("restore-preflight", "play_id already exists on this device; remove the existing APP group before restore");
