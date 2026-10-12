@@ -34,6 +34,25 @@ assert.equal(manifest.data[0].file, dataPath);
 assert.equal(manifest.complete, true);
 assert.deepEqual(manifest.missing_slots, undefined);
 assert.equal(validateDataArchiveManifest(manifest), manifest);
+const nvs = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]);
+const withNvs = buildDataArchiveManifest({
+  createdUtc: "2026-10-11T00:00:00.000Z",
+  slots: [{
+    play_id: 123, source_slot: 1, name: "demo",
+    files: [{ name: appPath, bytes: app.length, sha256: digest(app), type: "app" }],
+  }],
+  data: [],
+  nvs: { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) },
+});
+assert.deepEqual(withNvs.nvs, { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) });
+assert.equal(validateDataArchiveManifest(withNvs), withNvs);
+const withNvsPayloads = new Map([[appPath, app], ["nvs.bin", nvs]]);
+assert.equal(await validateDataArchivePayloads(withNvs, withNvsPayloads, async (bytes) => digest(bytes)), withNvs);
+await assert.rejects(
+  validateDataArchivePayloads(withNvs, new Map([[appPath, app], ["nvs.bin", app]]), async (bytes) => digest(bytes)),
+  /length mismatch|SHA-256 mismatch/,
+);
+
 
 const partial = buildDataArchiveManifest({
   createdUtc: "2026-10-11T00:00:00.000Z",
