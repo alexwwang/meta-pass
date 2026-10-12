@@ -39,7 +39,7 @@ function validateFileRecord(file, seenNames) {
   seenNames.add(file.name);
 }
 
-export function buildDataArchiveManifest({ createdUtc = new Date().toISOString(), slots, data, complete = true, missingSlots = [] }) {
+export function buildDataArchiveManifest({ createdUtc = new Date().toISOString(), slots, data, nvs = null, complete = true, missingSlots = [] }) {
   if (!Array.isArray(slots) || !Array.isArray(data)) fail("slots and data must be arrays");
   if (typeof complete !== "boolean" || !Array.isArray(missingSlots) ||
       missingSlots.some((slot) => !Number.isInteger(slot) || slot < 0) ||
@@ -98,6 +98,7 @@ export function buildDataArchiveManifest({ createdUtc = new Date().toISOString()
     ...(missingSlots.length ? { missing_slots: [...missingSlots].sort((a, b) => a - b) } : {}),
     slots: normalizedSlots,
     data: normalizedData,
+    ...(nvs ? { nvs: { file: nvs.file || "nvs.bin", bytes: nvs.bytes, sha256: nvs.sha256 } } : {}),
   };
   validateDataArchiveManifest(manifest);
   return manifest;
