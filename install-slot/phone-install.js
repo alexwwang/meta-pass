@@ -1484,6 +1484,31 @@ export function boot(opts = {}) {
         dataInputs.push({ play_id: record.play_id, label: record.label, type: record.type,
           subtype: record.subtype, state: record.state, bytes: read.bytes.length, sha256: read.sha256 });
       }
+      // NVS is global rather than APP-owned. Read only the fixed, authenticated system-NVS
+      // endpoint; preserve its exact bytes in the archive, but restore never writes them.
+      const nvsInfoReply = await bridge.nvsInfo();
+      if (!nvsInfoReply.ok) throw new Error("无法读取系统 NVS 分区信息 (HTTP " + nvsInfoReply.status + ")");
+      let nvsInfo;
+      try { nvsInfo = JSON.parse(nvsInfoReply.text); } catch { throw new Error("系统 NVS 分区信息格式无效"); }
+      if (!Number.isSafeInteger(nvsInfo.size) || nvsInfo.size <= 0 || nvsInfo.size > 1024 * 1024) {
+        throw new Error("系统 NVS 分区大小无效或超出安全上限");
+      }
+      const readNvsSnapshot = async () => {
+        const bytes = new Uint8Array(nvsInfo.size);
+        for (let offset = 0; offset < bytes.length; offset += 4096) {
+          const length = Math.min(4096, bytes.length - offset);
+          const chunk = await bridge.nvsRead(offset, length);
+          if (!chunk.ok || !(chunk.bytes instanceof Uint8Array) || chunk.bytes.length !== length) {
+            throw new Error("读取系统 NVS 字节失败，offset=" + offset + " (HTTP " + chunk.status + ")");
+          }
+          bytes.set(chunk.bytes, offset);
+          archiveMessage = "正在备份系统 NVS " + Math.floor((offset + length) * 100 / bytes.length) + "%";
+        }
+        return bytes;
+      };
+      const nvsBytes = await readNvsSnapshot();
+      const nvsSha256 = await sha256Hex(nvsBytes);
+
       // Re-fetch ownership and install state after byte reads. A changed mapping or
       // concurrent installation invalidates the archive rather than producing a mixed snapshot.
       await assertIdle();
@@ -1499,8 +1524,9 @@ export function boot(opts = {}) {
         slots: [{ play_id: slot.play_id, source_slot: slot.slot, name: slot.name,
           files: [{ name: appFile, bytes: appRead.bytes.length, sha256: appRead.sha256, type: "raw" }] }],
         data: dataInputs,
+        nvs: { file: "nvs.bin", bytes: nvsBytes.length, sha256: nvsSha256 },
       });
-      const entries = [{ name: appFile, data: appRead.bytes }];
+      const entries = [{ name: appFile, data: appRead.bytes }, { name: "nvs.bin", data: nvsBytes }];
       for (let i = 0; i < manifest.data.length; i++) entries.push({ name: manifest.data[i].file, data: dataPayloads[i] });
       const payloadMap = new Map(entries.map((entry) => [entry.name, entry.data]));
       await validateDataArchivePayloads(manifest, payloadMap, sha256Hex);
@@ -1513,7 +1539,7 @@ export function boot(opts = {}) {
       // activation. Render a real download link so the user can tap it explicitly.
       if (archiveDownload?.url) URL.revokeObjectURL(archiveDownload.url);
       archiveDownload = { url, filename };
-      archiveMessage = "备份已生成并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区）。请点击下方下载链接保存；可在空间管理中恢复单个完整 APP+DATA 组。";
+      archiveMessage = "备份已生成并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区，含系统 NVS 原始字节）。恢复时 NVS 只校验、不写入目标设备。请点击下方下载链接保存。";
       log(archiveMessage, "ok");
     } catch (error) {
       archiveMessage = "备份失败：" + (error && error.message ? error.message : String(error));
