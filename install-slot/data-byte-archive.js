@@ -177,6 +177,24 @@ export function validateDataArchiveManifest(manifest) {
 
 // fileBytes is a Map or plain object keyed by archive path; sha256Hex accepts
 // Uint8Array and returns a Promise<string>. No writes should occur before this passes.
+// Shared restore policy: both the mobile bridge and USB transport currently
+// restore one APP+DATA ownership group at a time. Keep archive shape/ownership
+// rules here so the two entry points cannot silently drift.
+export function validateSingleGroupRestoreManifest(manifest) {
+  validateDataArchiveManifest(manifest);
+  if (manifest.complete !== true || (manifest.missing_slots || []).length) {
+    fail("incomplete archives cannot be restored");
+  }
+  if (manifest.slots.length !== 1) {
+    fail("restore one complete APP+DATA group at a time; multi-APP atomic restore is not supported");
+  }
+  const slot = manifest.slots[0];
+  if (manifest.data.some((record) => record.play_id !== slot.play_id)) {
+    fail("every DATA record must belong to the archived APP group");
+  }
+  return slot;
+}
+
 export async function validateDataArchivePayloads(manifest, fileBytes, sha256Hex) {
   validateDataArchiveManifest(manifest);
   if (typeof sha256Hex !== "function") fail("SHA-256 implementation is required");
