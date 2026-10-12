@@ -454,10 +454,17 @@ async function uiInstallLocal(imagePath, displayName) {
     record("R", "DATA sizes confirmed (defaults)", true);
   }
 
-  await waitFor(async () => {
-    const text = await page.locator("#install-status").textContent();
-    return text && /done|success|完成|成功/i.test(text);
-  }, 240000, "UI install completion");
+  try {
+    await waitFor(async () => {
+      const text = await page.locator("#install-status").textContent();
+      return text && /done|success|完成|成功/i.test(text);
+    }, 240000, "UI install completion");
+  } catch (e) {
+    // 安装中途链路死亡与连接握手同理:芯片被留在 ROM 下载模式。
+    // 先复活设备,再把原始错误抛给上层(现场由截图/日志/槽位快照保留)。
+    await reviveDevice();
+    throw e;
+  }
 
   const installLog = (await page.locator("#log").textContent()) || "";
   // 本地流程无商店哈希可校验,证据口径:DATA 读回校验 + 槽写入 + carve 提交。
