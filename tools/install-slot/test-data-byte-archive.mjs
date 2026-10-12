@@ -35,7 +35,7 @@ assert.equal(manifest.complete, true);
 assert.deepEqual(manifest.missing_slots, undefined);
 assert.equal(validateDataArchiveManifest(manifest), manifest);
 const nvs = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]);
-const nvsManifest = buildDataArchiveManifest({
+const optionalNvsArchive = buildDataArchiveManifest({
   createdUtc: "2026-10-11T00:00:00.000Z",
   slots: [{
     play_id: 123, source_slot: 1, name: "demo",
@@ -44,12 +44,12 @@ const nvsManifest = buildDataArchiveManifest({
   data: [],
   nvs: { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) },
 });
-assert.deepEqual(nvsManifest.nvs, { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) });
-assert.equal(validateDataArchiveManifest(nvsManifest), nvsManifest);
-const nvsManifestPayloads = new Map([[appPath, app], ["nvs.bin", nvs]]);
-assert.deepEqual(await validateDataArchivePayloads(nvsManifest, nvsManifestPayloads, async (bytes) => digest(bytes)), { ok: true, fileCount: 2, dataCount: 0 });
+assert.deepEqual(optionalNvsArchive.nvs, { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) });
+assert.equal(validateDataArchiveManifest(optionalNvsArchive), optionalNvsArchive);
+const optionalNvsPayloads = new Map([[appPath, app], ["nvs.bin", nvs]]);
+assert.deepEqual(await validateDataArchivePayloads(optionalNvsArchive, optionalNvsPayloads, async (bytes) => digest(bytes)), { ok: true, fileCount: 2, dataCount: 0 });
 await assert.rejects(
-  validateDataArchivePayloads(nvsManifest, new Map([[appPath, app], ["nvs.bin", app]]), async (bytes) => digest(bytes)),
+  validateDataArchivePayloads(optionalNvsArchive, new Map([[appPath, app], ["nvs.bin", app]]), async (bytes) => digest(bytes)),
   /length mismatch|SHA-256 mismatch/,
 );
 
