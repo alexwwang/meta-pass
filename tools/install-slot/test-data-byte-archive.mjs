@@ -6,6 +6,7 @@ import {
   DATA_ARCHIVE_MANIFEST_VERSION,
   buildDataArchiveManifest,
   validateDataArchiveManifest,
+  validateSingleGroupRestoreManifest,
   validateDataArchivePayloads,
   readDataReservation,
   readAppSlotReservation,
@@ -34,6 +35,31 @@ assert.equal(manifest.data[0].file, dataPath);
 assert.equal(manifest.complete, true);
 assert.deepEqual(manifest.missing_slots, undefined);
 assert.equal(validateDataArchiveManifest(manifest), manifest);
+assert.equal(validateSingleGroupRestoreManifest(manifest).play_id, 123);
+assert.throws(
+  () => validateSingleGroupRestoreManifest({ ...manifest, complete: false, missing_slots: [2] }),
+  /incomplete archives cannot be restored/,
+);
+const multiGroupManifest = buildDataArchiveManifest({
+  createdUtc: "2026-10-11T00:00:00.000Z",
+  slots: [
+    { play_id: 123, source_slot: 1, name: "demo",
+      files: [{ name: "slot-1_firmware.bin", bytes: app.length, sha256: digest(app), type: "app" }] },
+    { play_id: 456, source_slot: 2, name: "other",
+      files: [{ name: "slot-2_firmware.bin", bytes: app.length, sha256: digest(app), type: "app" }] },
+  ],
+  data: [
+    { play_id: 123, label: "cfg_save", type: 1, subtype: 64, state: 1,
+      bytes: data.length, sha256: digest(data) },
+    { play_id: 456, label: "cfg_save", type: 1, subtype: 64, state: 1,
+      bytes: data.length, sha256: digest(data) },
+  ],
+});
+assert.throws(
+  () => validateSingleGroupRestoreManifest(multiGroupManifest),
+  /restore one complete APP\+DATA group at a time/,
+);
+console.log("PASS 0: shared restore policy rejects incomplete and multi-group archives");
 const nvs = new Uint8Array([0xaa, 0xbb, 0xcc, 0xdd]);
 const optionalNvsArchive = buildDataArchiveManifest({
   createdUtc: "2026-10-11T00:00:00.000Z",
