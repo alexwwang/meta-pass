@@ -451,13 +451,15 @@ smoke 失败后不得只输出“FAIL”。
 这项改动改变了原有“优先安装到现有空槽”的行为，因此必须重新跑受影响的 CI 和真机路径；如果当前环境没有真机，明确记录为未验证，不得用旧报告代替。
 
 
-## 15. 2026-10-12 新增：恢复事务故障注入覆盖
+## 15. 2026-10-12 新增：恢复事务故障注入与 finalize 不确定态
 
-`tools/install-slot/test-data-restore-transaction.mjs` 已纳入 `tools/validate.sh`，新增并验证以下故障边界：
+`tools/install-slot/test-data-restore-transaction.mjs` 已纳入 `tools/validate.sh`，覆盖：
 
 - APP 写入失败发生在 commit 前：不得进入 commit，必须尝试清理临时 staging。
 - commit 请求超时：结果视为不确定，不得清理 staging。
 - 模拟设备已完成持久化 commit、但响应在传输中超时：仍不得清理可能已被引用的 extent。
 - commit 返回成功后，所有权/几何读回校验失败：不得清理可能已发布的数据，必须保留状态供恢复检查。
 
-这些是 host fake-device 的事务语义测试，**不是**真实设备协议端点或 Flash 原子性的证明。云端 CI 通过后，仍需本地 agent 在目标固件上检查真实 prepare/session/chunk/finalize 路径；如果需要声称断电持久性，仍必须单独执行物理断电测试。不得把 fake-device 的 durable-commit 模拟写成真机证据。
+同时，`restoreDataArchive()` 曾在所有安装失败后无条件调用 `cancel()`；这会把 finalize 已被接受、但设备终态轮询超时的情况错误地当作可安全回滚。当前实现将此类结果标记为 `commitUncertain` 并跳过 cancel；只有设备明确报告终态 `failed` 时，才继续走回滚路径。集成测试覆盖“finalize 无确认时不 cancel”和“明确 failed 时允许 cancel”。
+
+这些测试仍不能证明真实 Flash 原子性或物理断电持久性。云端 CI 通过后，本地 agent 仍需在目标固件上检查真实 prepare/session/chunk/finalize 路径；不得把 fake-device 测试写成真机证据。
