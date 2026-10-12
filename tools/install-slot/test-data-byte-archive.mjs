@@ -47,7 +47,7 @@ const withNvs = buildDataArchiveManifest({
 assert.deepEqual(withNvs.nvs, { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) });
 assert.equal(validateDataArchiveManifest(withNvs), withNvs);
 const withNvsPayloads = new Map([[appPath, app], ["nvs.bin", nvs]]);
-assert.equal(await validateDataArchivePayloads(withNvs, withNvsPayloads, async (bytes) => digest(bytes)), withNvs);
+assert.deepEqual(await validateDataArchivePayloads(withNvs, withNvsPayloads, async (bytes) => digest(bytes)), { ok: true, fileCount: 2, dataCount: 0 });
 await assert.rejects(
   validateDataArchivePayloads(withNvs, new Map([[appPath, app], ["nvs.bin", app]]), async (bytes) => digest(bytes)),
   /length mismatch|SHA-256 mismatch/,
