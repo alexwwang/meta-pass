@@ -584,11 +584,9 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
     if (manifest.complete !== true || (manifest.missing_slots || []).length) {
       return fail("restore-preflight", "incomplete archives cannot be restored");
     }
-    // NVS is a global partition, not owned by an APP+DATA allocation group.
-    // Do not silently ignore or separately overwrite it outside the transaction.
-    if (manifest.nvs) {
-      return fail("restore-preflight", "archive includes global NVS; transactional NVS restore is not supported");
-    }
+    // NVS is global, not owned by an APP+DATA group. Validate any archived NVS
+    // bytes as part of archive integrity, but preserve the destination device's NVS:
+    // this APP/DATA transaction has no safe global-NVS commit operation.
     if (manifest.slots.length !== 1) {
       return fail("restore-preflight", "restore one APP+DATA group at a time; multi-APP atomic restore is not supported");
     }
@@ -693,7 +691,7 @@ export async function restoreDataArchive(bridge, listing, manifest, payloads, ho
       }
       return { ...result, stage: "restore-" + result.stage };
     }
-    return { ok: true, slot: result.slot, playId: slot.play_id, restoredData: dataImages.length };
+    return { ok: true, slot: result.slot, playId: slot.play_id, restoredData: dataImages.length, nvsPreserved: Boolean(manifest.nvs) };
   } catch (error) {
     return fail("restore-preflight", error?.message || String(error));
   }
@@ -1559,7 +1557,7 @@ export function boot(opts = {}) {
         },
       });
       if (!result.ok) throw new Error(result.reason || (result.stage + " failed"));
-      archiveMessage = `恢复成功：play_id ${result.playId}，DATA 分区 ${result.restoredData} 个。请等待设备完成状态更新后再启动玩法。`;
+      archiveMessage = `恢复成功：play_id ${result.playId}，DATA 分区 ${result.restoredData} 个。${result.nvsPreserved ? "归档中的 NVS 未写入，设备现有 NVS 保持不变。" : ""}请等待设备完成状态更新后再启动玩法。`;
       log(archiveMessage, "ok");
     } catch (error) {
       archiveMessage = "恢复失败：" + (error?.message || String(error));
