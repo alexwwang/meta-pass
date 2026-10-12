@@ -53,6 +53,20 @@ const good = buildDataArchiveZip([
   console.log("PASS 4: duplicate names across ZIP records are rejected");
 }
 {
+  const two = buildDataArchiveZip([
+    { name: "a.txt", data: enc.encode("one") },
+    { name: "b.txt", data: enc.encode("two") },
+  ]);
+  const overlapping = two.slice();
+  const dv = new DataView(overlapping.buffer, overlapping.byteOffset, overlapping.byteLength);
+  const central = findAll(overlapping, new Uint8Array([0x50, 0x4b, 0x01, 0x02]));
+  assert.equal(central.length, 2);
+  const firstLocalOffset = dv.getUint32(central[0] + 42, true);
+  dv.setUint32(central[1] + 42, firstLocalOffset, true);
+  assert.throws(() => readDataArchiveZip(overlapping), /overlapping ZIP local records/);
+  console.log("PASS 5: central entries cannot alias/overlap local ZIP records");
+}
+{
   const compressed = good.slice();
   const dv = new DataView(compressed.buffer, compressed.byteOffset, compressed.byteLength);
   dv.setUint16(8, 8, true); // local header compression method
@@ -60,12 +74,12 @@ const good = buildDataArchiveZip([
   assert.ok(central.length >= 1);
   dv.setUint16(central[0] + 10, 8, true);
   assert.throws(() => readDataArchiveZip(compressed), /unsupported ZIP entry flags\/compression\/size/);
-  console.log("PASS 5: unsupported compression methods are rejected");
+  console.log("PASS 6: unsupported compression methods are rejected");
 }
 {
   assert.throws(() => readDataArchiveZip(good.subarray(0, good.length - 1)), /ZIP end record missing|unsupported or malformed ZIP directory/);
   assert.throws(() => readDataArchiveZip(good, { maxArchiveBytes: 16 }), /ZIP archive size is outside the allowed range/);
   assert.throws(() => readDataArchiveZip(good, { maxEntries: 1 }), /unsupported or malformed ZIP directory/);
-  console.log("PASS 6: truncated, oversized, and over-entry-limit archives are rejected");
+  console.log("PASS 7: truncated, oversized, and over-entry-limit archives are rejected");
 }
 console.log("ALL DATA ARCHIVE ZIP TESTS PASSED");
