@@ -240,6 +240,17 @@ export function createBridge(deviceOrigin, token) {
         "X-Meta-Length": String(length),
       }});
     },
+    nvsInfo: () => call("/api/install/nvs/info"),
+    nvsRead: (offset, length) => {
+      if (!Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid NVS read request", bytes: null });
+      }
+      return callBytes("/api/install/nvs/read", { headers: {
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
     remove: (slot) => call("/api/install/remove", { method: "POST",
       json: { slot } }),
   };
