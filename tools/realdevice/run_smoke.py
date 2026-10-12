@@ -28,6 +28,15 @@ def http_get(url, timeout=5):
     except Exception as e:
         return None, repr(e).encode()
 
+def version_of(argv):
+    """Best-effort tool version capture; missing optional tools must not block evidence collection."""
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+        output = (r.stdout + "\\n" + r.stderr).strip().splitlines()
+        return output[0][:240] if r.returncode == 0 and output else "unavailable"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unavailable"
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ip", required=True)
@@ -47,10 +56,17 @@ def main():
         cmd.append("--fresh")
 
     report = {
+        "run_id": run_id, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "status": "RUNNING", "failure_category": None,
         "git_commit": "unknown", "git_branch": "unknown",
         "firmware": args.app, "firmware_sha256": None,
         "host": platform.platform(), "python": platform.python_version(),
+        "tool_versions": {
+            "idf": version_of(["idf.py", "--version"]),
+            "node": version_of(["node", "--version"]),
+            "esptool": version_of(["esptool.py", "version"]),
+            "pyserial": version_of([sys.executable, "-m", "serial.tools.list_ports", "--help"]),
+        },
         "serial_port": args.port, "device_ip": args.ip, "fresh": args.fresh,
         "soft_reset_tested": False, "physical_power_loss_tested": False,
         "stages": [], "artifacts": []
@@ -109,6 +125,8 @@ def main():
             report["failure_category"] = "USB_PORT"
         elif "esptool" in text:
             report["failure_category"] = "FIRMWARE_FLASH"
+        elif "nvs" in text:
+            report["failure_category"] = "NVS_API"
         elif "data" in text:
             report["failure_category"] = "DATA"
         elif "carve" in text:
@@ -119,8 +137,10 @@ def main():
             report["failure_category"] = "UNKNOWN"
 
     report["elapsed_seconds"] = round(elapsed, 2)
-    report["artifacts"] = sorted(os.path.relpath(os.path.join(run_dir, p), REPO)
-                                 for p in os.listdir(run_dir))
+    report["artifacts"] = sorted(
+        os.path.relpath(os.path.join(run_dir, p), REPO)
+        for p in set(os.listdir(run_dir)) | {"report.json", "report.md"}
+    )
 
     with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
