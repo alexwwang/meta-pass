@@ -198,3 +198,15 @@ Do not claim complete hardware validation until:
 - evidence package complete.
 
 If physical power loss was not actually performed, report POWER_LOSS_UNTESTED.
+
+
+## 15. Added 2026-10-12: restore transaction failure-injection coverage
+
+`tools/install-slot/test-data-restore-transaction.mjs` is registered in `tools/validate.sh` and now covers these failure boundaries:
+
+- APP write failure before commit: commit must not run; temporary staging cleanup must be attempted.
+- Commit request timeout: treat the result as uncertain and do not clean staging.
+- Simulated durable commit followed by a transport timeout: do not clean extents that may already be referenced.
+- Ownership/geometry readback failure after a successful commit response: do not clean possibly published data; preserve state for recovery inspection.
+
+These are host fake-device transaction-semantics tests, **not** proof of the real device endpoints or Flash atomicity. After cloud CI passes, the local agent must still inspect the real prepare/session/chunk/finalize path on the target firmware. Physical power-loss durability remains a separate test; never present the fake-device durable-commit simulation as real-device evidence.
