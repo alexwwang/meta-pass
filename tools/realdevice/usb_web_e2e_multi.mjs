@@ -304,25 +304,50 @@ function startServer() {
 
 // ── UI helpers (all via Playwright page) ─────────────────────────
 
+// esptool-js 连接握手会把芯片置进 ROM 下载模式;链路抖动导致握手半途而废时,
+// 芯片被留在 stub 里(app 不跑、WiFi 不起、115200 无输出)——外表像"设备挂死",
+// 实际 esptool 硬复位即可回 app(真机 2026-10-12 多回定案)。
+async function reviveDevice() {
+  return new Promise((resolve) => {
+    execFile("python3", ["-m", "esptool", "--chip", "esp32c3", "--port", SERIAL_PORT,
+                         "--after", "hard_reset", "chip_id"],
+             { timeout: 40000 }, (err) => resolve(!err));
+  });
+}
+
 async function uiConnect() {
   // Click Connect if not already connected
   const chipClass = await page.locator("#chip-status").getAttribute("class") || "";
   if (chipClass !== "ok") {
     await page.locator("#btn-connect").click();
   }
-  // Wait for DYN_SLOT mode (not LEGACY_FALLBACK)
-  const model = await waitFor(async () => {
-    const m = await page.evaluate(() => ({
-      chip: document.getElementById("chip-status")?.textContent || "",
-      chipClass: document.getElementById("chip-status")?.className || "",
-      mode: window.__installSlotDebug?.slotModel?.mode || "",
-      seq: window.__installSlotDebug?.slotModel?.seq,
-      carve: window.__installSlotDebug?.slotModel?.carve?.slots?.length,
-    }));
-    if (m.chipClass === "ok" && m.mode.startsWith("DYN_")) return m;
-    return null;
-  }, 120000, "DYN_SLOT connection");
-  return model;
+  // Wait for DYN_SLOT mode (not LEGACY_FALLBACK);握手失败会把芯片留在下载模式,
+  // 复活+重载页面后重试(最多 3 次)。
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const model = await waitFor(async () => {
+        const m = await page.evaluate(() => ({
+          chip: document.getElementById("chip-status")?.textContent || "",
+          chipClass: document.getElementById("chip-status")?.className || "",
+          mode: window.__installSlotDebug?.slotModel?.mode || "",
+          seq: window.__installSlotDebug?.slotModel?.seq,
+          carve: window.__installSlotDebug?.slotModel?.carve?.slots?.length,
+        }));
+        if (m.chipClass === "ok" && m.mode.startsWith("DYN_")) return m;
+        return null;
+      }, 120000, "DYN_SLOT connection");
+      if (attempt > 1) record("R", `connected after ${attempt} attempts`, true);
+      return model;
+    } catch (e) {
+      if (attempt >= 3) throw e;
+      console.log(`connect attempt ${attempt} failed (${e.message}); reviving device and retrying`);
+      await reviveDevice();
+      await new Promise((r) => setTimeout(r, 10000));
+      await page.goto(`${BASE}/?e2e=real`, { waitUntil: "domcontentloaded" });
+      await page.waitForFunction(() => window.__installSlotReady === true, null, { timeout: 15000 });
+      await page.locator("#btn-connect").click();
+    }
+  }
 }
 
 async function uiDisconnect() {

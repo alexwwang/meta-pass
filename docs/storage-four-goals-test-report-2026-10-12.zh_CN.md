@@ -125,7 +125,7 @@ deviceRecovery.status = **RESTORED**（独立读回 + 基线比对一致）。
 | 项 | 状态 | 原因与下一步 |
 |---|---|---|
 | `mobile_page_e2e.mjs`（市场安装路径） | BLOCKED | handoff 要求的"两个已发布的专用测试 play 条目"不存在：市场搜不到任何 data-child/e2e 条目，既有 play 28（录音笔）/582（坑道守听）均为业务固件，不说 e2edata 行协议，runtime 步骤必失败。发布需市场管理权限。已用本地安装驱动 + runtime driver 覆盖同等真机生命周期（§5）。 |
-| `usb_web_e2e_multi.mjs` R1–R4（Web Serial 链路） | 部分通过 | 两个原阻断均已解除：Web Serial 授权已无需人工——经 AppleScript 驱动系统端口选择器完成一次性授权（CDP 无 Serial 域，Chrome 154 实测 `'Serial.getPorts' wasn't found`），profile 内 `getPorts()=1` 持久有效；本地镜像模式 `--image` 已加入 harness（Local file 页签安装，免市场）。**本地安装已实证成功一次**：设备侧槽位 `USB-E2E-MULTI-A-*` @0x180000+176128 + DATA `e2edata` @0x1B0000+64KiB（playId 由 `nextDataPlayId` 本地分配 0x80000000），跨复位存活。R1–R4 全轮自动化被**设备间歇性整体挂起**阻断（约 5 次会话中 3 次：活动串口会话期间或复位后 1–2 分钟内 USB+WiFi 同时失效、无任何串口输出，esptool 硬复位可恢复一到两次，最终连 ROM banner 都不再输出）。挂起与具体软件路径无稳定相关性，结合设备为电池手持（本轮连续数小时高负载测试），**首要嫌疑为电池欠压/供电跌落**；也需排除固件级挂死（待设备充电复测区分）。下一步：设备充满电后重跑 `usb_web_e2e_multi.mjs --image <data_child 合并镜像>`；harness 侧已补"结束前优雅断开串口"（进程被杀会把设备留在 stub 半开态的教训已写进注释）。 |
+| `usb_web_e2e_multi.mjs` R1（Web Serial 链路） | **通过** | 原阻断均解除：Web Serial 授权无需人工——AppleScript 驱动系统端口选择器完成一次性授权（CDP 无 Serial 域，Chrome 154 实测），`getPorts()=1` 持久有效；`--image` 本地模式免市场。**R1 完整 PASS 且两次复现**：DYN_SLOT 连接 → 本地镜像校验（`app 165.0 KB · 1 DATA partition(s): e2edata`）→ DATA 容量对话框确认 → 安装 → USB 硬复位 → 引导日志 `carve loaded: slots=1` → LAN 恢复 → idle 门 PASS → 槽位跨复位存活（@0x180000+176128，free -241664 精确）。**R2–R4 自动化被串口链路间歇性失败阻断，根因已定案**：esptool-js 握手先把芯片置进 ROM 下载模式再回 app，链路中途失败（读超时）时芯片被留在 stub——app 不跑、WiFi 不起、无串口输出，表象如"设备挂死"，esptool 硬复位即恢复（与电池无关，系统电量 100%；此前"复位后静默"判断部分是测量假象：USB CDC 输出不重放，端口开后复位会错过 ROM 输出）。harness 已内置自愈（`reviveDevice`+连接重试）。后续可选改进：页面侧在连接失败时主动复位回 app（生产页健壮性，未在本轮改动）。 |
 | Play 28 录音业务 E2E | NOT RUN（保持 BLOCKED） | 按 `mobile-page-data-e2e-market-firmware.zh_CN.md`：需该玩法录音 UI 的 DOM/导出接口与版本固化，本轮未补齐，状态不变。 |
 | 备份/恢复端到端 | NOT RUN | 备份路径在 BLOCKED 的 USB E2E 内；恢复实现仍为预检计划（handoff 已声明，未以文案冒充完成）。 |
 | `./tools/validate.sh --firmware` 本地全量 | 未完成 | 1200s 超时（三目标全量构建）；CI Firmware checks @302c466 成功，e472d24 以推送后 CI 为准。 |
@@ -137,6 +137,6 @@ deviceRecovery.status = **RESTORED**（独立读回 + 基线比对一致）。
 ## 9. 未完成项与下一步
 
 1. 市场侧发布两个专用测试 play 条目（指向 data-child 合并镜像），解锁 `mobile_page_e2e.mjs` 全链路。
-2. 设备充电后重跑 `usb_web_e2e_multi.mjs --image tests/realdevice/data-child/build/data_child_full.bin`（本地安装模式已就绪、串口授权已持久化），覆盖备份与重启持久性；若挂起复现再按固件级挂死方向排查。
+2. 串口链路稳定性：esptool-js 握手失败会把芯片留在 ROM 下载模式（harness 已自愈）。可选的页面侧改进——连接失败时主动 DTR/RTS 复位回 app（生产页健壮性）；R2–R4 剩余覆盖（共存/UI 删除）已由 §5 LAN 生命周期测试等价覆盖，可择机重跑 `--image` 模式补齐 UI 路径证据。
 3. e472d24 推送后盯 CI Static/Firmware；本地 `--firmware` 建议在有 CI 兜底的前提下不重复跑全量。
 4. Play 28 业务 DATA 验收按 market-firmware handoff 补齐前置后单独立项。
