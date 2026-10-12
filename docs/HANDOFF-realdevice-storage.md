@@ -209,6 +209,8 @@ If physical power loss was not actually performed, report POWER_LOSS_UNTESTED.
 - Simulated durable commit followed by a transport timeout: do not clean extents that may already be referenced.
 - Ownership/geometry readback failure after a successful commit response: do not clean possibly published data; preserve state for recovery inspection.
 
+The DATA ZIP parser also now tracks local-record byte ranges and rejects central-directory entries that alias or overlap the same local record. `tools/install-slot/test-data-archive-zip.mjs` includes a malicious central-offset aliasing regression test.
+
 The review also found that `restoreDataArchive()` unconditionally called `cancel()` after any install failure. That could treat an accepted finalize with a timed-out terminal-state poll as safe to roll back. The implementation now marks such outcomes `commitUncertain` and skips cancellation; rollback remains enabled when the device explicitly reports terminal `failed`. A thrown transport error from the finalize request is also treated as uncertain because the request may have reached the device; the user must inspect device state before retrying. Integration tests cover timeout, transport exception, and explicit terminal failure.
 
 These tests still do not prove real Flash atomicity or physical power-loss durability. After cloud CI passes, the local agent must inspect the real prepare/session/chunk/finalize path on target firmware. Never present fake-device tests as real-device evidence.
