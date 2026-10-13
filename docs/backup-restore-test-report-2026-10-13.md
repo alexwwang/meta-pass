@@ -31,7 +31,7 @@ count=0, free=6766592, installer idle.
 
 ### T2 — human DATA confirmation — **PASS_HUMAN_CONFIRMED**
 
-Tester verified on the device: the recorder launches, records, and re-reads/reboots keep recordings. (The earlier `data-child` fixture was rejected at this gate — headless serial test firmware with no UI; "死机" observation attributed to the fixture having nothing to render.)
+Tester verified on the device: the recorder launches, records, and re-reads/reboots keep recordings. (The earlier `data-child` fixture was rejected at this gate — headless serial test firmware with no UI; tester-described "frozen/crashed" observation attributed to the fixture having nothing to render.)
 
 ### T3 — backup
 
@@ -69,7 +69,7 @@ Tester verified on the device: the restored recorder launches and the pre-delete
 ## data-child round (automation layer, previous section of this session)
 
 - T0/T1/T3 automation evidence remains valid and is kept in `usb-backup-restore-20261013T003913Z/`: install + runtime serial DATA IO (write/read/checksum/reboot/re-read) + backup zip with byte-fidelity to live DATA, all PASS.
-- T2 human gate: **rejected for this fixture** (no UI; "死机" = nothing to render, by design). T4/T5 not run in that round.
+- T2 human gate: **rejected for this fixture** (no UI; the "frozen screen" report = nothing to render, by design). T4/T5 not run in that round.
 
 ## Findings & fixes landed (all in-repo)
 
