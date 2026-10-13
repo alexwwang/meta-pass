@@ -804,7 +804,7 @@ async function stageRestore() {
         throw new Error(`probe: ${done.label || "Flash"} digest completion has no matching start event`);
       }
     }
-    if (!dones.some((e) => e.label === "APP") || !dones.some((e) => /^DATA\\b/.test(e.label || ""))) {
+    if (!dones.some((e) => e.label === "APP") || !dones.some((e) => /^DATA\b/.test(e.label || ""))) {
       throw new Error("probe: successful APP and DATA MD5 verification evidence is required");
     }
     record("T4", `device-side MD5 read-back evidence: ${dones.length} ranges verified`, true,
