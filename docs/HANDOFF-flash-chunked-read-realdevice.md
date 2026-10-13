@@ -11,10 +11,10 @@ Language: [简体中文](HANDOFF-flash-chunked-read-realdevice.zh_CN.md)
 Verify that long Flash reads remain reliable when split into bounded chunks with periodic serial-session recovery. The target is **Flash reading and read-back verification**, not chunked writing.
 
 Expected implementation:
-- Each Flash read is at most 32 KiB.
-- After each 512 KiB of cumulative reading, disconnect and reopen the current serial transport, clear its receive buffer, resynchronize, then continue.
-- APP and DATA read-back both use the shared chunked-read/byte-comparison module.
-- Short reads, invalid lengths, byte mismatches, and reconnect/sync failures must fail closed.
+- Production APP/DATA post-write verification uses the ESP stub's `flashMd5sum(address, length)` to hash the complete target range on-device, then strictly compares it with the local payload MD5.
+- Each non-empty APP/DATA range requires one device-side digest command; the page no longer transfers the entire range back through Web Serial, avoiding the reported deterministic wedge after 30 `readFlash` calls per page/SerialPort session.
+- Malformed device digests, digest mismatches, unavailable local MD5, or serial-command errors must fail closed; restore must not commit.
+- `flash-read-transfer.js` remains as an independent chunked byte-comparison tool for supplemental device evidence; it is no longer the page's production post-write verifier.
 - Existing Flash erase/write behavior remains unchanged.
 
 ## 2. Entry gates
@@ -34,25 +34,26 @@ Confirm Static checks and Firmware checks pass for the current HEAD. Record firm
 ## 3. Impact assessment and minimum regression set
 
 The runtime change is narrowly scoped to the USB installer page's **post-write Flash read-back verification**:
-- New shared helper: `install-slot/flash-read-transfer.js` (bounded reads, byte comparison, progress, reconnect callback).
-- Page integration: `install-slot/install-slot.html` uses it for APP read-back and DATA write/restore read-back.
-- Serving and automated checks: `tools/install-slot/server.mjs`, `tools/install-slot/test-flash-read-transfer.mjs`, and the corresponding static contract test.
+- New production verifier: `install-slot/flash-readback-verify.js`, comparing a device-side Flash MD5 with the local payload MD5 for the complete target range.
+- Page integration: `install-slot/install-slot.html` uses digest verification for APP read-back and DATA write/restore read-back.
+- `install-slot/flash-read-transfer.js` and its tests remain for independent chunked byte-by-byte device validation; the page's production path no longer performs long read-back streams.
+- Serving and automated checks: `tools/install-slot/server.mjs`, `tools/install-slot/test-flash-readback-verify.mjs`, and the page contract test.
 
 The existing erase/write loops, partition allocator, firmware/bootloader code, mobile embedded page, install/delete planning, and archive format are not changed by this optimization. Do not rerun unrelated mobile-page, allocator, boot, full install/delete lifecycle, or general backup-format scenarios solely for this change.
 
 Run only these regression items:
 
 ### R1 — Host regression (required; no device writes)
-Run `./tools/validate.sh --static` on the exact HEAD. It must exercise `test-flash-read-transfer.mjs` and the page integration contract. Confirm cases for contiguous offsets and bounded lengths, reconnect at 512 KiB, progress, short/invalid reads, byte mismatch, and empty payload. Firmware checks are an entry gate for using the built page/device, not evidence that Web Serial reconnect works.
+Run `./tools/validate.sh --static` on the exact HEAD. Confirm it runs `test-flash-readback-verify.mjs`, `test-flash-read-transfer.mjs`, and the page integration contract. Digest tests must cover one device digest request for the full range, matching/mismatching digests, malformed responses, local MD5 errors, serial-command failures, and rejection of empty payloads; the chunked utility still covers offsets, bounded chunks, reconnects, short reads, and byte mismatches. Firmware checks remain a gate for device testing.
 
 ### R2 — APP post-write read-back (required on device)
-Using the USB service page, install an approved APP image larger than 512 KiB (preferably several MiB) so multiple boundaries are crossed. Verify that the existing write completes unchanged, then read-back verification completes using reads no larger than 32 KiB, reconnects/resyncs at each 512 KiB boundary, and byte comparison passes. Capture logs for at least two reconnect boundaries where image size allows.
+Using the USB page, install or restore an approved APP image larger than 512 KiB (preferably several MiB). Confirm the existing write completes unchanged, then verify the complete range with the device-side `flashMd5sum` command. Logs must include address, length, expected MD5, device MD5, and success, with matching digests; this path should not issue a bulk `readFlash` stream.
 
 ### R3 — DATA post-write/read-back (required on device)
-Using an existing safe test APP/DATA setup, exercise the DATA restore/write path that calls the shared verifier. Use a DATA payload larger than 512 KiB (preferably several MiB) to cross multiple boundaries. Verify write behavior remains unchanged and read-back completes with contiguous offsets and byte-for-byte equality. Do not create/delete unrelated slots just to broaden coverage.
+Using an existing safe test APP/DATA setup, exercise the DATA restore/write path with a payload larger than 512 KiB (preferably several MiB). Confirm write behavior is unchanged and the device computes an MD5 for the complete DATA range that matches the local payload digest; the transaction must commit only after this succeeds. Do not create/delete unrelated slots.
 
 ### R4 — Recovery failure semantics (host tests required; device failure only if naturally encountered)
-The host suite must prove short reads, invalid returned lengths, byte mismatch, and reconnect/sync errors fail closed. If reconnect or sync fails on device, capture the error and stop; do not retry by bypassing verification or mark the case PASS.
+The host suite must prove digest mismatch, malformed device digest, local MD5 failure, and device digest/serial-command errors fail closed. If device verification fails, preserve evidence and confirm the restore transaction did not commit and staged DATA followed the existing cleanup path; never bypass verification.
 
 ### Explicitly out of scope
 Do not run full backup-archive creation/format compatibility, launcher upgrade, firmware boot, mobile WebView/browser E2E, generic partition-size selection, allocator, or APP deletion lifecycle regression for this read-back-only change. Existing backup creation and probe/metadata reads do not use this new helper. If DATA restoration is not safely available, report R3 as BLOCKED rather than substituting unrelated tests.
@@ -60,9 +61,9 @@ Do not run full backup-archive creation/format compatibility, launcher upgrade, 
 ## 4. Pass criteria
 
 - R1–R4 required host checks pass; latest Static checks and Firmware checks are green for the tested HEAD.
-- APP and DATA device read-back each cross at least one 512 KiB boundary; preferably multiple boundaries with multi-MiB payloads.
-- Logs prove every requested read is at most 32 KiB and every 512 KiB boundary triggers disconnect → connect → sync before the next read.
-- Read offsets are contiguous; no short reads, gaps, duplicates, mismatch, unexplained timeout, or permanent hang.
+- APP and DATA post-write verification both pass using device-side MD5 over the complete ranges, with matching expected/device digests in logs.
+- The production path is not expected to emit 32 KiB read chunks or 512 KiB reconnect logs; it should avoid long Web Serial read-back streams.
+- No digest mismatch, malformed response, unhandled command error, unexplained timeout, or permanent hang; failures remain fail-closed.
 - Existing write/erase behavior is unchanged; no claim is made that unrelated backup, mobile, or lifecycle paths were regression-tested.
 - The report records exact HEAD, firmware SHA-256, payload sizes, chunks, reconnect count/timing, byte-comparison result, logs, and PASS/FAIL/BLOCKED per item.
 
@@ -81,6 +82,6 @@ Do not bypass verification, skip read-back, or fabricate reconnect evidence.
 
 ## 6. Report requirements
 
-Include test time, branch and full commit SHA; firmware SHA-256; device/firmware type; OS/browser/Node; APP/DATA byte lengths; chunk count; 512 KiB boundaries and reconnect count; per-stage duration, errors/retries, byte-comparison and hash results; report/log paths; PASS/FAIL/BLOCKED with evidence-based attribution; and whether firmware 28 received human DATA confirmation.
+Include test time, branch and full commit SHA; firmware SHA-256; device/firmware type; OS/browser/Node; APP/DATA byte lengths; device-side digest request count and target ranges; expected/device MD5 values; per-stage duration, errors/retries; report/log paths; PASS/FAIL/BLOCKED with evidence-based attribution; and whether firmware 28 received human DATA confirmation.
 
 Green CI is only an entry gate; it does not mean this real-device handoff has passed.
