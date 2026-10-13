@@ -52,6 +52,8 @@ assert "post-commit ownership/geometry verification failed" in TRANSACTION
 assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
 assert "await restoreV2ArchiveUsb()" in USB
+assert "const BACKUP_CHUNK = 0x8000;" in USB
+assert "const payload = await readFlashChunked(record.offset, record.size" in USB
 assert 'from "./flash-readback-verify.js"' in USB
 assert '"/flash-readback-verify.js"' in SERVER
 assert "verifyFlashRangeByMd5" in USB
