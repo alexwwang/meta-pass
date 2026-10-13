@@ -7,6 +7,7 @@ HANDOFF = (ROOT / "docs/assets/storage-four-goals-handoff.zh_CN.md").read_text(e
 VALIDATE = (ROOT / "tools/validate.sh").read_text(encoding="utf-8")
 PHONE = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
 USB = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+SERVER = (ROOT / "tools/install-slot/server.mjs").read_text(encoding="utf-8")
 POOL = (ROOT / "install-slot/dynslot-pool.js").read_text(encoding="utf-8")
 RESTORE = (ROOT / "install-slot/data-restore-plan.js").read_text(encoding="utf-8")
 TRANSACTION = (ROOT / "install-slot/data-restore-transaction.js").read_text(encoding="utf-8")
@@ -52,6 +53,7 @@ assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
 assert "await restoreV2ArchiveUsb()" in USB
 assert 'from "./flash-readback-verify.js"' in USB
+assert '"/flash-readback-verify.js"' in SERVER
 assert "verifyFlashRangeByMd5" in USB
 assert "loader.flashMd5sum(offset, length)" in USB
 assert "md5-verify-done" in USB
