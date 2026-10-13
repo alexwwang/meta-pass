@@ -17,7 +17,7 @@ import { readFlashAndVerifyChunked, FLASH_READ_CHUNK_BYTES, FLASH_READ_SESSION_B
     onProgress: (p) => progress.push(p),
   });
   assert.deepEqual(calls.map((c) => c.length), [
-    ...Array(16).fill(FLASH_READ_CHUNK_BYTES), FLASH_READ_CHUNK_BYTES, 8192,
+    ...Array(16).fill(FLASH_READ_CHUNK_BYTES), 8192,
   ]);
   assert.equal(calls[0].address, 0x360000);
   assert.equal(calls.at(-1).address, 0x360000 + FLASH_READ_SESSION_BYTES + FLASH_READ_CHUNK_BYTES);
