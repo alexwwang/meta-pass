@@ -773,39 +773,42 @@ async function stageRestore() {
   }
   record("T4", "restore committed", true);
 
-  // Validate the bounded chunked-read evidence (handoff R2/R3): every read
-  // ≤ 32 KiB, contiguous offsets within each target range, and a disconnect →
-  // connect → sync reconnect at every 512 KiB cumulative boundary. Skipped in
-  // ?noverify mode by definition (the page performed no read-back).
+  // Validate production device-side MD5 read-back evidence (handoff R2/R3).
+  // The full range is hashed by the ESP stub, so no long Web Serial read stream
+  // is needed; every successful APP/DATA verification must have matching local
+  // and device digests and a corresponding start event.
   const events = await page.evaluate(() => window.__flashReadEvents || []);
   if (state.skipReadbackVerify) {
-    record("T4", "page read-back skipped (?noverify); decoupled verify is a separate harness stage", true);
+    record("T4", "page read-back skipped (?noverify); decoupled verifier is a separate harness stage", true);
   } else {
-  writeJson("t4-flash-read-probe.json", events);
-  {
-    const CHUNK = 0x8000, SESSION = 512 * 1024;
-    const reads = events.filter((e) => e.kind === "read");
-    const starts = events.filter((e) => e.kind === "reconnect-start");
-    const dones = events.filter((e) => e.kind === "reconnect-done");
-    const badLen = reads.filter((e) => e.length > CHUNK);
-    if (badLen.length) throw new Error(`probe: ${badLen.length} reads exceed 32 KiB (max ${badLen[0].length})`);
-    // group into contiguous runs by offset adjacency
-    const runs = [];
-    for (const r of reads) {
-      const cur = runs[runs.length - 1];
-      if (cur && r.offset === cur.end) { cur.end = r.offset + r.length; cur.bytes += r.length; cur.count++; }
-      else runs.push({ start: r.offset, end: r.offset + r.length, bytes: r.length, count: 1 });
+    writeJson("t4-flash-read-probe.json", events);
+    const starts = events.filter((e) => e.kind === "md5-verify-start");
+    const dones = events.filter((e) => e.kind === "md5-verify-done");
+    const failures = events.filter((e) => e.kind === "md5-verify-error");
+    if (failures.length) {
+      throw new Error(`probe: page emitted ${failures.length} MD5 verification failure event(s): ${failures[0].error || "unknown error"}`);
     }
-    let expectedReconnects = 0;
-    // module reconnects only when more data remains after a boundary
-    for (const run of runs) if (run.bytes > SESSION) expectedReconnects += Math.floor(run.bytes / SESSION);
-    if (starts.length !== dones.length) throw new Error(`probe: reconnect-start ${starts.length} != reconnect-done ${dones.length}`);
-    if (starts.length !== expectedReconnects) {
-      throw new Error(`probe: ${starts.length} reconnects, expected ${expectedReconnects} from ${JSON.stringify(runs.map((r) => ({ at: r.start, bytes: r.bytes, reads: r.count })))}`);
+    if (starts.length !== dones.length) {
+      throw new Error(`probe: MD5 verify-start ${starts.length} != verify-done ${dones.length}`);
     }
-    record("T4", `bounded chunked read-back evidence: ${reads.length} reads (max ${Math.max(...reads.map((r) => r.length))}B), ${runs.length} contiguous ranges, ${starts.length} session reconnects @512KiB`,
-      true, runs.map((r) => `0x${r.start.toString(16)}+${r.bytes}`).join(" "));
-  }
+    for (const done of dones) {
+      if (!Number.isSafeInteger(done.address) || done.address < 0 ||
+          !Number.isSafeInteger(done.length) || done.length <= 0) {
+        throw new Error("probe: MD5 verification has invalid address/range");
+      }
+      if (!/^[0-9a-f]{32}$/.test(done.expectedMd5 || "") ||
+          done.expectedMd5 !== done.actualMd5) {
+        throw new Error(`probe: ${done.label || "Flash"} MD5 digest missing or unequal`);
+      }
+      if (!starts.some((s) => s.label === done.label && s.address === done.address && s.length === done.length)) {
+        throw new Error(`probe: ${done.label || "Flash"} digest completion has no matching start event`);
+      }
+    }
+    if (!dones.some((e) => e.label === "APP") || !dones.some((e) => /^DATA\\b/.test(e.label || ""))) {
+      throw new Error("probe: successful APP and DATA MD5 verification evidence is required");
+    }
+    record("T4", `device-side MD5 read-back evidence: ${dones.length} ranges verified`, true,
+      dones.map((e) => `${e.label} 0x${e.address.toString(16)}+${e.length} MD5=${e.actualMd5}`).join("; "));
   }
   await uiDisconnect();
 
