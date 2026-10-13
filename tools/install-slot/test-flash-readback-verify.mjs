@@ -31,7 +31,7 @@ const md5Hex = (bytes) => createHash("md5").update(bytes).digest("hex");
   const expected = new Uint8Array([1, 2, 3, 4]);
   await assert.rejects(() => verifyFlashRangeByMd5({
     address: 0x180000, expected,
-    flashMd5sum: async () => "00000000000000000000000000000000",
+    flashMd5sum: async () => "0".repeat(32),
     md5Bytes,
   }), /Flash read-back MD5 mismatch/);
   await assert.rejects(() => verifyFlashRangeByMd5({
