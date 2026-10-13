@@ -11,7 +11,7 @@
 验证 Flash 长距离读取是否能通过有限大小的分块及周期性串口会话重建，避免 Chrome Web Serial / esptool-js 持续读取数分钟后挂起。此次修复目标是**读取和读回校验**，不是分块写入优化。
 
 当前实现预期：
-- APP 和 DATA 写入后的生产读回校验使用 ESP stub 的 `flashMd5sum(address, length)`，设备端对完整目标范围计算 MD5，浏览器对待写入 payload 计算 MD5 并严格比较。
+- 现有备份恢复流程中的 APP 与 DATA 写后校验使用 ESP stub 的 `flashMd5sum(address, length)`，设备端对完整目标范围计算 MD5，浏览器对归档 payload 计算 MD5 并严格比较。
 - 每个非空 APP/DATA 范围只需一个设备端摘要请求，不再把整个范围经 Web Serial 分块读回，规避报告中复现的单 page/SerialPort 会话 30 次 `readFlash` 调用后楔死问题。
 - 设备摘要格式异常、摘要不匹配、MD5 实现不可用或串口命令失败均必须失败关闭，不得提交恢复事务。
 - `flash-read-transfer.js` 保留为独立分块/逐字节校验工具，用于补充真机取证；它不再是页面生产写后校验的执行路径。
@@ -33,9 +33,9 @@ git rev-parse HEAD
 
 ## 3. 影响面评估与最小回归集
 
-本次运行时代码改动集中在 USB 服务页面的**写入后 Flash 回读校验**：
+本次运行时代码改动集中在 USB 服务页面备份恢复流程的**写入后 Flash 回读校验**：
 - 新增生产校验模块：`install-slot/flash-readback-verify.js`，使用设备端 Flash MD5 与本地 payload MD5 比对完整范围。
-- 页面接入：`install-slot/install-slot.html` 的 APP 回读和 DATA 写入/恢复后的回读都使用摘要校验。
+- 页面接入：`install-slot/install-slot.html` 的 APP 恢复后回读和 DATA 恢复写入后的回读都使用摘要校验；普通本地/社区 APP 安装流程不属于本次已有回读调用点。
 - `install-slot/flash-read-transfer.js` 与其测试仍保留，用于独立分块/逐字节真机验证，不代表页面生产路径继续执行长读回。
 - 服务与自动化检查：`tools/install-slot/server.mjs`、`tools/install-slot/test-flash-readback-verify.mjs` 及页面契约测试。
 
@@ -47,7 +47,7 @@ git rev-parse HEAD
 在准确的 HEAD 上执行 `./tools/validate.sh --static`。确认运行 `test-flash-readback-verify.mjs`、`test-flash-read-transfer.mjs` 和页面接线契约测试。摘要校验测试必须覆盖完整范围只发起一次设备摘要请求、摘要匹配、摘要不匹配、非法摘要、MD5 实现异常、串口命令失败和空 payload 拒绝；分块工具仍覆盖偏移/块大小/重连/短读/字节不匹配。Firmware checks 是使用该页面/固件进行真机测试的前置条件。
 
 ### R2 — APP 写入后回读（必需，真机）
-使用 USB 服务页面安装或恢复获准测试 APP（大于 512 KiB，最好数 MiB）。确认原有写入正常完成，随后生产路径执行设备端 `flashMd5sum` 校验；日志应记录目标地址、长度、期望 MD5、设备 MD5 和完成状态，且两个摘要一致。该路径不应触发整段 `readFlash` 流。
+通过 USB 服务页面现有备份恢复流程恢复获准测试 APP（大于 512 KiB，最好数 MiB）。确认原有写入正常完成，随后生产路径执行设备端 `flashMd5sum` 校验；日志应记录目标地址、长度、期望 MD5、设备 MD5 和完成状态，且两个摘要一致。该路径不应触发整段 `readFlash` 流。不要把普通本地/社区 APP 安装当作本次回读校验回归项。
 
 ### R3 — DATA 写入/恢复后回读（必需，真机）
 使用现有且安全的测试 APP/DATA 环境，执行 DATA 恢复/写入路径，并使用超过 512 KiB（最好数 MiB）的 payload。确认写入行为没有变化，设备端对完整 DATA 范围计算 MD5，期望/实际摘要一致，且事务成功提交。不要为了扩大覆盖面而额外创建或删除无关槽位。
