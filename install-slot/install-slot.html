@@ -303,7 +303,7 @@ import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { buildDataArchiveManifest, validateDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
 import { prepareDataArchiveRestore } from "./data-archive-restore.js";
-import { readFlashAndVerifyChunked, FLASH_READ_SESSION_BYTES } from "./flash-read-transfer.js";
+import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -1515,30 +1515,37 @@ async function chooseUsbDataSizes(dataImages, carve) {
   });
 }
 
-async function reconnectFlashReadSession() {
-  // Each 512 KiB read session is bounded; close/reopen the existing Web Serial
-  // transport between sessions while retaining the running stub and loader.
-  window.__flashReadProbe?.({ kind: "reconnect-start", at: Date.now() });
-  await withTimeout(loader.transport.disconnect(), 5000, "Flash read: close serial session timed out");
-  await withTimeout(loader.transport.connect(linkBaud), 5000, "Flash read: reopen serial session timed out");
-  loader.transport.buffer = new Uint8Array(0);
-  await withTimeout(loader.sync(), 5000, "Flash read: resync after session boundary timed out");
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  window.__flashReadProbe?.({ kind: "reconnect-done", at: Date.now() });
-}
-
 async function verifyFlashReadback(address, expected, label, onProgress) {
-  await readFlashAndVerifyChunked({
-    address,
-    expected,
-    readChunk: (offset, length) => {
-      window.__flashReadProbe?.({ kind: "read", offset, length, at: Date.now() });
-      return loader.readFlash(offset, length);
-    },
-    reconnect: reconnectFlashReadSession,
-    onProgress,
-  });
-  log(`${label} read-back verified in bounded chunks`, "ok");
+  const startedAt = Date.now();
+  const eventBase = { label, address, length: expected.length };
+  window.__flashReadProbe?.({ kind: "md5-verify-start", ...eventBase, at: startedAt });
+  try {
+    const result = await verifyFlashRangeByMd5({
+      address,
+      expected,
+      flashMd5sum: (offset, length) => loader.flashMd5sum(offset, length),
+      md5Bytes: (bytes) => {
+        const md5 = globalThis.__READFLASH_MD5__;
+        if (typeof md5 !== "function") throw new Error("local MD5 implementation is unavailable");
+        return md5(bytes);
+      },
+      onProgress,
+    });
+    window.__flashReadProbe?.({
+      kind: "md5-verify-done", ...eventBase,
+      expectedMd5: result.expectedMd5, actualMd5: result.actualMd5,
+      durationMs: Date.now() - startedAt, at: Date.now(),
+    });
+    log(`${label} read-back verified by device-side MD5 (${result.actualMd5})`, "ok");
+    return result;
+  } catch (error) {
+    window.__flashReadProbe?.({
+      kind: "md5-verify-error", ...eventBase,
+      error: error && error.message ? error.message : String(error),
+      durationMs: Date.now() - startedAt, at: Date.now(),
+    });
+    throw error;
+  }
 }
 
 async function writeDataPayload(image, record) {
@@ -2697,7 +2704,7 @@ async function restoreV2ArchiveUsb() {
       flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
       reportProgress: (_i, written, total) => setRestoreProgress(10 + written / total * 75),
     });
-    // Read APP back in bounded chunks with transport reconnects at each 512 KiB boundary.
+    // Verify the full APP range using the stub MD5 command; avoid bulk Web Serial reads.
     if (!SKIP_READBACK_VERIFY) {
       await verifyFlashReadback(addr, image.data, "APP");
     }
