@@ -1,3 +1,5 @@
+[English](HANDOFF-flash-chunked-read-realdevice.md)
+
 # Handoff｜feat/storage Flash 分块读取真机验证
 
 日期：2026-10-13  
