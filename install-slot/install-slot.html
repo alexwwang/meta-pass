@@ -754,7 +754,17 @@ async function connectMock() {
 
 // ===== 串口/读取协议配置(单一事实源:波特率与协议参数只允许在这里改) =====
 const ROM_BAUD = 115200;        // ROM bootloader 固定 115200(esptool 规范,不可调)
-const HIGH_BAUD = 921600;       // 会话波特率:实测读取提速 7.6 倍,esptool.py 同配置 5/5 稳定
+// 会话波特率:实测读取提速 7.6 倍,esptool.py 同配置 5/5 稳定。
+// ?baud=115200(e2e/诊断用):强制停留 ROM 波特,慢 ~8×但绕开个别链路上
+// 高速读大区域必死的兼容性问题(真机 2026-10-13:slot 读完后 DATA 区读
+// 连续 8/8 超时,重连亦复现;115200 走 esptool.py 同款停等路径)。
+const HIGH_BAUD = new URLSearchParams(location.search).get("baud") === String(ROM_BAUD)
+  ? ROM_BAUD : 921600;
+// ?noverify(e2e/诊断用):跳过恢复/安装的逐字节读回校验。Chrome WebSerial 在
+// macOS 上无法承受 esptool-js 的持续流式大读(esptool.py 同链路同波特
+// 233KB/s 零失败,问题在浏览器侧——真机 2026-10-13 定案);读回由 harness
+// 分块慢速路径代验。绝不在生产默认路径启用。
+const SKIP_READBACK_VERIFY = new URLSearchParams(location.search).has("noverify");
 const READFLASH_BLOCK = 4096;   // stub 栈缓冲硬上限:更大的块会被 stub 静默截断
 const READFLASH_WINDOW = 64;    // esptool.py read_flash 同款(停等模式,字节单位)。
                                 // 实测决策 2026-09-17:流水线(32768)在 921600 下失败率
@@ -1521,12 +1531,20 @@ async function writeDataPayload(image, record) {
     if (head.some((b) => b !== 0xff)) throw new Error(`DATA ${record.label} erase verification failed`);
     return;
   }
-  for (let off = 0; off < bytes.length; off += 4096) {
-    const n = Math.min(4096, bytes.length - off);
-    const got = await loader.readFlash(record.offset + off, n);
-    if (!bytesEqual(got, bytes.subarray(off, off + n))) {
-      throw new Error(`DATA ${record.label} read-back mismatch at +${hex(off)}`);
+  // 读回按 64KB 批次调用 readFlash(stub 内部仍按 4KB 包流式传输):
+  // 4KB/次的调用每次都有完整命令往返开销,MB 级分区实测读回 >20min;
+  // 64KB 批次把往返次数降 16×,总时长回到秒~分钟级(2026-10-13 真机定案)。
+  // ?noverify 时整段跳过(诊断/E2E:harness 分块慢速代验)。
+  if (!SKIP_READBACK_VERIFY) {
+    for (let off = 0; off < bytes.length; off += 0x10000) {
+      const n = Math.min(0x10000, bytes.length - off);
+      const got = await loader.readFlash(record.offset + off, n);
+      if (!bytesEqual(got, bytes.subarray(off, off + n))) {
+        throw new Error(`DATA ${record.label} read-back mismatch at +${hex(off)}`);
+      }
     }
+  } else {
+    log(`DATA ${record.label}: read-back skipped (?noverify — harness-side chunked verify)`, "warn");
   }
 }
 
@@ -2660,10 +2678,15 @@ async function restoreV2ArchiveUsb() {
       flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
       reportProgress: (_i, written, total) => setRestoreProgress(10 + written / total * 75),
     });
-    for (let off = 0; off < image.data.length; off += 4096) {
-      const part = image.data.subarray(off, Math.min(image.data.length, off + 4096));
-      const readback = await loader.readFlash(addr + off, part.length);
-      if (!bytesEqual(readback, part)) throw new Error(`APP read-back mismatch at +${hex(off)}`);
+    // 同 writeDataPayload:64KB 批次读回,避免 4KB/次的命令往返开销。
+    // ?noverify 时跳过(诊断/E2E:harness 分块慢速代验)。
+    if (!SKIP_READBACK_VERIFY) {
+      for (let off = 0; off < image.data.length; off += 0x10000) {
+        const n = Math.min(0x10000, image.data.length - off);
+        const part = image.data.subarray(off, off + n);
+        const readback = await loader.readFlash(addr + off, n);
+        if (!bytesEqual(readback, part)) throw new Error(`APP read-back mismatch at +${hex(off)}`);
+      }
     }
 
     const name = sanitizeDisplayName(archivedSlot.name) || `play ${archivedSlot.play_id}`;

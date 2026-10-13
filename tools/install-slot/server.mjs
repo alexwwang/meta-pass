@@ -70,6 +70,7 @@ const STATIC_FILES = new Map([
   ["/data-size-profile.js", { file: "data-size-profile.js", type: "text/javascript; charset=utf-8" }],
   ["/data-size-options.js", { file: "data-size-options.js", type: "text/javascript; charset=utf-8" }],
   ["/data-byte-archive.js", { file: "data-byte-archive.js", type: "text/javascript; charset=utf-8" }],
+  ["/data-archive-restore.js", { file: "data-archive-restore.js", type: "text/javascript; charset=utf-8" }],
   ["/data-install-plan.js", { file: "data-install-plan.js", type: "text/javascript; charset=utf-8" }],
   ["/slot-backup.js", { file: "slot-backup.js", type: "text/javascript; charset=utf-8" }],
   ["/launcher-upgrade.js", { file: "launcher-upgrade.js", type: "text/javascript; charset=utf-8" }],

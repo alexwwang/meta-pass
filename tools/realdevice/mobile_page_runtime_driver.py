@@ -91,7 +91,23 @@ def wait_event(port, event, timeout):
 
 
 def launcher_hello(port, timeout):
-    return send(port, "E2E HELLO", "HELLO", timeout)
+    # esptool-js(Web Serial)同步残留的 SLIP 二进制会填满 control_task 的
+    # 96B fgets 缓冲并把它卡在"等到 \n 为止"的丢弃循环里(真机 2026-10-12
+    # 定案)。一次裸 \n 不一定够:transport 拆除时设备 FIFO 里可能还有后续
+    # 字节继续污染缓冲,所以循环冲洗直到 HELLO 得到应答(残留垃圾行只会
+    # 得到无害的 UNKNOWN_COMMAND)。
+    last_exc = None
+    for _ in range(6):
+        try:
+            port.write(b"\n")
+            port.flush()
+            time.sleep(0.6)
+            port.reset_input_buffer()
+            return send(port, "E2E HELLO", "HELLO", min(8, timeout))
+        except (TimeoutError, RuntimeError) as exc:
+            last_exc = exc
+            time.sleep(0.4)
+    raise RuntimeError(f"E2E channel did not recover after flush attempts: {last_exc}")
 
 
 def wait_launcher(port, timeout):
