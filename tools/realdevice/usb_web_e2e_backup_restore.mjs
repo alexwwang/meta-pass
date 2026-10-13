@@ -36,7 +36,7 @@
 // usb_web_e2e_multi.mjs (usb-e2e-chrome-profile).
 
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -115,6 +115,12 @@ writeFileSync(
 
 const results = [];
 const consoleLines = [];
+function pushConsole(line) {
+  consoleLines.push(line);
+  // Long restores can outlive the harness process (host crash/kill); stream
+  // every line to disk so a killed run still leaves usable evidence.
+  try { appendFileSync(path.join(RUNDIR, "console-live.log"), line + "\n"); } catch {}
+}
 const pageErrors = [];
 let state = {};               // run state persisted across invocations
 let baselineSlots = null;
@@ -698,18 +704,25 @@ async function stageDelete() {
 async function stageRestore() {
   console.log("\n=== T4: v2 restore from archive ===");
   displayName = state.displayName;
-  // 115200 停等路径下恢复总时长实测 >40min;921600 下 esptool-js 持续流式
-  // 读回会死(esptool.py 同链路 233KB/s 零失败——问题在 Chrome WebSerial
-  // 侧)。故 e2e 模式用 ?noverify 跳过页内读回,字节保真由 harness 分块
-  // 慢速读回代验(512KB/新会话,备份期已实证可靠)。
-  const FAST = `${BASE}/?e2e=real${state.skipReadbackVerify ? "&noverify" : ""}`;
+  // 115200 停等路径下恢复总时长实测 >40min。默认(不带 --skip-readback-
+  // verify)走页内有界分块读回(≤32KiB/读,每 512KiB 重连重同步),t4 探针
+  // 证据写 t4-flash-read-probe.json;--skip-readback-verify 才用 ?noverify
+  // 跳过页内读回,字节保真由 harness 分块慢速读回代验。
+  const FAST = `${BASE}/?e2e=real${state.baud ? `&baud=${state.baud}` : ""}${state.skipReadbackVerify ? "&noverify" : ""}`;
   await page.goto(FAST, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__installSlotReady === true, null, { timeout: 15000 });
   await uiConnect();
 
   let committed = false;
-  for (let attempt = 1; attempt <= 2 && !committed; attempt++) {
+  const maxAttempts = state.restoreAttempts || 2;
+  for (let attempt = 1; attempt <= maxAttempts && !committed; attempt++) {
     try {
+      // e2e observability: capture every bounded read + session reconnect the
+      // page performs (install-slot.html flashes them via window.__flashReadProbe).
+      await page.evaluate(() => {
+        window.__flashReadEvents = [];
+        window.__flashReadProbe = (e) => window.__flashReadEvents.push(e);
+      });
       await page.locator("#restore-input").setInputFiles(state.zipPath);
       await waitFor(async () => (await page.locator("#restore-info").getAttribute("class")) === "ok",
                     60000, "restore preflight (archive validated)");
@@ -718,12 +731,31 @@ async function stageRestore() {
       await page.screenshot({ path: path.join(RUNDIR, "t4-preflight.png"), fullPage: true });
 
       await page.locator("#btn-restore").click();
-      await waitFor(async () =>
-        (await page.locator("#restore-status").getAttribute("class")) === "ok",
-        1500000, "UI restore completion");
+      // Poll explicitly: 'ok' completes, 'error' fails fast (a 40-min timeout
+      // for a failure the page reported in 30s wastes the whole attempt window).
+      const restoreDeadline = Date.now() + (state.restoreTimeoutMs || 1500000);
+      for (;;) {
+        const cls = await page.locator("#restore-status").getAttribute("class");
+        if (cls === "ok") break;
+        if (cls === "error") throw new Error("restore reported error status");
+        if (Date.now() > restoreDeadline) throw new Error("timeout waiting for UI restore completion");
+        await new Promise((r) => setTimeout(r, 1000));
+      }
       committed = true;
     } catch (e) {
-      if (attempt >= 2) { await reviveDevice(); throw e; }
+      // Fail-closed evidence: capture what the page actually reported so a
+      // failure is diagnosable (hang vs error status vs slow progress).
+      try {
+        const st = ((await page.locator("#restore-status").textContent()) || "").trim();
+        const cls = await page.locator("#restore-status").getAttribute("class");
+        const lg = (await page.locator("#log").textContent()) || "";
+        writeText(`t4-restore-failure-attempt${attempt}.txt`,
+          `status class=${cls}\nstatus text=${st}\n\n#log tail:\n${lg.slice(-4000)}\n`);
+        const probe = await page.evaluate(() => window.__flashReadEvents || []).catch(() => []);
+        writeJson(`t4-flash-read-probe-attempt${attempt}.json`, probe);
+        e = new Error(`${e.message} | restore-status class=${cls} text=${st.slice(0, 200)}`);
+      } catch {}
+      if (attempt >= maxAttempts) { await reviveDevice(); throw e; }
       console.log(`restore attempt ${attempt} failed (${e.message.split("\n")[0]}); reviving and retrying`);
       await uiDisconnect();
       await reviveDevice();
@@ -740,6 +772,41 @@ async function stageRestore() {
     throw new Error("restore log lacks commit / read-back evidence");
   }
   record("T4", "restore committed", true);
+
+  // Validate the bounded chunked-read evidence (handoff R2/R3): every read
+  // ≤ 32 KiB, contiguous offsets within each target range, and a disconnect →
+  // connect → sync reconnect at every 512 KiB cumulative boundary. Skipped in
+  // ?noverify mode by definition (the page performed no read-back).
+  const events = await page.evaluate(() => window.__flashReadEvents || []);
+  if (state.skipReadbackVerify) {
+    record("T4", "page read-back skipped (?noverify); decoupled verify is a separate harness stage", true);
+  } else {
+  writeJson("t4-flash-read-probe.json", events);
+  {
+    const CHUNK = 0x8000, SESSION = 512 * 1024;
+    const reads = events.filter((e) => e.kind === "read");
+    const starts = events.filter((e) => e.kind === "reconnect-start");
+    const dones = events.filter((e) => e.kind === "reconnect-done");
+    const badLen = reads.filter((e) => e.length > CHUNK);
+    if (badLen.length) throw new Error(`probe: ${badLen.length} reads exceed 32 KiB (max ${badLen[0].length})`);
+    // group into contiguous runs by offset adjacency
+    const runs = [];
+    for (const r of reads) {
+      const cur = runs[runs.length - 1];
+      if (cur && r.offset === cur.end) { cur.end = r.offset + r.length; cur.bytes += r.length; cur.count++; }
+      else runs.push({ start: r.offset, end: r.offset + r.length, bytes: r.length, count: 1 });
+    }
+    let expectedReconnects = 0;
+    // module reconnects only when more data remains after a boundary
+    for (const run of runs) if (run.bytes > SESSION) expectedReconnects += Math.floor(run.bytes / SESSION);
+    if (starts.length !== dones.length) throw new Error(`probe: reconnect-start ${starts.length} != reconnect-done ${dones.length}`);
+    if (starts.length !== expectedReconnects) {
+      throw new Error(`probe: ${starts.length} reconnects, expected ${expectedReconnects} from ${JSON.stringify(runs.map((r) => ({ at: r.start, bytes: r.bytes, reads: r.count })))}`);
+    }
+    record("T4", `bounded chunked read-back evidence: ${reads.length} reads (max ${Math.max(...reads.map((r) => r.length))}B), ${runs.length} contiguous ranges, ${starts.length} session reconnects @512KiB`,
+      true, runs.map((r) => `0x${r.start.toString(16)}+${r.bytes}`).join(" "));
+  }
+  }
   await uiDisconnect();
 
   const bootLog = await usbHardReset();
@@ -847,8 +914,8 @@ async function main() {
   record("E0", "single persistent Chrome window opened (whole-run lifecycle)", true);
   context = browser;
   page = await context.newPage();
-  page.on("console", (msg) => consoleLines.push(`[${msg.type()}] ${msg.text()}`));
-  page.on("pageerror", (err) => pageErrors.push(err.stack || err.message));
+  page.on("console", (msg) => pushConsole(`[${msg.type()}] ${msg.text()}`));
+  page.on("pageerror", (err) => { pageErrors.push(err.stack || err.message); pushConsole(`[pageerror] ${err.stack || err.message}`); });
 
   for (const stage of STAGES) {
     // 人工 DATA 确认硬门禁(handoff §0/§T2):backup(只读)完成后、任何

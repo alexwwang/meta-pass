@@ -1518,18 +1518,23 @@ async function chooseUsbDataSizes(dataImages, carve) {
 async function reconnectFlashReadSession() {
   // Each 512 KiB read session is bounded; close/reopen the existing Web Serial
   // transport between sessions while retaining the running stub and loader.
+  window.__flashReadProbe?.({ kind: "reconnect-start", at: Date.now() });
   await withTimeout(loader.transport.disconnect(), 5000, "Flash read: close serial session timed out");
   await withTimeout(loader.transport.connect(linkBaud), 5000, "Flash read: reopen serial session timed out");
   loader.transport.buffer = new Uint8Array(0);
   await withTimeout(loader.sync(), 5000, "Flash read: resync after session boundary timed out");
   await new Promise((resolve) => setTimeout(resolve, 50));
+  window.__flashReadProbe?.({ kind: "reconnect-done", at: Date.now() });
 }
 
 async function verifyFlashReadback(address, expected, label, onProgress) {
   await readFlashAndVerifyChunked({
     address,
     expected,
-    readChunk: (offset, length) => loader.readFlash(offset, length),
+    readChunk: (offset, length) => {
+      window.__flashReadProbe?.({ kind: "read", offset, length, at: Date.now() });
+      return loader.readFlash(offset, length);
+    },
     reconnect: reconnectFlashReadSession,
     onProgress,
   });
