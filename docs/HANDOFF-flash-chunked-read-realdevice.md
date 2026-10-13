@@ -31,41 +31,40 @@ git rev-parse HEAD
 
 Confirm Static checks and Firmware checks pass for the current HEAD. Record firmware SHA-256, device ID (redacted if needed), OS/browser/Node versions, ESP-IDF version, serial port, and page entry point. If the worktree is dirty, commit/build/test state is wrong, or host tests fail, stop before destructive device operations.
 
-## 3. Test sequence
+## 3. Impact assessment and minimum regression set
 
-### R0 — Baseline
-Record device APP/DATA inventory and Flash-space state. Verify device, serial connection, pairing, and page version. Do not move cardid, hardcode Flash addresses, or alter the fixed partition layout.
+The runtime change is narrowly scoped to the USB installer page's **post-write Flash read-back verification**:
+- New shared helper: `install-slot/flash-read-transfer.js` (bounded reads, byte comparison, progress, reconnect callback).
+- Page integration: `install-slot/install-slot.html` uses it for APP read-back and DATA write/restore read-back.
+- Serving and automated checks: `tools/install-slot/server.mjs`, `tools/install-slot/test-flash-read-transfer.mjs`, and the corresponding static contract test.
 
-### R1 — APP long read-back
-1. Use the build under test to install or select an approved test APP image.
-2. Trigger post-write APP read-back verification and retain page/serial logs.
-3. Verify each read is no larger than 32 KiB and each 512 KiB boundary produces disconnect → connect → sync.
-4. Confirm contiguous address coverage with no gaps or duplicates and a successful byte-for-byte comparison.
-5. Use an APP image larger than 512 KiB, preferably several MiB, to exercise multiple session boundaries.
+The existing erase/write loops, partition allocator, firmware/bootloader code, mobile embedded page, install/delete planning, and archive format are not changed by this optimization. Do not rerun unrelated mobile-page, allocator, boot, full install/delete lifecycle, or general backup-format scenarios solely for this change.
 
-### R2 — DATA long read-back
-1. Trigger post-write DATA read-back in an approved APP/DATA scenario.
-2. Verify chunk sizes, contiguous offsets, 512 KiB session boundaries, and byte comparison.
-3. Use multi-MiB DATA to exercise multiple reconnects; record duration, timeouts, and any manual recovery.
-4. Confirm the APP/DATA inventory and partition ranges remain unchanged.
+Run only these regression items:
 
-### R3 — Fail-closed behavior
-Host tests must show that short reads, byte mismatches, read exceptions, and reconnect/sync failures return explicit failures. If a real-device failure occurs, preserve evidence; do not use `?noverify` or skip verification to report PASS.
+### R1 — Host regression (required; no device writes)
+Run `./tools/validate.sh --static` on the exact HEAD. It must exercise `test-flash-read-transfer.mjs` and the page integration contract. Confirm cases for contiguous offsets and bounded lengths, reconnect at 512 KiB, progress, short/invalid reads, byte mismatch, and empty payload. Firmware checks are an entry gate for using the built page/device, not evidence that Web Serial reconnect works.
 
-### R4 — Backup/restore regression (only when safe)
-1. Verify a usable backup exists and follow every human-confirmation gate in the existing backup/restore handoff.
-2. Check that long APP/DATA read-back no longer hangs during sustained reads.
-3. If restoring, separately record writes, read-back verification, transaction commit, and final inventory. Successful writes do not prove read-back verification.
-4. After each install/restore involving real-market firmware 28, pause for explicit human confirmation that DATA can actually be read, written, and read back correctly. Otherwise keep status `BLOCKED_WAITING_FOR_HUMAN_DATA_CONFIRMATION`.
+### R2 — APP post-write read-back (required on device)
+Using the USB service page, install an approved APP image larger than 512 KiB (preferably several MiB) so multiple boundaries are crossed. Verify that the existing write completes unchanged, then read-back verification completes using reads no larger than 32 KiB, reconnects/resyncs at each 512 KiB boundary, and byte comparison passes. Capture logs for at least two reconnect boundaries where image size allows.
+
+### R3 — DATA post-write/read-back (required on device)
+Using an existing safe test APP/DATA setup, exercise the DATA restore/write path that calls the shared verifier. Use a DATA payload larger than 512 KiB (preferably several MiB) to cross multiple boundaries. Verify write behavior remains unchanged and read-back completes with contiguous offsets and byte-for-byte equality. Do not create/delete unrelated slots just to broaden coverage.
+
+### R4 — Recovery failure semantics (host tests required; device failure only if naturally encountered)
+The host suite must prove short reads, invalid returned lengths, byte mismatch, and reconnect/sync errors fail closed. If reconnect or sync fails on device, capture the error and stop; do not retry by bypassing verification or mark the case PASS.
+
+### Explicitly out of scope
+Do not run full backup-archive creation/format compatibility, launcher upgrade, firmware boot, mobile WebView/browser E2E, generic partition-size selection, allocator, or APP deletion lifecycle regression for this read-back-only change. Existing backup creation and probe/metadata reads do not use this new helper. If DATA restoration is not safely available, report R3 as BLOCKED rather than substituting unrelated tests.
 
 ## 4. Pass criteria
 
-- Both APP and DATA long reads complete; every read chunk is at most 32 KiB.
-- Logs prove serial reconnect and resynchronization at every 512 KiB boundary, followed by successful continuation.
-- Read ranges are contiguous, with no short reads or gaps; byte comparison and applicable hashes pass.
-- Multiple reconnects cause no permanent hang or unexplained timeout, and the page reports a definitive outcome.
-- Existing erase/write flow was not inadvertently changed into a new chunked-write implementation.
-- Report includes commit, firmware hash, environment, APP/DATA sizes, chunk count, reconnect count, duration, verification result, and gaps.
+- R1–R4 required host checks pass; latest Static checks and Firmware checks are green for the tested HEAD.
+- APP and DATA device read-back each cross at least one 512 KiB boundary; preferably multiple boundaries with multi-MiB payloads.
+- Logs prove every requested read is at most 32 KiB and every 512 KiB boundary triggers disconnect → connect → sync before the next read.
+- Read offsets are contiguous; no short reads, gaps, duplicates, mismatch, unexplained timeout, or permanent hang.
+- Existing write/erase behavior is unchanged; no claim is made that unrelated backup, mobile, or lifecycle paths were regression-tested.
+- The report records exact HEAD, firmware SHA-256, payload sizes, chunks, reconnect count/timing, byte-comparison result, logs, and PASS/FAIL/BLOCKED per item.
 
 ## 5. Failure evidence and attribution
 
