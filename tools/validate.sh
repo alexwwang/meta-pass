@@ -186,6 +186,8 @@ PY
         "$_ck_bin" --check tools/realdevice/browser_smoke.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e.mjs
         "$_ck_bin" --check tools/realdevice/usb_web_e2e_multi.mjs
+        "$_ck_bin" --check tools/realdevice/usb_web_e2e_backup_restore.mjs
+        "$_ck_bin" --check tools/realdevice/p28_page_readback_verify.mjs
         "$_ck_bin" --check tools/realdevice/mobile_webview_e2e.mjs
         "$_ck_bin" --check tools/realdevice/mobile_page_e2e.mjs
         "$_ck_bin" --check tools/realdevice/mobile_page_browser_smoke.mjs
