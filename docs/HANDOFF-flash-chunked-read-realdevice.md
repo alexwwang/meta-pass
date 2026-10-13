@@ -11,7 +11,7 @@ Language: [简体中文](HANDOFF-flash-chunked-read-realdevice.zh_CN.md)
 Verify that long Flash reads remain reliable when split into bounded chunks with periodic serial-session recovery. The target is **Flash reading and read-back verification**, not chunked writing.
 
 Expected implementation:
-- Production APP/DATA post-write verification uses the ESP stub's `flashMd5sum(address, length)` to hash the complete target range on-device, then strictly compares it with the local payload MD5.
+- The existing backup-restore APP/DATA post-write verification uses the ESP stub's `flashMd5sum(address, length)` to hash the complete target range on-device, then strictly compares it with the archive payload MD5.
 - Each non-empty APP/DATA range requires one device-side digest command; the page no longer transfers the entire range back through Web Serial, avoiding the reported deterministic wedge after 30 `readFlash` calls per page/SerialPort session.
 - Malformed device digests, digest mismatches, unavailable local MD5, or serial-command errors must fail closed; restore must not commit.
 - `flash-read-transfer.js` remains as an independent chunked byte-comparison tool for supplemental device evidence; it is no longer the page's production post-write verifier.
@@ -33,9 +33,9 @@ Confirm Static checks and Firmware checks pass for the current HEAD. Record firm
 
 ## 3. Impact assessment and minimum regression set
 
-The runtime change is narrowly scoped to the USB installer page's **post-write Flash read-back verification**:
+The runtime change is narrowly scoped to the USB installer page's **backup-restore post-write Flash read-back verification**:
 - New production verifier: `install-slot/flash-readback-verify.js`, comparing a device-side Flash MD5 with the local payload MD5 for the complete target range.
-- Page integration: `install-slot/install-slot.html` uses digest verification for APP read-back and DATA write/restore read-back.
+- Page integration: `install-slot/install-slot.html` uses digest verification for APP restore read-back and DATA restore write/read-back; the ordinary local/community APP install flow is not an existing read-back call site in this change.
 - `install-slot/flash-read-transfer.js` and its tests remain for independent chunked byte-by-byte device validation; the page's production path no longer performs long read-back streams.
 - Serving and automated checks: `tools/install-slot/server.mjs`, `tools/install-slot/test-flash-readback-verify.mjs`, and the page contract test.
 
@@ -47,7 +47,7 @@ Run only these regression items:
 Run `./tools/validate.sh --static` on the exact HEAD. Confirm it runs `test-flash-readback-verify.mjs`, `test-flash-read-transfer.mjs`, and the page integration contract. Digest tests must cover one device digest request for the full range, matching/mismatching digests, malformed responses, local MD5 errors, serial-command failures, and rejection of empty payloads; the chunked utility still covers offsets, bounded chunks, reconnects, short reads, and byte mismatches. Firmware checks remain a gate for device testing.
 
 ### R2 — APP post-write read-back (required on device)
-Using the USB page, install or restore an approved APP image larger than 512 KiB (preferably several MiB). Confirm the existing write completes unchanged, then verify the complete range with the device-side `flashMd5sum` command. Logs must include address, length, expected MD5, device MD5, and success, with matching digests; this path should not issue a bulk `readFlash` stream.
+Using the USB page's existing backup-restore flow, restore an approved APP image larger than 512 KiB (preferably several MiB). Confirm the existing write completes unchanged, then verify the complete range with the device-side `flashMd5sum` command. Logs must include address, length, expected MD5, device MD5, and success, with matching digests; this path should not issue a bulk `readFlash` stream. Do not count ordinary local/community APP installation as this regression: it is not an existing read-back verifier call site.
 
 ### R3 — DATA post-write/read-back (required on device)
 Using an existing safe test APP/DATA setup, exercise the DATA restore/write path with a payload larger than 512 KiB (preferably several MiB). Confirm write behavior is unchanged and the device computes an MD5 for the complete DATA range that matches the local payload digest; the transaction must commit only after this succeeds. Do not create/delete unrelated slots.
