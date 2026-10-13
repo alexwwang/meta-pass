@@ -51,10 +51,13 @@ assert "post-commit ownership/geometry verification failed" in TRANSACTION
 assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
 assert "await restoreV2ArchiveUsb()" in USB
-assert 'from "./flash-read-transfer.js"' in USB
+assert 'from "./flash-readback-verify.js"' in USB
+assert "verifyFlashRangeByMd5" in USB
+assert "loader.flashMd5sum(offset, length)" in USB
+assert "md5-verify-done" in USB
 assert "await verifyFlashReadback(record.offset, bytes" in USB
 assert "await verifyFlashReadback(addr, image.data" in USB
-assert "reconnectFlashReadSession" in USB
+assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" in VALIDATE
 assert "export async function restoreDataArchive" in PHONE
 
