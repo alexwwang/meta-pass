@@ -6,7 +6,7 @@ Language: [English](flash-chunked-read-test-report-2026-10-13.md)
 - 分支:`feat/storage` @ `d9c98d3` + 会话内插桩(探针钩子 + harness 可观测性,随本报告一并提交)
 - Handoff:`docs/HANDOFF-flash-chunked-read-realdevice.md`
 - 设备:专用 ESP32-C3 测试机(rev 1.1,8MB flash);launcher `v2.1.0-1003-g302c466-dirty`,factory 分区 SHA-256 `377aefcf9ba059027023a7e1dec66cd16c543ca8a3d134f9a7272230a728dcdb`(测试时经 esptool.py 读回);ESP-IDF v5.5.3
-- 主机:macOS 24.6.0(测试中途崩溃重启一次,R2 按要求重启后重跑),Chrome 154(每次运行单一持久窗口),Node v26.3.0,esptool 5.4.0,串口 `/dev/tty.usbmodem14201`,页面 `http://127.0.0.1:4191/install-slot.html`(`META_PASS_DEV=1`)
+- 主机:macOS 24.6.0(测试中途崩溃重启一次,R2 按要求重启后重跑),Chrome 154(每次运行单一持久窗口),Node v26.3.0,esptool 5.4.0,串口 `/dev/cu.usbmodemXXXX`(换线后的节点,已脱敏),页面 `http://127.0.0.1:4191/install-slot.html`(`META_PASS_DEV=1`)
 - 载荷:市场 28 号玩法"录音笔"——APP 镜像 1,454,096B(slot 0 @0x180000+1462272),DATA `recordings` 4,841,472B @0x360000(跨越 9 个 512KiB 边界);归档 `backup.zip` 6,325,885B,页面恢复预检接受
 - 证据目录:`tools/realdevice/logs/usb-chunked-read-20261013T080219Z/`
 - 主机说明:本机是已知困难链路(Chrome WebSerial 不稳定)。以下设备证据均在该主机可持续的配置下取得;偏差逐项如实记录,不含糊。

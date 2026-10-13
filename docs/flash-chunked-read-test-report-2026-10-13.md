@@ -6,7 +6,7 @@ Language: [简体中文](flash-chunked-read-test-report-2026-10-13.zh_CN.md)
 - Branch: `feat/storage` @ `d9c98d3` + session instrumentation (probe hook + harness observability; committed with this report)
 - Handoff: `docs/HANDOFF-flash-chunked-read-realdevice.md`
 - Device: dedicated ESP32-C3 test unit (revision 1.1, 8MB flash); launcher `v2.1.0-1003-g302c466-dirty`, factory partition SHA-256 `377aefcf9ba059027023a7e1dec66cd16c543ca8a3d134f9a7272230a728dcdb` (read back via esptool.py at test time); ESP-IDF v5.5.3
-- Host: macOS 24.6.0 (crashed+rebooted mid-test; R2 rerun after reboot), Chrome 154 (single persistent window per run), Node v26.3.0 (`/usr/local/bin/node`), esptool 5.4.0, serial `/dev/tty.usbmodem14201`, page `http://127.0.0.1:4191/install-slot.html` (`META_PASS_DEV=1`)
+- Host: macOS 24.6.0 (crashed+rebooted mid-test; R2 rerun after reboot), Chrome 154 (single persistent window per run), Node v26.3.0 (`/usr/local/bin/node`), esptool 5.4.0, serial `/dev/cu.usbmodemXXXX` (post cable-swap node, redacted), page `http://127.0.0.1:4191/install-slot.html` (`META_PASS_DEV=1`)
 - Payload: market play 28 "recorder" — APP image 1,454,096B (slot 0 @0x180000+1462272), DATA `recordings` 4,841,472B @0x360000 (9×512 KiB boundaries); archive `backup.zip` 6,325,885B accepted by the page restore preflight
 - Evidence dir: `tools/realdevice/logs/usb-chunked-read-20261013T080219Z/`
 - Host caveat: this is the known-difficult link (Chrome WebSerial instability). All device evidence below was produced under the profile this host can sustain; deviations are documented per item, not hidden.
