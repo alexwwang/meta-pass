@@ -314,6 +314,7 @@ PATHCHECK
         "${node_bin}" tools/install-slot/test-data-install-plan.mjs
         "${node_bin}" tools/install-slot/test-data-restore-plan.mjs
         "${node_bin}" tools/install-slot/test-data-size-options.mjs
+        "${node_bin}" tools/install-slot/test-flash-transfer.mjs
         "${node_bin}" tools/install-slot/test-data-restore-transaction.mjs
         "${node_bin}" tools/install-slot/test-data-restore-device-integration.mjs
     else
