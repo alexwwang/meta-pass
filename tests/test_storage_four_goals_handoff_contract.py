@@ -60,7 +60,8 @@ assert "md5-verify-done" in USB
 assert "await verifyFlashReadback(record.offset, bytes" in USB
 assert "await verifyFlashReadback(addr, image.data" in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
-assert "tools/install-slot/test-flash-read-transfer.mjs" in VALIDATE
+assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
+assert '"/flash-read-transfer.js"' not in SERVER
 assert "export async function restoreDataArchive" in PHONE
 
 # USB-only local firmware installation remains a required asymmetric capability.
