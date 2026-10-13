@@ -303,6 +303,7 @@ import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { buildDataArchiveManifest, validateDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
 import { prepareDataArchiveRestore } from "./data-archive-restore.js";
+import { FLASH_WRITE_CHUNK_BYTES, writeFlashChunked } from "./flash-transfer.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -807,15 +808,14 @@ async function wipeSlotResidue(slot, fromOffset, toOffset, onProgress) {
 }
 
 async function wipeRange(start, size, onProgress) {
-  const CHUNK = 0x10000;   // 64KB/块
+  const CHUNK = FLASH_WRITE_CHUNK_BYTES;
   const ff = new Uint8Array(CHUNK).fill(0xff);
   let written = 0;
   while (written < size) {
     const n = Math.min(CHUNK, size - written);
-    await loader.writeFlash({
-      fileArray: [{ data: u8ToBinaryString(ff.subarray(0, n)), address: start + written }],
-      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
-      reportProgress: (_i, w) => onProgress && onProgress((written + w) / size),
+    await writeFlashChunked(loader, ff.subarray(0, n), start + written, {
+      chunkBytes: CHUNK,
+      onProgress: (p) => onProgress && onProgress((written + p * n) / size),
     });
     written += n;
   }
@@ -1514,27 +1514,34 @@ async function chooseUsbDataSizes(dataImages, carve) {
   });
 }
 
-async function writeDataPayload(image, record) {
-  // Erase the complete new extent first so a reused free extent cannot expose
-  // stale bytes past the initial image payload.
-  await wipeRange(record.offset, record.size);
+async function writeDataPayload(image, record, onProgress) {
   const bytes = image.data;
-  for (let off = 0; off < bytes.length; off += 0x10000) {
-    const chunk = bytes.subarray(off, Math.min(bytes.length, off + 0x10000));
-    await loader.writeFlash({
-      fileArray: [{ data: u8ToBinaryString(chunk), address: record.offset + off }],
-      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
-    });
+  if (!(bytes instanceof Uint8Array) || bytes.length > record.size) {
+    throw new Error(`DATA ${record.label} payload exceeds its allocated extent`);
   }
   if (bytes.length === 0) {
+    await wipeRange(record.offset, record.size, onProgress);
     const head = await loader.readFlash(record.offset, Math.min(4096, record.size));
     if (head.some((b) => b !== 0xff)) throw new Error(`DATA ${record.label} erase verification failed`);
     return;
   }
-  // 读回按 64KB 批次调用 readFlash(stub 内部仍按 4KB 包流式传输):
-  // 4KB/次的调用每次都有完整命令往返开销,MB 级分区实测读回 >20min;
-  // 64KB 批次把往返次数降 16×,总时长回到秒~分钟级(2026-10-13 真机定案)。
-  // ?noverify 时整段跳过(诊断/E2E:harness 分块慢速代验)。
+
+  // writeFlash erases the sectors covered by the payload. Do not first erase
+  // those same sectors separately: that doubles Flash work for a full-size
+  // restore. Clear only the unused aligned tail so reused extents cannot expose
+  // stale bytes. DATA archive payloads are normally exactly the allocated size.
+  const payloadEnd = Math.ceil(bytes.length / 4096) * 4096;
+  if (payloadEnd > record.size) throw new Error(`DATA ${record.label} payload alignment exceeds its allocated extent`);
+  if (payloadEnd < record.size) {
+    await wipeRange(record.offset + payloadEnd, record.size - payloadEnd,
+      (p) => onProgress?.(p * 0.1));
+  }
+  await writeFlashChunked(loader, bytes, record.offset, {
+    onProgress: (p) => onProgress?.((payloadEnd < record.size ? 0.1 : 0) + p * (payloadEnd < record.size ? 0.9 : 1)),
+  });
+
+  // Readback stays enabled by default. Batching reads is independent from write
+  // chunking; the diagnostic ?noverify flag is still opt-in only.
   if (!SKIP_READBACK_VERIFY) {
     for (let off = 0; off < bytes.length; off += 0x10000) {
       const n = Math.min(0x10000, bytes.length - off);
@@ -2661,9 +2668,12 @@ async function restoreV2ArchiveUsb() {
 
   let commitStarted = false;
   try {
-    for (const record of plannedData) {
+    for (let dataIndex = 0; dataIndex < plannedData.length; dataIndex++) {
+      const record = plannedData[dataIndex];
       log(`Staging restored DATA ${record.label} · ${fmtBytes(record.size)} at ${hex(record.offset)}`);
-      await writeDataPayload(record, record);
+      const progressBase = 8 * dataIndex / plannedData.length;
+      const progressSpan = 8 / plannedData.length;
+      await writeDataPayload(record, record, (p) => setRestoreProgress(progressBase + p * progressSpan));
       log(`DATA ${record.label} write/read-back verified`, "ok");
     }
 
