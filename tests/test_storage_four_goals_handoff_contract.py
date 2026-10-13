@@ -51,10 +51,11 @@ assert "post-commit ownership/geometry verification failed" in TRANSACTION
 assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
 assert "await restoreV2ArchiveUsb()" in USB
-assert 'from "./flash-transfer.js"' in USB
-assert "await writeFlashChunked(loader, bytes, record.offset" in USB
-assert "payloadEnd < record.size" in USB, "DATA restore must clear only unused tail sectors before writing payload"
-assert "tools/install-slot/test-flash-transfer.mjs" in VALIDATE
+assert 'from "./flash-read-transfer.js"' in USB
+assert "await verifyFlashReadback(record.offset, bytes" in USB
+assert "await verifyFlashReadback(addr, image.data" in USB
+assert "reconnectFlashReadSession" in USB
+assert "tools/install-slot/test-flash-read-transfer.mjs" in VALIDATE
 assert "export async function restoreDataArchive" in PHONE
 
 # USB-only local firmware installation remains a required asymmetric capability.
