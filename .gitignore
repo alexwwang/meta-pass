@@ -22,3 +22,6 @@ x509_crt_bundle
 tools/realdevice/logs/
 # Node.js 依赖产物（tools/realdevice 等本地 npm install 生成）
 node_modules/
+
+# macOS Finder metadata
+.DS_Store
