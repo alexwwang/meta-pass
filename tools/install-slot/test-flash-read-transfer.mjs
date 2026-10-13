@@ -20,7 +20,7 @@ import { readFlashAndVerifyChunked, FLASH_READ_CHUNK_BYTES, FLASH_READ_SESSION_B
     ...Array(16).fill(FLASH_READ_CHUNK_BYTES), 8192,
   ]);
   assert.equal(calls[0].address, 0x360000);
-  assert.equal(calls.at(-1).address, 0x360000 + FLASH_READ_SESSION_BYTES + FLASH_READ_CHUNK_BYTES);
+  assert.equal(calls.at(-1).address, 0x360000 + FLASH_READ_SESSION_BYTES);
   assert.equal(reconnects, 1, "reopen the transport after each 512 KiB session budget");
   assert.equal(progress.at(-1), 1);
   assert.ok(progress.every((p, i) => i === 0 || p >= progress[i - 1]));
