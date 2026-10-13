@@ -57,6 +57,12 @@ Implications for upstream: in-page verify after writes cannot complete on affect
 
 Not run: backup-archive creation/format compatibility, launcher upgrade, firmware boot, mobile WebView E2E, allocator/generic size selection, APP deletion lifecycle regression. Restore/delete/cleanup here only managed this test's own artifacts; device returned to exact baseline (count=0, free=6766592).
 
+## Follow-up implementation after the original test
+
+This report records the original `d9c98d3` implementation, where the production page still used chunked `readFlash` for long-range verification. The test isolated a deterministic Chrome WebSerial wedge after exactly 30 reads per page/SerialPort session. Therefore, the original R2/R3 PASS proves the chunked verifier can complete in segmented fresh-page sessions; it **does not prove the original production page's long read-back path completes on this host**.
+
+A follow-up code change switches production APP/DATA post-write verification to the ESP stub's `flashMd5sum(address, length)` compared against the local payload MD5, adds host tests, and updates the handoff. This avoids bulk serial read-back, but the real-device evidence in this report **does not yet validate the new path**. Re-run CI on the latest commit and complete one real-device APP and one DATA verification before accepting the fix. MD5 here detects accidental corruption; it does not authenticate image origin or protect against malicious tampering.
+
 ## Known limitations
 
 - The single-session multi-MiB in-page read-back remains unproven on device — impossible on this host (deterministic 30-call wedge). On healthy links the production default path is unchanged and recommended.
