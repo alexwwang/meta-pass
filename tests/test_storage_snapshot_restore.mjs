@@ -69,7 +69,7 @@ function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = 
 }
 
 // Incompatible and missing device versions must fail before the first Flash mutation.
-for (const version of ["3.0.0", undefined]) {
+for (const version of ["3.0.0", null]) {
   const device = mockDevice({ version });
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
