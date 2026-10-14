@@ -251,6 +251,31 @@ export function createBridge(deviceOrigin, token) {
         "X-Meta-Length": String(length),
       }});
     },
+    // Read-only device-storage snapshot transport. Every read is bound to an
+    // exact live partition identity; callers never supply an absolute Flash address.
+    storageInfo: () => call("/api/install/storage/info"),
+    storageRead: (partition, offset, length) => {
+      if (!partition || typeof partition.label !== "string" ||
+          !/^[A-Za-z0-9_-]{1,16}$/.test(partition.label) ||
+          !Number.isSafeInteger(partition.type) || partition.type < 0 || partition.type > 255 ||
+          !Number.isSafeInteger(partition.subtype) || partition.subtype < 0 || partition.subtype > 255 ||
+          !Number.isSafeInteger(partition.offset) || partition.offset < 0 ||
+          !Number.isSafeInteger(partition.size) || partition.size <= 0 ||
+          !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096 ||
+          offset > partition.size || length > partition.size - offset) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid storage partition read request", bytes: null });
+      }
+      return callBytes("/api/install/storage/read", { headers: {
+        "X-Meta-Partition-Label": partition.label,
+        "X-Meta-Partition-Type": String(partition.type),
+        "X-Meta-Partition-Subtype": String(partition.subtype),
+        "X-Meta-Partition-Offset": String(partition.offset),
+        "X-Meta-Partition-Size": String(partition.size),
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
     nvsInfo: () => call("/api/install/nvs/info"),
     nvsRead: (offset, length) => {
       if (!Number.isSafeInteger(offset) || offset < 0 ||
