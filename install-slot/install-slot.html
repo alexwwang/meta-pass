@@ -1863,10 +1863,13 @@ $("btn-connect").addEventListener("click", async () => {
 
 // 带超时的 Promise 竞速:防止设备端静默(不回错误)时连接流程无限挂死。
 function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} (${Math.round(ms / 1000)}s)`)), ms)),
-  ]);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} (${Math.round(ms / 1000)}s)`)), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 // ===== 2. 槽位选择(动态行渲染 + 删除按钮事件委托)=====
