@@ -4,7 +4,7 @@ Language: [简体中文](HANDOFF-usb-backup-segmented-session.zh_CN.md)
 
 ## Goal
 
-Validate the production USB backup button after replacing one long-lived flash-read session with bounded 512 KiB segments and a fresh Transport/ESPLoader pair between segments. A successful run must produce a complete archive from the page itself; do not use the host-assembled chunked archive as proof that this local-test path works.
+Validate the local-test USB page backup button after replacing one long-lived flash-read session with bounded 512 KiB segments and a fresh Transport/ESPLoader pair between segments. A successful run must produce a complete archive from the page itself; do not use the host-assembled chunked archive as proof that this local-test path works.
 
 ## Preconditions
 
@@ -18,7 +18,7 @@ Validate the production USB backup button after replacing one long-lived flash-r
 
 1. Run `./tools/validate.sh` and `./tools/validate.sh --sim`; record both results and the exact HEAD.
 2. Start the USB page server and the existing Chrome persistent profile that has permission for the device's Web Serial port.
-3. Run `tools/realdevice/usb_data_backup_read_once.mjs` with a new evidence directory. This drives the real production `#btn-backup` path; the page should automatically read in 512 KiB segments, close/reopen the transport and loader between segments, and download one ZIP.
+3. Run `tools/realdevice/usb_data_backup_read_once.mjs` with a new evidence directory. This drives the actual local-test USB page `#btn-backup` path; the page should automatically read in 512 KiB segments, close/reopen the transport and loader between segments, and download one ZIP.
 4. Verify the harness reports a downloaded archive, `manifest.complete === true`, exactly one APP group and its associated DATA reservation, and successful payload hash validation. Record total bytes, elapsed time, per-segment logs, and archive SHA-256.
 5. Independently dump the APP image and DATA range with `esptool.py` in read-only mode. Compare byte-for-byte / SHA-256 against the corresponding archive payloads. Do not substitute device-side MD5 for reading and comparing the archive's actual bytes.
 6. Reboot the device normally and confirm the original APP/DATA group remains visible and its metadata is unchanged. This is a read-only backup test, not a physical power-loss test.
