@@ -6,22 +6,25 @@
 
 Branch: `feat/storage`.
 
-## Implemented foundation
+## Verified on the current branch
 
-- `install-slot/storage-snapshot.js`: v2 snapshot manifest validation, partition geometry/protection/extent checks, ZIP generation and parsing, SHA-256 verification, and a non-mutating restore-plan builder.
-- `main/meta_store_install.c`: authenticated, same-origin read-only partition inventory and partition-relative read APIs. Reads of the running host partition and `cardid` are rejected; callers cannot submit absolute Flash addresses as read targets.
-- `install-slot/phone-install.js`: phone storage management now offers whole-device snapshot backup with a sensitive-data warning. Restore currently performs archive-integrity and target-layout preflight only; it does not write Flash.
-- English and Chinese design/status documentation are present.
-- Automated coverage has been added to `tests/test_storage_snapshot.mjs`, `tests/test_phone_install.mjs`, and `tests/test_storage_snapshot_device_contract.py`, and registered in `tools/validate.sh`.
+- Latest checked HEAD: `95eea1911646eefcc5ab679317f7929195ca4601`.
+- GitHub Actions **Static checks** and **Firmware checks** both passed for that HEAD.
+- `install-slot/storage-snapshot.js` provides the v2 snapshot manifest, partition geometry/protection/extent validation, ZIP encode/decode, SHA-256 checks, sparse erased-range representation, and a non-mutating restore-plan builder.
+- The device exposes authenticated, same-origin read-only partition inventory and partition-relative read APIs. Reads of the running host partition and `cardid` are rejected; callers cannot submit absolute Flash addresses as read targets.
+- The embedded phone page supports v2 whole-device snapshot backup with a sensitive-data warning. Restore is deliberately preflight-only: it validates the archive and target layout but does not write Flash.
+- The USB page retains the historical v1.1 fixed-slot archive path. The NVS restore write path has an explicit contract test; do not replace this legacy path with v2 snapshot parsing.
+- The USB page's existing segmented-read route has passed a real-device end-to-end backup test: the page produced a complete archive, independent `esptool.py` dumps matched the APP/DATA payload bytes, and reboot persistence was checked. The same report records intermittent Chrome Web Serial/esptool-js session failures; a failed attempt must not produce a ZIP.
+- The tests explicitly preserve the version boundary: USB historical v1 restore remains identifiable, the retired APP+DATA logical-v2 restore handler is absent, and the phone page accepts only the v2 whole-device snapshot discriminator.
 
-## Not complete
+## Not complete / blocked
 
-- The USB page has not switched to the new snapshot archive. The historical USB v1.1 backup/restore path remains unchanged. Before USB snapshot support can be implemented safely, it must reliably obtain the device's currently running host firmware partition; inferring it from the partition table or guessing from OTA state is not sufficient.
-- Phone snapshot restore performs no writes yet. The device currently exposes read-only APIs. A bounded, verifiable transactional restore protocol and a clear rollback strategy for write failures/disconnects must be implemented before enabling restore writes.
-- Old APP+DATA v2 archives must not be treated as the new snapshot format. The existing USB v2 APP+DATA flow still needs migration or an explicit compatibility policy.
-- The latest GitHub Actions Static checks failed at the documentation language-link checks. Those links have been fixed and the missing English status document added; CI must be checked again.
-- Final static tests, ESP-IDF firmware build, and USB/phone browser regression have not yet been confirmed. Real-device testing has not been run; after code and CI checks, hand off passport-sim and hardware regression to the local agent.
+- **USB v2 snapshot backup remains fail-closed.** The USB serial/bootloader path cannot yet obtain a trustworthy report of the currently running host partition. Do not infer it from a static partition table, hard-coded addresses, or guessed OTA state.
+- **v2 snapshot restore is not enabled on either page.** The device has no safe transactional erase/write API with protected-range enforcement, recovery journal, disconnect/power-loss behavior, and post-write verification. Keep restore preflight-only; do not add arbitrary-address write/erase endpoints.
+- The historical USB v1.1 archive path is a separate compatibility contract. Do not broaden v1 archive support to the phone page; phone remains v2-only.
+- Old APP+DATA logical-v2 archives must be rejected as a distinct retired format, never treated as `meta-pass-storage-snapshot`.
+- Real-device testing is external to GitHub CI. The existing report covers the USB segmented backup/delete/restore scenario for the old logical archive path; it does not prove that the new whole-device v2 snapshot can be backed up over USB or restored.
 
 ## Safety requirements
 
-Before any restore write, validate the entire archive, every payload's length and SHA-256, the target device's live partition layout, and protected ranges. A restore plan must address only explicitly eligible partitions and must never expose an arbitrary-address write API. Old APP+DATA v2 archives must not be mistaken for `meta-pass-storage-snapshot`; historical USB v1.1 archives remain on their existing path.
+Before enabling any snapshot restore write, validate the entire archive, every payload's length and SHA-256, the target device's live partition layout, and protected ranges before mutation. The device must independently enforce partition identity, bounds, sector alignment, protected ranges, and transaction state. A restore plan must cover only explicitly eligible partitions and must never expose arbitrary Flash addresses. Never move `cardid` or bypass the dynamic allocator.
