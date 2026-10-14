@@ -141,7 +141,7 @@ export function validateStorageSnapshotManifest(manifest, {
     if (!Array.isArray(targetPartitions) || !validPartition(runningHostPartition)) {
       fail("target partition table and running host partition are required");
     }
-    const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition);
+    const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition, protectedRanges);
     for (const source of manifest.partitions) {
       const target = eligible.find((p) => p.label === source.label &&
         p.type === source.type && p.subtype === source.subtype);
