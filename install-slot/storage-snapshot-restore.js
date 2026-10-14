@@ -45,7 +45,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
   if (typeof sha256Hex !== "function") throw new TypeError("SHA-256 implementation is required");
   if (!device || typeof device.storageInfo !== "function" || typeof device.storageErase !== "function" ||
       typeof device.storageWrite !== "function") {
-    throw new Error("Device does not provide live storage inventory");
+    throw new Error("Device does not provide required storage inventory, erase, and write operations");
   }
 
   // Archive structure and every payload hash are checked before device writes.
