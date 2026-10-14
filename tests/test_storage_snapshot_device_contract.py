@@ -32,7 +32,7 @@ require("esp_partition_erase_range(part, 0, part->size)", "erase is confined to 
 require("esp_partition_write(part, offset, write_buf, length)", "writes are partition-relative")
 require("offset > part->size || length > part->size - offset", "write range stays inside partition bounds")
 require("part->readonly", "read-only partition protection")
-require("req->content_len != (int)length", "request body must match declared write length")
+require("req->content_len != (size_t)length", "request body must match declared write length")
 require("hcfg.max_uri_handlers = 24", "HTTP server has capacity for restore endpoints")
 assert "ESP_PARTITION_TYPE_ANY" in HEADER and "esp_partition_iterator_t" in HEADER
 assert "tests/test_storage_snapshot_device_contract.py" in VALIDATE
