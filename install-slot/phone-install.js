@@ -408,8 +408,8 @@ export async function createStorageSnapshotArchive(bridge, options = {}) {
   return { ...snapshot, zip };
 }
 
-// Restore preflight only: validates the complete archive against the current
-// device layout before a future transactional write API is invoked.
+// Read-only restore preflight: validates the complete archive, version contract,
+// and current device layout before the sequential writer is allowed to erase anything.
 export async function validateStorageSnapshotArchiveForDevice(bridge, input) {
   const archive = await readStorageSnapshotZip(input, sha256Hex);
   const response = await bridge.storageInfo();
@@ -1676,7 +1676,7 @@ export function boot(opts = {}) {
 
   async function doRemove(slot) {
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>
-      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部关联 DATA。你可以先导出设备存储快照；快照可能包含系统 NVS、Wi-Fi 凭证和安装会话状态。当前页面只支持快照备份与恢复预检，事务化写入/回滚协议完成前不会执行恢复写入。请先确认已保存需要保留的归档。此操作不可恢复。</p>
+      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部关联 DATA。你可以先导出设备存储快照；快照可能包含系统 NVS、Wi-Fi 凭证和安装会话状态。快照恢复采用逐分区擦除、写入与独立读回核验，不提供自动回滚；若中断或核验失败，请刷回归档记录的 MetaPass 版本后重试。请先确认已保存需要保留的归档。此操作不可恢复。</p>
       <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>删除 APP 及全部数据</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
