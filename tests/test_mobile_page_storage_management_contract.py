@@ -14,17 +14,15 @@ DEVICE = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 
 
 class MobilePageStorageManagementContract(unittest.TestCase):
-    def test_restore_capability_copy_matches_supported_single_group_restore(self):
+    def test_phone_snapshot_ui_matches_new_v2_semantics(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
-        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("恢复支持完整的单个 APP+DATA 组", mobile)
-        self.assertIn("归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变", mobile)
-        self.assertIn("归档中的 NVS 字节只校验、不写入，目标设备现有 NVS 保持不变", mobile)
-        self.assertNotIn("包含全局 NVS 的归档会被拒绝", mobile)
-        self.assertNotIn("当前尚不能导入恢复", mobile)
-        self.assertIn("Restore dispatches by detected device mode and archive version", usb)
-        self.assertIn("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", usb)
-        self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
+        self.assertIn("设备存储快照", mobile)
+        self.assertIn("备份设备快照", mobile)
+        self.assertIn("validateStorageSnapshotArchiveForDevice", mobile)
+        self.assertIn("事务化写入/回滚协议", mobile)
+        self.assertIn('manifest.kind !== "meta-pass-storage-snapshot"', mobile)
+        self.assertIn("归档未加密", mobile)
+        self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", mobile)
 
     def test_usb_restore_supports_v1_fixed_slot_and_v2_dynamic_contracts(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
@@ -46,15 +44,13 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("await restoreLegacyV1ArchiveUsb()", restore_handler)
         self.assertIn("parseManifest(manifestText)", usb[usb.index('$("restore-input").addEventListener'):handler_start])
 
-    def test_usb_and_mobile_backup_are_single_app_data_group(self):
+    def test_phone_backup_is_whole_device_snapshot_not_app_data_archive(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
-        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("async function doBackup(slotIndex)", mobile)
-        self.assertIn("slots: [{ play_id: slot.play_id", mobile)
-        self.assertIn("if (slots.length !== 1)", usb)
-        self.assertIn("msg_backup_single_group", usb)
-        self.assertIn("buildDataArchiveManifest({", mobile)
-        self.assertIn("buildDataArchiveManifest({", usb)
+        self.assertIn("async function doBackup()", mobile)
+        self.assertIn("createStorageSnapshotArchive(bridge", mobile)
+        self.assertIn("metapass-storage-snapshot-", mobile)
+        self.assertIn("validateStorageSnapshotArchiveForDevice", mobile)
+        self.assertNotIn('buildDataArchiveManifest({', mobile[mobile.index("async function doBackup()"):mobile.index("async function doRestoreArchive(file)")])
 
     def test_usb_backup_preserves_v1_fixed_slot_archive_compatibility(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
@@ -247,10 +243,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("删除 APP 及全部数据", installer)
         self.assertIn("永久删除此 APP 及其全部数据", installer)
         self.assertNotIn("mp-rm-erase", installer)
-        self.assertIn("可导出所选 APP 槽位及关联 DATA 的真实字节", installer)
+        self.assertIn("备份设备快照", installer)
+        self.assertIn("createStorageSnapshotArchive(bridge", installer)
+        self.assertIn("事务化写入/回滚协议完成前不会执行恢复写入", installer)
         self.assertIn("export async function restoreDataArchive", installer)
         self.assertIn("readDataArchiveZip", installer)
-        self.assertIn("可在空间管理中恢复单个完整 APP+DATA 组", installer)
+        self.assertIn("validateStorageSnapshotArchiveForDevice", installer)
         self.assertIn("readAppSlotReservation", installer)
         self.assertIn("readDataReservation", installer)
         self.assertIn("validateDataArchivePayloads(manifest, payloadMap, sha256Hex)", installer)
@@ -371,7 +369,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("Backup ZIP files are unencrypted", usb)
         self.assertIn("备份 ZIP 未加密", usb)
-        self.assertIn("备份 ZIP 未加密", mobile)
+        self.assertIn("归档未加密", mobile)
 
 
 if __name__ == "__main__":
