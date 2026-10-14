@@ -11,6 +11,7 @@ import {
   buildStorageSnapshotZip,
   readStorageSnapshotZip,
   buildStorageSnapshotRestorePlan,
+  assertSnapshotVersionCompatible,
 } from "../install-slot/storage-snapshot.js";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -53,6 +54,23 @@ const manifest = buildStorageSnapshotManifest({
 });
 assert.equal(manifest.kind, STORAGE_SNAPSHOT_KIND);
 assert.equal(manifest.manifest_version, 2);
+assert.deepEqual(manifest.meta_pass, {
+  system_version: "2.0.0",
+  compatible_versions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
+});
+assert.equal(assertSnapshotVersionCompatible(manifest, "2.3.1"), true);
+assert.throws(() => assertSnapshotVersionCompatible(manifest, "3.0.0"), /Reflash MetaPass 2.0.0/);
+assert.throws(() => assertSnapshotVersionCompatible(manifest, undefined), /valid MetaPass version/);
+const taggedVersion = "v0.2.2-35-gaa25c52";
+const taggedManifest = buildStorageSnapshotManifest({
+  metaPassVersion: taggedVersion,
+  compatibleMetaPassVersions: { min_inclusive: taggedVersion, max_inclusive: taggedVersion },
+  partitions: [{ label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x1000, extents: [] }],
+});
+assert.equal(assertSnapshotVersionCompatible(taggedManifest, taggedVersion), true,
+  "git-describe version strings from ESP-IDF app descriptors are valid source versions");
+assert.throws(() => assertSnapshotVersionCompatible(taggedManifest, "v0.2.2-34-gabcdef0"), /Reflash MetaPass/,
+  "a different build is outside the conservative exact-source compatibility range");
 const zip = await buildStorageSnapshotZip({
   manifest,
   payloads: new Map([["extents/store-000010.bin", payload]]),
