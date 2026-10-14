@@ -18,16 +18,33 @@ function validInt(n) {
 
 
 function parseVersion(value) {
-  if (typeof value !== "string" || !/^\d+\.\d+\.\d+$/.test(value)) return null;
-  const parts = value.split(".").map(Number);
-  return parts.every(Number.isSafeInteger) ? parts : null;
+  if (typeof value !== "string") return null;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(value);
+  if (!match) return null;
+  const numbers = match.slice(1, 4).map(Number);
+  if (!numbers.every(Number.isSafeInteger)) return null;
+  return { numbers, prerelease: match[4] ? match[4].split(".") : null };
 }
 
 function compareVersions(a, b) {
   const left = parseVersion(a), right = parseVersion(b);
   if (!left || !right) return null;
   for (let i = 0; i < 3; i++) {
-    if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1;
+    if (left.numbers[i] !== right.numbers[i]) return left.numbers[i] < right.numbers[i] ? -1 : 1;
+  }
+  if (!left.prerelease && !right.prerelease) return 0;
+  if (!left.prerelease) return 1;
+  if (!right.prerelease) return -1;
+  const n = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let i = 0; i < n; i++) {
+    const l = left.prerelease[i], r = right.prerelease[i];
+    if (l === undefined) return -1;
+    if (r === undefined) return 1;
+    if (l === r) continue;
+    const ln = /^\d+$/.test(l), rn = /^\d+$/.test(r);
+    if (ln && rn) return Number(l) < Number(r) ? -1 : 1;
+    if (ln !== rn) return ln ? -1 : 1;
+    return l < r ? -1 : 1;
   }
   return 0;
 }
