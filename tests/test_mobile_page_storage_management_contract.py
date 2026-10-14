@@ -346,7 +346,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "storageInfo: () => call", "storageRead: (partition, offset, length)",
                       "X-Meta-Partition-Label", "X-Meta-Partition-Offset",
                       "length > 4096", "createStorageSnapshotArchive(bridge", "captureStorageSnapshot(bridge",
-                      "归档未加密", "逐分区擦除、写入与独立读回核验"):
+                      "归档未加密", "快照恢复采用逐分区擦除与写入", "请重启设备并确认 MetaPass 能正常启动"):
             with self.subTest(token=token):
                 self.assertIn(token, mobile)
         for token in ("h_install_storage_info", "h_install_storage_read",
