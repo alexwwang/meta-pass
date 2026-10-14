@@ -32,6 +32,7 @@ import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 import { prepareDataArchiveRestore } from "./data-archive-restore.js";
+import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads } from "./storage-snapshot.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -290,6 +291,66 @@ export function createBridge(deviceOrigin, token) {
     remove: (slot) => call("/api/install/remove", { method: "POST",
       json: { slot } }),
   };
+}
+
+// Read a complete v2 device-storage snapshot through the guarded partition bridge.
+// A failed read rejects the whole operation; callers must never package a partial snapshot.
+export async function readStorageSnapshot(bridge, { onProgress } = {}) {
+  if (!bridge || typeof bridge.storageInfo !== "function" || typeof bridge.storageRead !== "function") {
+    throw new Error("device storage snapshot bridge is unavailable");
+  }
+  const response = await bridge.storageInfo();
+  if (!response?.ok || typeof response.text !== "string") {
+    throw new Error("cannot read live device partition table: " + (response?.text || response?.status || "unknown error"));
+  }
+  let info;
+  try { info = JSON.parse(response.text); }
+  catch { throw new Error("device partition inventory is not valid JSON"); }
+  const host = info?.running_host;
+  const partitions = info?.partitions;
+  if (!host || !Array.isArray(partitions) || partitions.length === 0) {
+    throw new Error("device partition inventory is incomplete");
+  }
+  const eligible = eligibleSnapshotPartitions(partitions, host, info.protected_ranges || []);
+  const totalBytes = eligible.reduce((sum, p) => sum + p.size, 0);
+  let readBytes = 0;
+  const payloads = new Map();
+  const snapshotPartitions = [];
+  for (const part of eligible) {
+    const extents = [];
+    for (let offset = 0; offset < part.size; offset += 4096) {
+      const length = Math.min(4096, part.size - offset);
+      const result = await bridge.storageRead(part, offset, length);
+      if (!result?.ok || !(result.bytes instanceof Uint8Array) || result.bytes.byteLength !== length) {
+        throw new Error("incomplete storage snapshot read: " + part.label + " at 0x" + offset.toString(16));
+      }
+      const bytes = result.bytes;
+      let erased = true;
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] !== 0xff) { erased = false; break; }
+      }
+      if (!erased) {
+        const file = "extents/" + part.label + "-" + offset.toString(16).padStart(8, "0") + ".bin";
+        extents.push({ file, offset, bytes: length, sha256: await sha256Hex(bytes) });
+        payloads.set(file, bytes);
+      }
+      readBytes += length;
+      onProgress?.({ label: part.label, offset: offset + length, partitionSize: part.size,
+                     bytesRead: readBytes, totalBytes });
+    }
+    snapshotPartitions.push({
+      label: part.label, type: part.type, subtype: part.subtype,
+      offset: part.offset, size: part.size, extents,
+    });
+  }
+  const manifest = buildStorageSnapshotManifest({ partitions: snapshotPartitions });
+  validateStorageSnapshotManifest(manifest, {
+    targetPartitions: partitions,
+    runningHostPartition: host,
+    protectedRanges: info.protected_ranges || [],
+  });
+  await validateStorageSnapshotPayloads(manifest, payloads, sha256Hex);
+  return { manifest, payloads, bytesRead: readBytes, totalBytes };
 }
 
 // ── 槽位管理(design §4.5 Remove)───────────────────────────────────────
