@@ -26,7 +26,7 @@ These rules override the runner's default behavior and any goal of completing al
 
 - Continue on `feat/storage`; do not develop on `main`.
 - v2 archives now mean whole-device allocated-storage snapshots, replacing the APP+DATA logical archive. The discriminator is `kind: meta-pass-storage-snapshot`.
-- The mobile page supports snapshot export and restore preflight, but not restore writes. The device currently exposes guarded partition inventory/read endpoints only. The USB v1.1 compatibility branch is unchanged and requires no dedicated regression in this round.
+- The mobile page supports snapshot export and restore preflight. A host-side restore coordinator and mock protocol test were added, but firmware lacks the durable transaction APIs, so the coordinator is not wired into the page and actual restore writes remain unimplemented. The device currently exposes guarded partition inventory/read endpoints only. The USB v1.1 compatibility branch is unchanged and requires no dedicated regression in this round.
 - USB fixed-slot devices retain historical v1.1 archive behavior. USB dynamic-v2 snapshot backup is blocked because the serial transport cannot yet reliably identify the running host partition. Neither page may treat an old APP+DATA v2 archive as a new snapshot.
 - Static checks and firmware checks passed for the most recently verified commit `3900829f91d15ffffe1341b50960e2c4df1f2d7a`. Recheck CI on any newer HEAD; never reuse an older result.
 
@@ -61,7 +61,7 @@ Before device testing, run:
 
 Confirm that these tests actually execute and pass:
 
-- `tests/test_storage_snapshot.mjs`
+- `tests/test_storage_snapshot.mjs`\n- `tests/test_storage_snapshot_restore.mjs` (host coordinator fail-closed and mock protocol; not evidence that real firmware supports restore)
 - `tests/test_storage_snapshot_device_contract.py`
 - `tools/install-slot/test-data-restore-device-integration.mjs` (now tests snapshot export and non-mutating preflight, not APP+DATA writes)
 - `tests/test_phone_install.mjs`
