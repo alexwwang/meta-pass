@@ -129,7 +129,7 @@ assert "manifest_version: 1" in usb_page, "USB fixed-slot backup must preserve t
 assert "archiveDownload = { url, filename }" in phone_page and "download=\"${esc(archiveDownload.filename)}\"" in phone_page, "mobile backup must expose a user-activated download link after async reads"
 assert "link.click()" not in phone_page, "mobile archive export must not rely on a delayed synthetic download click"
 assert "createStorageSnapshotArchive(bridge" in phone_page, "mobile v2 backup must create a whole-device snapshot"
-assert "validateStorageSnapshotArchiveForDevice" in phone_page and "事务化写入/回滚协议" in phone_page, "mobile restore must preflight and fail closed until transactional writes/rollback exist"
+assert "validateStorageSnapshotArchiveForDevice" in phone_page and "逐分区擦除、写入与独立读回核验" in phone_page, "mobile restore must preflight and use sequential writes with independent readback"
 install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 assert '"/api/install/slot/read",HTTP_GET,  h_install_slot_read' in install_server, "APP byte read endpoint must be registered"
 slot_read_start = install_server.index("static esp_err_t h_install_slot_read")
@@ -170,7 +170,7 @@ for token, label in [
 ]:
     assert token in read_handler, f"missing DATA read API contract: {label}"
 assert "httpd_resp_set_hdr(req, \"Cache-Control\", \"no-store\")" in read_handler, "DATA read responses must not be cached"
-assert "动态 v2 整设备快照暂时阻塞" in usb_page and "旧 APP+DATA v2 归档不再作为新快照格式" in usb_page, "Chinese UI must disclose the snapshot gate and reject the retired logical archive"
+assert "动态布局使用 v2 原始存储快照" in usb_page and "不再接受旧 APP+DATA v2 逻辑归档" in usb_page, "Chinese UI must disclose v2 snapshot support and reject the retired logical archive"
 assert "commitCarve(nextCarve, { materialize: deferredDataInstall })" in usb_page, "DATA-bearing APP install must commit APP+DATA as one carve/table transaction"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
