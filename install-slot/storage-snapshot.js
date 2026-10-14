@@ -119,6 +119,7 @@ export function buildStorageSnapshotManifest({ createdUtc = new Date().toISOStri
 export function validateStorageSnapshotManifest(manifest, {
   targetPartitions,
   runningHostPartition,
+  protectedRanges = [],
 } = {}) {
   if (!manifest || manifest.kind !== STORAGE_SNAPSHOT_KIND ||
       manifest.manifest_version !== STORAGE_SNAPSHOT_VERSION) {
