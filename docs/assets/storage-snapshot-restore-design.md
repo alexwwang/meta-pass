@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="storage-snapshot-restore-design.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
 # MetaPass v2 Storage Snapshot Restore Design
 
 Status: implementation on feat/storage; hardware validation pending
