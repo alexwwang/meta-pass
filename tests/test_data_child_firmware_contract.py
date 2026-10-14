@@ -129,7 +129,8 @@ assert "manifest_version: 1" in usb_page, "USB fixed-slot backup must preserve t
 assert "archiveDownload = { url, filename }" in phone_page and "download=\"${esc(archiveDownload.filename)}\"" in phone_page, "mobile backup must expose a user-activated download link after async reads"
 assert "link.click()" not in phone_page, "mobile archive export must not rely on a delayed synthetic download click"
 assert "createStorageSnapshotArchive(bridge" in phone_page, "mobile v2 backup must create a whole-device snapshot"
-assert "validateStorageSnapshotArchiveForDevice" in phone_page and "逐分区擦除、写入与独立读回核验" in phone_page, "mobile restore must preflight and use sequential writes with independent readback"
+assert "validateStorageSnapshotArchiveForDevice" in phone_page and "恢复采用逐分区擦除与写入" in phone_page, "mobile restore must preflight and use sequential partition writes"
+assert "result.dataWritten" in phone_page and "请重启设备并确认 MetaPass 能正常启动" in phone_page, "mobile restore must require a successful post-restore boot check"
 install_server = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
 assert '"/api/install/slot/read",HTTP_GET,  h_install_slot_read' in install_server, "APP byte read endpoint must be registered"
 slot_read_start = install_server.index("static esp_err_t h_install_slot_read")
