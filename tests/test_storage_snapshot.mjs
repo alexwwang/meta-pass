@@ -39,6 +39,8 @@ assert.deepEqual(eligibleSnapshotPartitions(withProtected, host, []).map((p) => 
 const payload = new Uint8Array([1, 2, 3, 4]);
 const manifest = buildStorageSnapshotManifest({
   createdUtc: "2026-10-14T00:00:00.000Z",
+  metaPassVersion: "2.0.0",
+  compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
   partitions: [
     { label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x6000, extents: [] },
     {
