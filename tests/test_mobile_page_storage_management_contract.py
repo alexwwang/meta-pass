@@ -358,8 +358,8 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, DEVICE)
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("Backup ZIP files are unencrypted", usb)
-        self.assertIn("备份 ZIP 未加密", usb)
+        self.assertIn("ZIP files are unencrypted", usb)
+        self.assertIn("ZIP 未加密", usb)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
