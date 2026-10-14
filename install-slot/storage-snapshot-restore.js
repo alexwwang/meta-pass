@@ -64,7 +64,6 @@ export async function restoreStorageSnapshotArchive(device, input, {
     kind: archive.manifest.kind,
     manifest_version: archive.manifest.manifest_version,
     manifest: archive.manifest,
-    plan: restorePlan,
   });
   if (!begun || typeof begun.transaction_id !== "string" || !begun.transaction_id) {
     throw new Error("Device did not create a durable snapshot restore transaction");
@@ -81,7 +80,13 @@ export async function restoreStorageSnapshotArchive(device, input, {
         }
         const staged = await device.stageSnapshotRestoreChunk({
           transaction_id: transactionId,
-          partition: partition.partition,
+          // Identity only; the device resolves the current live partition and
+          // independently enforces the protected ranges and partition bounds.
+          partition: {
+            label: partition.partition.label,
+            type: partition.partition.type,
+            subtype: partition.partition.subtype,
+          },
           relative_offset: extent.relativeOffset,
           expected_sha256: extent.sha256,
           bytes,
