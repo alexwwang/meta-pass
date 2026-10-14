@@ -2637,13 +2637,31 @@ async function restoreLegacyV1ArchiveUsb() {
     restoredSlots.push(`${job.from}→${job.to}`);
     done++;
   }
-  // Archived NVS is validated during preflight but is never written to the target.
-  // This is intentional for both v1 and v2: Wi-Fi credentials and device-local
-  // state belong to the destination device, not to an APP restore operation.
+  // Historical v1.1 archives include a raw NVS image and the old restore
+  // contract writes it back to the target NVS partition. Keep that behavior
+  // only on this fixed-slot v1 path. New v2 snapshots are handled separately
+  // and must never fall through to this APP/NVS restore implementation.
+  if (nvsData) {
+    const nv = await ensureDeviceNvs();
+    if (!nv) throw new Error(t("err_restore_nvs_missing"));
+    const digest = await sha256Hex(nvsData);
+    if (digest !== manifest.nvs.sha256) {
+      throw new Error(t("err_restore_sha", {
+        name: manifest.nvs.file, expected: manifest.nvs.sha256, got: digest,
+      }));
+    }
+    if (nvsData.length !== manifest.nvs.bytes) {
+      throw new Error("Historical v1 NVS payload length does not match its manifest");
+    }
+    log(t("msg_restore_nvs_write", { size: fmtBytes(nvsData.length), addr: hex(nv.offset) }));
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(nvsData), address: nv.offset }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      reportProgress: (_i, written, total) => setRestoreProgress(Math.min(99, 95 + (written / total) * 4)),
+    });
+  }
   setRestoreProgress(100);
-  $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") }) +
-    " " + t("msg_restore_nvs_preserved") +
-    (nvsData ? " " + t("msg_archive_nvs_verified") : "");
+  $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") });
   $("restore-status").className = "ok";
   log($("restore-status").textContent, "ok");
   restoreZip = null;
