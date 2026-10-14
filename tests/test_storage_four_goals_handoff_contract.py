@@ -71,7 +71,11 @@ assert "async function restoreV2ArchiveUsb()" not in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
 assert '"/flash-read-transfer.js"' not in SERVER
-assert "恢复采用逐分区擦除、写入与独立读回核验" in PHONE
+assert "恢复采用逐分区擦除与写入" in PHONE
+assert "result.dataWritten" in PHONE and "请重启设备并确认 MetaPass 能正常启动" in PHONE
+assert "result.dataWritten" in USB and "重启设备，确认 MetaPass 能正常启动" in USB
+assert "data-written" in (ROOT / "install-slot/storage-snapshot-restore.js").read_text(encoding="utf-8")
+assert "tests/test_storage_snapshot_restore.mjs" in VALIDATE
 
 # USB-only local firmware installation remains a required asymmetric capability.
 assert 'data-tab="local"' in USB and 'id="file-input"' in USB, "USB must retain its local-file firmware installation path"
