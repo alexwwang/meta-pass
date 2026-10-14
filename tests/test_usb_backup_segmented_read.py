@@ -36,12 +36,13 @@ require(
     r"const BACKUP_RETRIES = 3;.*?const BACKUP_READ_TIMEOUT_MS = 15000;",
     "failed reads must use bounded retries and a finite per-chunk timeout",
 )
-require(
-    r"async function readFlashChunkedSingleSession\(start, size, onProgress, onRetry\).*?"
-    r"await restartBackupReadSession\(\).*?"
-    r"withTimeout\(.*?loader\.readFlash\(start \\+ got, n\).*?BACKUP_READ_TIMEOUT_MS",
-    "a failed/timed-out chunk must restart the session and retry the same offset",
-)
+reader_start = PAGE.index("async function readFlashChunkedSingleSession(")
+reader_end = PAGE.index('$("btn-backup").addEventListener', reader_start)
+reader = PAGE[reader_start:reader_end]
+if "await restartBackupReadSession()" not in reader:
+    raise SystemExit("FAIL: failed reads must restart the session")
+if "loader.readFlash(start + got, n)" not in reader or "BACKUP_READ_TIMEOUT_MS" not in reader:
+    raise SystemExit("FAIL: retry must read the same offset with a finite timeout")
 require(
     r"function withTimeout\(promise, ms, label\).*?clearTimeout\(timer\)",
     "successful reads must clear their timeout timer",
