@@ -40,6 +40,25 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertNotIn("msg_restore_nvs_write", restore_handler)
         self.assertNotIn("parseManifest(rawManifest)", usb[usb.index('$("restore-input").addEventListener'):handler_start])
 
+    def test_usb_and_mobile_backup_are_single_app_data_group(self):
+        mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
+        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+        self.assertIn("async function doBackup(slotIndex)", mobile)
+        self.assertIn("slots: [{ play_id: slot.play_id", mobile)
+        self.assertIn("if (isDynMode(slotModel.mode) && slots.length !== 1)", usb)
+        self.assertIn("msg_backup_single_group", usb)
+        self.assertIn("buildDataArchiveManifest({", mobile)
+        self.assertIn("buildDataArchiveManifest({", usb)
+
+    def test_usb_rejects_v1_archive_before_restore_mutation(self):
+        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+        start = usb.index('$("restore-input").addEventListener')
+        end = usb.index('async function restoreV2ArchiveUsb()', start)
+        parser = usb[start:end]
+        self.assertIn("legacy v1 restore is not supported", parser)
+        self.assertNotIn("const manifest = parseManifest(rawManifest)", parser)
+        self.assertNotIn("manifest_version: 1", parser)
+
     def test_usb_v2_restore_revalidates_single_app_data_group_before_mutation(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index("async function restoreV2ArchiveUsb()")
