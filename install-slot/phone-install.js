@@ -1574,6 +1574,8 @@ export function boot(opts = {}) {
       archiveMessage = result.dataVerified
         ? "快照数据写入与独立读回核验通过。请重启设备并确认 MetaPass 可重新连接；此步骤尚未自动完成。"
         : "快照恢复尚未完成。";
+      const status = $("mp-backup-status");
+      if (status) status.className = result.bootValidated ? "ok" : "warn";
       log(archiveMessage, result.bootValidated ? "ok" : "warn");
     } catch (error) {
       const code = String(error?.code || "");
