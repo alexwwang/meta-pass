@@ -1,130 +1,188 @@
 // install-slot/storage-snapshot-restore.js
-// Host-side coordinator for the v2 whole-device snapshot restore protocol.
-// This module deliberately refuses the legacy per-slot write APIs: a snapshot
-// restore must be backed by a device-side durable transaction implementation.
+// Sequential v2 snapshot restore: preflight, erase/write, independent readback,
+// then a separate boot/reconnect check. No transaction journal or rollback.
 import {
+  assertSnapshotVersionCompatible,
   buildStorageSnapshotRestorePlan,
   readStorageSnapshotZip,
-  validateStorageSnapshotPayloads,
 } from "./storage-snapshot.js";
 
-function unsupported(message) {
+const CHUNK_BYTES = 4096;
+const FF = new Uint8Array(CHUNK_BYTES).fill(0xff);
+
+function restoreError(message, code, details = {}) {
   const error = new Error(message);
-  error.code = "STORAGE_SNAPSHOT_RESTORE_UNAVAILABLE";
+  error.code = code;
+  Object.assign(error, details);
   return error;
 }
 
-function requireMethod(device, name) {
-  if (!device || typeof device[name] !== "function") {
-    throw unsupported("Device does not implement durable snapshot restore protocol: " + name);
+function parseInventory(result) {
+  if (!result || result.ok !== true) throw new Error("Unable to read the target device's live partition inventory");
+  let inventory;
+  try {
+    inventory = typeof result.text === "string" ? JSON.parse(result.text) : result;
+  } catch {
+    throw new Error("Target device returned invalid live partition inventory JSON");
   }
+  if (!Array.isArray(inventory.partitions) || !inventory.running_host) {
+    throw new Error("Target device did not report its live partition table and running host identity");
+  }
+  return inventory;
 }
 
-// Do not substitute ordinary partition write/erase calls here. beginSnapshotRestore
-// must durably journal the transaction and reserve rollback/recovery capacity on
-// the device before the first mutation; the device enforces protected ranges itself.
+function expectedChunk(partition, payloads, relativeOffset, length) {
+  const expected = new Uint8Array(length).fill(0xff);
+  for (const extent of partition.extents) {
+    const bytes = payloads.get(extent.file);
+    const left = Math.max(relativeOffset, extent.relativeOffset);
+    const right = Math.min(relativeOffset + length, extent.relativeOffset + extent.bytes);
+    if (left >= right) continue;
+    expected.set(
+      bytes.subarray(left - extent.relativeOffset, right - extent.relativeOffset),
+      left - relativeOffset,
+    );
+  }
+  return expected;
+}
+
+function firstMismatch(expected, actual) {
+  if (!(actual instanceof Uint8Array) || actual.length !== expected.length) return 0;
+  for (let i = 0; i < expected.length; i++) if (expected[i] !== actual[i]) return i;
+  return -1;
+}
+
+async function writeChunk(device, address, bytes) {
+  if (typeof device.writeFlash !== "function") {
+    throw new Error("Device adapter does not provide writeFlash(address, Uint8Array)");
+  }
+  await device.writeFlash(address, bytes);
+}
+
+async function readChunk(device, address, length) {
+  if (typeof device.readFlash !== "function") {
+    throw new Error("Device adapter does not provide readFlash(address, length)");
+  }
+  const bytes = await device.readFlash(address, length);
+  if (!(bytes instanceof Uint8Array) || bytes.length !== length) {
+    throw new Error("Flash read returned an invalid byte length at 0x" + address.toString(16));
+  }
+  return bytes;
+}
+
 export async function restoreStorageSnapshotArchive(device, input, {
   sha256Hex,
   onProgress = () => {},
 } = {}) {
-  if (typeof sha256Hex !== "function") {
-    throw new TypeError("SHA-256 implementation is required");
+  if (typeof sha256Hex !== "function") throw new TypeError("SHA-256 implementation is required");
+  if (!device || typeof device.storageInfo !== "function") {
+    throw new Error("Device does not provide live storage inventory");
   }
-  for (const name of [
-    "storageInfo",
-    "beginSnapshotRestore",
-    "stageSnapshotRestoreChunk",
-    "verifyStagedSnapshotRestore",
-    "commitSnapshotRestore",
-    "getSnapshotRestoreStatus",
-  ]) requireMethod(device, name);
 
-  // Fully validate archive bytes and every payload before device mutation.
+  // Archive structure and every payload hash are checked before device writes.
   const archive = await readStorageSnapshotZip(input, sha256Hex);
-  const inventoryResult = await device.storageInfo();
-  if (!inventoryResult || inventoryResult.ok !== true) {
-    throw new Error("Unable to read the target device's live partition inventory");
-  }
-  const inventory = typeof inventoryResult.text === "string"
-    ? JSON.parse(inventoryResult.text)
-    : inventoryResult;
-  if (!Array.isArray(inventory.partitions) || !inventory.running_host) {
-    throw new Error("Target device did not report a live partition table and running host identity");
-  }
+  const inventory = parseInventory(await device.storageInfo());
+  const currentVersion = inventory.meta_pass_version ?? inventory.firmware_version;
+  assertSnapshotVersionCompatible(archive.manifest, currentVersion);
   const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
     targetPartitions: inventory.partitions,
     runningHostPartition: inventory.running_host,
     protectedRanges: inventory.protected_ranges || [],
   });
-  await validateStorageSnapshotPayloads(archive.manifest, archive.payloads, sha256Hex);
 
-  // The device must reject if it cannot durably stage rollback state. A returned
-  // transaction ID is opaque; the host never supplies absolute Flash addresses.
-  const begun = await device.beginSnapshotRestore({
-    kind: archive.manifest.kind,
-    manifest_version: archive.manifest.manifest_version,
-    manifest: archive.manifest,
+  let completedBytes = 0;
+  const totalBytes = restorePlan.totalEraseBytes * 2;
+  const report = (phase, partition, relativeOffset, extra = {}) => onProgress({
+    phase, partition: partition?.label, relativeOffset, completedBytes, totalBytes, ...extra,
   });
-  if (!begun || typeof begun.transaction_id !== "string" || !begun.transaction_id) {
-    throw new Error("Device did not create a durable snapshot restore transaction");
-  }
-  const transactionId = begun.transaction_id;
-  try {
-    let sent = 0;
-    const total = [...archive.payloads.values()].reduce((sum, bytes) => sum + bytes.byteLength, 0);
-    for (const partition of restorePlan.partitions) {
-      for (const extent of partition.extents) {
-        const bytes = archive.payloads.get(extent.file);
-        if (!(bytes instanceof Uint8Array) || bytes.byteLength !== extent.bytes) {
-          throw new Error("Validated payload disappeared before staging: " + extent.file);
+
+  for (const item of restorePlan.partitions) {
+    const p = item.partition;
+    report("erase", p, 0);
+    // The only absolute base comes from the just-read live partition table.
+    for (let rel = 0; rel < p.size; rel += CHUNK_BYTES) {
+      const n = Math.min(CHUNK_BYTES, p.size - rel);
+      try {
+        await writeChunk(device, p.offset + rel, n === CHUNK_BYTES ? FF : FF.subarray(0, n));
+      } catch (cause) {
+        throw restoreError(
+          `Restore incomplete while erasing partition ${p.label} at relative offset 0x${rel.toString(16)}: ${cause.message}. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
+          "SNAPSHOT_RESTORE_WRITE_FAILED",
+          { partition: p.label, relativeOffset: rel, phase: "erase", cause },
+        );
+      }
+      completedBytes += n;
+      report("erase", p, rel + n);
+    }
+
+    for (const extent of item.extents) {
+      const bytes = archive.payloads.get(extent.file);
+      for (let rel = 0; rel < bytes.length; rel += CHUNK_BYTES) {
+        const chunk = bytes.subarray(rel, Math.min(bytes.length, rel + CHUNK_BYTES));
+        const partitionRelativeOffset = extent.relativeOffset + rel;
+        try {
+          await writeChunk(device, p.offset + partitionRelativeOffset, chunk);
+        } catch (cause) {
+          throw restoreError(
+            `Restore incomplete while writing partition ${p.label} at relative offset 0x${partitionRelativeOffset.toString(16)} (${extent.file}): ${cause.message}. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
+            "SNAPSHOT_RESTORE_WRITE_FAILED",
+            { partition: p.label, relativeOffset: partitionRelativeOffset, phase: "write", cause },
+          );
         }
-        const staged = await device.stageSnapshotRestoreChunk({
-          transaction_id: transactionId,
-          // Identity only; the device resolves the current live partition and
-          // independently enforces the protected ranges and partition bounds.
-          partition: {
-            label: partition.partition.label,
-            type: partition.partition.type,
-            subtype: partition.partition.subtype,
-          },
-          relative_offset: extent.relativeOffset,
-          expected_sha256: extent.sha256,
-          bytes,
-        });
-        if (!staged || staged.ok !== true) {
-          throw new Error("Device rejected snapshot extent staging: " + extent.file);
-        }
-        sent += bytes.byteLength;
-        onProgress({ phase: "staging", sent, total, file: extent.file });
       }
     }
-    const verified = await device.verifyStagedSnapshotRestore({ transaction_id: transactionId });
-    if (!verified || verified.ok !== true || verified.verified !== true) {
-      throw new Error("Device did not verify the complete staged snapshot and rollback journal");
+
+    // Read back the entire partition, including sparse gaps expected to be 0xFF.
+    report("readback", p, 0);
+    for (let rel = 0; rel < p.size; rel += CHUNK_BYTES) {
+      const n = Math.min(CHUNK_BYTES, p.size - rel);
+      let actual;
+      try {
+        actual = await readChunk(device, p.offset + rel, n);
+      } catch (cause) {
+        throw restoreError(
+          `Restore verification incomplete for partition ${p.label} at relative offset 0x${rel.toString(16)}: readback failed (${cause.message}). Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
+          "SNAPSHOT_RESTORE_READBACK_FAILED",
+          { partition: p.label, relativeOffset: rel, phase: "readback", cause },
+        );
+      }
+      const expected = expectedChunk(item, archive.payloads, rel, n);
+      const mismatch = firstMismatch(expected, actual);
+      if (mismatch >= 0) {
+        const offset = rel + mismatch;
+        throw restoreError(
+          `Restore verification mismatch in partition ${p.label} at relative offset 0x${offset.toString(16)} (expected 0x${expected[mismatch].toString(16).padStart(2, "0")}, read 0x${actual[mismatch].toString(16).padStart(2, "0")}). Restore is incomplete/inconsistent. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
+          "SNAPSHOT_RESTORE_READBACK_MISMATCH",
+          { partition: p.label, relativeOffset: offset, phase: "readback" },
+        );
+      }
+      completedBytes += n;
+      report("readback", p, rel + n);
     }
-    onProgress({ phase: "committing", sent, total });
-    // A timeout here is ambiguous. Never abort/clean a transaction after commit
-    // may have started; inspect durable device status on reconnect instead.
-    const committed = await device.commitSnapshotRestore({ transaction_id: transactionId });
-    if (!committed || committed.committed !== true) {
-      const error = new Error("Snapshot restore commit status is ambiguous; inspect durable device transaction status");
-      error.code = "SNAPSHOT_RESTORE_COMMIT_AMBIGUOUS";
-      error.transactionId = transactionId;
-      throw error;
-    }
-    const status = await device.getSnapshotRestoreStatus({ transaction_id: transactionId });
-    if (!status || status.state !== "committed" || status.verified !== true) {
-      const error = new Error("Device did not confirm committed state and post-write readback verification");
-      error.code = "SNAPSHOT_RESTORE_COMMIT_AMBIGUOUS";
-      error.transactionId = transactionId;
-      throw error;
-    }
-    onProgress({ phase: "complete", sent, total });
-    return { committed: true, transactionId, restorePlan };
-  } catch (error) {
-    // No best-effort abort: after a transport error, the commit boundary may have
-    // been crossed. The durable journal must decide resume vs rollback on device.
-    if (!error.transactionId) error.transactionId = transactionId;
-    throw error;
   }
+
+  report("data-verified", null, null);
+  // Reboot is deliberately a separate validation step, not part of data integrity.
+  if (typeof device.rebootAndReconnect !== "function") {
+    return {
+      dataVerified: true,
+      bootValidated: false,
+      restorePlan,
+      warning: "Data restore and independent readback passed; reboot/reconnect validation remains pending.",
+    };
+  }
+  try {
+    const boot = await device.rebootAndReconnect();
+    if (!boot || boot.ok !== true) {
+      throw new Error(boot?.message || "device did not reconnect after reboot");
+    }
+  } catch (cause) {
+    throw restoreError(
+      `Data restore and readback verification passed, but reboot/reconnect validation failed (${cause.message}). Reflash MetaPass ${archive.manifest.meta_pass.system_version} and reconnect the device.`,
+      "SNAPSHOT_RESTORE_BOOT_VALIDATION_FAILED",
+      { phase: "boot-validation", dataVerified: true, cause },
+    );
+  }
+  report("complete", null, null);
+  return { dataVerified: true, bootValidated: true, restorePlan };
 }
