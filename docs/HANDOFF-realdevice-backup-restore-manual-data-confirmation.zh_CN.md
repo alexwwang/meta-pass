@@ -4,7 +4,7 @@ Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.m
 
 日期：2026-10-14  
 目标分支：`feat/storage`  
-适用范围：v2 整设备存储快照、USB v1.1 历史归档兼容，以及安装后真实设备 DATA 存取人工确认。
+适用范围：v2 整设备存储快照，以及安装后真实设备 DATA 存取人工确认。USB v1.1 既有兼容分支未改动，不属于本轮测试范围。
 
 ## 0. 不可绕过的测试纪律（先读）
 
@@ -26,7 +26,7 @@ Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.m
 
 - 代码工作仍在 `feat/storage`，不要切换到 `main` 上开发。
 - v2 归档语义已改为整设备已分配存储快照，取代 APP+DATA 逻辑归档；归档 kind 为 `meta-pass-storage-snapshot`。
-- 手机页支持快照导出和恢复预检，但恢复写入未实现。设备侧目前只有受保护的分区清单/读取 API。
+- 手机页支持快照导出和恢复预检，但恢复写入未实现。设备侧目前只有受保护的分区清单/读取 API。USB v1.1 兼容分支本轮未改动，不安排 v1.1 专项回归。
 - USB 固定槽设备保留历史 v1.1 归档路径；USB 动态 v2 快照备份因串口通道不能可信确认当前运行宿主分区而暂时阻塞。USB 和手机均不得把旧 APP+DATA v2 归档当作新快照。
 - 最近核验的提交 `3900829f91d15ffffe1341b50960e2c4df1f2d7a` 的 Static checks 与 Firmware checks 均通过；新提交后仍必须检查新 HEAD 的 CI，不能沿用旧结果。
 - 进入真机测试前，先确认当前工作区/commit、宿主测试和固件构建状态。若静态检查或构建失败，先修复代码并重新验证，不要用真机测试掩盖代码门禁失败。
@@ -83,7 +83,7 @@ git rev-parse HEAD
 - 快照完整性、payload 长度和 SHA-256 均通过验证。
 - 目标布局必须与快照完全匹配，宿主固件和 `cardid` 被排除。
 - 手机恢复预检只读分区清单，不写 Flash。
-- USB 固定槽 v1.1 历史恢复仍走旧路径；动态 v2 快照暂时阻塞。
+- USB 动态 v2 快照当前暂时阻塞；本轮不回归未变更的 USB v1.1 历史分支。
 - 当前 commit 的 Static checks 与 Firmware checks 成功；本地真机测试仍需单独执行。
 
 如任一项失败，先修复并重跑受影响测试；不要进入“最终 PASS”报告。
