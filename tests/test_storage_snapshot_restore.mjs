@@ -28,16 +28,19 @@ const archive = await buildStorageSnapshotZip({
 }, async bytes => hash(bytes));
 
 function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = null,
-  failBoot = false } = {}) {
+  failBoot = false, layoutMismatch = false } = {}) {
   const calls = [];
   const flash = new Map();
   let writes = 0;
   const key = (partition, offset) => partition.offset + offset;
+  const livePartitions = layoutMismatch
+    ? partitions.map(p => p.label === "store" ? { ...p, size: p.size + 0x1000 } : p)
+    : partitions;
   return {
     calls,
     async storageInfo() {
       calls.push(["info"]);
-      return { ok: true, meta_pass_version: version, running_host: host, partitions };
+      return { ok: true, meta_pass_version: version, running_host: host, partitions: livePartitions };
     },
     async storageErase(partition) {
       calls.push(["erase", partition.label, partition.size]);
