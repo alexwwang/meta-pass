@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static safety contract for device-side storage snapshot reads."""
+"""Static safety contract for device-side storage snapshot reads and bounded restore I/O."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,8 +24,15 @@ require("origin_allowed(req)", "same-origin gate")
 require("req_token_ok(req)", "session token gate")
 require("esp_partition_find(", "live partition table enumeration")
 require("install_partition_same(part, running)", "running host identity comparison")
-assert "/api/install/storage/write" not in SOURCE, "no arbitrary storage write endpoint may be introduced"
-assert "/api/install/storage/erase" not in SOURCE, "no non-transactional storage erase endpoint may be introduced"
+require('"/api/install/storage/erase"', "registered partition-scoped snapshot erase endpoint")
+require('"/api/install/storage/write"', "registered partition-scoped snapshot write endpoint")
+require("install_snapshot_target(req, &part", "restore uses the exact live partition identity resolver")
+require("esp_partition_erase_range(part, 0, part->size)", "erase is confined to one resolved partition")
+require("esp_partition_write(part, offset, write_buf, length)", "writes are partition-relative")
+require("offset > part->size || length > part->size - offset", "write range stays inside partition bounds")
+require("part->readonly", "read-only partition protection")
+require("req->content_len != (int)length", "request body must match declared write length")
+require("hcfg.max_uri_handlers = 24", "HTTP server has capacity for restore endpoints")
 assert "ESP_PARTITION_TYPE_ANY" in HEADER and "esp_partition_iterator_t" in HEADER
 assert "tests/test_storage_snapshot_device_contract.py" in VALIDATE
 print("Storage snapshot device-read contract: PASS")
