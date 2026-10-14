@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="mobile-page-backup-restore-e2e-handoff.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
 # Mobile embedded-page backup/restore E2E handoff
 
 Date: 2026-10-14

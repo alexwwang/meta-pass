@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>简体中文</strong> · <a href="mobile-page-backup-restore-e2e-handoff.md">English</a>
+</p>
+
 # 手机内嵌页面备份/恢复真机 E2E 交接
 
 日期：2026-10-14
