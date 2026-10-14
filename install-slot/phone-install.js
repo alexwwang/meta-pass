@@ -45,8 +45,8 @@ const NAME_MAX = 32;                     // 设备端可显示名上限(META_NAM
 // only transactional MPTB v2 APP+DATA archives. Legacy v1.1 archives remain a
 // USB-page compatibility feature; reject them before making any device request.
 export function assertPhoneArchiveVersion(manifest) {
-  if (!manifest || manifest.manifest_version !== 2) {
-    throw new Error("手机内嵌页仅支持 v2 APP+DATA 归档；v1.1 旧归档请使用 USB 服务页还原");
+  if (!manifest || manifest.manifest_version !== 2 || manifest.kind !== "meta-pass-storage-snapshot") {
+    throw new Error("手机内嵌页只接受 v2 设备存储快照归档；旧 APP+DATA 逻辑归档不能按快照还原");
   }
   return manifest;
 }
@@ -1578,8 +1578,9 @@ export function boot(opts = {}) {
 
   function renderMgmt(info, busy) {
     const backupSection = `
-      <h4 style="margin-top:14px">数据备份</h4>
-      <p class=mp-sub>可导出所选 APP 槽位及关联 DATA 的真实字节并验证 SHA-256。恢复支持完整的单个 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。多 APP 原子恢复暂不支持。卸载 APP 会永久删除设备上的关联数据。 备份 ZIP 未加密；系统 NVS 可能包含 Wi-Fi 凭证等敏感配置，请勿上传或分享，妥善保管备份文件。</p>\n      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-restore-pick class="mp-btn ghost" type=button>从备份恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
+      <h4 style="margin-top:14px">设备存储快照</h4>
+      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。恢复会覆盖归档纳入范围内的目标存储。当前版本只提供备份和恢复预检，事务化写入/回滚协议完成前不会执行恢复写入。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>校验快照归档</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
@@ -1588,9 +1589,7 @@ export function boot(opts = {}) {
             <b>槽位 ${s.slot}</b> ${esc(s.name || "")}<br>
             <span style="font-size:12.5px;color:var(--ink2)">${MGMT_STATE[s.state] || s.state}${s.kind === "storage" ? " · 存储预留" : ""} · ${fmtMB(s.size)}${s.state !== "empty" ? ` · 已装 ${fmtMB(s.len)}` : ""}</span>
           </span>
-          ${s.kind === "app" && s.state !== "empty" && s.play_id > 0
-            ? `<button class="mp-btn ghost" data-bk="${s.slot}" style="padding:6px 12px;font-size:13px" ${busy || archiveBusy ? "disabled" : ""}>备份</button>`
-            : ""}
+
           <button class="mp-btn ghost" data-rm="${s.slot}" style="padding:6px 12px;font-size:13px">删除</button>
         </div>`).join("")
       : `<p class=mp-sub>设备上还没有已分配槽位</p>`;
@@ -1619,10 +1618,11 @@ export function boot(opts = {}) {
         if (file) doRestoreArchive(file);
       };
     }
-    root.querySelectorAll("[data-bk]").forEach((b) => {
-      b.disabled = busy || archiveBusy;
-      b.onclick = () => doBackup(Number(b.dataset.bk));
-    });
+    const snapshotBackup = $("mp-snapshot-backup");
+    if (snapshotBackup) {
+      snapshotBackup.disabled = busy || archiveBusy;
+      snapshotBackup.onclick = () => doBackup();
+    }
     root.querySelectorAll("[data-rm]").forEach((b) => {
       if (busy) { b.disabled = true; return; }
       b.onclick = () => {
