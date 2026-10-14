@@ -61,12 +61,15 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("未生成旧 APP+DATA v2 备份", backup)
         self.assertIn("manifest_version: 1", backup)
         self.assertIn("slots: manifestEntries.map(({ slot, files }) => ({ slot, files }))", backup)
+        self.assertIn("complete: missingSlots.length === 0", backup)
+        self.assertIn("{ missing_slots: missingSlots }", backup)
 
     def test_usb_v1_archive_uses_legacy_restore_only_for_fixed_slot_device(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("restore-input").addEventListener')
         end = usb.index('$("btn-restore").addEventListener', start)
         parser = usb[start:end]
+        self.assertIn("rawManifest?.complete === false", parser)
         self.assertIn("rawManifest?.manifest_version === 1", parser)
         self.assertIn("if (isDynMode(slotModel.mode))", parser)
         self.assertIn("const manifest = parseManifest(manifestText)", parser)
