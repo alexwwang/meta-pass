@@ -350,27 +350,35 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                 self.assertIn(token, DESIGN)
 
 
-    def test_mobile_nvs_reads_are_fixed_partition_authenticated_and_bounded(self):
+    def test_mobile_snapshot_reads_are_authenticated_bounded_and_partition_scoped(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
-        for token in ('"/api/install/nvs/info"', '"/api/install/nvs/read"',
-                      "nvsInfo: () => call", "nvsRead: (offset, length)",
-                      "length > 4096", 'nvs: { file: "nvs.bin"',
-                      "正在备份系统 NVS", "NVS 只校验、不写入"):
+        for token in ('"/api/install/storage/info"', '"/api/install/storage/read"',
+                      "storageInfo: () => call", "storageRead: (partition, offset, length)",
+                      "X-Meta-Partition-Label", "X-Meta-Partition-Offset",
+                      "length > 4096", "createStorageSnapshotArchive(bridge",
+                      "归档未加密", "事务化写入/回滚协议"):
             with self.subTest(token=token):
                 self.assertIn(token, mobile)
-        for token in ("h_install_nvs_info", "h_install_nvs_read",
-                      "ESP_PARTITION_SUBTYPE_DATA_NVS, \"nvs\"",
+        for token in ("h_install_storage_info", "h_install_storage_read",
+                      "esp_ota_get_running_partition()", 'strcmp(part->label, "cardid") == 0',
+                      "part->address != part_offset || part->size != part_size",
                       "origin_allowed(req)", "req_token_ok(req)",
-                      "length > INSTALL_IO_BUF", "esp_partition_read(part, offset, read_buf, length)",
+                      "length > INSTALL_IO_BUF",
+                      "esp_partition_read(part, offset, read_buf, length)",
                       "offset > part->size || length > part->size - offset",
+                      '"/api/install/storage/info"', '"/api/install/storage/read"'):
+            with self.subTest(token=token):
+                self.assertIn(token, DEVICE)
+        # The fixed-NVS read endpoints remain bounded for legacy consumers,
+        # but the snapshot UI no longer models NVS as an APP-owned payload.
+        for token in ("h_install_nvs_info", "h_install_nvs_read",
+                      'ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs"',
                       '"/api/install/nvs/info"', '"/api/install/nvs/read"'):
             with self.subTest(token=token):
                 self.assertIn(token, DEVICE)
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("Backup ZIP files are unencrypted", usb)
         self.assertIn("备份 ZIP 未加密", usb)
-        self.assertIn("归档未加密", mobile)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
