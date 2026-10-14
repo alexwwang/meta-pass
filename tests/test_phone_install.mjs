@@ -93,6 +93,16 @@ console.log("PASS archive version gate: phone page accepts v2 only and directs v
   assert.ok(archive.zip instanceof Uint8Array);
   const preflight = await phone.validateStorageSnapshotArchiveForDevice(bridge, archive.zip);
   assert.equal(preflight.manifest.kind, "meta-pass-storage-snapshot");
+  const incompatibleBridge = {
+    storageInfo: async () => ({ ok: true, text: JSON.stringify({
+      running_host: host,
+      partitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
+    }) }),
+  };
+  await assert.rejects(
+    () => phone.validateStorageSnapshotArchiveForDevice(incompatibleBridge, archive.zip),
+    /incompatible/,
+  );
   console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
 }
 const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
