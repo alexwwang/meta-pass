@@ -27,7 +27,7 @@ const archive = await buildStorageSnapshotZip({
   manifest, payloads: new Map([["extents/store-00000010.bin", payload]]),
 }, async bytes => hash(bytes));
 
-function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = null,
+function mockDevice({ version = "2.2.0", failWriteAt = null,
   failBoot = false, layoutMismatch = false } = {}) {
   const calls = [];
   const flash = new Map();
@@ -53,14 +53,6 @@ function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = 
       if (failWriteAt !== null && writes === failWriteAt) throw new Error("simulated write failure");
       for (let i = 0; i < bytes.length; i++) flash.set(key(partition, offset) + i, bytes[i]);
       return { ok: true };
-    },
-    async storageRead(partition, offset, length) {
-      calls.push(["read", partition.label, offset, length]);
-      const address = key(partition, offset);
-      const out = new Uint8Array(length);
-      for (let i = 0; i < length; i++) out[i] = flash.has(address + i) ? flash.get(address + i) : 0xff;
-      if (corruptReadback && partition.label === "store" && offset <= 0x10 && offset + length > 0x10) out[0x10 - offset] ^= 0x01;
-      return { ok: true, bytes: out };
     },
     async rebootAndReconnect() {
       calls.push(["reboot"]);
@@ -105,7 +97,7 @@ for (const version of ["3.0.0", null]) {
   assert.equal(calls.includes("erase"), false, "transport capability preflight must be non-mutating");
 }
 
-// Success covers erase, sparse 0xFF gaps, payload writes, full partition readback, and reboot.
+// Success covers erase, sparse 0xFF gaps, payload writes, and reboot; restore does not reread every Flash byte.
 {
   const device = mockDevice();
   const progress = [];
@@ -113,26 +105,14 @@ for (const version of ["3.0.0", null]) {
     sha256Hex: async bytes => hash(bytes),
     onProgress: event => progress.push(event.phase),
   });
-  assert.equal(result.dataVerified, true);
+  assert.equal(result.dataWritten, true);
   assert.equal(result.bootValidated, true);
-  assert.ok(device.calls.some(c => c[0] === "read" && c[1] === "store"));
+  assert.equal(device.calls.some(c => c[0] === "read"), false, "restore must not perform full-partition readback");
   assert.ok(device.calls.some(c => c[0] === "reboot"));
   assert.ok(progress.includes("write"), "restore progress should expose the extent-write phase");
-  assert.ok(progress.includes("data-verified") && progress.includes("complete"));
+  assert.ok(progress.includes("data-written") && progress.includes("complete"));
   assert.equal(device.calls.some(c => c[0] === "write" && c[1] === "ota_0"), false);
   assert.equal(device.calls.some(c => c[0] === "write" && c[1] === "cardid"), false);
-}
-
-// A byte mismatch reports the exact partition and relative offset, then stops.
-{
-  const device = mockDevice({ corruptReadback: true });
-  await assert.rejects(
-    restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
-    error => error.code === "SNAPSHOT_RESTORE_READBACK_MISMATCH" &&
-      error.partition === "store" && error.relativeOffset === 0x10 &&
-      /Reflash MetaPass 2.1.0/.test(error.message),
-  );
-  assert.equal(device.calls.some(c => c[0] === "reboot"), false);
 }
 
 // A write error is reported as incomplete and no rollback is attempted.
@@ -147,14 +127,14 @@ for (const version of ["3.0.0", null]) {
   assert.equal(device.calls.some(c => c[0] === "reboot"), false);
 }
 
-// Data readback success and reboot failure are separate outcomes.
+// Completed writes and reboot failure are separate outcomes.
 {
   const device = mockDevice({ failBoot: true });
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
     error => error.code === "SNAPSHOT_RESTORE_BOOT_VALIDATION_FAILED" &&
-      error.dataVerified === true && /readback verification passed/.test(error.message),
+      error.dataWritten === true && /Snapshot bytes were written/.test(error.message),
   );
 }
 
-console.log("PASS sequential snapshot restore preflight, writes, independent readback, sparse ranges, and reboot validation");
+console.log("PASS sequential snapshot restore preflight, writes, sparse ranges, and reboot validation");
