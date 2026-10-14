@@ -112,7 +112,7 @@ node tools/realdevice/usb_web_e2e_multi.mjs --help
 | 卸载 APP | 仅删除关联 DATA；空间可重用；其他 APP 不受影响 | carve 前后快照 |
 | 备份 | manifest 与所有 APP/DATA 载荷的长度和 SHA-256 相符 | ZIP 校验报告 |
 | 恢复 | 完整预检、地址由设备端分配、写后读回、提交后重读验证 | 模拟故障矩阵 + 真机证据 |
-| v1 旧归档 | 明确拒绝恢复；仅接受完整 v2 单 APP+DATA 归档 | UI/契约测试 |
+| v1 旧归档 | 固定槽设备保留 APP/NVS 备份与恢复；动态存储设备使用 v2 APP+DATA 事务归档 | UI/契约测试 |
 | APP+DATA v2 恢复实现 | 两页均有分阶段恢复事务；USB 页完整真机恢复已由 2026-10-13 报告证明，手机页完整 UI 闭环仍待真机验收 | 自动化测试 + 分页面真机证据 |
 
 **恢复功能状态（以 2026-10-14 的报告为准）：** `install-slot/data-restore-plan.js` 是地址无关的预检辅助模块；手机页 `phone-install.js::restoreDataArchive()` 与 USB 页 `restoreV2ArchiveUsb()` 分别执行传输适配与事务写入。USB 页已由 `docs/backup-restore-test-report-2026-10-13.zh_CN.md` 证明完整真机生命周期通过；`docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` 又证明分段备份、失败重试和归档载荷字节一致。不得继续把 USB 真机备份/恢复标为 NOT RUN。尚缺的是手机内嵌页通过真实移动视口 UI 完成备份 → 删除 APP+DATA → 恢复 → 字节级比较 → 重启持久性的完整 E2E 证据。两页都只支持 v2 单 APP+DATA 组恢复；归档 NVS 只校验、不写入目标设备；多 APP 原子恢复不在本期范围。
