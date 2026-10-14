@@ -28,11 +28,16 @@ class MobilePageStorageManagementContract(unittest.TestCase):
 
     def test_usb_restore_supports_v1_fixed_slot_and_v2_dynamic_contracts(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
+        self.assertIn("All restore versions verify archived NVS when present but never write it", usb)
         self.assertIn("restoreLegacyV1ArchiveUsb()", usb)
         self.assertIn("if (isDynMode(slotModel.mode))", usb)
         self.assertIn("if (rawManifest?.manifest_version === 1)", usb)
-        self.assertIn("v2 只校验归档 NVS，保留目标设备现有 NVS", usb)
+        self.assertIn("所有版本均只校验归档中的 NVS，不写入 NVS，目标设备现有 NVS 始终保持不变", usb)
+        legacy_start = usb.index("async function restoreLegacyV1ArchiveUsb()")
+        v2_start = usb.index("async function restoreV2ArchiveUsb()", legacy_start)
+        legacy_restore = usb[legacy_start:v2_start]
+        self.assertNotIn("msg_restore_nvs_write", legacy_restore)
+        self.assertNotIn("ensureDeviceNvs()", legacy_restore)
         self.assertNotIn("multi-APP restore is not atomic", usb)
         handler_start = usb.index('$("btn-restore").addEventListener')
         handler_end = usb.index('// ===== 4. 安装 =====', handler_start)
