@@ -115,6 +115,7 @@ for (const version of ["3.0.0", null]) {
   assert.equal(result.bootValidated, true);
   assert.ok(device.calls.some(c => c[0] === "read" && c[1] === "store"));
   assert.ok(device.calls.some(c => c[0] === "reboot"));
+  assert.ok(progress.includes("write"), "restore progress should expose the extent-write phase");
   assert.ok(progress.includes("data-verified") && progress.includes("complete"));
   assert.equal(device.calls.some(c => c[0] === "write" && c[1] === "ota_0"), false);
   assert.equal(device.calls.some(c => c[0] === "write" && c[1] === "cardid"), false);
