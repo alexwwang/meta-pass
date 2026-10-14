@@ -113,5 +113,6 @@ static inline esp_err_t httpd_req_get_hdr_value_str(httpd_req_t *r, const char *
 esp_err_t httpd_req_get_url_query_str(httpd_req_t *r, char *buf, size_t buf_len);
 esp_err_t httpd_query_key_value(const char *qry, const char *key, char *val, size_t val_size);
 esp_err_t httpd_resp_set_status(httpd_req_t *r, const char *status);
+esp_err_t httpd_resp_sendstr_chunk(httpd_req_t *r, const char *str);
 esp_err_t httpd_resp_sendstr(httpd_req_t *r, const char *str);
 int httpd_req_recv(httpd_req_t *r, char *buf, size_t buf_len);
