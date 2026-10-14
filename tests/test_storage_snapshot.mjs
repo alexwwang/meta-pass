@@ -25,6 +25,10 @@ const partitions = [
 const eligible = eligibleSnapshotPartitions(partitions, host, []);
 assert.deepEqual(eligible.map((p) => p.label), ["nvs", "store", "pool_0"],
   "snapshot includes allocated NVS/storage, but excludes running host firmware and cardid");
+assert.deepEqual(eligibleSnapshotPartitions(partitions, host, [
+  { offset: host.offset, size: host.size }, { offset: 0xf000, size: 0x1000 },
+]).map((p) => p.label), ["nvs", "store", "pool_0"],
+  "protected ranges may describe already-protected host/cardid partitions without invalidating the table");
 const withProtected = [...partitions, { label: "secure", type: 1, subtype: 0x43, offset: 0x1d0000, size: 0x1000, protected: true }];
 assert.deepEqual(eligibleSnapshotPartitions(withProtected, host, []).map((p) => p.label),
   ["nvs", "store", "pool_0"], "device-reported protected flags exclude otherwise valid partitions");
