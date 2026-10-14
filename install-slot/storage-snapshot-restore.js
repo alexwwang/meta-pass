@@ -92,7 +92,10 @@ export async function restoreStorageSnapshotArchive(device, input, {
   });
 
   let completedBytes = 0;
-  const totalBytes = restorePlan.totalEraseBytes * 2;
+  const totalWriteBytes = restorePlan.partitions.reduce(
+    (sum, item) => sum + item.extents.reduce((partSum, extent) => partSum + extent.bytes, 0), 0,
+  );
+  const totalBytes = restorePlan.totalEraseBytes * 2 + totalWriteBytes;
   const report = (phase, partition, relativeOffset, extra = {}) => onProgress({
     phase, partition: partition?.label, relativeOffset, completedBytes, totalBytes, ...extra,
   });
@@ -128,6 +131,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
             { partition: p.label, relativeOffset: partitionRelativeOffset, phase: "write", cause },
           );
         }
+        completedBytes += chunk.length;
         report("write", p, partitionRelativeOffset + chunk.length);
       }
     }
