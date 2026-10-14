@@ -1525,7 +1525,7 @@ export function boot(opts = {}) {
       await assertIdle();
       const snapshot = await createStorageSnapshotArchive(bridge, {
         onProgress: (p) => {
-          archiveMessage = "正在备份分区 " + p.partition + "：" +
+          archiveMessage = "正在备份分区 " + p.label + "：" +
             Math.floor(p.bytesRead * 100 / Math.max(1, p.totalBytes)) + "%";
           const node = $("mp-backup-status");
           if (node) node.textContent = archiveMessage;
