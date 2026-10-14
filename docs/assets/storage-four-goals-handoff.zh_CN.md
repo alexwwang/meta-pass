@@ -115,7 +115,7 @@ node tools/realdevice/usb_web_e2e_multi.mjs --help
 | v1.1 旧归档 | 固定槽设备保留历史 APP/NVS 备份与恢复；动态 v2 不生成旧 APP+DATA 逻辑归档 | UI/契约测试 |
 | v2 整设备快照 | 手机页可备份并做恢复预检；USB 动态快照备份、两页快照写入/回滚均 BLOCKED，未实现前不得声称完成 | 快照契约测试 + 后续真机证据 |
 
-**新快照功能状态（2026-10-14）：** 旧的 `docs/backup-restore-test-report-2026-10-13.zh_CN.md` 与 `docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` 验证的是此前 APP+DATA 逻辑归档流程，不能作为新整设备快照恢复的证据。当前 `install-slot/storage-snapshot.js` 提供快照 ZIP、payload SHA-256 校验和非变更式恢复计划；`main/meta_store_install.c` 仅提供受保护的分区清单/分区相对偏移读取 API；手机 UI 可生成快照并预检归档，但不会执行写入。USB 动态模式拒绝生成旧 APP+DATA v2 归档，USB v2 快照备份尚未接入，因为串口页无法可靠取得设备报告的当前运行宿主分区。两端均未实现快照写入/事务回滚，故恢复预检不等于恢复。旧 v1.1 固定槽路径继续保留。下一阶段先完成安全的事务化恢复/回滚协议和 USB 宿主分区识别，再运行新快照真机测试。
+**新快照功能状态（2026-10-14）：** 旧的 `docs/backup-restore-test-report-2026-10-13.zh_CN.md` 与 `docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` 验证的是此前 APP+DATA 逻辑归档流程，不能作为新整设备快照恢复的证据。当前 `install-slot/storage-snapshot.js` 提供快照 ZIP、payload SHA-256 校验和非变更式恢复计划；`main/meta_store_install.c` 仅提供受保护的分区清单/分区相对偏移读取 API；手机 UI 可生成快照并预检归档，但不会执行写入。USB 动态模式拒绝生成旧 APP+DATA v2 归档，USB 动态快照备份尚未接入，因为串口页无法可靠取得设备报告的当前运行宿主分区。两端均未实现快照写入/事务回滚，故恢复预检不等于恢复。旧 v1.1 固定槽路径继续保留。下一阶段先完成安全的事务化恢复/回滚协议和 USB 宿主分区识别，再运行新快照真机测试。
 
 ## 5. 分区布局评估要求
 
