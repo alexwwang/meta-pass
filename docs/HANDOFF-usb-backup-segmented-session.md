@@ -4,7 +4,7 @@ Language: [简体中文](HANDOFF-usb-backup-segmented-session.zh_CN.md)
 
 ## Goal
 
-Validate the production USB backup button after replacing one long-lived flash-read session with bounded 512 KiB segments and a fresh Transport/ESPLoader pair between segments. A successful run must produce a complete archive from the page itself; do not use the host-assembled chunked archive as proof that this production path works.
+Validate the production USB backup button after replacing one long-lived flash-read session with bounded 512 KiB segments and a fresh Transport/ESPLoader pair between segments. A successful run must produce a complete archive from the page itself; do not use the host-assembled chunked archive as proof that this local-test path works.
 
 ## Preconditions
 
@@ -26,7 +26,7 @@ Validate the production USB backup button after replacing one long-lived flash-r
 
 ## Pass criteria
 
-- One production UI action completes without manually reloading the page or running a host-side segment script.
+- One local-test UI action completes without manually reloading the page or running a host-side segment script.
 - Every declared payload has the exact expected byte count and SHA-256.
 - Independent `esptool.py` dumps match the APP and DATA payloads byte-for-byte.
 - The APP/DATA ownership record is unchanged before and after backup and reboot.
