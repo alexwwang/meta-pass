@@ -15,6 +15,7 @@ run_static_checks() {
     python3 tools/check_repo.py
     python3 tests/test_storage_four_goals_handoff_contract.py
     python3 tests/test_usb_backup_segmented_read.py
+    python3 tests/test_storage_snapshot_device_contract.py
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
     if [[ -z "${actionlint_bin}" ]]; then
