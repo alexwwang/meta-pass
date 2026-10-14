@@ -31,6 +31,7 @@ import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan } from "./storage-snapshot.js";
+import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -141,6 +142,23 @@ export function detectDeviceOrigin() {
 // dynslot §4.5 槽位管理 slots/remove)。设备 API 无 CORS 头(§8),跨源调用
 // 仅限同源场景;跨源(手动 IP)时仍尝试,由浏览器策略决定成败(真机路径
 // 永远是同源,这条只服务高级用户)。
+function validStoragePartitionIdentity(partition) {
+  return !!partition && typeof partition.label === "string" &&
+    /^[A-Za-z0-9_-]{1,16}$/.test(partition.label) &&
+    Number.isSafeInteger(partition.type) && partition.type >= 0 && partition.type <= 255 &&
+    Number.isSafeInteger(partition.subtype) && partition.subtype >= 0 && partition.subtype <= 255 &&
+    Number.isSafeInteger(partition.offset) && partition.offset >= 0 &&
+    Number.isSafeInteger(partition.size) && partition.size > 0;
+}
+function storagePartitionHeaders(partition) {
+  return {
+    "X-Meta-Partition-Label": partition.label,
+    "X-Meta-Partition-Type": String(partition.type),
+    "X-Meta-Partition-Subtype": String(partition.subtype),
+    "X-Meta-Partition-Offset": String(partition.offset),
+    "X-Meta-Partition-Size": String(partition.size),
+  };
+}
 export function createBridge(deviceOrigin, token) {
   const base = (deviceOrigin || "").replace(/\/$/, "");
   async function call(path, opt = {}) {
@@ -253,6 +271,30 @@ export function createBridge(deviceOrigin, token) {
     // Read-only device-storage snapshot transport. Every read is bound to an
     // exact live partition identity; callers never supply an absolute Flash address.
     storageInfo: () => call("/api/install/storage/info"),
+    storageErase: (partition) => {
+      if (!validStoragePartitionIdentity(partition)) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid storage partition identity" });
+      }
+      return call("/api/install/storage/erase", { method: "POST", headers: storagePartitionHeaders(partition) });
+    },
+    storageWrite: (partition, offset, bytes) => {
+      if (!validStoragePartitionIdentity(partition) || !Number.isSafeInteger(offset) || offset < 0 ||
+          !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 4096 ||
+          offset % 4 !== 0 || bytes.length % 4 !== 0 || offset > partition.size ||
+          bytes.length > partition.size - offset) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid storage partition write request" });
+      }
+      return call("/api/install/storage/write", {
+        method: "POST",
+        headers: {
+          ...storagePartitionHeaders(partition),
+          "X-Meta-Offset": String(offset),
+          "X-Meta-Length": String(bytes.length),
+          "Content-Type": "application/octet-stream",
+        },
+        body: bytes,
+      });
+    },
     storageRead: (partition, offset, length) => {
       if (!partition || typeof partition.label !== "string" ||
           !/^[A-Za-z0-9_-]{1,16}$/.test(partition.label) ||
@@ -341,7 +383,16 @@ export async function readStorageSnapshot(bridge, { onProgress } = {}) {
       offset: part.offset, size: part.size, extents,
     });
   }
-  const manifest = buildStorageSnapshotManifest({ partitions: snapshotPartitions });
+  const sourceVersion = info.meta_pass_version;
+  if (typeof sourceVersion !== "string" || !/^\\d+\\.\\d+\\.\\d+$/.test(sourceVersion)) {
+    throw new Error("device did not report a valid MetaPass system version; snapshot was not created");
+  }
+  // Conservative until a broader compatibility matrix is maintained: exact source version only.
+  const manifest = buildStorageSnapshotManifest({
+    partitions: snapshotPartitions,
+    metaPassVersion: sourceVersion,
+    compatibleMetaPassVersions: { min_inclusive: sourceVersion, max_inclusive: sourceVersion },
+  });
   validateStorageSnapshotManifest(manifest, {
     targetPartitions: partitions,
     runningHostPartition: host,
@@ -1495,14 +1546,21 @@ export function boot(opts = {}) {
     archiveBusy = true;
     archiveMessage = "正在校验设备存储快照…";
     try {
-      const checked = await validateStorageSnapshotArchiveForDevice(
-        bridge, new Uint8Array(await file.arrayBuffer()));
-      // Do not fall back to the former APP+DATA v2 restore path: the v2 format
-      // now means a whole-device allocated-storage snapshot. The device-side
-      // transactional writer/rollback protocol is a hard prerequisite for writes.
-      archiveMessage = "归档完整性与目标分区布局校验通过（" +
-        checked.manifest.partitions.length + " 个分区），但当前固件尚未提供事务化快照写入与失败回滚协议。本次未写入任何 Flash。";
-      log(archiveMessage, "warn");
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const result = await restoreStorageSnapshotArchive(bridge, bytes, {
+        sha256Hex,
+        onProgress: (event) => {
+          archiveMessage = "快照恢复：" + event.phase +
+            (event.partition ? " · " + event.partition : "") +
+            (Number.isInteger(event.relativeOffset) ? " · 相对偏移 0x" + event.relativeOffset.toString(16) : "");
+          const status = $("mp-backup-status");
+          if (status) status.textContent = archiveMessage;
+        },
+      });
+      archiveMessage = result.dataVerified
+        ? "快照数据写入与独立读回核验通过。请重启设备并确认 MetaPass 可重新连接；此步骤尚未自动完成。"
+        : "快照恢复尚未完成。";
+      log(archiveMessage, result.bootValidated ? "ok" : "warn");
     } catch (error) {
       archiveMessage = "快照还原预检失败：" + (error?.message || String(error));
       log(archiveMessage, "error");
