@@ -2222,6 +2222,11 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
     session_unlock();
     if (install_busy) return reply(req, "409 Conflict", "storage snapshot unavailable during installation");
 
+    bool recovered_remove = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered_remove);
+    if (recovery != ESP_OK) return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    if (recovered_remove) return reply(req, "409 Conflict", "previous uninstall recovered; refresh partition list");
+
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
 
@@ -2277,6 +2282,11 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
     if (install_busy) return reply(req, "409 Conflict", "storage snapshot unavailable during installation");
+
+    bool recovered_remove = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered_remove);
+    if (recovery != ESP_OK) return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    if (recovered_remove) return reply(req, "409 Conflict", "previous uninstall recovered; refresh partition list");
 
     char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
     char off_str[16], len_str[16];
