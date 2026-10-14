@@ -222,17 +222,17 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "不提供单独删除 DATA 的用户操作",
                       "不允许用户选择卸载时保留 DATA",
                       "删除中断后重启",
-                      "当前 UI 支持 v2 整设备快照备份和恢复预检，但尚不支持快照写入"):
+                      "当前 UI 支持 v2 整设备快照备份与顺序恢复"):
             with self.subTest(token=token):
                 self.assertIn(token, LIFECYCLE)
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
         self.assertIn("删除 APP 及全部数据", installer)
         self.assertIn("永久删除此 APP 及其全部关联 DATA", installer)
-        self.assertIn("当前页面只支持快照备份与恢复预检", installer)
+        self.assertIn("快照恢复采用逐分区擦除、写入与独立读回核验", installer)
         self.assertNotIn("mp-rm-erase", installer)
         self.assertIn("备份设备快照", installer)
         self.assertIn("createStorageSnapshotArchive(bridge", installer)
-        self.assertIn("事务化写入/回滚协议完成前不会执行恢复写入", installer)
+        self.assertNotIn("事务化写入/回滚协议完成前不会执行恢复写入", installer)
         self.assertIn("export async function readStorageSnapshot", installer)
         self.assertIn("validateStorageSnapshotArchiveForDevice", installer)
         self.assertIn("validateStorageSnapshotPayloads(manifest, payloads, sha256Hex)", installer)
@@ -342,7 +342,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "storageInfo: () => call", "storageRead: (partition, offset, length)",
                       "X-Meta-Partition-Label", "X-Meta-Partition-Offset",
                       "length > 4096", "createStorageSnapshotArchive(bridge",
-                      "归档未加密", "事务化写入/回滚协议"):
+                      "归档未加密", "逐分区擦除、写入与独立读回核验"):
             with self.subTest(token=token):
                 self.assertIn(token, mobile)
         for token in ("h_install_storage_info", "h_install_storage_read",
