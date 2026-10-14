@@ -138,7 +138,13 @@ export function validateStorageSnapshotManifest(manifest, {
     if (!validPartition(p) || !Array.isArray(p.extents)) fail("invalid partition record");
     if (seenLabels.has(p.label)) fail("duplicate partition label");
     seenLabels.add(p.label);
-    if (p.label === "cardid" ||
+    const protectedOverlap = protectedRanges.some((r) => {
+      if (!r || !validInt(r.offset) || !Number.isSafeInteger(r.size) || r.size <= 0) {
+        fail("invalid device-provided protected range");
+      }
+      return overlaps(p.offset, p.size, r.offset, r.size);
+    });
+    if (p.label === "cardid" || protectedOverlap ||
         (runningHostPartition && isProtectedPartition(p, runningHostPartition))) {
       fail("snapshot attempts to include a protected partition");
     }
