@@ -2303,14 +2303,9 @@ $("btn-backup").addEventListener("click", async () => {
     $("backup-status").textContent = t("msg_backup_pick_slot");
     return;
   }
-  // Both pages support the same v2 contract: one complete APP+DATA group.
-  // Do not offer legacy fixed-slot backup because its v1 archive is not restorable.
-  if (!isDynMode(slotModel.mode)) {
-    $("backup-status").textContent = t("msg_backup_v2_required");
-    log(t("msg_backup_v2_required"), "warn");
-    return;
-  }
-  if (slots.length !== 1) {
+  // Dynamic v2 archives are transactional single APP+DATA groups. Fixed-slot
+  // devices retain the established v1 multi-slot backup format.
+  if (isDynMode(slotModel.mode) && slots.length !== 1) {
     $("backup-status").textContent = t("msg_backup_single_group");
     log(t("msg_backup_single_group"), "warn");
     return;
@@ -2409,8 +2404,8 @@ $("btn-backup").addEventListener("click", async () => {
     } catch (err) {
       log(t("msg_backup_nvs_failed", { err: err.message }), "warn");
     }
-    // Dynslot v2 archives include real bytes for every DATA reservation owned by selected APPs.
-    // Legacy/v1 records have no stable play_id and deliberately stay APP/NVS-only.
+    // v2 archives carry stable APP ownership and DATA bytes. Fixed-slot
+    // devices retain the original v1 APP/NVS archive contract.
     let manifestObj;
     const v2Slots = manifestEntries.map((entry) => ({
       play_id: entry.play_id, source_slot: entry.slot, name: entry.name, files: entry.files,
@@ -2418,9 +2413,9 @@ $("btn-backup").addEventListener("click", async () => {
     const canArchiveData = isDynMode(slotModel.mode) && v2Slots.length > 0 &&
       v2Slots.every((entry) => Number.isSafeInteger(entry.play_id) && entry.play_id > 0);
     if (canArchiveData) {
+      if (slots.length !== 1) throw new Error(t("msg_backup_single_group"));
       const selectedPlayIds = new Set(v2Slots.map((entry) => entry.play_id));
-      const dataRecords = (slotModel.carve?.data || []).filter((record) =>
-        selectedPlayIds.has(record.playId));
+      const dataRecords = (slotModel.carve?.data || []).filter((record) => selectedPlayIds.has(record.playId));
       const dataPayloads = [];
       for (const record of dataRecords) {
         log(`DATA backup: ${record.label} (${record.playId}) · ${fmtBytes(record.size)}`);
@@ -2429,7 +2424,6 @@ $("btn-backup").addEventListener("click", async () => {
           (addr, err, attempt) => log(`[DATA] read ${hex(addr)} error(${attempt}) — ${err.message}`, "warn"));
         dataPayloads.push(payload);
       }
-      // Re-read A/B metadata after DATA reads. If ownership/extents changed, refuse the archive.
       const stableA = await loader.readFlash(STORE_OFFSET, STORE_SECTOR_SIZE);
       const stableB = await loader.readFlash(STORE_OFFSET + STORE_SECTOR_SIZE, STORE_SECTOR_SIZE);
       const stable = pickRecord(stableA, stableB);
@@ -2443,10 +2437,8 @@ $("btn-backup").addEventListener("click", async () => {
         state: record.state, bytes: dataPayloads[index].length, sha256: await sha256Hex(dataPayloads[index]),
       })));
       const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
-      manifestObj = buildDataArchiveManifest({
-        slots: v2Slots, data: dataInputs,
-        complete: missingSlots.length === 0, missingSlots,
-      });
+      manifestObj = buildDataArchiveManifest({ slots: v2Slots, data: dataInputs,
+        complete: missingSlots.length === 0, missingSlots });
       if (nvsEntry) manifestObj.nvs = nvsEntry;
       for (let i = 0; i < manifestObj.data.length; i++) {
         entries.push({ name: manifestObj.data[i].file, data: dataPayloads[i] });
@@ -2455,8 +2447,11 @@ $("btn-backup").addEventListener("click", async () => {
       await validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex);
       log(`DATA backup verified: ${manifestObj.data.length} reservation(s), real bytes + SHA-256`, "ok");
     } else {
-      // Never emit a v1 archive: neither page supports its non-transactional restore path.
-      throw new Error("Cannot create a restorable v2 archive without stable APP play_id ownership metadata.");
+      manifestObj = {
+        manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
+        slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
+        ...(nvsEntry ? { nvs: nvsEntry } : {}),
+      };
     }
     entries.push({
       name: MANIFEST_NAME,
