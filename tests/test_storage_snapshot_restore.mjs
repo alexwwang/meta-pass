@@ -138,7 +138,7 @@ for (const version of ["3.0.0", null]) {
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
     error => error.code === "SNAPSHOT_RESTORE_WRITE_FAILED" &&
-      error.partition === "nvs" && error.relativeOffset === 0 &&
+      error.partition === "store" && error.relativeOffset === 0x10 &&
       /Restore incomplete/.test(error.message),
   );
   assert.equal(device.calls.some(c => c[0] === "reboot"), false);
