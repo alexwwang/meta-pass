@@ -14,7 +14,7 @@ const partitions = [
 const reads = [];
 const bridge = {
   async storageInfo() {
-    return { ok: true, status: 200, text: JSON.stringify({ running_host: host, partitions }) };
+    return { ok: true, status: 200, text: JSON.stringify({ meta_pass_version: "2.1.0", running_host: host, partitions }) };
   },
   async storageRead(partition, offset, length) {
     reads.push({ label: partition.label, offset, length });
