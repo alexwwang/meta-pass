@@ -25,17 +25,21 @@ assert.deepEqual(eligible.map((p) => p.label), ["nvs", "store", "pool_0"],
 const payload = new Uint8Array([1, 2, 3, 4]);
 const manifest = buildStorageSnapshotManifest({
   createdUtc: "2026-10-14T00:00:00.000Z",
-  partitions: [{
-    label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000,
-    // The gap before this extent represents erased 0xFF bytes; it remains positional.
-    extents: [{ file: "extents/store-000010.bin", offset: 0x10, bytes: payload.length, sha256: hash(payload) }],
-  }],
+  partitions: [
+    { label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x6000, extents: [] },
+    {
+      label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000,
+      // The gap before this extent represents erased 0xFF bytes; it remains positional.
+      extents: [{ file: "extents/store-000010.bin", offset: 0x10, bytes: payload.length, sha256: hash(payload) }],
+    },
+    { label: "pool_0", type: 1, subtype: 0x42, offset: 0x1b0000, size: 0x20000, extents: [] },
+  ],
 });
 assert.equal(manifest.kind, STORAGE_SNAPSHOT_KIND);
 assert.equal(manifest.manifest_version, 2);
 validateStorageSnapshotManifest(manifest, { targetPartitions: partitions, runningHostPartition: host });
 assert.deepEqual(await validateStorageSnapshotPayloads(manifest, { "extents/store-000010.bin": payload }, async (b) => hash(b)),
-  { partitionCount: 1, extentCount: 1 });
+  { partitionCount: 3, extentCount: 1 });
 
 assert.throws(() => validateStorageSnapshotManifest({
   ...manifest,
@@ -65,4 +69,18 @@ await assert.rejects(() => validateStorageSnapshotPayloads(manifest, {
 await assert.rejects(() => validateStorageSnapshotPayloads(manifest, {}, async (b) => hash(b)),
   /missing snapshot payload/);
 
-console.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");
+
+assert.throws(() => validateStorageSnapshotManifest(manifest, {
+  targetPartitions: partitions,
+  runningHostPartition: host,
+  protectedRanges: [{ offset: 0x1a0000, size: 0x1000 }],
+}), /protected partition/);
+assert.throws(() => validateStorageSnapshotManifest({
+  ...manifest,
+  partitions: manifest.partitions.filter((p) => p.label !== "pool_0"),
+}, { targetPartitions: partitions, runningHostPartition: host }), /every eligible allocated partition/);
+assert.throws(() => eligibleSnapshotPartitions([
+  ...partitions,
+  { label: "overlap", type: 1, subtype: 0x43, offset: 0x1a8000, size: 0x1000 },
+], host), /overlapping live partition table/);
+\nconsole.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");
