@@ -51,6 +51,19 @@
 
 `tools/realdevice/logs/20261014T005837Z-usb-data-backup-read/` —— `report.md`/`report.zh_CN.md`/`report.json`、`environment.txt`、`attempt1-*`/`attempt2-*`(逐读页面日志、esptool-js TRACE console、终态 JSON、截图、解析读统计)、`esptool-read-data.log` + `esptool-data-0x360000.bin`(对照)、`restore-rundir/`(建组,恢复 PASS 47.0s)。
 
-## 后续(未执行)
+## 后续(同日经用户批准已执行)
 
-- 在受影响主机类别上根因 Chrome/esptool-js 传输死亡(ACK/响应等待、调用状态),或如需端到端验证备份链,改用已验证的分段全新会话方案(`p28_chunked_backup.mjs`)。
+**Stage D 经分段路线完成**(`p28_chunked_backup.mjs`,已入库;仅备份环节分段,其余全部正常生产路径):
+
+| 步骤 | 结果 |
+|---|---|
+| 分段备份(每 512KB 一个全新页面会话 @115200) | PASS 602.7s —— 归档 6,325,885B,载荷经共享模块验证,页面恢复预检接受 |
+| 页面 UI 删除 APP | PASS 22.5s —— DATA 级联删除确认,无孤儿 DATA |
+| 生产路径恢复(**设备侧 MD5 读回**,上游新机制) | PASS —— 提交 + 两个区间 MD5 校验 + 复位后可见;harness 旧字节读回检查撞上已知主机传输死亡(属重复验证,如实记录) |
+| 逐字节比较(esptool 只读 dump,handoff D.5 允许) | PASS —— DATA `cba83ea5…`、APP `f519f076…` 均与归档载荷一致 |
+| 重启持久性 | PASS —— 复位及后续 RTS 重启后组均完好 |
+| 清理 | 回基线 `count=0 free=6766592`(harness exit=1 系合成 run-state 缺 `baselineFree`,LAN 已验证) |
+
+**总结论**:页面单会话备份在此类主机上无法完成(Chrome WebSerial 传输死亡,已复现 4 次并归因);但 备份→删除→恢复→字节比较→重启持久 全链功能端到端正确,且设备侧 MD5 读回在真机工作正常。
+
+

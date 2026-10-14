@@ -51,6 +51,19 @@ No chunk-size change, no second reader, no page-reload segmentation, no `flashMd
 
 `tools/realdevice/logs/20261014T005837Z-usb-data-backup-read/` — `report.md`/`report.zh_CN.md`/`report.json`, `environment.txt`, `attempt1-*`/`attempt2-*` (per-read page logs, esptool-js TRACE console, final-state JSON, screenshots, parsed read stats), `esptool-read-data.log` + `esptool-data-0x360000.bin` (control), `restore-rundir/` (group re-creation, restore PASS 47.0s).
 
-## Follow-ups (not executed)
+## Follow-ups (executed same day, user-approved)
 
-- Root-cause the Chrome/esptool-js transport death (ACK/response waits, call state) on this host class, or run backup via the already-proven segmented fresh-session approach (`p28_chunked_backup.mjs`) if the chain must be validated end-to-end.
+**Stage D completed via the segmented route** (`p28_chunked_backup.mjs`, already committed; backup leg only — everything else is the normal production path):
+
+| Step | Result |
+|---|---|
+| Segmented backup (512KB per fresh page session @115200) | PASS 602.7s — archive 6,325,885B, payloads verified with shared modules, page restore preflight accepted |
+| Delete APP via USB page UI | PASS 22.5s — cascade DATA removal confirmed, no orphan DATA |
+| Restore via production path (**device-side MD5 read-back**, new upstream mechanism) | PASS — commit + MD5 verified both ranges + visible after reset; harness legacy byte read-back check hit the known host transport death (redundant, recorded) |
+| Byte-for-byte compare (esptool read-only dumps, handoff D.5) | PASS — DATA `cba83ea5…` and APP `f519f076…` both equal to archive payload |
+| Reboot persistence | PASS — group intact after reset and after subsequent RTS reboot |
+| Cleanup | Baseline restored `count=0 free=6766592` (harness exit=1 was a missing `baselineFree` field in the synthesized run-state, LAN-verified) |
+
+**Bottom line**: the page single-session backup cannot complete on this host class (Chrome WebSerial transport death, root-caused and reproduced 4×). The full backup → delete → restore → byte-compare → reboot-persistence chain is functionally correct end-to-end, and device-side MD5 read-back works on the real device.
+
+
