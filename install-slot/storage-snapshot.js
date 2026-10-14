@@ -75,7 +75,7 @@ export function eligibleSnapshotPartitions(partitions, runningHostPartition, pro
       p.label !== "cardid" && protectedOverlap(p))) {
     fail("eligible live partition overlaps a protected range");
   }
-  return partitions.filter((p) => p.protected !== true && !isProtectedPartition(p, runningHostPartition) &&
+  return partitions.filter((p) => p.protected !== true && p.running_host !== true && !isProtectedPartition(p, runningHostPartition) &&
     p.label !== "cardid" && !protectedOverlap(p));
 }
 
@@ -150,7 +150,7 @@ export function validateStorageSnapshotManifest(manifest, {
       }
       return overlaps(p.offset, p.size, r.offset, r.size);
     });
-    if (p.protected === true || p.label === "cardid" || protectedOverlap ||
+    if (p.protected === true || p.running_host === true || p.label === "cardid" || protectedOverlap ||
         (runningHostPartition && isProtectedPartition(p, runningHostPartition))) {
       fail("snapshot attempts to include a protected partition");
     }
