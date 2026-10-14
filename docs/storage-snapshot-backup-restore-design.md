@@ -1,3 +1,7 @@
+ <p align="right">
+  <strong>English</strong> · <a href="storage-snapshot-backup-restore-design.zh_CN.md">简体中文</a>
+</p>
+
 # Storage Snapshot Backup and Restore Design (2026-10-14)
 
 ## Decision
