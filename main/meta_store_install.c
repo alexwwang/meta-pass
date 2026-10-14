@@ -2192,7 +2192,7 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
 
     size_t used = 0;
     int n = snprintf(s_storage_info_json, sizeof(s_storage_info_json),
-        "{\\"running_host\\":{\\"label\\":\\"%s\\",\\"type\\":%u,\\"subtype\\":%u,\\"offset\\":%" PRIu32 ",\\"size\\":%" PRIu32 "},\\"partitions\\":[",
+        "{\"running_host\":{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 "},\"partitions\":[",
         running->label, (unsigned)running->type, (unsigned)running->subtype,
         running->address, running->size);
     if (n < 0 || (size_t)n >= sizeof(s_storage_info_json)) {
@@ -2208,7 +2208,7 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
             char escaped_label[40];
             json_escape(part->label, escaped_label, sizeof(escaped_label));
             n = snprintf(s_storage_info_json + used, sizeof(s_storage_info_json) - used,
-                "%s{\\"label\\":\\"%s\\",\\"type\\":%u,\\"subtype\\":%u,\\"offset\\":%" PRIu32 ",\\"size\\":%" PRIu32 ",\\"protected\\":%s}",
+                "%s{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"protected\":%s}",
                 first ? "" : ",", escaped_label, (unsigned)part->type,
                 (unsigned)part->subtype, part->address, part->size,
                 install_partition_protected(part, running) ? "true" : "false");
