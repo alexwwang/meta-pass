@@ -18,7 +18,7 @@
 
 1. 执行 `./tools/validate.sh` 和 `./tools/validate.sh --sim`，记录结果和精确 HEAD。
 2. 启动 USB 页面服务，并使用已获准访问设备 Web Serial 端口的 Chrome 持久化 profile。
-3. 使用新的证据目录运行 `tools/realdevice/usb_data_backup_read_once.mjs`。该脚本驱动真实生产 `#btn-backup` 路径；页面应自动按 512 KiB 分段读取、在段间关闭并重开 transport/loader，最终下载一个 ZIP。
+3. 使用新的证据目录运行 `tools/realdevice/usb_data_backup_read_once.mjs`。该脚本驱动本地测试 USB 页面实际 `#btn-backup` 路径；页面应自动按 512 KiB 分段读取、在段间关闭并重开 transport/loader，最终下载一个 ZIP。
 4. 确认脚本捕获到下载，`manifest.complete === true`，归档包含且仅包含一个 APP 组及其关联 DATA 预留区，并且载荷哈希校验通过。记录总字节数、耗时、各段日志和归档 SHA-256。
 5. 使用 `esptool.py` 以只读方式独立 dump APP 镜像和 DATA 区间，与归档对应载荷逐字节比较并比对 SHA-256。不能用设备侧 MD5 代替读取和比较归档中的实际字节。
 6. 正常重启设备，确认原 APP/DATA 组仍可见且元数据未变化。这是只读备份测试，不是物理断电测试。
