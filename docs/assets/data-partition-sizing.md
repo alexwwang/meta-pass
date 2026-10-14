@@ -3,9 +3,11 @@
   <a href="data-partition-sizing.zh_CN.md">简体中文</a>
 </p>
 
-# Generic DATA Partition Sizing
+# Generic DATA Capacity Selection
 
 Status: implementation baseline for `feat/storage`
+
+**Scope for this phase:** users choose capacity when a new DATA extent is created. In-place expansion/shrinking of an existing DATA extent, or migration that preserves its contents, is not required. If a matching valid DATA record already exists for the app, retain its current capacity and contents and do not offer a resize control.
 
 ## 1. Goal
 
@@ -17,7 +19,7 @@ The feature must not depend on a Play ID, test task, test switch, or blank-FAT a
 
 1. Separate production policy from test fixtures.
 2. The device is authoritative: UI values are advisory and are revalidated on-device.
-3. Never silently shrink, format, truncate, or overwrite existing user data.
+3. For a new DATA extent, allocate the user-selected capacity. If a matching DATA extent already exists, retain its size and contents; in-place resizing or data migration is out of scope.
 4. Use bytes in protocols/storage and MiB in the UI; conversions must be explicit.
 5. Commit the complete carve layout transactionally; failed operations preserve the last valid layout.
 6. Missing DATA fields in legacy offers mean no additional DATA request, not a zero-sized partition.
