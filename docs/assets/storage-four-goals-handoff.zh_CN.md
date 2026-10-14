@@ -2,7 +2,7 @@
 
 简体中文 | [English](storage-four-goals-handoff.md)
 
-日期：2026-10-11  
+日期：2026-10-14  
 仓库：`alexwwang/meta-pass`  
 工作分支：`feat/storage`  
 PR：[#1](https://github.com/alexwwang/meta-pass/pull/1)  
@@ -12,7 +12,7 @@ PR：[#1](https://github.com/alexwwang/meta-pass/pull/1)
 
 本交接文档用于追踪剩余验收项，不应覆盖后续更新的真机报告。每项结论以最新代码、自动化结果和带日期的真机报告为准；旧报告中的 NOT RUN 不能在新证据出现后继续沿用。
 
-1. **手机内嵌页与 USB 服务页对齐**：两页共享 DATA 容量选项、v2 归档与恢复预检模块；传输层保持各自实现（USB WebSerial/esptool-js，手机 DeviceBridge），USB 独有本地固件安装入口。恢复语义统一为完整 v2 单 APP+DATA 组，归档 NVS 只校验、不写入目标设备；USB 已移除 v1 顺序恢复路径。两页仍不是同一套 UI/传输代码，因此需持续用契约测试防止业务语义漂移。
+1. **手机内嵌页与 USB 服务页对齐（未完成）**：新 v2 语义改为整设备已分配存储快照，不再是 APP+DATA 逻辑归档。手机页已有快照备份和归档/目标布局预检，但恢复不会写 Flash，因为事务化写入与失败回滚协议尚未实现。USB 保留固定槽设备的历史 v1.1 备份/还原；动态 v2 备份目前 fail-closed，拒绝继续生成旧 APP+DATA v2 归档；USB 也拒绝旧 APP+DATA v2 归档和新快照实际写入。USB 仍独有本地固件安装入口。两页的 v2 快照写入/还原尚未完成，不能宣称已对齐。
 2. **保留固定 `cardid`/ `store` 的分区容量方案**：绝不移动固定分区或直接改动 `cardid`。动态池被固定区域切成两个物理区段；单个连续 DATA reservation 不能跨越固定分区。当前 `dynslot-pool.js` 的池段为 `0x180000..0x356000` 和 `0x360000..0x7fe000`，第二段约 4.61 MiB。不能仅凭两个区段的总空闲容量声称 5.7 MiB DATA 可安装。若市场镜像声明的最小 DATA 大于最大可分配连续区间，必须明确拒绝，并同时展示最大连续空闲空间与总空闲空间；手机页和 USB 页已补充该诊断。除非设计并实现了设备端兼容的非连续 DATA 映射，否则不能把一个 reservation 跨段拼接。
 3. **专用测试子固件验证 DATA 读写**：使用 `tests/realdevice/data-child/`，经 USB Serial/JTAG 的受控命令写入测试记录、读回并校验、重启后再次校验。只允许通过分区标签 `e2edata` 解析分区，不接受任意 Flash 地址。市场玩法不支持这个串口协议，不能拿它代替专用测试固件。
 4. **安装时创建 DATA 分区**：安装前校验最小容量、4 KiB 对齐、记录数和连续空间；安装后核对 APP 与 DATA 的 `play_id` 归属；读写、重启持久性、卸载释放和重新安装都要覆盖。现有分配器/安装计划代码和部分真机安装证据，不等于完整生命周期已通过。
@@ -115,7 +115,7 @@ node tools/realdevice/usb_web_e2e_multi.mjs --help
 | v1 旧归档 | 固定槽设备保留 APP/NVS 备份与恢复；动态存储设备使用 v2 APP+DATA 事务归档 | UI/契约测试 |
 | APP+DATA v2 恢复实现 | 两页均有分阶段恢复事务；USB 页完整真机恢复已由 2026-10-13 报告证明，手机页完整 UI 闭环仍待真机验收 | 自动化测试 + 分页面真机证据 |
 
-**恢复功能状态（以 2026-10-14 的报告为准）：** `install-slot/data-restore-plan.js` 是地址无关的预检辅助模块；手机页 `phone-install.js::restoreDataArchive()` 与 USB 页 `restoreV2ArchiveUsb()` 分别执行传输适配与事务写入。USB 页已由 `docs/backup-restore-test-report-2026-10-13.zh_CN.md` 证明完整真机生命周期通过；`docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` 又证明分段备份、失败重试和归档载荷字节一致。不得继续把 USB 真机备份/恢复标为 NOT RUN。尚缺的是手机内嵌页通过真实移动视口 UI 完成备份 → 删除 APP+DATA → 恢复 → 字节级比较 → 重启持久性的完整 E2E 证据。两页都只支持 v2 单 APP+DATA 组恢复；归档 NVS 只校验、不写入目标设备；多 APP 原子恢复不在本期范围。
+**新快照功能状态（2026-10-14）：** 旧的 `docs/backup-restore-test-report-2026-10-13.zh_CN.md` 与 `docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` 验证的是此前 APP+DATA 逻辑归档流程，不能作为新整设备快照恢复的证据。当前 `install-slot/storage-snapshot.js` 提供快照 ZIP、payload SHA-256 校验和非变更式恢复计划；`main/meta_store_install.c` 仅提供受保护的分区清单/分区相对偏移读取 API；手机 UI 可生成快照并预检归档，但不会执行写入。USB 动态模式拒绝生成旧 APP+DATA v2 归档，USB v2 快照备份/恢复尚未接入，因为串口页无法可靠取得设备报告的当前运行宿主分区。旧 v1.1 固定槽路径继续保留。下一阶段先完成安全的事务化恢复/回滚协议和 USB 宿主分区识别，再运行新快照真机测试。
 
 ## 5. 分区布局评估要求
 
