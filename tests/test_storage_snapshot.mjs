@@ -29,7 +29,10 @@ assert.deepEqual(eligibleSnapshotPartitions(partitions, host, [
   { offset: host.offset, size: host.size }, { offset: 0xf000, size: 0x1000 },
 ]).map((p) => p.label), ["nvs", "store", "pool_0"],
   "protected ranges may describe already-protected host/cardid partitions without invalidating the table");
-const withProtected = [...partitions, { label: "secure", type: 1, subtype: 0x43, offset: 0x1d0000, size: 0x1000, protected: true }];
+const withProtected = [...partitions,
+  { label: "secure", type: 1, subtype: 0x43, offset: 0x1d0000, size: 0x1000, protected: true },
+  { label: "reported-host", type: 0, subtype: 0x10, offset: 0x1e0000, size: 0x1000, running_host: true },
+];
 assert.deepEqual(eligibleSnapshotPartitions(withProtected, host, []).map((p) => p.label),
   ["nvs", "store", "pool_0"], "device-reported protected flags exclude otherwise valid partitions");
 
