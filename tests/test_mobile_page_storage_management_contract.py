@@ -22,7 +22,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("归档中的 NVS 字节只校验、不写入，目标设备现有 NVS 保持不变", mobile)
         self.assertNotIn("包含全局 NVS 的归档会被拒绝", mobile)
         self.assertNotIn("当前尚不能导入恢复", mobile)
-        self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
+        self.assertIn("Restore dispatches by detected device mode and archive version", usb)
         self.assertIn("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", usb)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
 
@@ -32,7 +32,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("restoreLegacyV1ArchiveUsb()", usb)
         self.assertIn("if (isDynMode(slotModel.mode))", usb)
         self.assertIn("if (rawManifest?.manifest_version === 1)", usb)
-        self.assertIn("归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变", usb)
+        self.assertIn("v2 只校验归档 NVS，保留目标设备现有 NVS", usb)
         self.assertNotIn("multi-APP restore is not atomic", usb)
         handler_start = usb.index('$("btn-restore").addEventListener')
         handler_end = usb.index('// ===== 4. 安装 =====', handler_start)
