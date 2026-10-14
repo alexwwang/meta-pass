@@ -31,7 +31,6 @@ import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan } from "./storage-snapshot.js";
-import { readDataArchiveZip } from "./data-byte-archive.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -40,22 +39,12 @@ const TAIL_SECTOR = 0x1000;              // 槽位尾部 4KB 名字 blob sector
 const METAPASS = "https://metapass.chuanxilu.net";
 const NAME_MAX = 32;                     // 设备端可显示名上限(META_NAME_LEN)
 
-// Classify archive formats independently of current transport capabilities.
-// Recognition stays aligned with USB: historical v1.1 is distinct, v2 snapshots
-// are accepted, and retired APP+DATA logical v2 archives are rejected.
-export function classifyPhoneArchiveVersion(manifest) {
-  if (manifest?.manifest_version === 1) return "legacy-v1";
-  if (manifest?.manifest_version === 2 && manifest?.kind === "meta-pass-storage-snapshot") return "storage-snapshot-v2";
-  if (manifest?.manifest_version === 2) {
-    throw new Error("不再接受旧 APP+DATA v2 逻辑归档；v2 归档必须使用 meta-pass-storage-snapshot 格式");
-  }
-  throw new Error("不支持的归档版本：" + String(manifest?.manifest_version));
-}
-
+// The embedded phone page ships only with v2+ devices and accepts only the
+// unambiguous v2 whole-device storage snapshot kind. Legacy USB v1.1 and the
+// retired APP+DATA logical v2 archive must never be interpreted as snapshots.
 export function assertPhoneArchiveVersion(manifest) {
-  const kind = classifyPhoneArchiveVersion(manifest);
-  if (kind !== "storage-snapshot-v2") {
-    throw new Error("已识别历史 v1.1 APP/NVS 归档；手机端尚无固定槽旧版写入通道，本次未写入 Flash");
+  if (!manifest || manifest.manifest_version !== 2 || manifest.kind !== "meta-pass-storage-snapshot") {
+    throw new Error("手机内嵌页只接受 v2 设备存储快照归档；旧 APP+DATA 逻辑归档不能按快照还原");
   }
   return manifest;
 }
@@ -1504,25 +1493,10 @@ export function boot(opts = {}) {
   async function doRestoreArchive(file) {
     if (!file || archiveBusy) return;
     archiveBusy = true;
-    archiveMessage = "正在识别归档版本…";
+    archiveMessage = "正在校验设备存储快照…";
     try {
-      const input = new Uint8Array(await file.arrayBuffer());
-      const entries = readDataArchiveZip(input);
-      const manifestBytes = entries.get("manifest.json");
-      if (!manifestBytes) throw new Error("归档缺少 manifest.json");
-      let rawManifest;
-      try { rawManifest = JSON.parse(new TextDecoder().decode(manifestBytes)); }
-      catch { throw new Error("manifest.json 不是有效 JSON"); }
-      const archiveKind = classifyPhoneArchiveVersion(rawManifest);
-      if (archiveKind === "legacy-v1") {
-        // The old USB fixed-slot restore path writes raw APP/NVS images through
-        // its serial/bootloader transport. The embedded page has no equivalent
-        // guarded v1 writer; identify the archive accurately, then fail closed.
-        archiveMessage = "已识别历史 v1.1 APP/NVS 归档，但当前手机端设备 API 不提供旧版固定槽写入通道。本次未写入任何 Flash；请使用 USB 服务页还原该历史归档。";
-        log(archiveMessage, "warn");
-        return;
-      }
-      const checked = await validateStorageSnapshotArchiveForDevice(bridge, input);
+      const checked = await validateStorageSnapshotArchiveForDevice(
+        bridge, new Uint8Array(await file.arrayBuffer()));
       // Do not fall back to the former APP+DATA v2 restore path: the v2 format
       // now means a whole-device allocated-storage snapshot. The device-side
       // transactional writer/rollback protocol is a hard prerequisite for writes.
