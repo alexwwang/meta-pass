@@ -2,9 +2,9 @@
 
 Language: [简体中文](HANDOFF-realdevice-backup-restore-manual-data-confirmation.zh_CN.md)
 
-Date: 2026-10-12  
+Date: 2026-10-14  
 Target branch: `feat/storage`  
-Scope: APP + DATA backup/restore in the embedded mobile page and USB service page, including real-device DATA access confirmation.
+Scope: v2 whole-device storage snapshots, USB v1.1 legacy archive compatibility, and human confirmation of real-device DATA access after installs.
 
 ## 0. Mandatory test discipline
 
@@ -25,9 +25,10 @@ These rules override the runner's default behavior and any goal of completing al
 ## 1. Current status and entry conditions
 
 - Continue on `feat/storage`; do not develop on `main`.
-- Recent changes introduced shared v2 archive preparation in `install-slot/data-archive-restore.js`, used by both mobile and USB restore paths, with host test `tools/install-slot/test-data-archive-restore.mjs`.
-- A recent static check failed because the Chinese handoff did not have its required English default peer. Fix this documentation contract and rerun checks on the latest HEAD; do not reuse results from an older commit.
-- Confirm current branch, commit, working tree, host tests, and firmware build before changing a device.
+- v2 archives now mean whole-device allocated-storage snapshots, replacing the APP+DATA logical archive. The discriminator is `kind: meta-pass-storage-snapshot`.
+- The mobile page supports snapshot export and restore preflight, but not restore writes. The device currently exposes guarded partition inventory/read endpoints only.
+- USB fixed-slot devices retain historical v1.1 archive behavior. USB dynamic-v2 snapshot backup is blocked because the serial transport cannot yet reliably identify the running host partition. Neither page may treat an old APP+DATA v2 archive as a new snapshot.
+- Static checks and firmware checks passed for the most recently verified commit `3900829f91d15ffffe1341b50960e2c4df1f2d7a`. Recheck CI on any newer HEAD; never reuse an older result.
 
 Suggested commands:
 
@@ -60,21 +61,20 @@ Before device testing, run:
 
 Confirm that these tests actually execute and pass:
 
-- `tools/install-slot/test-data-byte-archive.mjs`
-- `tools/install-slot/test-data-archive-restore.mjs`
-- `tools/install-slot/test-data-archive-zip.mjs`
-- `tools/install-slot/test-data-restore-transaction.mjs`
-- `tools/install-slot/test-data-restore-device-integration.mjs`
+- `tests/test_storage_snapshot.mjs`
+- `tests/test_storage_snapshot_device_contract.py`
+- `tools/install-slot/test-data-restore-device-integration.mjs` (now tests snapshot export and non-mutating preflight, not APP+DATA writes)
 - `tests/test_phone_install.mjs`
-- Mobile and USB storage-management/page-health contract tests.
+- `tests/test_mobile_page_storage_management_contract.py`
+- USB storage-management and browser smoke contract tests.
 
 Also verify:
 
-- Mobile and USB use the same `prepareDataArchiveRestore()` semantics for v2 APP+DATA archives.
-- v2 restore validates archived NVS bytes but does not write global NVS to the target device.
-- If commit status is uncertain, the restore transaction does not delete possibly referenced staging DATA.
-- DATA length, SHA-256, and allocation granularity are validated.
-- The current commit's firmware build succeeds.
+- Snapshot completeness, payload length, and SHA-256 checks pass.
+- Target layout must match exactly; running host firmware and `cardid` are excluded.
+- Mobile restore preflight only reads partition inventory and does not write Flash.
+- USB fixed-slot v1.1 restore remains on the historical path; dynamic v2 snapshot remains blocked.
+- Static checks and firmware checks pass on the current commit; real-device tests remain separate.
 
 If any check fails, fix it and rerun affected tests before proceeding to device acceptance.
 
@@ -118,16 +118,16 @@ This gate is mandatory, especially for market firmware 28:
 
 1. Export an archive through an explicit user action.
 2. Verify ZIP parsing, manifest completeness, each entry's byte length, and SHA-256.
-3. Confirm the archive contains only the selected APP group and its DATA; record whether global NVS is included.
-4. NVS archives may contain Wi-Fi credentials and device configuration and are unencrypted. Do not upload/share them or print raw NVS bytes in logs.
+3. For a mobile v2 snapshot, confirm the archive contains raw bytes of allocated partitions except the running host firmware, `cardid`, and unallocated gaps; NVS may be included.
+4. ZIP files are unencrypted and may contain Wi-Fi credentials, install-session state, and play data. Do not upload/share them or print raw sensitive bytes. USB dynamic-v2 snapshot backup is currently blocked and must not fall back to a retired APP+DATA v2 archive.
 5. Store the archive securely and record its size and SHA-256. Never commit the archive to Git.
 
 ### T4 — Restore to a safe target
 
 1. Confirm the target device is approved for writes and the archive source is trusted.
 2. Record target APP/DATA/NVS baseline.
-3. v2 restore must restore APP + DATA only. Validate archived global NVS but do not write it to the target.
-4. Record preflight, APP/DATA write/read-back, carve commit, and final inventory.
+3. Currently only archive validation and target-layout preflight are allowed; do not perform snapshot restore writes until transactional write/rollback exists.
+4. Record target partition inventory, exact-layout result, payload hash validation, and the explicit no-write status.
 5. After successful restore, repeat T2 human DATA confirmation. Do not continue without it.
 6. If commit outcome is uncertain, stop. Do not blindly retry or clean staging; inspect device state and collect logs first.
 
@@ -178,7 +178,7 @@ Record each scenario separately; never merge results across firmware or page typ
 The task is complete only when all conditions hold:
 
 1. Static/host tests and firmware build pass on the current HEAD.
-2. Both embedded mobile and USB backup/restore paths have real-device test records.
+2. Mobile snapshot backup/preflight and USB v1.1 legacy compatibility have test records; USB v2 snapshot and snapshot restore on both pages must remain explicitly BLOCKED until implemented.
 3. Every installation involving real-market firmware 28 has human DATA access confirmation; unconfirmed scenarios remain BLOCKED.
-4. Restored APP/DATA can actually be read and written, and values remain correct after required reread/restart checks.
-5. Archive structure, byte lengths, and SHA-256 pass, with evidence for restored DATA and target device state.
+4. Once snapshot restore is implemented, restored partitions must pass read-back verification; human DATA checks after any play install remain governed by T2.
+5. Archive structure, byte lengths, and SHA-256 pass; preflight must never be presented as evidence of a completed restore.
