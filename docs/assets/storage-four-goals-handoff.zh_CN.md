@@ -10,9 +10,9 @@ PR：[#1](https://github.com/alexwwang/meta-pass/pull/1)
 
 ## 0. 重要结论
 
-这不是“CI 全绿即可结束”的任务。下列四项必须逐项给出代码证据、自动化测试结果和真机证据；未执行的真机项目必须标为 BLOCKED/NOT RUN，不得推断 PASS。
+本交接文档用于追踪剩余验收项，不应覆盖后续更新的真机报告。每项结论以最新代码、自动化结果和带日期的真机报告为准；旧报告中的 NOT RUN 不能在新证据出现后继续沿用。
 
-1. **手机内嵌页与 USB 服务页对齐**：安装、卸载、容量选择、备份/恢复、错误提示和生命周期语义一致；USB 保留手机页没有的本地固件安装入口。当前两页仍是独立 UI/业务代码；本轮已将 DATA 容量选项生成抽为 `install-slot/data-size-options.js`，两页共享同一默认值/选项规则，但安装、卸载、备份恢复和设备通信流程尚未统一。
+1. **手机内嵌页与 USB 服务页对齐**：两页共享 DATA 容量选项、v2 归档与恢复预检模块；传输层保持各自实现（USB WebSerial/esptool-js，手机 DeviceBridge），USB 独有本地固件安装入口。恢复语义统一为完整 v2 单 APP+DATA 组，归档 NVS 只校验、不写入目标设备；USB 已移除 v1 顺序恢复路径。两页仍不是同一套 UI/传输代码，因此需持续用契约测试防止业务语义漂移。
 2. **保留固定 `cardid`/ `store` 的分区容量方案**：绝不移动固定分区或直接改动 `cardid`。动态池被固定区域切成两个物理区段；单个连续 DATA reservation 不能跨越固定分区。当前 `dynslot-pool.js` 的池段为 `0x180000..0x356000` 和 `0x360000..0x7fe000`，第二段约 4.61 MiB。不能仅凭两个区段的总空闲容量声称 5.7 MiB DATA 可安装。若市场镜像声明的最小 DATA 大于最大可分配连续区间，必须明确拒绝，并同时展示最大连续空闲空间与总空闲空间；手机页和 USB 页已补充该诊断。除非设计并实现了设备端兼容的非连续 DATA 映射，否则不能把一个 reservation 跨段拼接。
 3. **专用测试子固件验证 DATA 读写**：使用 `tests/realdevice/data-child/`，经 USB Serial/JTAG 的受控命令写入测试记录、读回并校验、重启后再次校验。只允许通过分区标签 `e2edata` 解析分区，不接受任意 Flash 地址。市场玩法不支持这个串口协议，不能拿它代替专用测试固件。
 4. **安装时创建 DATA 分区**：安装前校验最小容量、4 KiB 对齐、记录数和连续空间；安装后核对 APP 与 DATA 的 `play_id` 归属；读写、重启持久性、卸载释放和重新安装都要覆盖。现有分配器/安装计划代码和部分真机安装证据，不等于完整生命周期已通过。
@@ -113,9 +113,9 @@ node tools/realdevice/usb_web_e2e_multi.mjs --help
 | 备份 | manifest 与所有 APP/DATA 载荷的长度和 SHA-256 相符 | ZIP 校验报告 |
 | 恢复 | 完整预检、地址由设备端分配、写后读回、提交后重读验证 | 模拟故障矩阵 + 真机证据 |
 | v1 旧归档 | 明确标识不含 DATA | UI/测试断言 |
-| APP+DATA v2 恢复实现 | 当前手机页/USB 页均有分阶段恢复事务；仍需真机恢复 E2E 验证 | 自动化测试 + 真机证据 |
+| APP+DATA v2 恢复实现 | 两页均有分阶段恢复事务；USB 页完整真机恢复已由 2026-10-13 报告证明，手机页完整 UI 闭环仍待真机验收 | 自动化测试 + 分页面真机证据 |
 
-**恢复功能特别说明：** `install-slot/data-restore-plan.js` 是地址无关的预检辅助模块，不单独执行 Flash 写入；实际恢复入口已分别存在于手机页 `phone-install.js::restoreDataArchive()` 和 USB 页 `restoreV2ArchiveUsb()`，通过设备端安装事务写入 APP/DATA 并在提交前读回验证。代码/自动化测试存在不等于真机恢复验收完成：本轮报告中的真机备份/恢复仍为 NOT RUN，必须保留此状态，直到真机恢复 E2E 有完整证据。
+**恢复功能状态（以 2026-10-14 的报告为准）：** `install-slot/data-restore-plan.js` 是地址无关的预检辅助模块；手机页 `phone-install.js::restoreDataArchive()` 与 USB 页 `restoreV2ArchiveUsb()` 分别执行传输适配与事务写入。USB 页已由 `docs/backup-restore-test-report-2026-10-13.zh_CN.md` 证明完整真机生命周期通过；`docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` 又证明分段备份、失败重试和归档载荷字节一致。不得继续把 USB 真机备份/恢复标为 NOT RUN。尚缺的是手机内嵌页通过真实移动视口 UI 完成备份 → 删除 APP+DATA → 恢复 → 字节级比较 → 重启持久性的完整 E2E 证据。两页都只支持 v2 单 APP+DATA 组恢复；归档 NVS 只校验、不写入目标设备；多 APP 原子恢复不在本期范围。
 
 ## 5. 分区布局评估要求
 
