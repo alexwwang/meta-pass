@@ -26,7 +26,7 @@ Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.m
 
 - 代码工作仍在 `feat/storage`，不要切换到 `main` 上开发。
 - v2 归档语义已改为整设备已分配存储快照，取代 APP+DATA 逻辑归档；归档 kind 为 `meta-pass-storage-snapshot`。
-- 手机页支持快照导出和恢复预检，但恢复写入未实现。设备侧目前只有受保护的分区清单/读取 API。USB v1.1 兼容分支本轮未改动，不安排 v1.1 专项回归。
+- 手机页支持快照导出和恢复预检。宿主侧新增恢复协调器及 mock 协议测试，但固件缺少持久化事务 API，协调器未接入页面，实际恢复写入仍未实现。设备侧目前只有受保护的分区清单/读取 API。USB v1.1 兼容分支本轮未改动，不安排 v1.1 专项回归。
 - USB 固定槽设备保留历史 v1.1 归档路径；USB 动态 v2 快照备份因串口通道不能可信确认当前运行宿主分区而暂时阻塞。USB 和手机均不得把旧 APP+DATA v2 归档当作新快照。
 - 最近核验的提交 `3900829f91d15ffffe1341b50960e2c4df1f2d7a` 的 Static checks 与 Firmware checks 均通过；新提交后仍必须检查新 HEAD 的 CI，不能沿用旧结果。
 - 进入真机测试前，先确认当前工作区/commit、宿主测试和固件构建状态。若静态检查或构建失败，先修复代码并重新验证，不要用真机测试掩盖代码门禁失败。
@@ -72,7 +72,7 @@ git rev-parse HEAD
 
 至少确认以下覆盖被实际执行并通过：
 
-- `tests/test_storage_snapshot.mjs`
+- `tests/test_storage_snapshot.mjs`\n- `tests/test_storage_snapshot_restore.mjs`（宿主协调器 fail-closed 与 mock 协议流程；不代表真机固件已支持恢复）
 - `tests/test_storage_snapshot_device_contract.py`
 - `tools/install-slot/test-data-restore-device-integration.mjs`（当前验证快照备份与非写入预检，不再验证 APP+DATA 写入）
 - `tests/test_phone_install.mjs`
