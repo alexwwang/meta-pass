@@ -1515,8 +1515,8 @@ export function boot(opts = {}) {
           if (status) status.textContent = archiveMessage;
         },
       });
-      archiveMessage = result.dataVerified
-        ? "快照数据写入与独立读回核验通过。请重启设备并确认 MetaPass 可重新连接；此步骤尚未自动完成。"
+      archiveMessage = result.dataWritten
+        ? "快照数据已写入。请重启设备并确认 MetaPass 能正常启动、重新连接；此步骤尚未自动完成。"
         : "快照恢复尚未完成。";
       const status = $("mp-backup-status");
       if (status) status.className = result.bootValidated ? "ok" : "warn";
@@ -1524,7 +1524,7 @@ export function boot(opts = {}) {
     } catch (error) {
       const code = String(error?.code || "");
       const restoring = code.startsWith("SNAPSHOT_RESTORE_");
-      archiveMessage = (restoring ? "快照恢复未完成/不一致：" : "快照还原预检失败：") +
+      archiveMessage = (restoring ? "快照恢复未完成：" : "快照还原预检失败：") +
         (error?.message || String(error));
       log(archiveMessage, "error");
     } finally {
@@ -1538,7 +1538,7 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">设备存储快照</h4>
-      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。恢复采用逐分区擦除、写入与独立读回核验，不提供自动回滚；中断或核验失败时，请刷回归档记录的 MetaPass 版本后重试。</p>
+      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。恢复采用逐分区擦除与写入，不提供自动回滚；写入中断或重启后无法正常启动时，请刷回归档记录的 MetaPass 版本后重试。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>选择快照归档并恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
@@ -1625,7 +1625,7 @@ export function boot(opts = {}) {
 
   async function doRemove(slot) {
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>
-      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部关联 DATA。你可以先导出设备存储快照；快照可能包含系统 NVS、Wi-Fi 凭证和安装会话状态。快照恢复采用逐分区擦除、写入与独立读回核验，不提供自动回滚；若中断或核验失败，请刷回归档记录的 MetaPass 版本后重试。请先确认已保存需要保留的归档。此操作不可恢复。</p>
+      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部关联 DATA。你可以先导出设备存储快照；快照可能包含系统 NVS、Wi-Fi 凭证和安装会话状态。快照恢复采用逐分区擦除与写入，不提供自动回滚；若写入中断或重启后无法正常启动，请刷回归档记录的 MetaPass 版本后重试。请先确认已保存需要保留的归档。此操作不可恢复。</p>
       <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>删除 APP 及全部数据</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
