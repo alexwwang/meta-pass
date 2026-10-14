@@ -84,6 +84,10 @@ assert.throws(() => buildStorageSnapshotManifest({
   partitions: [{ label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000,
     extents: [{ file: "../escape.bin", offset: 0, bytes: 4, sha256: hash(payload) }] }],
 }), /invalid snapshot extent/);
+assert.throws(() => buildStorageSnapshotManifest({
+  partitions: [{ label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000,
+    extents: [{ file: "extents/unaligned.bin", offset: 1, bytes: 4, sha256: hash(payload) }] }],
+}), /invalid snapshot extent/);
 await assert.rejects(() => validateStorageSnapshotPayloads(manifest, {
   "extents/store-000010.bin": new Uint8Array([4, 3, 2, 1]),
 }, async (b) => hash(b)), /SHA-256 mismatch/);
