@@ -41,7 +41,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         parser_start = usb.index('$("restore-input").addEventListener')
         parser = usb[parser_start:handler_start]
         self.assertIn("const manifest = parseManifest(manifestText)", parser)
-        self.assertIn("historical v1 APP/NVS archive validated", parser)
+        self.assertIn("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", parser)
 
     def test_phone_backup_is_whole_device_snapshot_not_app_data_archive(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
