@@ -527,7 +527,9 @@ export default {
     // 跨模块错位。
     if (path === "/phone-install.js" || path === "/extract-app-image.js" ||
         path === "/store-analyze.js" || path === "/name-blob.js" ||
-        path === "/dynslot-pool.js" || path === "/storage-snapshot.js") {
+        path === "/dynslot-pool.js" || path === "/data-size-profile.js" ||
+        path === "/data-size-options.js" || path === "/data-byte-archive.js" ||
+        path === "/data-archive-restore.js" || path === "/storage-snapshot.js") {
       const asset = await env.ASSETS.fetch(new Request(new URL(path, req.url), req));
       if (!asset.ok) return err(404, "phone-install module missing from bundle");
       const headers = new Headers(asset.headers);
