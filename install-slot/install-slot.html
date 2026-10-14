@@ -190,7 +190,7 @@
 
   <section>
     <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">In dynamic mode, back up one complete APP+DATA group per archive; legacy layouts remain APP-only.</p>
+    <p class="subtitle" data-i18n="backup_desc">Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic v2 snapshot backup is temporarily unavailable over USB until the page can identify the running host partition safely.</p>
     <p>
       <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
       <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
@@ -208,8 +208,8 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restore dispatches by detected device mode and archive version: v1 APP/NVS archives on legacy fixed-slot devices, or complete v2 single APP+DATA archives on dynamic devices. Both versions verify archived NVS when present but always preserve destination NVS.</p>
-    <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
+    <p class="subtitle" data-i18n="restore_desc">USB restore currently accepts historical v1 APP/NVS archives only on fixed-slot devices. V2 whole-device snapshots remain blocked until safe running-host identification and transactional rollback are available; old APP+DATA v2 archives are rejected.</p>
+    <p class="hint" data-i18n="restore_flow_hint">Select a historical v1 archive to restore on a fixed-slot device. V2 snapshot restore remains blocked until safe host-partition identification and transactional rollback are available.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
     <button id="btn-restore" class="primary" disabled data-i18n="btn_restore">Restore</button>
@@ -217,7 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
-    <p class="hint" data-i18n="data_backup_unavailable">USB fixed-slot devices retain v1 APP/NVS archive compatibility, and dynamic devices back up one complete APP+DATA group as v2. All restore versions verify archived NVS when present but never write it; destination NVS stays unchanged. Removing an APP also deletes its owned DATA.</p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB fixed-slot devices retain historical v1 APP/NVS archive compatibility. Dynamic v2 whole-device snapshot backup is temporarily blocked until the page can obtain the device-reported running host partition; old APP+DATA v2 archives are not the new snapshot format. ZIP files are unencrypted and may contain Wi-Fi credentials and child-firmware data. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -302,7 +302,6 @@ import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRAN
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { buildDataArchiveManifest, validateDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip } from "./data-byte-archive.js";
-import { prepareDataArchiveRestore } from "./data-archive-restore.js";
 import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
@@ -2696,116 +2695,6 @@ async function restoreLegacyV1ArchiveUsb() {
   $("restore-status").className = "ok";
   log($("restore-status").textContent, "ok");
   restoreZip = null;
-}
-
-async function restoreV2ArchiveUsb() {
-  const manifest = restoreZip?.manifest;
-  const payloads = restoreZip?.v2Payloads;
-  if (!manifest || manifest.manifest_version !== 2 || !(payloads instanceof Map)) {
-    throw new Error("No validated v2 archive is loaded");
-  }
-  // Revalidate archive bytes at the mutation boundary using the same pure
-  // preparation path as the mobile page. Transport-specific allocation/write/
-  // commit logic remains below, but archive semantics must not drift.
-  const prepared = await prepareDataArchiveRestore(manifest, payloads, {
-    sha256Hex, extractAppImage, dataSizeGranule: DATA_SIZE_GRANULE,
-  });
-  const archivedSlot = prepared.slot;
-  const image = prepared.image;
-  const dataImages = prepared.dataImages;
-
-  // Re-read the durable carve after file selection; another action may have
-  // changed ownership or free space before the user confirms restore.
-  await loadSlotModel();
-  if (!isDynMode(slotModel.mode) || !slotModel.carve || !carveValid(slotModel.carve)) {
-    throw new Error("Transactional APP+DATA restore requires a valid dynamic carve record");
-  }
-  if (slotModel.carve.slots.some((s) => s.playId === archivedSlot.play_id) ||
-      slotModel.carve.data.some((d) => d.playId === archivedSlot.play_id)) {
-    throw new Error("This play_id already exists on the device. Remove the existing APP group before restore.");
-  }
-  const plan = planInstall(slotModel.carve, image.length, { target: "auto" });
-  if (plan.action !== PLAN.CREATE) {
-    throw new Error(`No fresh APP slot fits: need ${fmtBytes(plan.need)}, largest contiguous gap ${fmtBytes(plan.largestGap)}, total free ${fmtBytes(plan.totalFree)}`);
-  }
-  let nextCarve = insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size });
-  let plannedData = [];
-  if (dataImages.length) {
-    const dataPlan = planDataReservations(nextCarve, dataImages,
-      dataImages.map((d) => d.required_size), archivedSlot.play_id);
-    if (!dataPlan.ok) throw new Error(`DATA allocation failed (${dataPlan.reason})`);
-    plannedData = dataPlan.records;
-    nextCarve = {
-      slots: dataPlan.carve.slots,
-      data: dataPlan.carve.data.map((record) =>
-        record.playId === archivedSlot.play_id ? { ...record, state: DATA_STATE.DIRTY } : record),
-    };
-    if (!carveValid(nextCarve)) throw new Error("Restore allocation produced an invalid carve");
-  }
-
-  let commitStarted = false;
-  try {
-    for (const record of plannedData) {
-      log(`Staging restored DATA ${record.label} · ${fmtBytes(record.size)} at ${hex(record.offset)}`);
-      await writeDataPayload(record, record);
-    }
-
-    const addr = plan.offset;
-    const tailOffset = Math.ceil(image.length / 4096) * 4096;
-    if (tailOffset + 4096 < plan.size) {
-      await wipeSlotResidue({ offset: plan.offset, size: plan.size },
-        addr + tailOffset + 4096, plan.offset + plan.size, (p) => setRestoreProgress(p * 10));
-    }
-    await loader.writeFlash({
-      fileArray: [{ data: u8ToBinaryString(image.data), address: addr }],
-      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
-      reportProgress: (_i, written, total) => setRestoreProgress(10 + written / total * 75),
-    });
-    // Verify the full APP range using the stub MD5 command; avoid bulk Web Serial reads.
-    if (!SKIP_READBACK_VERIFY) {
-      await verifyFlashReadback(addr, image.data, "APP");
-    }
-
-    const name = sanitizeDisplayName(archivedSlot.name) || `play ${archivedSlot.play_id}`;
-    let tail = image.tailSector ? new Uint8Array(image.tailSector) : new Uint8Array(4096).fill(0xff);
-    const nameWindow = packNameBlobTail(name);
-    if (!nameWindow) throw new Error("Could not encode restored APP display name");
-    tail.set(nameWindow, 4056);
-    const tailAddr = addr + image.tailSectorOffset;
-    if (tailAddr + tail.length > addr + plan.size) throw new Error("APP tail metadata exceeds allocated slot");
-    await loader.writeFlash({
-      fileArray: [{ data: u8ToBinaryString(tail), address: tailAddr }],
-      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
-    });
-    const tailReadback = await loader.readFlash(tailAddr, tail.length);
-    if (!bytesEqual(tailReadback, tail)) throw new Error("APP tail metadata read-back mismatch");
-
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", image.data));
-    const slots = nextCarve.slots.slice();
-    slots[plan.index] = { ...slots[plan.index], state: SLOT_STATE.VALID,
-      imageLen: image.length, sha: digest, name, playId: archivedSlot.play_id };
-    const finalCarve = { slots, data: nextCarve.data };
-    if (!carveValid(finalCarve)) throw new Error("Final APP+DATA carve is invalid");
-    commitStarted = true;
-    const committed = await commitCarve(finalCarve, { materialize: true });
-    setRestoreProgress(100);
-    log(`Restore committed: source play_id ${archivedSlot.play_id}, new slot ${plan.index}, ${plannedData.length} DATA partition(s), record ${committed.from}→${committed.to}`, "ok");
-    $("restore-status").textContent = "APP+DATA 恢复成功。已验证 APP/DATA 写入，并提交新的分区记录；目标设备现有 NVS 保持不变。";
-    $("restore-status").className = "ok";
-    restoreZip = null;
-    await loadSlotModel();
-    renderSlotView();
-  } catch (error) {
-    if (!commitStarted) {
-      for (const record of plannedData) {
-        try { await wipeRange(record.offset, record.size); }
-        catch (cleanupError) { log(`Staged DATA cleanup failed at ${hex(record.offset)}: ${cleanupError.message}`, "warn"); }
-      }
-    } else {
-      log("Restore metadata commit status is uncertain; staged DATA bytes were preserved for recovery.", "warn");
-    }
-    throw error;
-  }
 }
 
 $("btn-restore").addEventListener("click", async () => {
