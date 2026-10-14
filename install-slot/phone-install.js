@@ -32,7 +32,7 @@ import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 import { prepareDataArchiveRestore } from "./data-archive-restore.js";
-import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads } from "./storage-snapshot.js";
+import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip } from "./storage-snapshot.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -351,6 +351,34 @@ export async function readStorageSnapshot(bridge, { onProgress } = {}) {
   });
   await validateStorageSnapshotPayloads(manifest, payloads, sha256Hex);
   return { manifest, payloads, bytesRead: readBytes, totalBytes };
+}
+
+export async function createStorageSnapshotArchive(bridge, options = {}) {
+  const snapshot = await readStorageSnapshot(bridge, options);
+  const zip = await buildStorageSnapshotZip(snapshot, sha256Hex);
+  return { ...snapshot, zip };
+}
+
+// Restore preflight only: validates the complete archive against the current
+// device layout before a future transactional write API is invoked.
+export async function validateStorageSnapshotArchiveForDevice(bridge, input) {
+  const archive = await readStorageSnapshotZip(input, sha256Hex);
+  const response = await bridge.storageInfo();
+  if (!response?.ok || typeof response.text !== "string") {
+    throw new Error("cannot read target device partition table: " + (response?.text || response?.status || "unknown error"));
+  }
+  let info;
+  try { info = JSON.parse(response.text); }
+  catch { throw new Error("target device partition inventory is not valid JSON"); }
+  if (!info?.running_host || !Array.isArray(info.partitions)) {
+    throw new Error("target device partition inventory is incomplete");
+  }
+  validateStorageSnapshotManifest(archive.manifest, {
+    targetPartitions: info.partitions,
+    runningHostPartition: info.running_host,
+    protectedRanges: info.protected_ranges || [],
+  });
+  return { ...archive, target: info };
 }
 
 // ── 槽位管理(design §4.5 Remove)───────────────────────────────────────
