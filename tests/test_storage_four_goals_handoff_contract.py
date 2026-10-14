@@ -33,13 +33,13 @@ for token in (
 assert "start: 0x180000, end: 0x356000" in POOL
 assert "start: 0x360000, end: 0x7fe000" in POOL
 assert "No Flash addresses or writes are accepted here" in RESTORE
-assert "export async function restoreDataArchive" in PHONE
+assert "export async function readStorageSnapshot" in PHONE
 assert "validateStorageSnapshotArchiveForDevice" in PHONE and "createStorageSnapshotArchive(bridge" in PHONE
 assert "createStorageSnapshotArchive(bridge" in PHONE and "validateStorageSnapshotArchiveForDevice" in PHONE
 assert "export async function restoreDataArchive" not in PHONE and "prepareDataArchiveRestore" not in PHONE
 assert "tools/install-slot/test-data-archive-restore.mjs" in VALIDATE
-assert "readDataArchiveZip" in PHONE
-assert "restoreData: true" in PHONE
+assert "readStorageSnapshotZip" in PHONE
+assert "buildStorageSnapshotRestorePlan" in PHONE
 assert "tools/install-slot/test-data-restore-device-integration.mjs" in VALIDATE
 assert "restore_data" in (ROOT / "main/meta_install_model.h").read_text(encoding="utf-8")
 assert "m->restore_data ? META_DATA_DIRTY : META_DATA_PRISTINE" in (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
@@ -69,7 +69,7 @@ assert "async function restoreV2ArchiveUsb()" not in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
 assert '"/flash-read-transfer.js"' not in SERVER
-assert "export async function restoreDataArchive" in PHONE
+assert "事务化写入/回滚协议完成前不会执行恢复写入" in PHONE
 
 # USB-only local firmware installation remains a required asymmetric capability.
 assert 'data-tab="local"' in USB and 'id="file-input"' in USB, "USB must retain its local-file firmware installation path"
