@@ -89,6 +89,10 @@ console.log("PASS archive version gate: phone page accepts v2 only and directs v
   assert.equal(reads.some((r) => r.label === "ota_0" || r.label === "cardid"), false,
     "snapshot reads must skip running host and cardid");
   assert.equal(snapshot.bytesRead, 0x3000);
+  const archive = await phone.createStorageSnapshotArchive(bridge);
+  assert.ok(archive.zip instanceof Uint8Array);
+  const preflight = await phone.validateStorageSnapshotArchiveForDevice(bridge, archive.zip);
+  assert.equal(preflight.manifest.kind, "meta-pass-storage-snapshot");
   console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
 }
 const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
