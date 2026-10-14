@@ -2150,7 +2150,9 @@ $("btn-probe").addEventListener("click", async () => {
 // 4096j(j≤8)的字节 ∈ {0x10..0x80},可证永不出现 0xC0/0xDB —— 协议流里不再存在
 // 不安全字节;同时失败粒度与重试代价减半。
 const BACKUP_CHUNK = 0x8000;
-const BACKUP_RETRIES = 8;   // 单块失败率 p≈3-5%(设备侧偶发丢字节/命令竞态,不可根除)下,8 次重试使单块最终失败概率 p^8 ≈ 万分之一
+// 失败后重建会话并重读当前块；最多恢复 3 次，避免在坏链路上无限等待。
+const BACKUP_RETRIES = 3;
+const BACKUP_READ_TIMEOUT_MS = 15000; // 真机 32 KiB 块通常数秒；给慢链路留余量，卡死时及时重建会话。
 // 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 4KB 块等浏览器
 // 回 4 字节累计确认(max_in_flight=64 帧,实际受读取总长限制)。中断后若只清缓冲
 // 不补确认,stub 会停在"等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧
@@ -2309,8 +2311,8 @@ async function restartBackupReadSession() {
   }
 }
 
-// Public backup reader: preserve the v1.1 32 KiB chunk/retry implementation within
-// each bounded segment, then renew the serial/loader session before continuing.
+// Public backup reader: read in bounded 512 KiB sessions. On a failed 32 KiB
+// chunk, the inner reader renews the session and retries the same flash offset.
 async function readFlashChunked(start, size, onProgress, onRetry) {
   const out = new Uint8Array(size);
   let offset = 0;
@@ -2343,15 +2345,21 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
       chunkT0 = Date.now();
       if (debugMode()) log(`[debug] → read 0x${(start + got).toString(16)} +${n}B #${attempt}`, "warn");
       if (attempt > 1) {
-        try { await resyncAfterReadError(n, attempt); }
-        catch (syncErr) {
+        try {
+          log(`备份块读取失败，重建会话后从 0x${(start + got).toString(16)} 续读（${attempt - 1}/${BACKUP_RETRIES - 1}）`, "warn");
+          await restartBackupReadSession();
+        } catch (syncErr) {
           lastErr = syncErr;
           log(t("msg_backup_resync_failed", { err: syncErr.message }), "warn");
-          break;   // re-sync 失败 = 传输层已死,放弃该槽
+          break;
         }
       }
       try {
-        chunk = await loader.readFlash(start + got, n);
+        chunk = await withTimeout(
+          loader.readFlash(start + got, n),
+          BACKUP_READ_TIMEOUT_MS,
+          `读取 0x${(start + got).toString(16)} 的 ${n} 字节超时`,
+        );
         // 短读/长读防护:readFlash 若返回长度不符的缓冲(历史毒帧/协议错位的可能
         // 症状),buf.set 会在无日志路径上抛 RangeError,被外层吞成"仍失败"。
         // 显式校验 + 报告,把这类失败拉回可观测区。
