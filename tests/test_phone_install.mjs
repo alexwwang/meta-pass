@@ -29,6 +29,37 @@ assert.equal(phone.assertPhoneArchiveVersion({ manifest_version: 2 }).manifest_v
 assert.throws(() => phone.assertPhoneArchiveVersion({ manifest_version: 1 }), /USB 服务页还原/);
 assert.throws(() => phone.assertPhoneArchiveVersion(null), /仅支持 v2/);
 console.log("PASS archive version gate: phone page accepts v2 only and directs v1.1 users to USB");
+
+{
+  const seen = [];
+  globalThis.fetch = async (url, options = {}) => {
+    seen.push({ url: String(url), headers: options.headers || {} });
+    if (String(url).endsWith("/api/install/storage/info")) {
+      return new Response(JSON.stringify({ running_host: { label: "ota_0" }, partitions: [] }), { status: 200 });
+    }
+    if (String(url).endsWith("/api/install/storage/read")) {
+      return new Response(new Uint8Array([0, 255, 1, 128]), { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  const bridge = phone.createBridge("http://device", "a".repeat(32));
+  const info = await bridge.storageInfo();
+  assert.equal(info.ok, true);
+  const part = { label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000 };
+  const read = await bridge.storageRead(part, 0, 4);
+  assert.equal(read.ok, true);
+  assert.deepEqual([...read.bytes], [0, 255, 1, 128]);
+  const req = seen.find((x) => x.url.endsWith("/api/install/storage/read"));
+  assert.equal(req.headers["X-Meta-Partition-Label"], "store");
+  assert.equal(req.headers["X-Meta-Partition-Offset"], String(part.offset));
+  assert.equal(req.headers["X-Meta-Offset"], "0");
+  assert.equal(req.headers["X-Meta-Length"], "4");
+  const count = seen.length;
+  const invalid = await bridge.storageRead(part, part.size - 1, 2);
+  assert.equal(invalid.ok, false);
+  assert.equal(seen.length, count, "invalid relative ranges must be rejected before any device request");
+  console.log("PASS guarded storage snapshot bridge: exact partition identity, binary reads, and range bounds");
+}
 const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
 const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
 const v2RestoreStart = usbPage.indexOf("async function restoreV2ArchiveUsb()", legacyRestoreStart);
