@@ -3,7 +3,6 @@
 // Transport-specific Flash I/O belongs to USB and the guarded device bridge.
 export const STORAGE_SNAPSHOT_VERSION = 2;
 export const STORAGE_SNAPSHOT_KIND = "meta-pass-storage-snapshot";
-export const PARTITION_TABLE_RANGE = Object.freeze({ offset: 0x8000, size: 0x1000 });
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
 function fail(message) {
@@ -75,7 +74,7 @@ export function buildStorageSnapshotManifest({ createdUtc = new Date().toISOStri
       !Array.isArray(partitions) || partitions.length === 0) fail("invalid snapshot input");
   const seen = new Set();
   const normalized = partitions.map((p) => {
-    if (!validPartition(p) || typeof p.name !== "string" || !Array.isArray(p.extents)) {
+    if (!validPartition(p) || !Array.isArray(p.extents)) {
       fail("invalid snapshot partition record");
     }
     if (seen.has(p.label)) fail("duplicate snapshot partition label");
@@ -119,7 +118,6 @@ export function validateStorageSnapshotManifest(manifest, {
     if (seenLabels.has(p.label)) fail("duplicate partition label");
     seenLabels.add(p.label);
     if (p.label === "cardid" ||
-        overlaps(p.offset, p.size, PARTITION_TABLE_RANGE.offset, PARTITION_TABLE_RANGE.size) ||
         (runningHostPartition && isProtectedPartition(p, runningHostPartition))) {
       fail("snapshot attempts to include a protected partition");
     }
