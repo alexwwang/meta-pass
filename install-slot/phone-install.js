@@ -384,7 +384,7 @@ export async function readStorageSnapshot(bridge, { onProgress } = {}) {
     });
   }
   const sourceVersion = info.meta_pass_version;
-  if (typeof sourceVersion !== "string" || !/^\\d+\\.\\d+\\.\\d+$/.test(sourceVersion)) {
+  if (typeof sourceVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(sourceVersion)) {
     throw new Error("device did not report a valid MetaPass system version; snapshot was not created");
   }
   // Conservative until a broader compatibility matrix is maintained: exact source version only.
