@@ -32,7 +32,7 @@ import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
 import { prepareDataArchiveRestore } from "./data-archive-restore.js";
-import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip } from "./storage-snapshot.js";
+import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan } from "./storage-snapshot.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -373,12 +373,12 @@ export async function validateStorageSnapshotArchiveForDevice(bridge, input) {
   if (!info?.running_host || !Array.isArray(info.partitions)) {
     throw new Error("target device partition inventory is incomplete");
   }
-  validateStorageSnapshotManifest(archive.manifest, {
+  const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
     targetPartitions: info.partitions,
     runningHostPartition: info.running_host,
     protectedRanges: info.protected_ranges || [],
   });
-  return { ...archive, target: info };
+  return { ...archive, target: info, restorePlan };
 }
 
 // ── 槽位管理(design §4.5 Remove)───────────────────────────────────────
