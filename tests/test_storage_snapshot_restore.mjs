@@ -28,7 +28,7 @@ const archive = await buildStorageSnapshotZip({
 }, async bytes => hash(bytes));
 
 function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = null,
-  failBoot = false } = {}) {
+  failBoot = false, layoutMismatch = false } = {}) {
   const calls = [];
   const flash = new Map();
   let writes = 0;
@@ -36,7 +36,7 @@ function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = 
     calls,
     async storageInfo() {
       calls.push(["info"]);
-      return { ok: true, meta_pass_version: version, running_host: host, partitions };
+      return { ok: true, meta_pass_version: version, running_host: host, partitions: layoutMismatch ? partitions.map(p => p.label === "store" ? { ...p, size: p.size + 0x1000 } : p) : partitions };
     },
     async storageErase(partition) {
       calls.push(["erase", partition.label]);
@@ -76,6 +76,31 @@ for (const version of ["3.0.0", null]) {
     /outside this snapshot's supported range|did not report a valid MetaPass version/,
   );
   assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false, "version preflight runs before writes");
+}
+
+// Live layout mismatch is rejected before the first erase.
+{
+  const device = mockDevice({ layoutMismatch: true });
+  await assert.rejects(
+    restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
+    /incompatible/,
+  );
+  assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false,
+    "layout preflight must finish before Flash mutation");
+}
+
+// Missing read/write capabilities must also fail before erase.
+{
+  const calls = [];
+  const device = {
+    async storageInfo() { calls.push("info"); return { ok: true, meta_pass_version: "2.2.0", running_host: host, partitions }; },
+    async storageErase() { calls.push("erase"); return { ok: true }; },
+  };
+  await assert.rejects(
+    restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
+    /does not provide live storage inventory/,
+  );
+  assert.equal(calls.includes("erase"), false, "transport capability preflight must be non-mutating");
 }
 
 // Success covers erase, sparse 0xFF gaps, payload writes, full partition readback, and reboot.
