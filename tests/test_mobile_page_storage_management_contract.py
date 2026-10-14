@@ -23,7 +23,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertNotIn("包含全局 NVS 的归档会被拒绝", mobile)
         self.assertNotIn("当前尚不能导入恢复", mobile)
         self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
-        self.assertIn("legacy v1 restore is not supported", usb)
+        self.assertIn("Legacy v1 restore is not supported", usb)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
 
     def test_usb_restore_matches_mobile_v2_only_contract(self):
