@@ -1,3 +1,4 @@
+import { buildDataArchiveZip, readDataArchiveZip } from "./data-byte-archive.js";
 // install-slot/storage-snapshot.js
 // Pure shared policy/validation for the v2 device-storage snapshot format.
 // Transport-specific Flash I/O belongs to USB and the guarded device bridge.
@@ -75,7 +76,7 @@ export function eligibleSnapshotPartitions(partitions, runningHostPartition, pro
 }
 
 function validateExtent(extent, partitionSize, seenNames) {
-  if (!extent || typeof extent.file !== "string" || !extent.file ||
+  if (!extent || typeof extent.file !== "string" || !extent.file || extent.file === "manifest.json" ||
       extent.file.startsWith("/") || extent.file.includes("\\") ||
       extent.file.split("/").some((part) => !part || part === "." || part === "..") ||
       !Number.isSafeInteger(extent.offset) || extent.offset < 0 ||
@@ -182,6 +183,40 @@ export function validateStorageSnapshotManifest(manifest, {
     }
   }
   return manifest;
+}
+
+export async function buildStorageSnapshotZip({ manifest, payloads }, sha256Hex) {
+  validateStorageSnapshotManifest(manifest);
+  if (!(payloads instanceof Map)) fail("snapshot payloads must be a Map");
+  await validateStorageSnapshotPayloads(manifest, payloads, sha256Hex);
+  const expected = new Set(manifest.partitions.flatMap((p) => p.extents.map((e) => e.file)));
+  if (payloads.size !== expected.size || [...payloads.keys()].some((name) => !expected.has(name))) {
+    fail("snapshot payload set does not match manifest");
+  }
+  const entries = [...expected].map((name) => ({ name, data: payloads.get(name) }));
+  entries.push({ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
+  return buildDataArchiveZip(entries, { maxEntries: 4096 });
+}
+
+export async function readStorageSnapshotZip(input, sha256Hex) {
+  const entries = readDataArchiveZip(input, {
+    maxArchiveBytes: 16 * 1024 * 1024,
+    maxEntries: 4096,
+    maxEntryBytes: 8 * 1024 * 1024,
+  });
+  const manifestBytes = entries.get("manifest.json");
+  if (!(manifestBytes instanceof Uint8Array)) fail("storage snapshot archive is missing manifest.json");
+  let manifest;
+  try { manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)); }
+  catch { fail("storage snapshot manifest is not valid UTF-8 JSON"); }
+  validateStorageSnapshotManifest(manifest);
+  entries.delete("manifest.json");
+  const expected = new Set(manifest.partitions.flatMap((p) => p.extents.map((e) => e.file)));
+  if (entries.size !== expected.size || [...entries.keys()].some((name) => !expected.has(name))) {
+    fail("storage snapshot archive contains missing or undeclared payload files");
+  }
+  await validateStorageSnapshotPayloads(manifest, entries, sha256Hex);
+  return { manifest, payloads: entries };
 }
 
 export async function validateStorageSnapshotPayloads(manifest, payloads, sha256Hex) {
