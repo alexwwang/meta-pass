@@ -303,7 +303,7 @@ import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
 import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
-import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
+import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
 import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
@@ -2391,6 +2391,11 @@ async function createUsbStorageSnapshot(onProgress = () => {}) {
     partitions: snapshotPartitions,
     metaPassVersion: version,
     compatibleMetaPassVersions: { min_inclusive: version, max_inclusive: version },
+  });
+  validateStorageSnapshotManifest(manifest, {
+    targetPartitions: inventory.partitions,
+    runningHostPartition: inventory.running_host,
+    protectedRanges: [],
   });
   const zip = await buildStorageSnapshotZip({ manifest, payloads }, sha256Hex);
   return { zip, manifest, inventory };
