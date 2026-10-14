@@ -908,13 +908,13 @@ const I18N = {
     msg_orphan_slot_warning: "Warning: slot geometry was committed but firmware write failed. The slot is allocated but empty — reinstall or delete it to avoid boot issues.",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
-    backup_desc: "In dynamic mode, back up one complete APP+DATA group per archive; legacy layouts remain APP-only.",
+    backup_desc: "Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic v2 snapshots are temporarily unavailable over USB until the page can obtain the device-reported running host partition; do not create legacy APP+DATA v2 archives.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only.",
-    restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
+    restore_desc: "USB restore currently accepts historical v1 APP/NVS archives only on fixed-slot devices. New v2 device snapshots require reliable running-host partition identity and a transactional restore protocol; old APP+DATA v2 archives are rejected.",
+    restore_flow_hint: "Select a historical v1 archive to restore on a fixed-slot device. V2 snapshot restore remains blocked until safe host-partition identification and transactional rollback are available.",
     btn_restore: "Restore",
-    data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive. Backup ZIP files are unencrypted and may contain raw NVS data such as Wi-Fi credentials; do not upload or share them. All restore versions verify any archived NVS bytes but never write NVS; destination device NVS remains unchanged. Legacy v1 archives retain APP/NVS archive compatibility. Removing an APP also deletes its owned DATA.",
+    data_backup_unavailable: "USB fixed-slot devices retain historical v1 APP/NVS archive compatibility. Dynamic v2 whole-device snapshot backup is temporarily blocked until the page can obtain the device-reported running host partition; old APP+DATA v2 archives are not the new snapshot format. ZIP files are unencrypted and may contain Wi-Fi credentials and child-firmware data. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
     msg_backup_single_group: "Backup supports one APP+DATA group per archive. Select exactly one APP slot.",
@@ -1124,13 +1124,13 @@ const I18N = {
     msg_orphan_slot_warning: "警告:槽位几何已提交但固件写入失败。槽位已分配但为空——请重新安装或删除该槽位,以免设备启动异常。",
     // 备份/恢复流程
     step_backup: "5. 备份子固件(读取槽位 → zip)",
-    backup_desc: "动态存储模式下每个归档备份一个完整 APP+DATA 组；旧布局仍仅备份 APP。",
+    backup_desc: "固定槽设备保留历史 v1 APP/NVS 备份。USB 动态 v2 快照暂不可用：页面尚不能可靠取得设备报告的当前宿主固件分区；不要继续生成旧 APP+DATA v2 归档。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "恢复流程按握手识别的设备模式与归档版本分流：旧版固定槽设备使用 v1 APP/NVS 归档；动态存储设备使用完整 v2 单 APP+DATA 归档。所有版本均只校验归档中的 NVS，不写入 NVS，目标设备现有 NVS 始终保持不变。",
-    restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
+    restore_desc: "USB 还原目前只允许在固定槽设备上恢复历史 v1 APP/NVS 归档。新 v2 设备快照需要可靠识别当前宿主分区和事务化回滚协议；旧 APP+DATA v2 归档会被拒绝。",
+    restore_flow_hint: "选择历史 v1 归档，并仅在固定槽设备上还原。v2 快照还原会等到安全的宿主分区识别与事务化回滚机制完成后再开放。",
     btn_restore: "开始恢复",
-    data_backup_unavailable: "USB 固定槽设备保留 v1 APP/NVS 归档兼容；动态存储设备备份一个完整 APP+DATA 组为 v2。备份 ZIP 未加密，可能包含 Wi-Fi 凭证等 NVS 原始数据，请勿上传或分享。所有版本均只校验归档中的 NVS，不写入 NVS，目标设备现有 NVS 始终保持不变。删除 APP 会同时删除其关联 DATA。",
+    data_backup_unavailable: "USB 固定槽设备保留历史 v1 APP/NVS 归档兼容。动态 v2 整设备快照暂时阻塞，原因是页面尚不能可靠取得设备报告的当前宿主固件分区；旧 APP+DATA v2 归档不再作为新快照格式。ZIP 未加密，可能包含 Wi-Fi 凭证和玩法数据。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_single_group: "每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
@@ -2298,6 +2298,12 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
 
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
+  if (isDynMode(slotModel.mode)) {
+    const message = "USB v2 快照备份暂不可用：无法从当前串口会话可靠取得设备报告的运行中宿主分区。为避免错误归档，未生成旧 APP+DATA v2 备份。";
+    $("backup-status").textContent = message;
+    log(message, "warn");
+    return;
+  }
   const slots = deviceSlots.map((_, i) => i).filter((i) => $(`bk-slot${i}`)?.checked);
   if (slots.length === 0) {
     $("backup-status").textContent = t("msg_backup_pick_slot");
@@ -2547,36 +2553,15 @@ $("restore-input").addEventListener("change", async (ev) => {
       const missing = Array.isArray(rawManifest.missing_slots) ? rawManifest.missing_slots.join(", ") : "unknown";
       throw new Error(t("msg_restore_partial_archive", { slots: missing }));
     }
+    if (rawManifest?.kind === "meta-pass-storage-snapshot") {
+      throw new Error("USB 快照还原暂不可用：当前串口会话无法可靠确认设备运行中的宿主分区，且事务化回滚协议尚未完成；未写入 Flash。");
+    }
     if (rawManifest?.manifest_version === 2) {
-      validateDataArchiveManifest(rawManifest);
-      if (rawManifest.complete !== true || (rawManifest.missing_slots || []).length) {
-        throw new Error("Incomplete v2 archive cannot be restored.");
-      }
-      if (rawManifest.slots.length !== 1) {
-        throw new Error("USB transactional restore currently supports one APP+DATA group at a time.");
-      }
-      const payloads = new Map(entries);
-      payloads.delete(MANIFEST_NAME);
-      const expected = new Set([
-        ...rawManifest.slots.flatMap((slot) => slot.files.map((f) => f.name)),
-        ...rawManifest.data.map((record) => record.file),
-        ...(rawManifest.nvs?.file ? [rawManifest.nvs.file] : []),
-      ]);
-      for (const name of payloads.keys()) {
-        if (!expected.has(name)) throw new Error("Undeclared archive payload: " + name);
-      }
-      await validateDataArchivePayloads(rawManifest, payloads, sha256Hex);
-      restoreZip = { manifest: rawManifest, v2Payloads: payloads };
-      $("restore-info").textContent = "完整 APP+DATA 归档已校验。恢复将分配新的连续空间，并在写入与读回校验后一次提交 APP/DATA 元数据；归档 NVS 不会写入，目标设备现有 NVS 保持不变。";
-      $("restore-info").className = "ok";
-      $("restore-slots").innerHTML = "";
-      $("btn-restore").disabled = busy || !loader;
-      log("v2 APP+DATA archive preflight passed; waiting for explicit restore action.", "ok");
-      return;
+      throw new Error("不再接受旧 APP+DATA v2 逻辑归档；v2 归档必须使用 meta-pass-storage-snapshot 格式。");
     }
     if (rawManifest?.manifest_version === 1) {
       if (isDynMode(slotModel.mode)) {
-        throw new Error("This v1 APP/NVS archive requires a legacy fixed-slot device; v2 dynamic devices require a v2 APP+DATA archive.");
+        throw new Error("This historical v1 APP/NVS archive requires a fixed-slot device; v2 snapshot restore is not yet available over USB.");
       }
       const manifest = parseManifest(manifestText);
       const filesBySlot = new Map();
@@ -2632,7 +2617,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       log("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", "ok");
       return;
     }
-    if (rawManifest?.manifest_version !== 2) {
+    if (rawManifest?.manifest_version !== 1) {
       throw new Error("Unsupported archive version: " + String(rawManifest?.manifest_version));
     }
   } catch (err) {
@@ -2832,10 +2817,8 @@ $("btn-restore").addEventListener("click", async () => {
   try {
     if (restoreZip.manifest.manifest_version === 1) {
       await restoreLegacyV1ArchiveUsb();
-    } else if (restoreZip.manifest.manifest_version === 2) {
-      await restoreV2ArchiveUsb();
     } else {
-      throw new Error("Unsupported archive version: " + String(restoreZip.manifest.manifest_version));
+      throw new Error("Only historical v1 fixed-slot archives can be restored by the USB page at this time.");
     }
   } catch (err) {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
