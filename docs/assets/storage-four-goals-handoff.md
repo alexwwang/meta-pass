@@ -90,10 +90,11 @@ Use the repository's documented arguments and runtime driver; do not invent flag
 | Reboot | APP and DATA ownership plus byte digest remain unchanged |
 | Cancel uninstall | No slot, reservation, or free-space changes |
 | Uninstall | Only the target app and its owned DATA are removed; other apps remain |
-| Backup | All archive payloads match manifest length and SHA-256 |
-| Restore | Full preflight, device-side allocation, staged writes, readback, atomic metadata publish, post-commit revalidation |
-| Legacy v1 archive | Preserve APP/NVS backup and restore on fixed-slot devices; dynamic devices use v2 APP+DATA transaction archives |
-| APP+DATA v2 restore implementation | Both pages have staged restore paths; USB full lifecycle is proven by the 2026-10-13 report, while the full mobile-page UI E2E remains pending |
+| Phone v2 snapshot backup | Read live partition inventory; exclude running host, `cardid`, and unallocated gaps; verify each extent length and SHA-256 | Node tests + phone browser smoke + real-device ZIP verification (not yet run) |
+| USB fixed-slot v1.1 archive | Preserve historical APP/NVS archive behavior | Contract tests + fixed-slot device check (not yet run) |
+| Old APP+DATA v2 archive | Reject explicitly; never treat as the new snapshot kind | USB/phone contract tests |
+| V2 snapshot restore | Preflight only; device-side transactional writes, rollback, erase bounds, and readback verification are not implemented | BLOCKED; do not attempt destructive device restore |
+| USB dynamic v2 snapshot | Fail closed until the serial page can reliably obtain the device-reported running host partition | Code/contract tests; restore remains BLOCKED |
 
 **Snapshot status (2026-10-14):** The older reports `docs/backup-restore-test-report-2026-10-13.zh_CN.md` and `docs/usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md` validate the former APP+DATA logical-archive path, not the new whole-device snapshot restore. `install-slot/storage-snapshot.js` now provides snapshot ZIP generation/parsing, payload SHA-256 checks, and a non-mutating restore plan. `main/meta_store_install.c` provides authenticated read-only partition inventory and partition-relative reads. The phone UI can create snapshots and preflight an archive, but it does not write Flash. USB dynamic mode refuses to generate old APP+DATA v2 archives; USB snapshot backup/restore is not connected because the serial page cannot reliably obtain the device-reported running host partition. Historical fixed-slot v1.1 behavior remains. Next: implement and validate a bounded transactional restore/rollback protocol and solve USB host-partition identification before destructive snapshot tests. The prior reports must not be cited as proof that the new snapshot restore works.
 
