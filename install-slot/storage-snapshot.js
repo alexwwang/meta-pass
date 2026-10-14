@@ -363,7 +363,7 @@ export async function captureStorageSnapshot(device, {
       const readResult = await device.storageReadPartition(part, offset => {
         onProgress({ label: part.label, offset, partitionSize: part.size, bytesRead: bytesRead + offset, totalBytes });
       });
-      const bytes = readResult instanceof Uint8Array ? readResult : readResult?.bytes;
+      const bytes = readResult instanceof Uint8Array ? readResult : readResult?.ok === true ? readResult.bytes : null;
       if (!(bytes instanceof Uint8Array) || bytes.byteLength !== part.size) {
         throw new Error("incomplete storage snapshot read: " + part.label + " (whole-partition reader returned invalid length)");
       }
