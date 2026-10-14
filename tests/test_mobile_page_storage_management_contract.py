@@ -235,7 +235,9 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertNotIn("事务化写入/回滚协议完成前不会执行恢复写入", installer)
         self.assertIn("export async function readStorageSnapshot", installer)
         self.assertIn("validateStorageSnapshotArchiveForDevice", installer)
-        self.assertIn("validateStorageSnapshotPayloads(manifest, payloads, sha256Hex)", installer)
+        self.assertIn("captureStorageSnapshot(bridge", installer)
+        snapshot_module = (ROOT / "install-slot/storage-snapshot.js").read_text(encoding="utf-8")
+        self.assertIn("validateStorageSnapshotPayloads(manifest, payloads, sha256Hex)", snapshot_module)
         self.assertIn("buildStorageSnapshotRestorePlan", installer)
         self.assertNotIn("export async function restoreDataArchive", installer)
         self.assertNotIn("data-export-pid", installer)
@@ -341,7 +343,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         for token in ('"/api/install/storage/info"', '"/api/install/storage/read"',
                       "storageInfo: () => call", "storageRead: (partition, offset, length)",
                       "X-Meta-Partition-Label", "X-Meta-Partition-Offset",
-                      "length > 4096", "createStorageSnapshotArchive(bridge",
+                      "length > 4096", "createStorageSnapshotArchive(bridge", "captureStorageSnapshot(bridge",
                       "归档未加密", "逐分区擦除、写入与独立读回核验"):
             with self.subTest(token=token):
                 self.assertIn(token, mobile)
