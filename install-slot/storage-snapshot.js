@@ -142,11 +142,14 @@ export function validateStorageSnapshotManifest(manifest, {
       fail("target partition table and running host partition are required");
     }
     const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition, protectedRanges);
-    for (const source of manifest.partitions) {
-      const target = eligible.find((p) => p.label === source.label &&
-        p.type === source.type && p.subtype === source.subtype);
-      if (!target || target.offset !== source.offset || target.size !== source.size) {
-        fail("target partition layout is incompatible: " + source.label);
+    if (manifest.partitions.length !== eligible.length) {
+      fail("snapshot does not cover every eligible allocated partition");
+    }
+    for (const target of eligible) {
+      const source = manifest.partitions.find((p) => p.label === target.label &&
+        p.type === target.type && p.subtype === target.subtype);
+      if (!source || target.offset !== source.offset || target.size !== source.size) {
+        fail("target partition layout is incompatible or snapshot is incomplete: " + target.label);
       }
     }
   }
