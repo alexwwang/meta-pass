@@ -14,7 +14,7 @@ Branch: `feat/storage`.
 - The device exposes authenticated, same-origin read-only partition inventory and partition-relative read APIs. Reads of the running host partition and `cardid` are rejected; callers cannot submit absolute Flash addresses as read targets.
 - The embedded phone page supports v2 whole-device snapshot backup with a sensitive-data warning. Restore is deliberately preflight-only: it validates the archive and target layout but does not write Flash.
 - The USB page retains the historical v1.1 fixed-slot archive path. The NVS restore write path has an explicit contract test; do not replace this legacy path with v2 snapshot parsing.
-- The USB page's existing segmented-read route has passed a real-device end-to-end backup test: the page produced a complete archive, independent `esptool.py` dumps matched the APP/DATA payload bytes, and reboot persistence was checked. The same report records intermittent Chrome Web Serial/esptool-js session failures; a failed attempt must not produce a ZIP.
+- A real-device report from an earlier tested revision records a successful segmented APP+DATA logical-archive backup/delete/restore cycle and intermittent Chrome Web Serial/esptool-js failures. That report is historical evidence only: the current branch has retired the old APP+DATA logical-v2 restore handler, so it does **not** prove current-HEAD restore behavior. Re-run the applicable USB v1.1 compatibility regression on the current firmware/page before hardware acceptance.
 - The tests explicitly preserve the version boundary: USB historical v1 restore remains identifiable, the retired APP+DATA logical-v2 restore handler is absent, and the phone page accepts only the v2 whole-device snapshot discriminator.
 
 ## Not complete / blocked
