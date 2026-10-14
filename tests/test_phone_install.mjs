@@ -25,22 +25,15 @@ import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
-assert.equal(phone.classifyPhoneArchiveVersion({
-  manifest_version: 1, kind: "meta-pass-slot-backup",
-}), "legacy-v1");
-assert.equal(phone.classifyPhoneArchiveVersion({
-  manifest_version: 2, kind: "meta-pass-storage-snapshot",
-}), "storage-snapshot-v2");
 assert.equal(phone.assertPhoneArchiveVersion({
   manifest_version: 2, kind: "meta-pass-storage-snapshot",
 }).kind, "meta-pass-storage-snapshot");
 assert.throws(() => phone.assertPhoneArchiveVersion({
   manifest_version: 2, kind: "meta-pass-slot-backup",
 }), /旧 APP\+DATA 逻辑归档/);
-assert.throws(() => phone.assertPhoneArchiveVersion({ manifest_version: 1 }), /已识别历史 v1.1/);
-assert.throws(() => phone.classifyPhoneArchiveVersion({ manifest_version: 2, kind: "meta-pass-slot-backup" }), /旧 APP/);
-assert.throws(() => phone.assertPhoneArchiveVersion(null), /不支持的归档版本/);
-console.log("PASS phone archive classification: recognizes legacy v1.1, accepts v2 snapshots, and rejects retired APP+DATA v2");
+assert.throws(() => phone.assertPhoneArchiveVersion({ manifest_version: 1 }), /v2 设备存储快照/);
+assert.throws(() => phone.assertPhoneArchiveVersion(null), /v2 设备存储快照/);
+console.log("PASS archive version gate: phone page accepts v2 storage snapshots and rejects legacy logical archives");
 
 {
   const seen = [];
