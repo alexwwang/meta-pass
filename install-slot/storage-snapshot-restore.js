@@ -8,7 +8,6 @@ import {
 } from "./storage-snapshot.js";
 
 const CHUNK_BYTES = 4096;
-const FF = new Uint8Array(CHUNK_BYTES).fill(0xff);
 
 function restoreError(message, code, details = {}) {
   const error = new Error(message);
@@ -52,22 +51,23 @@ function firstMismatch(expected, actual) {
   return -1;
 }
 
-async function writeChunk(device, address, bytes) {
-  if (typeof device.writeFlash !== "function") {
-    throw new Error("Device adapter does not provide writeFlash(address, Uint8Array)");
+async function writeChunk(device, partition, relativeOffset, bytes) {
+  if (typeof device.storageWrite !== "function") {
+    throw new Error("Device adapter does not provide partition-relative storageWrite");
   }
-  await device.writeFlash(address, bytes);
+  const result = await device.storageWrite(partition, relativeOffset, bytes);
+  if (!result || result.ok !== true) throw new Error(result?.text || "device rejected partition write");
 }
 
-async function readChunk(device, address, length) {
-  if (typeof device.readFlash !== "function") {
-    throw new Error("Device adapter does not provide readFlash(address, length)");
+async function readChunk(device, partition, relativeOffset, length) {
+  if (typeof device.storageRead !== "function") {
+    throw new Error("Device adapter does not provide partition-relative storageRead");
   }
-  const bytes = await device.readFlash(address, length);
-  if (!(bytes instanceof Uint8Array) || bytes.length !== length) {
-    throw new Error("Flash read returned an invalid byte length at 0x" + address.toString(16));
+  const result = await device.storageRead(partition, relativeOffset, length);
+  if (!result || result.ok !== true || !(result.bytes instanceof Uint8Array) || result.bytes.length !== length) {
+    throw new Error(result?.text || "partition read returned an invalid byte length");
   }
-  return bytes;
+  return result.bytes;
 }
 
 export async function restoreStorageSnapshotArchive(device, input, {
@@ -75,14 +75,14 @@ export async function restoreStorageSnapshotArchive(device, input, {
   onProgress = () => {},
 } = {}) {
   if (typeof sha256Hex !== "function") throw new TypeError("SHA-256 implementation is required");
-  if (!device || typeof device.storageInfo !== "function") {
+  if (!device || typeof device.storageInfo !== "function" || typeof device.storageErase !== "function") {
     throw new Error("Device does not provide live storage inventory");
   }
 
   // Archive structure and every payload hash are checked before device writes.
   const archive = await readStorageSnapshotZip(input, sha256Hex);
   const inventory = parseInventory(await device.storageInfo());
-  const currentVersion = inventory.meta_pass_version ?? inventory.firmware_version;
+  const currentVersion = inventory.meta_pass_version;
   assertSnapshotVersionCompatible(archive.manifest, currentVersion);
   const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
     targetPartitions: inventory.partitions,
@@ -99,21 +99,18 @@ export async function restoreStorageSnapshotArchive(device, input, {
   for (const item of restorePlan.partitions) {
     const p = item.partition;
     report("erase", p, 0);
-    // The only absolute base comes from the just-read live partition table.
-    for (let rel = 0; rel < p.size; rel += CHUNK_BYTES) {
-      const n = Math.min(CHUNK_BYTES, p.size - rel);
-      try {
-        await writeChunk(device, p.offset + rel, n === CHUNK_BYTES ? FF : FF.subarray(0, n));
-      } catch (cause) {
-        throw restoreError(
-          `Restore incomplete while erasing partition ${p.label} at relative offset 0x${rel.toString(16)}: ${cause.message}. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
-          "SNAPSHOT_RESTORE_WRITE_FAILED",
-          { partition: p.label, relativeOffset: rel, phase: "erase", cause },
-        );
-      }
-      completedBytes += n;
-      report("erase", p, rel + n);
+    try {
+      const erased = await device.storageErase(p);
+      if (!erased || erased.ok !== true) throw new Error(erased?.text || "device rejected partition erase");
+    } catch (cause) {
+      throw restoreError(
+        `Restore incomplete while erasing partition ${p.label} at relative offset 0x0: ${cause.message}. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
+        "SNAPSHOT_RESTORE_WRITE_FAILED",
+        { partition: p.label, relativeOffset: 0, phase: "erase", cause },
+      );
     }
+    completedBytes += p.size;
+    report("erase", p, p.size);
 
     for (const extent of item.extents) {
       const bytes = archive.payloads.get(extent.file);
@@ -121,7 +118,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
         const chunk = bytes.subarray(rel, Math.min(bytes.length, rel + CHUNK_BYTES));
         const partitionRelativeOffset = extent.relativeOffset + rel;
         try {
-          await writeChunk(device, p.offset + partitionRelativeOffset, chunk);
+          await writeChunk(device, p, partitionRelativeOffset, chunk);
         } catch (cause) {
           throw restoreError(
             `Restore incomplete while writing partition ${p.label} at relative offset 0x${partitionRelativeOffset.toString(16)} (${extent.file}): ${cause.message}. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
@@ -138,7 +135,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
       const n = Math.min(CHUNK_BYTES, p.size - rel);
       let actual;
       try {
-        actual = await readChunk(device, p.offset + rel, n);
+        actual = await readChunk(device, p, rel, n);
       } catch (cause) {
         throw restoreError(
           `Restore verification incomplete for partition ${p.label} at relative offset 0x${rel.toString(16)}: readback failed (${cause.message}). Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
