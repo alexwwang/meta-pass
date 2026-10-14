@@ -83,7 +83,7 @@ for (const version of ["3.0.0", null]) {
     "layout preflight must finish before Flash mutation");
 }
 
-// Missing read/write capabilities must also fail before erase.
+// Missing write capability must fail before erase.
 {
   const calls = [];
   const device = {
@@ -92,7 +92,7 @@ for (const version of ["3.0.0", null]) {
   };
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
-    /does not provide live storage inventory/,
+    /does not provide required storage inventory, erase, and write operations/,
   );
   assert.equal(calls.includes("erase"), false, "transport capability preflight must be non-mutating");
 }
