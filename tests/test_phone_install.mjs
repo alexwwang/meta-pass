@@ -119,8 +119,9 @@ const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1Archiv
 const restoreClickStart = usbPage.indexOf('$("btn-restore").addEventListener("click"', legacyRestoreStart);
 assert.ok(legacyRestoreStart >= 0 && restoreClickStart > legacyRestoreStart,
   "USB historical v1 restore handler must remain identifiable");
-assert.equal(usbPage.includes("async function restoreV2ArchiveUsb()"), false,
-  "retired APP+DATA v2 restore handler must not remain available");
+assert.match(usbPage, /restoreStorageSnapshotArchive\\(device, restoreZip\\.bytes/, "USB must use the sequential snapshot restore coordinator");
+assert.match(usbPage, /async function createUsbStorageSnapshot/, "USB dynamic mode must create raw v2 snapshots");
+assert.match(usbPage, /project !== "FoloToy-AI-Passport"/, "USB host partition must be identified from the app descriptor, not a fixed address");
 const legacyRestoreSource = usbPage.slice(legacyRestoreStart, restoreClickStart);
 assert.match(legacyRestoreSource, /msg_restore_nvs_write/);
 assert.match(legacyRestoreSource, /ensureDeviceNvs\(\)/);
@@ -133,7 +134,7 @@ const restoreDispatchSource = usbPage.slice(restoreClickStart, usbPage.indexOf("
 assert.match(restoreDispatchSource, /restoreZip\.manifest\.manifest_version === 1/,
   "USB restore dispatch must route only v1 archives to the legacy handler");
 assert.match(restoreDispatchSource, /Only historical v1 fixed-slot archives can be restored by the USB page at this time/,
-  "USB must fail closed for snapshot and retired APP+DATA v2 archives");
+  "USB must reject retired APP+DATA v2 archives");
 console.log("PASS USB historical v1.1 restore is fixed-slot-only and rejects v2 archive formats");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
