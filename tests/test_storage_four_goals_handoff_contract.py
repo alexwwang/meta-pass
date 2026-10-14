@@ -34,7 +34,8 @@ assert "start: 0x180000, end: 0x356000" in POOL
 assert "start: 0x360000, end: 0x7fe000" in POOL
 assert "No Flash addresses or writes are accepted here" in RESTORE
 assert "export async function restoreDataArchive" in PHONE
-assert "prepareDataArchiveRestore" in PHONE and "prepareDataArchiveRestore" in USB
+assert "validateStorageSnapshotArchiveForDevice" in PHONE and "createStorageSnapshotArchive(bridge" in PHONE
+assert "prepareDataArchiveRestore" in PHONE and "prepareDataArchiveRestore" not in USB
 assert "tools/install-slot/test-data-archive-restore.mjs" in VALIDATE
 assert "readDataArchiveZip" in PHONE
 assert "restoreData: true" in PHONE
@@ -51,15 +52,17 @@ assert "cleanupStaging" in TRANSACTION
 assert "post-commit ownership/geometry verification failed" in TRANSACTION
 assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
-assert "await restoreV2ArchiveUsb()" in USB
+assert "await restoreV2ArchiveUsb()" not in USB
+assert "不再接受旧 APP+DATA v2 逻辑归档" in USB
+assert "未生成旧 APP+DATA v2 备份" in USB
 assert "const BACKUP_CHUNK = 0x8000;" in USB
-assert "const payload = await readFlashChunked(record.offset, record.size" in USB
+assert "const nvsData = await readFlashChunked(" in USB
 assert 'from "./flash-readback-verify.js"' in USB
 assert '"/flash-readback-verify.js"' in SERVER
 assert "verifyFlashRangeByMd5" in USB
 assert "loader.flashMd5sum(offset, length)" in USB
 assert "md5-verify-done" in USB
-assert "await verifyFlashReadback(record.offset, bytes" in USB
+assert "async function restoreV2ArchiveUsb()" not in USB
 assert "await verifyFlashReadback(addr, image.data" in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
