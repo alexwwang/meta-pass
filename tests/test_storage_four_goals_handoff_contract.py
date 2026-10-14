@@ -63,7 +63,8 @@ assert "verifyFlashRangeByMd5" in USB
 assert "loader.flashMd5sum(offset, length)" in USB
 assert "md5-verify-done" in USB
 assert "async function restoreV2ArchiveUsb()" not in USB
-assert "await verifyFlashReadback(addr, image.data" in USB
+assert "USB v2 快照备份暂不可用" in USB
+assert "async function restoreV2ArchiveUsb()" not in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
 assert '"/flash-read-transfer.js"' not in SERVER
