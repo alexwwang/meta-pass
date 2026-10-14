@@ -1,3 +1,5 @@
+[Chinese](HANDOFF-usb-data-backup-read.zh_CN.md)
+
 # Handoff | USB DATA Backup Read and APP+DATA Restore Device Test
 
 ## Baseline and status
