@@ -93,6 +93,7 @@ console.log("PASS archive version gate: phone page accepts v2 only and directs v
   assert.ok(archive.zip instanceof Uint8Array);
   const preflight = await phone.validateStorageSnapshotArchiveForDevice(bridge, archive.zip);
   assert.equal(preflight.manifest.kind, "meta-pass-storage-snapshot");
+  assert.equal(preflight.restorePlan.partitionCount, 2);
   const incompatibleBridge = {
     storageInfo: async () => ({ ok: true, text: JSON.stringify({
       running_host: host,
