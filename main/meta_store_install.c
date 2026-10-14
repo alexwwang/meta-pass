@@ -2204,6 +2204,124 @@ static esp_err_t h_install_nvs_read(httpd_req_t *req)
     return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
 
+// GET /api/install/storage/info: read-only live partition inventory for storage snapshots.
+// The browser receives partition identities, never arbitrary Flash addresses to write.
+static bool install_partition_same(const esp_partition_t *a, const esp_partition_t *b)
+{
+    return a && b && a->type == b->type && a->subtype == b->subtype &&
+           a->address == b->address && a->size == b->size &&
+           strcmp(a->label, b->label) == 0;
+}
+
+static esp_err_t h_install_storage_info(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage snapshot unavailable during installation");
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t e = httpd_resp_sendstr_chunk(req, "{\"running_host\":");
+    if (e != ESP_OK) return e;
+    char label[40], item[256];
+    json_escape(running->label, label, sizeof(label));
+    snprintf(item, sizeof(item),
+             "{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 "},\"partitions\":[",
+             label, (unsigned)running->type, (unsigned)running->subtype,
+             (uint32_t)running->address, (uint32_t)running->size);
+    e = httpd_resp_sendstr_chunk(req, item);
+    if (e != ESP_OK) return e;
+
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+                                                      ESP_PARTITION_SUBTYPE_ANY, NULL);
+    bool first = true;
+    while (it) {
+        const esp_partition_t *part = esp_partition_get(it);
+        if (!part) {
+            esp_partition_iterator_release(it);
+            return reply(req, "500 Internal Server Error", "partition iterator returned an empty entry");
+        }
+        char escaped[40];
+        json_escape(part->label, escaped, sizeof(escaped));
+        snprintf(item, sizeof(item),
+                 "%s{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"running_host\":%s}",
+                 first ? "" : ",", escaped, (unsigned)part->type, (unsigned)part->subtype,
+                 (uint32_t)part->address, (uint32_t)part->size,
+                 install_partition_same(part, running) ? "true" : "false");
+        e = httpd_resp_sendstr_chunk(req, item);
+        if (e != ESP_OK) {
+            esp_partition_iterator_release(it);
+            return e;
+        }
+        first = false;
+        it = esp_partition_next(it);
+    }
+    return httpd_resp_sendstr_chunk(req, "]}") == ESP_OK
+        ? httpd_resp_sendstr_chunk(req, NULL) : ESP_FAIL;
+}
+
+// GET /api/install/storage/read: bounded read of one exact live partition identity.
+// cardid and the currently running MetaPass host partition are never readable here.
+static esp_err_t h_install_storage_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage snapshot unavailable during installation");
+
+    char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
+    char off_str[16], len_str[16];
+    uint32_t type = 0, subtype = 0, part_offset = 0, part_size = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Label", label, sizeof(label)) != ESP_OK ||
+        label[0] == '\0' ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Type", type_str, sizeof(type_str)) != ESP_OK ||
+        !parse_u32(type_str, &type) || type > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Subtype", subtype_str, sizeof(subtype_str)) != ESP_OK ||
+        !parse_u32(subtype_str, &subtype) || subtype > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Offset", part_off_str, sizeof(part_off_str)) != ESP_OK ||
+        !parse_u32(part_off_str, &part_offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Size", part_size_str, sizeof(part_size_str)) != ESP_OK ||
+        !parse_u32(part_size_str, &part_size) || part_size == 0 ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad storage partition read headers");
+    }
+
+    const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
+    if (!part || part->address != part_offset || part->size != part_size) {
+        return reply(req, "409 Conflict", "partition identity does not match live partition table");
+    }
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+    if (strcmp(part->label, "cardid") == 0 || install_partition_same(part, running)) {
+        return reply(req, "403 Forbidden", "protected partition cannot be read by storage snapshot API");
+    }
+    if (offset > part->size || length > part->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "storage partition read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const esp_err_t e = esp_partition_read(part, offset, read_buf, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "storage partition read failed label=%s off=%" PRIu32 ": %s",
+                 label, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "storage partition read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
+
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
