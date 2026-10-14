@@ -8,7 +8,7 @@
 
 For v2, backup and restore use a **device-storage snapshot**, not a logical archive grouped by APP and DATA ownership. The snapshot preserves bytes in allocated storage partitions without interpreting child-firmware formats, NVS keys/namespaces, or filesystem internals.
 
-This supersedes the earlier proposal to archive one APP+DATA group at a time and to preserve the target device's NVS unchanged during restore.
+This supersedes the earlier proposal to archive one APP+DATA group at a time and to preserve the target device's NVS unchanged during restore. NVS is raw snapshot content like every other eligible partition; it has no special archive, validation, or write path.
 
 ## Snapshot scope
 
@@ -36,7 +36,7 @@ NVS is not special in this model: include it if it is an allocated partition and
 2. Read the target device's live partition table and identify its currently running host firmware partition.
 3. Require exact layout compatibility for every included partition. The initial implementation requires identity, offset, and size to match; reject mismatches rather than guessing or silently remapping.
 4. Recompute protected ranges on the target. Reject archive entries that cover the running MetaPass firmware, `cardid`, the partition table, or unallocated Flash.
-5. Erase/write only eligible ranges. Restore omitted sparse erased ranges to erased state as needed, then read back and verify.
+5. Erase/write only eligible ranges. Restore omitted sparse erased ranges to erased state as needed, then read back and verify. Every eligible partition, including NVS, follows the same partition-identity plus relative-offset byte I/O path.
 6. Never write the running MetaPass firmware, `cardid`, partition table, or unallocated gaps. Do not separately rewrite allocator/carve metadata unless it resides in an explicitly included partition.
 
 ## Compatibility and page parity
@@ -53,8 +53,8 @@ NVS is not special in this model: include it if it is an allocated partition and
 2. **Done (device read path):** authenticated `/api/install/storage/info` reports the live partition table and `esp_ota_get_running_partition()` identity; `/api/install/storage/read` only reads a bounded range from an exact live partition identity and rejects `cardid` and the running host.
 3. **Done (phone backup/preflight):** mobile v2 exports the allocated-storage snapshot and validates a selected snapshot against the target layout without writing Flash.
 4. **Blocked (USB v2 backup):** USB serial/bootloader transport still cannot safely identify the running host partition. Do not infer it from hard-coded offsets or guessed OTA state.
-5. **Blocked (restore on both pages):** there is no safe device-side transactional erase/write, rollback journal, or write/read-back verification protocol. Keep restore preflight-only; do not add arbitrary-address write/erase endpoints.
-6. Next, design a bounded, recoverable device-side restore transaction with explicit staged data, power-loss recovery semantics, protected-range enforcement, sector-aligned erases, and post-write verification. Only then enable phone restore and consider a trusted running-host report for USB. Run host/browser tests before passport-sim and real-device acceptance.
+5. **In progress (bounded device I/O added):** `/api/install/storage/erase` and `/api/install/storage/write` resolve an exact live partition identity, enforce session/origin checks, reject the running host, `cardid`, and read-only partitions, and accept only partition-relative aligned ranges. These are simple sequential restore primitives, not an atomic transaction. The page-side restore orchestration and end-to-end tests must use them uniformly for NVS and other eligible partitions, verify every byte after writing, and clearly report that interruption can leave a partial restore.
+6. Do not add a dedicated NVS journal or duplicate every partition for rollback. Before enabling restore in the UI, finish the simple page-side sequential writer and tests, then run firmware/host CI, passport-sim, and real-device verification. USB v2 additionally needs a trustworthy running-host identity over its transport.
 
 ## Explicitly out of scope
 
