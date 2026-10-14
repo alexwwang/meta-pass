@@ -4,7 +4,7 @@
 
 ## 结论
 
-**PASS。** 在此前单会话读取必死的主机上,生产 USB 页面备份按钮(`#btn-backup`)现在单页面会话即可完成完整 APP+DATA+NVS 归档。单击一次,无重载,无宿主侧拼装。
+**PASS。** 在此前单会话读取必死的主机上,本地测试 USB 页面备份按钮(`#btn-backup`)现在单页面会话即可完成完整 APP+DATA+NVS 归档。单击一次,无重载,无宿主侧拼装。
 
 ## 被测变动
 
@@ -14,7 +14,7 @@
 
 | 通过标准(handoff) | 结果 |
 |---|---|
-| 生产 UI 单击一次备份;无需手动重载页面或宿主分段脚本 | PASS —— 驱动单击 `#btn-backup` 一次,单一持久页面会话 |
+| 本地测试 USB 页面单击一次备份;无需手动重载页面或宿主分段脚本 | PASS —— 驱动单击 `#btn-backup` 一次,单一持久页面会话 |
 | 归档完整、仅含一个 APP 组及其关联 DATA | PASS —— `manifest.complete=true`,manifest_version 2,一槽 + 一 DATA 记录 + NVS |
 | 各载荷字节数与 SHA-256 准确 | PASS —— 页内 3/3 验证;ZIP SHA-256 `3b578dd15f85…`(与页内计算值一致) |
 | 独立 esptool.py dump 与归档 APP/DATA 载荷逐字节一致 | PASS —— APP 固件 `f519f076…`、槽位尾块 `f78752cb…`、DATA `cba83ea5…` 均逐字节一致(尾块 = 槽末尾 4 KiB 的 `MNAM` 名称记录;槽内 4 KiB 0xFF 填充按设计不入归档) |
@@ -23,7 +23,7 @@
 
 备份:577.9s @115200,归档 6,325,913 字节。逐读节奏平稳(~2.85s/32KiB)。
 
-## 会话重建在生产条件下真实触发
+## 会话重建在本地测试条件下真实触发
 
 读到 `0x3d8000`(DATA,约 22 分钟处)时撞上 `Packet content transfer stopped` —— 正是本主机此前四次单会话尝试的全部死因(见[上一轮报告 Stage C](usb-data-backup-read-test-report-2026-10-14.md))。页面打印 `DATA backup: opening a fresh serial/loader session at segment boundary`,重建 loader 并校验 carve 元数据未变后继续,直至归档完整。
 
