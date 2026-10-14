@@ -50,6 +50,16 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("buildDataArchiveManifest({", mobile)
         self.assertIn("buildDataArchiveManifest({", usb)
 
+    def test_usb_backup_never_emits_unrestorable_v1_archive(self):
+        usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
+        start = usb.index('$("btn-backup").addEventListener')
+        end = usb.index('// --- 6. 恢复 ---', start)
+        backup = usb[start:end]
+        self.assertIn("if (!isDynMode(slotModel.mode))", backup)
+        self.assertIn("msg_backup_v2_required", backup)
+        self.assertIn("Cannot create a restorable v2 archive without stable APP play_id ownership metadata.", backup)
+        self.assertNotIn("manifest_version: 1", backup)
+
     def test_usb_rejects_v1_archive_before_restore_mutation(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("restore-input").addEventListener')

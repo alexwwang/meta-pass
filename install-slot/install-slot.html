@@ -917,7 +917,8 @@ const I18N = {
     data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive. Backup ZIP files are unencrypted and may contain raw NVS data such as Wi-Fi credentials; do not upload or share them. v2 restore verifies any archived NVS bytes but preserves the destination device NVS; legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
-    msg_backup_single_group: "Dynamic-mode backup supports one APP+DATA group per archive. Select exactly one APP slot.",
+    msg_backup_single_group: "Backup supports one APP+DATA group per archive. Select exactly one APP slot.",
+    msg_backup_v2_required: "Transactional APP+DATA backup requires dynamic storage; legacy fixed-slot backup is not supported.",
     msg_backup_start: "Backing up slots…",
     msg_backup_reading: "Reading slot {slot} ({size} at {addr})… this can take a minute per slot.",
     msg_backup_slot_done: "Slot {slot}: {firmware}",
@@ -1132,7 +1133,8 @@ const I18N = {
     data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。备份 ZIP 未加密，可能包含 Wi-Fi 凭证等 NVS 原始数据，请勿上传或分享。v2 恢复会校验归档中的 NVS 字节，但保留目标设备现有 NVS、不写入归档 NVS；旧版 v1 归档恢复不再支持；仅接受完整的 v2 单 APP+DATA 归档。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
-    msg_backup_single_group: "动态存储模式下每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
+    msg_backup_single_group: "每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
+    msg_backup_v2_required: "事务化 APP+DATA 备份需要动态存储模式；不再支持旧版固定槽位备份。",
     msg_backup_start: "开始备份槽位…",
     msg_backup_reading: "读取槽位 {slot}({size} @ {addr})… 每个槽位可能需要一分钟。",
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
@@ -2301,9 +2303,14 @@ $("btn-backup").addEventListener("click", async () => {
     $("backup-status").textContent = t("msg_backup_pick_slot");
     return;
   }
-  // v2 restore is deliberately one APP+DATA transaction, matching the mobile page.
-  // Do not create a multi-group v2 archive that this UI cannot restore.
-  if (isDynMode(slotModel.mode) && slots.length !== 1) {
+  // Both pages support the same v2 contract: one complete APP+DATA group.
+  // Do not offer legacy fixed-slot backup because its v1 archive is not restorable.
+  if (!isDynMode(slotModel.mode)) {
+    $("backup-status").textContent = t("msg_backup_v2_required");
+    log(t("msg_backup_v2_required"), "warn");
+    return;
+  }
+  if (slots.length !== 1) {
     $("backup-status").textContent = t("msg_backup_single_group");
     log(t("msg_backup_single_group"), "warn");
     return;
@@ -2448,18 +2455,8 @@ $("btn-backup").addEventListener("click", async () => {
       await validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex);
       log(`DATA backup verified: ${manifestObj.data.length} reservation(s), real bytes + SHA-256`, "ok");
     } else {
-      // Never guess ownership from partition labels or slot indexes.
-      const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
-      manifestObj = {
-        manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
-        complete: missingSlots.length === 0,
-        ...(missingSlots.length ? { missing_slots: missingSlots } : {}),
-        slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
-        ...(nvsEntry ? { nvs: nvsEntry } : {}),
-      };
-      if (slotModel.mode === MODE.DYN && (slotModel.carve?.data || []).length) {
-        log("DATA backup omitted: stable APP play_id metadata is unavailable for this selection", "warn");
-      }
+      // Never emit a v1 archive: neither page supports its non-transactional restore path.
+      throw new Error("Cannot create a restorable v2 archive without stable APP play_id ownership metadata.");
     }
     entries.push({
       name: MANIFEST_NAME,
