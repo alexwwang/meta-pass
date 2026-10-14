@@ -2,7 +2,7 @@
   <strong>English</strong> · <a href="storage-snapshot-backup-restore-design.zh_CN.md">简体中文</a>
 </p>
 
-# Storage Snapshot Backup and Restore Design (2026-10-14)
+# Storage Snapshot Backup and Restore Design (2026-10-15)
 
 ## Decision
 
@@ -41,20 +41,27 @@ NVS is not special in this model: include it if it is an allocated partition and
 
 ## Compatibility and page parity
 
-- The USB page retains its historical v1.1 archive format and restore path; this round does not change that branch, so a dedicated v1.1 regression is not required here. If a future diff touches legacy manifest parsing or raw NVS writes, add the smallest targeted regression then.
-- USB v2 whole-device snapshot backup/restore remains fail-closed until the transport can obtain a trustworthy running-host identity and the device-side restore transaction is implemented.
-- The embedded phone page supports v2 only and must share the v2 manifest validator, protected-range policy, sparse-extent semantics, and restore checks with USB.
-- Local firmware installation remains USB-only. Other storage backup/restore semantics must match across both pages.
-- Old APP+DATA logical archives must not be mistaken for snapshots. Use an unambiguous archive kind/version discriminator and show a clear error for ambiguous archives.
+- USB retains historical v1.1 fixed-slot archive restore. The embedded phone page accepts v2 snapshots only.
+- Both pages share the v2 manifest, extent validation, snapshot capture, and sequential restore coordinator. USB alone retains local-firmware installation.
+- Old APP+DATA logical v2 archives must not be mistaken for snapshots; reject them with a clear error.
+- The manifest records the source MetaPass version and an inclusive compatible-version range. Until a broader compatibility matrix is maintained, the range is conservatively set to the exact source version. A target-version mismatch must be resolved by reflashing the source version before retrying.
 
 ## Implementation status and next steps
 
-1. **Done (host-side foundation):** shared manifest/extent validation, snapshot ZIP encode/decode, payload length/SHA-256 checks, sparse erased-chunk representation, target-layout preflight, and host tests.
-2. **Done (device read path):** authenticated `/api/install/storage/info` reports the live partition table and `esp_ota_get_running_partition()` identity; `/api/install/storage/read` only reads a bounded range from an exact live partition identity and rejects `cardid` and the running host.
-3. **Done (phone backup/preflight):** mobile v2 exports the allocated-storage snapshot and validates a selected snapshot against the target layout without writing Flash.
-4. **Blocked (USB v2 backup):** USB serial/bootloader transport still cannot safely identify the running host partition. Do not infer it from hard-coded offsets or guessed OTA state.
-5. **In progress (bounded device I/O added):** `/api/install/storage/erase` and `/api/install/storage/write` resolve an exact live partition identity, enforce session/origin checks, reject the running host, `cardid`, and read-only partitions, and accept only partition-relative aligned ranges. These are simple sequential restore primitives, not an atomic transaction. The page-side restore orchestration and end-to-end tests must use them uniformly for NVS and other eligible partitions, verify every byte after writing, and clearly report that interruption can leave a partial restore.
-6. Do not add a dedicated NVS journal or duplicate every partition for rollback. Before enabling restore in the UI, finish the simple page-side sequential writer and tests, then run firmware/host CI, passport-sim, and real-device verification. USB v2 additionally needs a trustworthy running-host identity over its transport.
+1. **Implemented (shared snapshot foundation):** manifest/extent validation, ZIP encode/decode, payload length/SHA-256 validation, sparse erased-byte representation, target-layout preflight, and a shared capture function used by both transports.
+2. **Implemented (device API):** authenticated storage inventory reports the running MetaPass version and host identity; bounded partition-relative read, erase, and write endpoints re-resolve the live partition and reject the running host, cardid, read-only partitions, and out-of-bounds ranges.
+3. **Implemented (USB transport):** identifies the MetaPass host from a validated ESP app descriptor and fails closed if it cannot uniquely identify it. It retains the historical v1.1 archive path and supports v2 raw snapshot backup/restore on dynamic layouts.
+4. **Implemented (phone transport):** v2 snapshot backup and sequential restore use the shared capture/restore core. Phone v1 archive compatibility is intentionally not added.
+5. **Implemented (restore behavior):** full preflight before any write; per-partition erase, extent writes, and independent full-partition readback, including sparse 0xFF regions. Any failure stops the sequence and reports partition/relative offset. No transaction journal, automatic rollback, or complex repair orchestration is implemented.
+6. **Still required:** real-device verification of both transports, including byte-level persistence after restore and a separate reboot/reconnect check. Host mocks and CI are not hardware evidence.
+
+## Recovery and UI rules
+
+- Before writing, show the source MetaPass version and number of partitions to overwrite.
+- On preflight failure, state that no Flash was written.
+- On erase/write/readback failure, state that restore is incomplete/inconsistent, include the partition and relative offset, and recommend reflashing the source MetaPass version before retrying.
+- Data readback success is not boot validation. Both pages currently require the user to exit download mode/reboot and confirm that MetaPass reconnects.
+- Archives are unencrypted and may contain Wi-Fi credentials, device state, and child-firmware data.
 
 ## Explicitly out of scope
 
