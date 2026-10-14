@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { buildDataArchiveZip } from "../install-slot/data-byte-archive.js";
 import {
   STORAGE_SNAPSHOT_KIND,
   eligibleSnapshotPartitions,
