@@ -30,7 +30,7 @@ import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
-import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan } from "./storage-snapshot.js";
+import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
 import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
@@ -422,6 +422,7 @@ export async function validateStorageSnapshotArchiveForDevice(bridge, input) {
   if (!info?.running_host || !Array.isArray(info.partitions)) {
     throw new Error("target device partition inventory is incomplete");
   }
+  assertSnapshotVersionCompatible(archive.manifest, info.meta_pass_version);
   const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
     targetPartitions: info.partitions,
     runningHostPartition: info.running_host,
@@ -1547,6 +1548,19 @@ export function boot(opts = {}) {
     archiveMessage = "正在校验设备存储快照…";
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
+      const checked = await validateStorageSnapshotArchiveForDevice(bridge, bytes);
+      const sourceVersion = checked.manifest.meta_pass.system_version;
+      const accepted = confirm(
+        "即将按快照覆盖 " + checked.manifest.partitions.length + " 个已分配分区。\n\n" +
+        "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
+        "若写入或读回核验失败，请重新刷入该版本，再连接设备并重试。\n\n" +
+        "继续恢复？"
+      );
+      if (!accepted) {
+        archiveMessage = "已取消快照恢复；未写入 Flash。";
+        log(archiveMessage, "warn");
+        return;
+      }
       const result = await restoreStorageSnapshotArchive(bridge, bytes, {
         sha256Hex,
         onProgress: (event) => {
@@ -1575,8 +1589,8 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">设备存储快照</h4>
-      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。当前版本只提供备份和恢复预检，事务化写入/回滚协议完成前不会执行恢复写入。</p>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>校验快照归档</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
+      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。恢复采用逐分区擦除、写入与独立读回核验，不提供自动回滚；中断或核验失败时，请刷回归档记录的 MetaPass 版本后重试。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>选择快照归档并恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
