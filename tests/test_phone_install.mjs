@@ -153,7 +153,7 @@ assert.match(restoreDispatchSource, /restoreZip\.manifest\.manifest_version === 
   "USB restore dispatch must route only v1 archives to the legacy handler");
 assert.match(restoreDispatchSource, /restoreStorageSnapshotArchive\(device, restoreZip\.bytes/,
   "USB v2 snapshot restore must use the sequential coordinator");
-assert.match(usbPage, /不再接受旧 APP\\+DATA v2 逻辑归档/,
+assert.match(usbPage, /不再接受旧 APP\+DATA v2 逻辑归档/,
   "USB must reject retired APP+DATA v2 archives");
 console.log("PASS USB historical v1.1 restore is fixed-slot-only and v2 snapshot restore uses sequential verification");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
