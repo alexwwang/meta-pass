@@ -35,7 +35,8 @@ assert "start: 0x360000, end: 0x7fe000" in POOL
 assert "No Flash addresses or writes are accepted here" in RESTORE
 assert "export async function restoreDataArchive" in PHONE
 assert "validateStorageSnapshotArchiveForDevice" in PHONE and "createStorageSnapshotArchive(bridge" in PHONE
-assert "prepareDataArchiveRestore" in PHONE and "prepareDataArchiveRestore" not in USB
+assert "createStorageSnapshotArchive(bridge" in PHONE and "validateStorageSnapshotArchiveForDevice" in PHONE
+assert "export async function restoreDataArchive" not in PHONE and "prepareDataArchiveRestore" not in PHONE
 assert "tools/install-slot/test-data-archive-restore.mjs" in VALIDATE
 assert "readDataArchiveZip" in PHONE
 assert "restoreData: true" in PHONE
