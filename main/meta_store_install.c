@@ -2147,6 +2147,142 @@ static esp_err_t h_install_slot_read(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
+// Snapshot inventory/read API: labels and absolute geometry are always resolved from the live table.
+#define STORAGE_PARTITION_LABEL_HDR  "X-Meta-Partition-Label"
+#define STORAGE_PARTITION_TYPE_HDR   "X-Meta-Partition-Type"
+#define STORAGE_PARTITION_SUBTYPE_HDR "X-Meta-Partition-Subtype"
+#define STORAGE_PARTITION_OFFSET_HDR "X-Meta-Partition-Offset"
+#define STORAGE_PARTITION_SIZE_HDR   "X-Meta-Partition-Size"
+#define STORAGE_INFO_JSON_CAP 8192
+static char s_storage_info_json[STORAGE_INFO_JSON_CAP];
+
+static bool install_partition_same(const esp_partition_t *part,
+                                   const esp_partition_t *other)
+{
+    return part && other && part->type == other->type &&
+        part->subtype == other->subtype &&
+        part->address == other->address && part->size == other->size &&
+        strcmp(part->label, other->label) == 0;
+}
+
+static bool install_partition_protected(const esp_partition_t *part,
+                                        const esp_partition_t *running)
+{
+    return !part || strcmp(part->label, "cardid") == 0 ||
+        install_partition_same(part, running);
+}
+
+// GET /api/install/storage/info returns the live partition table and running host identity.
+// It reports protected partitions but does not expose reads of them.
+static esp_err_t h_install_storage_info(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage inventory unavailable during installation");
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+
+    size_t used = 0;
+    int n = snprintf(s_storage_info_json, sizeof(s_storage_info_json),
+        "{\\"running_host\\":{\\"label\\":\\"%s\\",\\"type\\":%u,\\"subtype\\":%u,\\"offset\\":%" PRIu32 ",\\"size\\":%" PRIu32 "},\\"partitions\\":[",
+        running->label, (unsigned)running->type, (unsigned)running->subtype,
+        running->address, running->size);
+    if (n < 0 || (size_t)n >= sizeof(s_storage_info_json)) {
+        return reply(req, "500 Internal Server Error", "storage inventory overflow");
+    }
+    used = (size_t)n;
+    bool first = true;
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+        ESP_PARTITION_SUBTYPE_ANY, NULL);
+    while (it) {
+        const esp_partition_t *part = esp_partition_get(it);
+        if (part) {
+            char escaped_label[40];
+            json_escape(part->label, escaped_label, sizeof(escaped_label));
+            n = snprintf(s_storage_info_json + used, sizeof(s_storage_info_json) - used,
+                "%s{\\"label\\":\\"%s\\",\\"type\\":%u,\\"subtype\\":%u,\\"offset\\":%" PRIu32 ",\\"size\\":%" PRIu32 ",\\"protected\\":%s}",
+                first ? "" : ",", escaped_label, (unsigned)part->type,
+                (unsigned)part->subtype, part->address, part->size,
+                install_partition_protected(part, running) ? "true" : "false");
+            if (n < 0 || (size_t)n >= sizeof(s_storage_info_json) - used) {
+                esp_partition_iterator_release(it);
+                return reply(req, "500 Internal Server Error", "storage inventory exceeds response limit");
+            }
+            used += (size_t)n;
+            first = false;
+        }
+        it = esp_partition_next(it);
+    }
+    if (used + 3 >= sizeof(s_storage_info_json)) {
+        return reply(req, "500 Internal Server Error", "storage inventory overflow");
+    }
+    s_storage_info_json[used++] = ']';
+    s_storage_info_json[used++] = '}';
+    s_storage_info_json[used] = '\\0';
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, s_storage_info_json, (ssize_t)used);
+}
+
+// GET /api/install/storage/read: bounded partition-relative read. Caller must echo exact live identity.
+static esp_err_t h_install_storage_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage read unavailable during installation");
+
+    char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
+    char off_str[16], len_str[16];
+    uint32_t type = 0, subtype = 0, part_offset = 0, part_size = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_LABEL_HDR, label, sizeof(label)) != ESP_OK ||
+        label[0] == '\\0' ||
+        httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_TYPE_HDR, type_str, sizeof(type_str)) != ESP_OK ||
+        !parse_u32(type_str, &type) || type > UINT8_MAX ||
+        httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_SUBTYPE_HDR, subtype_str, sizeof(subtype_str)) != ESP_OK ||
+        !parse_u32(subtype_str, &subtype) || subtype > UINT8_MAX ||
+        httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_OFFSET_HDR, part_off_str, sizeof(part_off_str)) != ESP_OK ||
+        !parse_u32(part_off_str, &part_offset) ||
+        httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_SIZE_HDR, part_size_str, sizeof(part_size_str)) != ESP_OK ||
+        !parse_u32(part_size_str, &part_size) ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad storage read headers");
+    }
+
+    const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!part || !running) return reply(req, "404 Not Found", "partition not found");
+    if (part->address != part_offset || part->size != part_size) {
+        return reply(req, "409 Conflict", "live partition identity changed");
+    }
+    if (install_partition_protected(part, running)) {
+        return reply(req, "403 Forbidden", "protected partition cannot be read");
+    }
+    if (offset > part->size || length > part->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "storage read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const esp_err_t e = esp_partition_read(part, offset, read_buf, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "storage read failed label=%s off=%" PRIu32 ": %s",
+                 label, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "storage partition read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (ssize_t)length);
+}
+
 // GET /api/install/nvs/info: expose only the fixed system NVS partition, never arbitrary labels/addresses.
 static const esp_partition_t *install_nvs_partition(void)
 {
@@ -2822,6 +2958,8 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
         { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
         { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
+        { "/api/install/storage/info", HTTP_GET, h_install_storage_info, NULL },
+        { "/api/install/storage/read", HTTP_GET, h_install_storage_read, NULL },
         { "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL },
         { "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL },
         { "/api/install/storage/info", HTTP_GET, h_install_storage_info, NULL },
