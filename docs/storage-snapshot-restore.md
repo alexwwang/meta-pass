@@ -1,4 +1,4 @@
-# Storage snapshot restore: design and test handoff
+<p align="right">\n  <a href="storage-snapshot-restore.zh_CN.md">简体中文</a> · <strong>English</strong>\n</p>\n\n# Storage snapshot restore: design and test handoff
 
 Status: implementation in progress on `feat/storage`. This document describes the intended v2 snapshot behavior; it is not evidence of a completed real-device test.
 
