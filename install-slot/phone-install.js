@@ -39,6 +39,16 @@ export const MAX_CHUNK = 65536;          // 设备 META_INSTALL_MAX_CHUNK
 const TAIL_SECTOR = 0x1000;              // 槽位尾部 4KB 名字 blob sector
 const METAPASS = "https://metapass.chuanxilu.net";
 const NAME_MAX = 32;                     // 设备端可显示名上限(META_NAME_LEN)
+
+// The embedded phone page ships only with v2+ devices and therefore accepts
+// only transactional MPTB v2 APP+DATA archives. Legacy v1.1 archives remain a
+// USB-page compatibility feature; reject them before making any device request.
+export function assertPhoneArchiveVersion(manifest) {
+  if (!manifest || manifest.manifest_version !== 2) {
+    throw new Error("手机内嵌页仅支持 v2 APP+DATA 归档；v1.1 旧归档请使用 USB 服务页还原");
+  }
+  return manifest;
+}
 const CONFIRM_POLL_MS = 1000;            // 物理确认轮询间隔
 const CONFIRM_TIMEOUT_MS = 300000;       // 5 分钟无人确认即放弃(设备侧有会话超时)
 
@@ -1513,6 +1523,7 @@ export function boot(opts = {}) {
       let manifest;
       try { manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)); }
       catch { throw new Error("manifest.json 不是有效 UTF-8 JSON"); }
+      assertPhoneArchiveVersion(manifest);
       zipEntries.delete("manifest.json");
       const expectedFiles = new Set([
         ...(Array.isArray(manifest?.slots) ? manifest.slots.flatMap((s) => Array.isArray(s.files) ? s.files.map((f) => f.name) : []) : []),
