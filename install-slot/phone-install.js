@@ -30,8 +30,6 @@ import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
-import { buildDataArchiveManifest, validateSingleGroupRestoreManifest, validateDataArchivePayloads, readDataArchiveZip, readDataReservation, readAppSlotReservation, buildDataArchiveZip } from "./data-byte-archive.js";
-import { prepareDataArchiveRestore } from "./data-archive-restore.js";
 import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, validateStorageSnapshotPayloads, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan } from "./storage-snapshot.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
@@ -713,66 +711,6 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
 // install transaction used for a normal install. Raw Flash addresses never leave
 // the device; allocation is re-derived from the live listing and the device
 // independently validates the carve proposal.
-export async function restoreDataArchive(bridge, listing, manifest, payloads, hooks = {}) {
-  const fail = (stage, reason, extra = {}) => ({ ok: false, stage, reason, ...extra });
-  try {
-    const slot = validateSingleGroupRestoreManifest(manifest);
-    // NVS is global, not owned by an APP+DATA group. The shared archive
-    // preparation validates its bytes but never writes it to the destination.
-    if (listing?.slots?.some((item) => item.play_id === slot.play_id) ||
-        listing?.data?.some((item) => item.play_id === slot.play_id)) {
-      return fail("restore-preflight", "play_id already exists on this device; remove the existing APP group before restore");
-    }
-    let extracted;
-    let dataImages;
-    let appSha;
-    try {
-      const prepared = await prepareDataArchiveRestore(manifest, payloads, {
-        sha256Hex, extractAppImage, dataSizeGranule: DATA_SIZE_GRANULE,
-      });
-      extracted = prepared.image;
-      dataImages = prepared.dataImages;
-      appSha = prepared.appSha256;
-    } catch (error) {
-      return fail("restore-preflight", error?.message || String(error));
-    }
-    const geom = geomFromListing(listing, extracted.length);
-    if (!geom.proposal) {
-      return fail("restore-preflight",
-        `no fresh APP carve fits: need ${carveNeed(extracted.length)} bytes; largest contiguous gap ${geom.maxGap}, total free ${geom.totalFree}`);
-    }
-    const offer = {
-      protocol: PROTOCOL_V1, playId: slot.play_id, revisionId: 0,
-      name: pickDisplayName(slot.name, slot.play_id),
-      storeSha256: appSha, imageLen: extracted.length, sha256: appSha,
-      suggestedSlot: geom.proposal.slot, slot: geom.proposal.slot,
-      slots: geom.placed, reason: "archive-restore", restoreData: true,
-      carveOffset: geom.proposal.carveOffset, carveSize: geom.proposal.carveSize,
-      data: dataImages.map((item) => ({
-        playId: slot.play_id, size: item.required_size, label: item.label,
-        subtype: item.subtype, initialImageSize: item.initial_image_size,
-        sha256: item.sha256,
-      })),
-    };
-    const result = await runInstall(bridge, offer, extracted.data, {
-      ...hooks,
-      dataImages,
-    });
-    if (!result.ok) {
-      // A pre-commit failure can be rolled back. If finalize may have taken
-      // effect but its terminal state is unknown, cancel could destroy data
-      // already referenced by durable ownership metadata; preserve state for
-      // recovery inspection instead.
-      if (result.commitUncertain !== true) {
-        try { await bridge.cancel(); } catch { /* retain original result */ }
-      }
-      return { ...result, stage: "restore-" + result.stage };
-    }
-    return { ok: true, slot: result.slot, playId: slot.play_id, restoredData: dataImages.length, nvsPreserved: Boolean(manifest.nvs) };
-  } catch (error) {
-    return fail("restore-preflight", error?.message || String(error));
-  }
-}
 
 export async function preflight(id, hooks = {}) {
   const meta = await preflightMeta(id, hooks);
