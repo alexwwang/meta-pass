@@ -19,12 +19,12 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("设备存储快照", mobile)
         self.assertIn("备份设备快照", mobile)
         self.assertIn("validateStorageSnapshotArchiveForDevice", mobile)
-        self.assertIn("事务化写入/回滚协议", mobile)
+        self.assertIn("逐分区擦除、写入与独立读回核验", mobile)
         self.assertIn('manifest.kind !== "meta-pass-storage-snapshot"', mobile)
         self.assertIn("归档未加密", mobile)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", mobile)
 
-    def test_usb_restore_preserves_v1_and_rejects_v2_until_safe_snapshot_restore(self):
+    def test_usb_restore_preserves_v1_and_supports_sequential_v2_snapshot_restore(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("restoreLegacyV1ArchiveUsb()", usb)
         self.assertIn("if (rawManifest?.manifest_version === 1)", usb)
@@ -52,13 +52,13 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("validateStorageSnapshotArchiveForDevice", mobile)
         self.assertNotIn('buildDataArchiveManifest({', mobile[mobile.index("async function doBackup()"):mobile.index("async function doRestoreArchive(file)")])
 
-    def test_usb_backup_preserves_v1_and_blocks_legacy_dynamic_v2_archives(self):
+    def test_usb_backup_preserves_v1_and_uses_raw_dynamic_v2_snapshots(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("btn-backup").addEventListener')
         end = usb.index('// --- 6. 恢复 ---', start)
         backup = usb[start:end]
         self.assertIn("if (isDynMode(slotModel.mode))", backup)
-        self.assertIn("未生成旧 APP+DATA v2 备份", backup)
+        self.assertIn("const snapshot = await createUsbStorageSnapshot", backup)
         self.assertIn("manifest_version: 1", backup)
         self.assertIn("slots: manifestEntries.map(({ slot, files }) => ({ slot, files }))", backup)
         self.assertIn("complete: missingSlots.length === 0", backup)
