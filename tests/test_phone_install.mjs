@@ -36,7 +36,7 @@ assert.ok(legacyRestoreStart >= 0 && v2RestoreStart > legacyRestoreStart, "USB r
 const legacyRestoreSource = usbPage.slice(legacyRestoreStart, v2RestoreStart);
 assert.doesNotMatch(legacyRestoreSource, /msg_restore_nvs_write|ensureDeviceNvs\(\)|address:\s*nv\.offset/,
   "legacy archive restore must never write archived NVS to the destination device");
-assert.match(legacyRestoreSource, /目标设备现有 NVS 保持不变/,
+assert.match(legacyRestoreSource, /t\("msg_restore_nvs_preserved"\)/,
   "USB legacy restore must explicitly report that destination NVS is preserved");
 console.log("PASS USB restore preserves destination NVS for legacy archives");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
