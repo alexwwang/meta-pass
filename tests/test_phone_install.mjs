@@ -90,7 +90,7 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
   assert.deepEqual(snapshot.manifest.partitions.map((p) => [p.label, p.extents.length]), [["nvs", 0], ["store", 1]]);
   assert.equal(snapshot.manifest.partitions[1].extents[0].offset, 0);
   assert.equal(snapshot.manifest.partitions[1].extents[0].bytes, 4096);
-  assert.deepEqual([...snapshot.payloads.values()][0].slice(0, 2), [1, 2]);
+  assert.deepEqual(Array.from([...snapshot.payloads.values()][0].slice(0, 2)), [1, 2]);
   assert.equal(reads.some((r) => r.label === "ota_0" || r.label === "cardid"), false,
     "snapshot reads must skip running host and cardid");
   assert.equal(snapshot.bytesRead, 0x3000);
