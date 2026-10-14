@@ -41,7 +41,7 @@ NVS is not special in this model: include it if it is an allocated partition and
 
 ## Compatibility and page parity
 
-- The USB page must retain its historical v1.1 archive restore path unchanged.
+- The USB page must retain its historical v1.1 archive format and restore path. In particular, the archived raw NVS payload must still be written to the target NVS partition according to the legacy manifest; regression coverage must pin this behavior.
 - USB v2 creates and restores the new snapshot format.
 - The embedded phone page supports v2 only and must share the v2 manifest validator, protected-range policy, sparse-extent semantics, and restore checks with USB.
 - Local firmware installation remains USB-only. Other storage backup/restore semantics must match across both pages.
