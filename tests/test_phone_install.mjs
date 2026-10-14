@@ -31,6 +31,12 @@ assert.equal(phone.classifyPhoneArchiveVersion({
 assert.equal(phone.classifyPhoneArchiveVersion({
   manifest_version: 2, kind: "meta-pass-storage-snapshot",
 }), "storage-snapshot-v2");
+assert.equal(phone.classifyPhoneArchiveVersion({
+  manifest_version: 1, kind: "meta-pass-slot-backup",
+}), "legacy-v1");
+assert.equal(phone.classifyPhoneArchiveVersion({
+  manifest_version: 2, kind: "meta-pass-storage-snapshot",
+}), "storage-snapshot-v2");
 assert.equal(phone.assertPhoneArchiveVersion({
   manifest_version: 2, kind: "meta-pass-storage-snapshot",
 }).kind, "meta-pass-storage-snapshot");
