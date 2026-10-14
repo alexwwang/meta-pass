@@ -2313,6 +2313,9 @@ async function readUsbStorageInventory() {
     const head = await loader.readFlash(part.offset, 0x100);
     if (!(head instanceof Uint8Array) || head.length !== 0x100 || head[0] !== 0xe9) continue;
     const desc = head.subarray(0x20);
+    // ESP_APP_DESC_MAGIC_WORD (0xABCD5432, little-endian) is part of the
+    // descriptor contract; don't identify a host from project-name bytes alone.
+    if (desc[0] !== 0x32 || desc[1] !== 0x54 || desc[2] !== 0xcd || desc[3] !== 0xab) continue;
     const decoder = new TextDecoder();
     const project = decoder.decode(desc.subarray(48, 80)).split("\0", 1)[0];
     if (project !== "FoloToy-AI-Passport") continue;
