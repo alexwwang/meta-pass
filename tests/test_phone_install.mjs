@@ -29,6 +29,16 @@ assert.equal(phone.assertPhoneArchiveVersion({ manifest_version: 2 }).manifest_v
 assert.throws(() => phone.assertPhoneArchiveVersion({ manifest_version: 1 }), /USB 服务页还原/);
 assert.throws(() => phone.assertPhoneArchiveVersion(null), /仅支持 v2/);
 console.log("PASS archive version gate: phone page accepts v2 only and directs v1.1 users to USB");
+const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
+const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
+const v2RestoreStart = usbPage.indexOf("async function restoreV2ArchiveUsb()", legacyRestoreStart);
+assert.ok(legacyRestoreStart >= 0 && v2RestoreStart > legacyRestoreStart, "USB restore handlers must remain identifiable");
+const legacyRestoreSource = usbPage.slice(legacyRestoreStart, v2RestoreStart);
+assert.doesNotMatch(legacyRestoreSource, /msg_restore_nvs_write|ensureDeviceNvs\(\)|address:\s*nv\.offset/,
+  "legacy archive restore must never write archived NVS to the destination device");
+assert.match(legacyRestoreSource, /目标设备现有 NVS 保持不变/,
+  "USB legacy restore must explicitly report that destination NVS is preserved");
+console.log("PASS USB restore preserves destination NVS for legacy archives");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
