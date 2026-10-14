@@ -116,6 +116,7 @@ const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"
 const workerSource = readFileSync(path.join(ROOT, "install-slot", "_worker.js"), "utf8");
 assert.match(workerSource, /path === "\/storage-snapshot\.js"/, "snapshot module must be served with no-store dependency policy");
 assert.match(workerSource, /path === "\/storage-snapshot-restore\.js"/, "restore coordinator must be served with no-store dependency policy");
+assert.match(workerSource, /path === "\/storage-snapshot-restore\.js"/, "restore coordinator must be served with no-store dependency policy");
 const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
 const restoreClickStart = usbPage.indexOf('$("btn-restore").addEventListener("click"', legacyRestoreStart);
 assert.ok(legacyRestoreStart >= 0 && restoreClickStart > legacyRestoreStart,
