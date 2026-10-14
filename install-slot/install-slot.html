@@ -2373,17 +2373,21 @@ async function createUsbStorageSnapshot(onProgress = () => {}) {
   const total = eligible.reduce((sum, p) => sum + p.size, 0);
   for (const part of eligible) {
     const extents = [];
+    // Read in bounded 512 KiB sessions; do not reset the serial session for
+    // every 4 KiB extent or let a long snapshot silently exceed session limits.
+    const partitionBytes = await readFlashChunked(part.offset, part.size,
+      got => onProgress((done + got) / total));
     for (let offset = 0; offset < part.size; offset += 4096) {
       const length = Math.min(4096, part.size - offset);
-      const bytes = await readFlashChunked(part.offset + offset, length);
+      const bytes = partitionBytes.subarray(offset, offset + length);
       if (!isAllFF(bytes)) {
         const file = "extents/" + part.label + "-" + offset.toString(16).padStart(8, "0") + ".bin";
         extents.push({ file, offset, bytes: length, sha256: await sha256Hex(bytes) });
         payloads.set(file, bytes);
       }
-      done += length;
-      onProgress(done / total);
     }
+    done += part.size;
+    onProgress(done / total);
     snapshotPartitions.push({ label: part.label, type: part.type, subtype: part.subtype, offset: part.offset, size: part.size, extents });
   }
   const version = inventory.meta_pass_version;
