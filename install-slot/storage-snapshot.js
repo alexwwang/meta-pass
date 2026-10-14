@@ -79,8 +79,8 @@ function validateExtent(extent, partitionSize, seenNames) {
   if (!extent || typeof extent.file !== "string" || !extent.file || extent.file === "manifest.json" ||
       extent.file.startsWith("/") || extent.file.includes("\\") ||
       extent.file.split("/").some((part) => !part || part === "." || part === "..") ||
-      !Number.isSafeInteger(extent.offset) || extent.offset < 0 ||
-      !Number.isSafeInteger(extent.bytes) || extent.bytes <= 0 ||
+      !Number.isSafeInteger(extent.offset) || extent.offset < 0 || extent.offset % 4 !== 0 ||
+      !Number.isSafeInteger(extent.bytes) || extent.bytes <= 0 || extent.bytes % 4 !== 0 ||
       !Number.isSafeInteger(extent.offset + extent.bytes) ||
       extent.offset + extent.bytes > partitionSize ||
       typeof extent.sha256 !== "string" || !SHA256_RE.test(extent.sha256)) {
