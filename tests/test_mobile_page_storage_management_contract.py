@@ -36,8 +36,9 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         legacy_start = usb.index("async function restoreLegacyV1ArchiveUsb()")
         handler_start = usb.index('$("btn-restore").addEventListener')
         legacy_restore = usb[legacy_start:handler_start]
-        self.assertNotIn("msg_restore_nvs_write", legacy_restore)
-        self.assertNotIn("ensureDeviceNvs()", legacy_restore)
+        self.assertIn("msg_restore_nvs_write", legacy_restore)
+        self.assertIn("ensureDeviceNvs()", legacy_restore)
+        self.assertIn("Historical v1 NVS payload length does not match its manifest", legacy_restore)
         parser_start = usb.index('$("restore-input").addEventListener')
         parser = usb[parser_start:handler_start]
         self.assertIn("const manifest = parseManifest(manifestText)", parser)
