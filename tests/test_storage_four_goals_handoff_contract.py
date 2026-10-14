@@ -17,7 +17,7 @@ DRIVER = (ROOT / "tools/realdevice/data_child_serial.py").read_text(encoding="ut
 # The handoff must enumerate the four requested outcomes and give the local agent
 # reproducible commands, lifecycle assertions, and a reporting contract.
 for token in (
-    "手机内嵌页与 USB 服务页对齐",
+    "手机内嵌页与 USB 服务页的 v2 快照路径已接入代码",
     "保留固定",
     "专用测试子固件验证 DATA 读写",
     "安装时创建 DATA 分区",
