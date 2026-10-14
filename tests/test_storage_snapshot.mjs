@@ -22,7 +22,7 @@ const partitions = [
   { label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000 },
   { label: "pool_0", type: 1, subtype: 0x42, offset: 0x1b0000, size: 0x20000 },
 ];
-const eligible = eligibleSnapshotPartitions(partitions, host);
+const eligible = eligibleSnapshotPartitions(partitions, host, []);
 assert.deepEqual(eligible.map((p) => p.label), ["nvs", "store", "pool_0"],
   "snapshot includes allocated NVS/storage, but excludes running host firmware and cardid");
 
