@@ -2262,8 +2262,9 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
         first = false;
         it = esp_partition_next(it);
     }
-    return httpd_resp_sendstr_chunk(req, "]}") == ESP_OK
-        ? httpd_resp_sendstr_chunk(req, NULL) : ESP_FAIL;
+    e = httpd_resp_sendstr_chunk(req, "]}");
+    if (e != ESP_OK) return e;
+    return httpd_resp_sendstr_chunk(req, NULL);
 }
 
 // GET /api/install/storage/read: bounded read of one exact live partition identity.
