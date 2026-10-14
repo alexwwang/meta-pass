@@ -25,6 +25,10 @@ import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
+assert.equal(phone.assertPhoneArchiveVersion({ manifest_version: 2 }).manifest_version, 2);
+assert.throws(() => phone.assertPhoneArchiveVersion({ manifest_version: 1 }), /USB 服务页还原/);
+assert.throws(() => phone.assertPhoneArchiveVersion(null), /仅支持 v2/);
+console.log("PASS archive version gate: phone page accepts v2 only and directs v1.1 users to USB");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
