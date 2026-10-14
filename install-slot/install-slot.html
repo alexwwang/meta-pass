@@ -2574,17 +2574,154 @@ $("restore-input").addEventListener("change", async (ev) => {
       log("v2 APP+DATA archive preflight passed; waiting for explicit restore action.", "ok");
       return;
     }
-    // The supported archive contract is v2: one complete APP+DATA group,
-    // with archived NVS verified but never written to the destination device.
-    // v1 sequential APP/NVS restore is intentionally no longer supported; it
-    // cannot preserve the same ownership and transaction guarantees as v2.
-    throw new Error("Only complete v2 APP+DATA archives are supported; legacy v1 restore is not supported.");
+    if (rawManifest?.manifest_version === 1) {
+      if (isDynMode(slotModel.mode)) {
+        throw new Error("This v1 APP/NVS archive requires a legacy fixed-slot device; v2 dynamic devices require a v2 APP+DATA archive.");
+      }
+      const manifest = parseManifest(manifestText);
+      const filesBySlot = new Map();
+      for (const slotEntry of manifest.slots) {
+        const files = new Map();
+        for (const file of slotEntry.files) {
+          const bytes = entries.get(file.name);
+          if (!bytes) throw new Error(t("err_restore_missing_file", { name: file.name }));
+          if (bytes.length !== file.bytes) {
+            throw new Error(t("msg_restore_bad_zip", { err: `${file.name} is ${bytes.length} bytes, manifest says ${file.bytes}` }));
+          }
+          const digest = await sha256Hex(bytes);
+          if (digest !== file.sha256) {
+            throw new Error(t("err_restore_sha", { name: file.name, expected: file.sha256, got: digest }));
+          }
+          files.set(file.name, bytes);
+        }
+        filesBySlot.set(slotEntry.slot, files);
+      }
+      let nvsData = null;
+      if (manifest.nvs) {
+        nvsData = entries.get(manifest.nvs.file);
+        if (!nvsData || nvsData.length !== manifest.nvs.bytes) {
+          throw new Error(t("err_restore_missing_file", { name: manifest.nvs.file }));
+        }
+        const digest = await sha256Hex(nvsData);
+        if (digest !== manifest.nvs.sha256) {
+          throw new Error(t("err_restore_sha", { name: manifest.nvs.file, expected: manifest.nvs.sha256, got: digest }));
+        }
+      }
+      restoreZip = { manifest, filesBySlot, nvsData };
+      const wrap = $("restore-slots");
+      for (const entry of manifest.slots) {
+        const row = document.createElement("p");
+        const label = document.createElement("label");
+        label.textContent = t("msg_restore_slot_label", { from: entry.slot });
+        label.htmlFor = `restore-target-${entry.slot}`;
+        const sel = document.createElement("select");
+        sel.id = `restore-target-${entry.slot}`;
+        for (let target = 0; target < deviceSlots.length; target++) {
+          const opt = document.createElement("option");
+          opt.value = String(target);
+          opt.textContent = target === entry.slot ? t("msg_restore_same_slot", { slot: target }) : `Slot ${target}`;
+          if (target === entry.slot) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        row.append(label, sel);
+        wrap.appendChild(row);
+      }
+      $("restore-info").textContent = t("msg_restore_loaded", { slots: manifest.slots.map((s) => s.slot).join(", ") });
+      $("restore-info").className = "ok";
+      $("btn-restore").disabled = busy || !loader;
+      log("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", "ok");
+      return;
+    }
+    if (rawManifest?.manifest_version !== 2) {
+      throw new Error("Unsupported archive version: " + String(rawManifest?.manifest_version));
+    }
   } catch (err) {
     $("restore-info").textContent = t("msg_restore_bad_zip", { err: err.message });
     $("restore-info").className = "error";
     log(t("msg_restore_bad_zip", { err: err.message }), "error");
   }
 });
+
+async function restoreLegacyV1ArchiveUsb() {
+  const { manifest, filesBySlot, nvsData } = restoreZip || {};
+  if (!manifest || manifest.manifest_version !== 1 || !(filesBySlot instanceof Map)) {
+    throw new Error("No validated legacy v1 archive is loaded");
+  }
+  if (isDynMode(slotModel.mode)) {
+    throw new Error("Legacy v1 restore requires a detected fixed-slot device");
+  }
+  const jobs = manifest.slots.map((entry) => ({
+    from: entry.slot,
+    to: Number($(`restore-target-${entry.slot}`).value),
+  }));
+  if (!jobs.length) throw new Error(t("msg_restore_pick_target"));
+  for (const job of jobs) {
+    if (!Number.isInteger(job.to) || job.to < 0 || job.to >= deviceSlots.length) {
+      throw new Error(t("err_restore_target_invalid", { slot: job.to }));
+    }
+  }
+  let done = 0;
+  const restoredSlots = [];
+  for (const job of jobs) {
+    const target = deviceSlots[job.to];
+    const files = manifestFilesForSlot(manifest, job.from);
+    const fileMap = filesBySlot.get(job.from);
+    const fit = checkRestoreFit(files, target.size);
+    if (!fit.ok) throw new Error(t("err_restore_no_space", { slot: job.to, reason: fit.reason }));
+    for (const file of restoreOrder(files)) {
+      const bytes = fileMap.get(file.name);
+      const digest = await sha256Hex(bytes);
+      if (digest !== file.sha256) {
+        throw new Error(t("err_restore_sha", { name: file.name, expected: file.sha256, got: digest }));
+      }
+    }
+    const wiped = await wipeSlotResidue(target, target.offset, target.offset + target.size,
+      (p) => setRestoreProgress(((done + p * 0.2) / jobs.length) * 100));
+    if (wiped) log(t("msg_residue_wiped", { slot: job.to, addr: hex(target.offset), size: fmtBytes(target.size) }));
+    const ordered = restoreOrder(files);
+    for (let i = 0; i < ordered.length; i++) {
+      const file = ordered[i];
+      const bytes = fileMap.get(file.name);
+      let addr;
+      if (file.type === "raw" || file.name.endsWith("_raw.bin") || file.name.endsWith("_firmware.bin")) {
+        addr = target.offset;
+      } else if (file.name.endsWith("_tail.bin")) {
+        addr = target.offset + Math.ceil(fileMap.get(firmwareFileName(job.from)).length / 4096) * 4096;
+      } else {
+        addr = target.offset + Math.ceil(fileMap.get(firmwareFileName(job.from)).length / 4096) * 4096 + 4096;
+      }
+      log(t("msg_restore_writing", { name: file.name, size: fmtBytes(bytes.length), slot: job.to, addr: hex(addr) }));
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(bytes), address: addr }],
+        flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+        reportProgress: (_i, written, total) =>
+          setRestoreProgress(((done + 0.2 + (0.8 * (i + written / total)) / ordered.length) / jobs.length) * 100),
+      });
+    }
+    restoredSlots.push(`${job.from}→${job.to}`);
+    done++;
+  }
+  // v1 compatibility preserves the established automatic NVS restore behavior.
+  if (nvsData) {
+    const nv = await ensureDeviceNvs();
+    if (!nv) throw new Error(t("err_restore_nvs_missing"));
+    const digest = await sha256Hex(nvsData);
+    if (digest !== manifest.nvs.sha256) {
+      throw new Error(t("err_restore_sha", { name: manifest.nvs.file, expected: manifest.nvs.sha256, got: digest }));
+    }
+    log(t("msg_restore_nvs_write", { size: fmtBytes(nvsData.length), addr: hex(nv.offset) }));
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(nvsData), address: nv.offset }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      reportProgress: (_i, written, total) => setRestoreProgress(Math.min(99, 95 + (written / total) * 4)),
+    });
+  }
+  setRestoreProgress(100);
+  $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") });
+  $("restore-status").className = "ok";
+  log(t("msg_restore_done", { slots: restoredSlots.join(", ") }), "ok");
+  restoreZip = null;
+}
 
 async function restoreV2ArchiveUsb() {
   const manifest = restoreZip?.manifest;
@@ -2703,10 +2840,13 @@ $("btn-restore").addEventListener("click", async () => {
   $("restore-status").textContent = "";
   setRestoreProgress(0);
   try {
-    if (restoreZip.manifest.manifest_version !== 2) {
-      throw new Error("Only complete v2 APP+DATA archives are supported; legacy v1 restore is not supported.");
+    if (restoreZip.manifest.manifest_version === 1) {
+      await restoreLegacyV1ArchiveUsb();
+    } else if (restoreZip.manifest.manifest_version === 2) {
+      await restoreV2ArchiveUsb();
+    } else {
+      throw new Error("Unsupported archive version: " + String(restoreZip.manifest.manifest_version));
     }
-    await restoreV2ArchiveUsb();
   } catch (err) {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
     $("restore-status").className = "error";
