@@ -1,6 +1,6 @@
 // install-slot/storage-snapshot-restore.js
-// Sequential v2 snapshot restore: preflight, erase/write, independent readback,
-// then a separate boot/reconnect check. No transaction journal or rollback.
+// Sequential v2 snapshot restore: preflight, erase/write, then boot/reconnect check.
+// Archive hashes are verified before mutation; no full-flash readback or rollback.
 import {
   assertSnapshotVersionCompatible,
   buildStorageSnapshotRestorePlan,
@@ -30,44 +30,12 @@ function parseInventory(result) {
   return inventory;
 }
 
-function expectedChunk(partition, payloads, relativeOffset, length) {
-  const expected = new Uint8Array(length).fill(0xff);
-  for (const extent of partition.extents) {
-    const bytes = payloads.get(extent.file);
-    const left = Math.max(relativeOffset, extent.relativeOffset);
-    const right = Math.min(relativeOffset + length, extent.relativeOffset + extent.bytes);
-    if (left >= right) continue;
-    expected.set(
-      bytes.subarray(left - extent.relativeOffset, right - extent.relativeOffset),
-      left - relativeOffset,
-    );
-  }
-  return expected;
-}
-
-function firstMismatch(expected, actual) {
-  if (!(actual instanceof Uint8Array) || actual.length !== expected.length) return 0;
-  for (let i = 0; i < expected.length; i++) if (expected[i] !== actual[i]) return i;
-  return -1;
-}
-
 async function writeChunk(device, partition, relativeOffset, bytes) {
   if (typeof device.storageWrite !== "function") {
     throw new Error("Device adapter does not provide partition-relative storageWrite");
   }
   const result = await device.storageWrite(partition, relativeOffset, bytes);
   if (!result || result.ok !== true) throw new Error(result?.text || "device rejected partition write");
-}
-
-async function readChunk(device, partition, relativeOffset, length) {
-  if (typeof device.storageRead !== "function") {
-    throw new Error("Device adapter does not provide partition-relative storageRead");
-  }
-  const result = await device.storageRead(partition, relativeOffset, length);
-  if (!result || result.ok !== true || !(result.bytes instanceof Uint8Array) || result.bytes.length !== length) {
-    throw new Error(result?.text || "partition read returned an invalid byte length");
-  }
-  return result.bytes;
 }
 
 export async function restoreStorageSnapshotArchive(device, input, {
@@ -95,7 +63,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
   const totalWriteBytes = restorePlan.partitions.reduce(
     (sum, item) => sum + item.extents.reduce((partSum, extent) => partSum + extent.bytes, 0), 0,
   );
-  const totalBytes = restorePlan.totalEraseBytes * 2 + totalWriteBytes;
+  const totalBytes = restorePlan.totalEraseBytes + totalWriteBytes;
   const report = (phase, partition, relativeOffset, extra = {}) => onProgress({
     phase, partition: partition?.label, relativeOffset, completedBytes, totalBytes, ...extra,
   });
@@ -136,43 +104,14 @@ export async function restoreStorageSnapshotArchive(device, input, {
       }
     }
 
-    // Read back the entire partition, including sparse gaps expected to be 0xFF.
-    report("readback", p, 0);
-    for (let rel = 0; rel < p.size; rel += CHUNK_BYTES) {
-      const n = Math.min(CHUNK_BYTES, p.size - rel);
-      let actual;
-      try {
-        actual = await readChunk(device, p, rel, n);
-      } catch (cause) {
-        throw restoreError(
-          `Restore verification incomplete for partition ${p.label} at relative offset 0x${rel.toString(16)}: readback failed (${cause.message}). Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
-          "SNAPSHOT_RESTORE_READBACK_FAILED",
-          { partition: p.label, relativeOffset: rel, phase: "readback", cause },
-        );
-      }
-      const expected = expectedChunk(item, archive.payloads, rel, n);
-      const mismatch = firstMismatch(expected, actual);
-      if (mismatch >= 0) {
-        const offset = rel + mismatch;
-        throw restoreError(
-          `Restore verification mismatch in partition ${p.label} at relative offset 0x${offset.toString(16)} (expected 0x${expected[mismatch].toString(16).padStart(2, "0")}, read 0x${actual[mismatch].toString(16).padStart(2, "0")}). Restore is incomplete/inconsistent. Reflash MetaPass ${archive.manifest.meta_pass.system_version}, reconnect, and retry.`,
-          "SNAPSHOT_RESTORE_READBACK_MISMATCH",
-          { partition: p.label, relativeOffset: offset, phase: "readback" },
-        );
-      }
-      completedBytes += n;
-      report("readback", p, rel + n);
-    }
-  }
-
-  report("data-verified", null, null);
+  report("data-written", null, null);
   // Reboot is deliberately a separate validation step, not part of data integrity.
   if (typeof device.rebootAndReconnect !== "function") {
     return {
-      dataVerified: true,
+      dataWritten: true,
       bootValidated: false,
       restorePlan,
-      warning: "Data restore and independent readback passed; reboot/reconnect validation remains pending.",
+      warning: "Snapshot bytes were written; reboot/reconnect validation remains pending.",
     };
   }
   try {
@@ -182,11 +121,11 @@ export async function restoreStorageSnapshotArchive(device, input, {
     }
   } catch (cause) {
     throw restoreError(
-      `Data restore and readback verification passed, but reboot/reconnect validation failed (${cause.message}). Reflash MetaPass ${archive.manifest.meta_pass.system_version} and reconnect the device.`,
+      `Snapshot bytes were written, but reboot/reconnect validation failed (${cause.message}). Reflash MetaPass ${archive.manifest.meta_pass.system_version} and reconnect the device.`,
       "SNAPSHOT_RESTORE_BOOT_VALIDATION_FAILED",
-      { phase: "boot-validation", dataVerified: true, cause },
+      { phase: "boot-validation", dataWritten: true, cause },
     );
   }
   report("complete", null, null);
-  return { dataVerified: true, bootValidated: true, restorePlan };
+  return { dataWritten: true, bootValidated: true, restorePlan };
 }
