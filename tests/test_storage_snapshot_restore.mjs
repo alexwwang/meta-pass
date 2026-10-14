@@ -28,20 +28,19 @@ const archive = await buildStorageSnapshotZip({
 }, async bytes => hash(bytes));
 
 function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = null,
-  failBoot = false, layoutMismatch = false } = {}) {
+  failBoot = false } = {}) {
   const calls = [];
   const flash = new Map();
   let writes = 0;
+  const key = (partition, offset) => partition.offset + offset;
   return {
     calls,
     async storageInfo() {
       calls.push(["info"]);
-      return { ok: true, meta_pass_version: version, running_host: host, partitions: layoutMismatch ? partitions.map(p => p.label === "store" ? { ...p, size: p.size + 0x1000 } : p) : partitions };
+      return { ok: true, meta_pass_version: version, running_host: host, partitions };
     },
     async storageErase(partition) {
-      calls.push(["erase", partition.label]);
-      writes++;
-      if (failWriteAt !== null && writes === failWriteAt) throw new Error("simulated erase failure");
+      calls.push(["erase", partition.label, partition.size]);
       for (let i = 0; i < partition.size; i++) flash.set(partition.offset + i, 0xff);
       return { ok: true };
     },
@@ -49,15 +48,15 @@ function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = 
       calls.push(["write", partition.label, offset, bytes.length]);
       writes++;
       if (failWriteAt !== null && writes === failWriteAt) throw new Error("simulated write failure");
-      for (let i = 0; i < bytes.length; i++) flash.set(partition.offset + offset + i, bytes[i]);
+      for (let i = 0; i < bytes.length; i++) flash.set(key(partition, offset) + i, bytes[i]);
       return { ok: true };
     },
     async storageRead(partition, offset, length) {
       calls.push(["read", partition.label, offset, length]);
-      const address = partition.offset + offset;
+      const address = key(partition, offset);
       const out = new Uint8Array(length);
       for (let i = 0; i < length; i++) out[i] = flash.has(address + i) ? flash.get(address + i) : 0xff;
-      if (corruptReadback && partition.label === "store" && offset === 0) out[0x10] ^= 0x01;
+      if (corruptReadback && partition.label === "store" && offset <= 0x10 && offset + length > 0x10) out[0x10 - offset] ^= 0x01;
       return { ok: true, bytes: out };
     },
     async rebootAndReconnect() {
