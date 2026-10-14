@@ -10,6 +10,7 @@ import {
   validateStorageSnapshotPayloads,
   buildStorageSnapshotZip,
   readStorageSnapshotZip,
+  buildStorageSnapshotRestorePlan,
 } from "../install-slot/storage-snapshot.js";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -59,6 +60,13 @@ await assert.rejects(
   /expected a v2 storage snapshot/,
 );
 validateStorageSnapshotManifest(manifest, { targetPartitions: partitions, runningHostPartition: host });
+const restorePlan = buildStorageSnapshotRestorePlan(manifest, {
+  targetPartitions: partitions, runningHostPartition: host,
+});
+assert.equal(restorePlan.partitionCount, 3);
+assert.equal(restorePlan.totalEraseBytes, 0x6000 + 0x10000 + 0x20000);
+assert.equal(restorePlan.partitions.find((p) => p.partition.label === "store").erase.bytes, 0x10000);
+assert.equal(restorePlan.partitions.find((p) => p.partition.label === "store").extents[0].relativeOffset, 0x10);
 assert.deepEqual(await validateStorageSnapshotPayloads(manifest, { "extents/store-000010.bin": payload }, async (b) => hash(b)),
   { partitionCount: 3, extentCount: 1 });
 
