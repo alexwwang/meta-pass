@@ -18,7 +18,7 @@ function validInt(n) {
 
 
 function parseVersion(value) {
-  if (typeof value !== "string" || !/^\\d+\\.\\d+\\.\\d+$/.test(value)) return null;
+  if (typeof value !== "string" || !/^\d+\.\d+\.\d+$/.test(value)) return null;
   const parts = value.split(".").map(Number);
   return parts.every(Number.isSafeInteger) ? parts : null;
 }
