@@ -155,17 +155,21 @@ export function validateStorageSnapshotManifest(manifest, {
   return manifest;
 }
 
-export function validateStorageSnapshotPayloads(manifest, payloads) {
+export async function validateStorageSnapshotPayloads(manifest, payloads, sha256Hex) {
   validateStorageSnapshotManifest(manifest);
+  if (typeof sha256Hex !== "function") fail("SHA-256 implementation is required");
   const get = (name) => payloads instanceof Map ? payloads.get(name) : payloads?.[name];
+  let extentCount = 0;
   for (const p of manifest.partitions) {
     for (const e of p.extents) {
       const bytes = get(e.file);
       if (!(bytes instanceof Uint8Array) || bytes.byteLength !== e.bytes) {
         fail("missing snapshot payload or length mismatch: " + e.file);
       }
+      const digest = await sha256Hex(bytes);
+      if (digest !== e.sha256) fail("snapshot payload SHA-256 mismatch: " + e.file);
+      extentCount++;
     }
   }
-  return { partitionCount: manifest.partitions.length,
-    extentCount: manifest.partitions.reduce((n, p) => n + p.extents.length, 0) };
+  return { partitionCount: manifest.partitions.length, extentCount };
 }
