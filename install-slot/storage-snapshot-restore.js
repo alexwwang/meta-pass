@@ -7,8 +7,6 @@ import {
   readStorageSnapshotZip,
 } from "./storage-snapshot.js";
 
-const CHUNK_BYTES = 4096;
-
 function restoreError(message, code, details = {}) {
   const error = new Error(message);
   error.code = code;
