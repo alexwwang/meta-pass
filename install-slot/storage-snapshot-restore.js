@@ -118,6 +118,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
       for (let rel = 0; rel < bytes.length; rel += CHUNK_BYTES) {
         const chunk = bytes.subarray(rel, Math.min(bytes.length, rel + CHUNK_BYTES));
         const partitionRelativeOffset = extent.relativeOffset + rel;
+        report("write", p, partitionRelativeOffset);
         try {
           await writeChunk(device, p, partitionRelativeOffset, chunk);
         } catch (cause) {
@@ -127,6 +128,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
             { partition: p.label, relativeOffset: partitionRelativeOffset, phase: "write", cause },
           );
         }
+        report("write", p, partitionRelativeOffset + chunk.length);
       }
     }
 
