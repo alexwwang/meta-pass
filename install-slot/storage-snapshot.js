@@ -68,7 +68,9 @@ export function assertSnapshotVersionCompatible(manifest, currentVersion) {
     throw new Error("Target device did not report a valid MetaPass version; restore refused before Flash writes");
   }
   const { min_inclusive: min, max_inclusive: max } = manifest.meta_pass.compatible_versions;
-  if (compareVersions(currentVersion, min) < 0 || compareVersions(currentVersion, max) > 0) {
+  const exactSourceVersion = min === max;
+  if ((exactSourceVersion && currentVersion !== min) ||
+      compareVersions(currentVersion, min) < 0 || compareVersions(currentVersion, max) > 0) {
     const source = manifest.meta_pass.system_version;
     const error = new Error(
       `MetaPass ${currentVersion} is outside this snapshot's supported range ${min}–${max}. ` +
