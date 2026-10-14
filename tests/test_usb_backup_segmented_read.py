@@ -56,8 +56,12 @@ if "resyncAfterReadError" in PAGE:
     raise SystemExit("FAIL: obsolete layered recovery remains in the backup page")
 
 require(
-    r"const payload = await readFlashChunked\(record\.offset, record\.size",
-    "DATA backup must use the production segmented reader",
+    r'if \(isDynMode\(slotModel\.mode\)\).*?未生成旧 APP\+DATA v2 备份',
+    "dynamic v2 backup must fail closed until running-host partition identity is available",
+)
+require(
+    r"const nvsData = await readFlashChunked\(",
+    "historical fixed-slot v1 backup must retain its bounded NVS read",
 )
 
 print("USB segmented backup contract: PASS")
