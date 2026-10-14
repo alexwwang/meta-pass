@@ -65,7 +65,7 @@ test("reports boot validation failure separately from completed writes", async (
   const archive = await archiveFor(f.manifest, f.original);
   await assert.rejects(
     restoreStorageSnapshotArchive(f.device, archive, { sha256Hex }),
-    (error) => error.code === "SNAPSHOT_RESTORE_BOOT_VALIDATION_FAILED" && error.dataVerified === true,
+    (error) => error.code === "SNAPSHOT_RESTORE_BOOT_VALIDATION_FAILED" && error.dataWritten === true,
   );
 });
 
@@ -74,7 +74,7 @@ test("does not claim boot validation when the adapter cannot reboot/reconnect", 
   delete f.device.rebootAndReconnect;
   const archive = await archiveFor(f.manifest, f.original);
   const result = await restoreStorageSnapshotArchive(f.device, archive, { sha256Hex });
-  assert.equal(result.dataVerified, true);
+  assert.equal(result.dataWritten, true);
   assert.equal(result.bootValidated, false);
   assert.match(result.warning, /reboot\/reconnect validation remains pending/);
 });
