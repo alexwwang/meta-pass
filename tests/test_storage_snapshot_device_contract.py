@@ -13,7 +13,7 @@ def require(needle: str, label: str) -> None:
 
 
 require('"/api/install/storage/info"', "registered partition inventory endpoint")
-require("\\\"meta_pass_version\\\"", "inventory exposes the current MetaPass system version for archive compatibility checks")
+require('"meta_pass_version"', "inventory exposes the current MetaPass system version for archive compatibility checks")
 require('"/api/install/storage/read"', "registered partition read endpoint")
 require("esp_ota_get_running_partition()", "running host partition protection")
 require('strcmp(part->label, "cardid") == 0', "cardid read protection")
