@@ -137,4 +137,16 @@ for (const version of ["3.0.0", null]) {
   );
 }
 
+
+// Without a reboot adapter, a completed write is explicitly pending boot validation.
+{
+  const device = mockDevice();
+  delete device.rebootAndReconnect;
+  const result = await restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) });
+  assert.equal(result.dataWritten, true);
+  assert.equal(result.bootValidated, false);
+  assert.match(result.warning, /reboot\/reconnect validation remains pending/);
+  assert.equal(device.calls.some(c => c[0] === "read"), false);
+}
+
 console.log("PASS sequential snapshot restore preflight, writes, sparse ranges, and reboot validation");
