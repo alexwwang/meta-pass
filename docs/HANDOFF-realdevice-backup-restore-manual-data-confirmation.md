@@ -4,7 +4,7 @@ Language: [简体中文](HANDOFF-realdevice-backup-restore-manual-data-confirmat
 
 Date: 2026-10-14  
 Target branch: `feat/storage`  
-Scope: v2 whole-device storage snapshots, USB v1.1 legacy archive compatibility, and human confirmation of real-device DATA access after installs.
+Scope: v2 whole-device storage snapshots and human confirmation of real-device DATA access after installs. The unchanged USB v1.1 compatibility branch is outside this round's test scope.
 
 ## 0. Mandatory test discipline
 
@@ -26,7 +26,7 @@ These rules override the runner's default behavior and any goal of completing al
 
 - Continue on `feat/storage`; do not develop on `main`.
 - v2 archives now mean whole-device allocated-storage snapshots, replacing the APP+DATA logical archive. The discriminator is `kind: meta-pass-storage-snapshot`.
-- The mobile page supports snapshot export and restore preflight, but not restore writes. The device currently exposes guarded partition inventory/read endpoints only.
+- The mobile page supports snapshot export and restore preflight, but not restore writes. The device currently exposes guarded partition inventory/read endpoints only. The USB v1.1 compatibility branch is unchanged and requires no dedicated regression in this round.
 - USB fixed-slot devices retain historical v1.1 archive behavior. USB dynamic-v2 snapshot backup is blocked because the serial transport cannot yet reliably identify the running host partition. Neither page may treat an old APP+DATA v2 archive as a new snapshot.
 - Static checks and firmware checks passed for the most recently verified commit `3900829f91d15ffffe1341b50960e2c4df1f2d7a`. Recheck CI on any newer HEAD; never reuse an older result.
 
@@ -73,7 +73,7 @@ Also verify:
 - Snapshot completeness, payload length, and SHA-256 checks pass.
 - Target layout must match exactly; running host firmware and `cardid` are excluded.
 - Mobile restore preflight only reads partition inventory and does not write Flash.
-- USB fixed-slot v1.1 restore remains on the historical path; dynamic v2 snapshot remains blocked.
+- USB dynamic v2 snapshot remains blocked. Do not spend this round re-testing the unchanged USB v1.1 historical branch.
 - Static checks and firmware checks pass on the current commit; real-device tests remain separate.
 
 If any check fails, fix it and rerun affected tests before proceeding to device acceptance.
