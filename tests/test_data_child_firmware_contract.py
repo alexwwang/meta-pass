@@ -125,7 +125,7 @@ assert 'log(`INCOMPLETE BACKUP: slot(s) ${missingSlots.join(", ")} could not be 
 assert 'data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive' in usb_page, "USB UI must disclose one-group-per-archive backup scope"
 assert "Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only" in usb_page, "USB UI must disclose v2-only restore support"
 assert "In dynamic mode, back up one complete APP+DATA group per archive" in usb_page, "USB backup copy must match the single-group v2 restore contract"
-assert "if (isDynMode(slotModel.mode) && slots.length !== 1)" in usb_page, "USB must refuse to create a multi-group v2 archive that its restore path cannot consume"
+assert "if (slots.length !== 1)" in usb_page and "if (!isDynMode(slotModel.mode))" in usb_page, "USB backup must require one dynamic APP+DATA group, matching mobile restore"
 assert "msg_backup_single_group" in usb_page, "USB must explain the single-group backup restriction"
 assert "v2 restores one complete APP+DATA group and preserves the destination device NVS" in usb_page, "USB restore fallback copy must disclose v2 destination NVS preservation"
 assert "Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only" in usb_page, "USB restore copy must disclose v2-only restore support"
