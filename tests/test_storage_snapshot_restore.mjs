@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { restoreStorageSnapshotArchive } from "../install-slot/storage-snapshot-restore.js";
 import { buildStorageSnapshotManifest, buildStorageSnapshotZip } from "../install-slot/storage-snapshot.js";
 
