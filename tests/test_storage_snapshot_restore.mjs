@@ -137,7 +137,7 @@ for (const version of ["3.0.0", null]) {
 
 // A write error is reported as incomplete and no rollback is attempted.
 {
-  const device = mockDevice({ failWriteAt: 3 });
+  const device = mockDevice({ failWriteAt: 1 });
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
     error => error.code === "SNAPSHOT_RESTORE_WRITE_FAILED" &&
