@@ -2317,7 +2317,7 @@ async function readUsbStorageInventory() {
     const project = decoder.decode(desc.subarray(48, 80)).split("\0", 1)[0];
     if (project !== "FoloToy-AI-Passport") continue;
     const version = decoder.decode(desc.subarray(16, 48)).split("\0", 1)[0].trim();
-    if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
       throw new Error("MetaPass host image has no valid semantic version; snapshot operation refused");
     }
     hosts.push({ ...part, version });
