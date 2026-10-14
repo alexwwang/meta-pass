@@ -2225,7 +2225,7 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
     s_storage_info_json[used] = '\0';
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, s_storage_info_json, (ssize_t)used);
+    return httpd_resp_send(req, s_storage_info_json, (int)used);
 }
 
 // GET /api/install/storage/read: bounded partition-relative read. Caller must echo exact live identity.
@@ -2280,7 +2280,7 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
     }
     httpd_resp_set_type(req, "application/octet-stream");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, (const char *)read_buf, (ssize_t)length);
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
 
 // GET /api/install/nvs/info: expose only the fixed system NVS partition, never arbitrary labels/addresses.
