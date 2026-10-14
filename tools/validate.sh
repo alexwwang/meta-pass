@@ -292,6 +292,7 @@ PATHCHECK
     fi
     if [[ -n "${node_bin}" ]]; then
         "${node_bin}" tools/install-slot/test-extract.mjs
+        "${node_bin}" tests/test_storage_snapshot.mjs
         "${node_bin}" tools/install-slot/test-store-analyze.mjs
         "${node_bin}" tests/test_data_size_profile.mjs
         "${node_bin}" tests/test_store_analyze_profile.mjs
