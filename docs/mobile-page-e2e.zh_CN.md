@@ -33,7 +33,7 @@ node tools/realdevice/mobile_page_browser_smoke.mjs \
 
 1. **真实 ESP32 设备**：运行当前待测启动器固件，网页服务来自该设备。
 2. **CDP 浏览器 UI 自动化**：一个持续的移动视口浏览器会话，所有创建、安装和删除动作都由页面控件触发。
-3. **分层测试对象**：`tests/realdevice/data-child/` 专用固件用于基础协议/分区分配回归；真实市场业务 DATA 验收目标为录音笔 Play 28（`recordings` FAT 分区）。Play 28 的容量缩容与录音 UI 自动化尚未完成，详见 [真实市场固件选择](assets/mobile-page-data-e2e-market-firmware.zh_CN.md)。在该链路完成前，fixture PASS 不等于市场业务 E2E PASS。
+3. **分层测试对象**：`tests/realdevice/data-child/` 专用固件用于基础协议/分区分配回归；真实市场业务 DATA 验收目标为录音笔 Play 28（`recordings` FAT 分区）。Play 28 的安装容量选择场景与录音 UI 自动化尚未完成；这里的容量测试只针对新建 DATA 分区，不涉及既有 DATA 原地扩缩容，详见 [真实市场固件选择](assets/mobile-page-data-e2e-market-firmware.zh_CN.md)。在该链路完成前，fixture PASS 不等于市场业务 E2E PASS。
 4. **硬件运行驱动**：通过真实的设备控制/串口观测链路启动指定槽位、等待测试子固件执行、触发其返回启动器，并收集设备侧证据。不能用模拟的 API 响应代替。驱动通过 `--runtime-driver` 提供，接口见下文。
 5. **DATA 分区支持**：本轮 A/B 测试固件都必须声明并实际访问受支持的 DATA 分区；否则本次完整生命周期测试应失败，而不是跳过读写测试。
 
