@@ -60,6 +60,37 @@ console.log("PASS archive version gate: phone page accepts v2 only and directs v
   assert.equal(seen.length, count, "invalid relative ranges must be rejected before any device request");
   console.log("PASS guarded storage snapshot bridge: exact partition identity, binary reads, and range bounds");
 }
+
+{
+  const host = { label: "ota_0", type: 0, subtype: 0x10, offset: 0x10000, size: 0x10000 };
+  const partitions = [
+    { ...host, running_host: true },
+    { label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x1000, running_host: false },
+    { label: "cardid", type: 1, subtype: 0x40, offset: 0xa000, size: 0x1000, running_host: false },
+    { label: "store", type: 1, subtype: 0x41, offset: 0x20000, size: 0x2000, running_host: false },
+  ];
+  const reads = [];
+  const bridge = {
+    storageInfo: async () => ({ ok: true, text: JSON.stringify({ running_host: host, partitions }) }),
+    storageRead: async (part, offset, length) => {
+      reads.push({ label: part.label, offset, length });
+      const bytes = new Uint8Array(length).fill(0xff);
+      if (part.label === "store" && offset === 0) { bytes[0] = 1; bytes[1] = 2; }
+      return { ok: true, bytes };
+    },
+  };
+  const snapshot = await phone.readStorageSnapshot(bridge);
+  assert.equal(snapshot.manifest.kind, "meta-pass-storage-snapshot");
+  assert.equal(snapshot.manifest.partitions.length, 2);
+  assert.deepEqual(snapshot.manifest.partitions.map((p) => [p.label, p.extents.length]), [["nvs", 0], ["store", 1]]);
+  assert.equal(snapshot.manifest.partitions[1].extents[0].offset, 0);
+  assert.equal(snapshot.manifest.partitions[1].extents[0].bytes, 4096);
+  assert.deepEqual([...snapshot.payloads.values()][0].slice(0, 2), [1, 2]);
+  assert.equal(reads.some((r) => r.label === "ota_0" || r.label === "cardid"), false,
+    "snapshot reads must skip running host and cardid");
+  assert.equal(snapshot.bytesRead, 0x3000);
+  console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
+}
 const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
 const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
 const v2RestoreStart = usbPage.indexOf("async function restoreV2ArchiveUsb()", legacyRestoreStart);
