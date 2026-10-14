@@ -45,13 +45,33 @@ export function isProtectedPartition(partition, runningHostPartition) {
       partition.size === runningHostPartition.size);
 }
 
-export function eligibleSnapshotPartitions(partitions, runningHostPartition) {
-  if (!Array.isArray(partitions) || !validPartition(runningHostPartition)) {
-    fail("live partition table and running host partition are required");
+export function eligibleSnapshotPartitions(partitions, runningHostPartition, protectedRanges = []) {
+  if (!Array.isArray(partitions) || !validPartition(runningHostPartition) || !Array.isArray(protectedRanges)) {
+    fail("live partition table, running host partition, and protected ranges are required");
   }
-  return partitions.filter((p) => validPartition(p) &&
-    !isProtectedPartition(p, runningHostPartition) &&
-    !overlaps(p.offset, p.size, PARTITION_TABLE_RANGE.offset, PARTITION_TABLE_RANGE.size));
+  const labels = new Set();
+  for (let i = 0; i < partitions.length; i++) {
+    const p = partitions[i];
+    if (!validPartition(p)) fail("invalid live partition table entry");
+    if (labels.has(p.label)) fail("duplicate live partition label");
+    labels.add(p.label);
+    for (let j = 0; j < i; j++) {
+      if (overlaps(p.offset, p.size, partitions[j].offset, partitions[j].size)) {
+        fail("overlapping live partition table entries");
+      }
+    }
+  }
+  if (!partitions.some((p) => isProtectedPartition(p, runningHostPartition))) {
+    fail("running host partition is absent from live partition table");
+  }
+  const protectedOverlap = (p) => protectedRanges.some((r) => {
+    if (!r || !validInt(r.offset) || !Number.isSafeInteger(r.size) || r.size <= 0) {
+      fail("invalid device-provided protected range");
+    }
+    return overlaps(p.offset, p.size, r.offset, r.size);
+  });
+  return partitions.filter((p) => !isProtectedPartition(p, runningHostPartition) &&
+    p.label !== "cardid" && !protectedOverlap(p));
 }
 
 function validateExtent(extent, partitionSize, seenNames) {
