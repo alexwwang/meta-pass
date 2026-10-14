@@ -24,25 +24,24 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("归档未加密", mobile)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", mobile)
 
-    def test_usb_restore_supports_v1_fixed_slot_and_v2_dynamic_contracts(self):
+    def test_usb_restore_preserves_v1_and_rejects_v2_until_safe_snapshot_restore(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        self.assertIn("All restore versions verify archived NVS when present but never write it", usb)
         self.assertIn("restoreLegacyV1ArchiveUsb()", usb)
-        self.assertIn("if (isDynMode(slotModel.mode))", usb)
         self.assertIn("if (rawManifest?.manifest_version === 1)", usb)
-        self.assertIn("所有版本均只校验归档中的 NVS，不写入 NVS，目标设备现有 NVS 始终保持不变", usb)
+        self.assertIn('rawManifest?.kind === "meta-pass-storage-snapshot"', usb)
+        self.assertIn("不再接受旧 APP+DATA v2 逻辑归档", usb)
+        self.assertIn("未写入 Flash", usb)
+        self.assertNotIn("async function restoreV2ArchiveUsb()", usb)
+        self.assertNotIn("await restoreV2ArchiveUsb()", usb)
         legacy_start = usb.index("async function restoreLegacyV1ArchiveUsb()")
-        v2_start = usb.index("async function restoreV2ArchiveUsb()", legacy_start)
-        legacy_restore = usb[legacy_start:v2_start]
+        handler_start = usb.index('$("btn-restore").addEventListener')
+        legacy_restore = usb[legacy_start:handler_start]
         self.assertNotIn("msg_restore_nvs_write", legacy_restore)
         self.assertNotIn("ensureDeviceNvs()", legacy_restore)
-        self.assertNotIn("multi-APP restore is not atomic", usb)
-        handler_start = usb.index('$("btn-restore").addEventListener')
-        handler_end = usb.index('// ===== 4. 安装 =====', handler_start)
-        restore_handler = usb[handler_start:handler_end]
-        self.assertIn("await restoreV2ArchiveUsb()", restore_handler)
-        self.assertIn("await restoreLegacyV1ArchiveUsb()", restore_handler)
-        self.assertIn("parseManifest(manifestText)", usb[usb.index('$("restore-input").addEventListener'):handler_start])
+        parser_start = usb.index('$("restore-input").addEventListener')
+        parser = usb[parser_start:handler_start]
+        self.assertIn("const manifest = parseManifest(manifestText)", parser)
+        self.assertIn("historical v1 APP/NVS archive validated", parser)
 
     def test_phone_backup_is_whole_device_snapshot_not_app_data_archive(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
@@ -52,54 +51,37 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("validateStorageSnapshotArchiveForDevice", mobile)
         self.assertNotIn('buildDataArchiveManifest({', mobile[mobile.index("async function doBackup()"):mobile.index("async function doRestoreArchive(file)")])
 
-    def test_usb_backup_preserves_v1_fixed_slot_archive_compatibility(self):
+    def test_usb_backup_preserves_v1_and_blocks_legacy_dynamic_v2_archives(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("btn-backup").addEventListener')
         end = usb.index('// --- 6. 恢复 ---', start)
         backup = usb[start:end]
-        self.assertIn("if (isDynMode(slotModel.mode) && slots.length !== 1)", backup)
+        self.assertIn("if (isDynMode(slotModel.mode))", backup)
+        self.assertIn("未生成旧 APP+DATA v2 备份", backup)
         self.assertIn("manifest_version: 1", backup)
         self.assertIn("slots: manifestEntries.map(({ slot, files }) => ({ slot, files }))", backup)
 
     def test_usb_v1_archive_uses_legacy_restore_only_for_fixed_slot_device(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("restore-input").addEventListener')
-        end = usb.index('async function restoreV2ArchiveUsb()', start)
+        end = usb.index('$("btn-restore").addEventListener', start)
         parser = usb[start:end]
         self.assertIn("rawManifest?.manifest_version === 1", parser)
         self.assertIn("if (isDynMode(slotModel.mode))", parser)
         self.assertIn("const manifest = parseManifest(manifestText)", parser)
+        self.assertIn("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", parser)
 
-    def test_usb_v2_restore_revalidates_single_app_data_group_before_mutation(self):
+    def test_usb_rejects_ambiguous_and_legacy_app_data_v2_archives(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
-        start = usb.index("async function restoreV2ArchiveUsb()")
-        end = usb.index('$("btn-restore").addEventListener', start)
-        restore = usb[start:end]
-        for token in (
-            "prepareDataArchiveRestore(manifest, payloads",
-            "const archivedSlot = prepared.slot",
-        ):
-            with self.subTest(token=token):
-                self.assertIn(token, restore)
-        shared = (ROOT / "install-slot/data-byte-archive.js").read_text(encoding="utf-8")
-        for token in (
-            "export function validateSingleGroupRestoreManifest(manifest)",
-            "manifest.complete !== true",
-            "manifest.slots.length !== 1",
-            "record.play_id !== slot.play_id",
-        ):
-            with self.subTest(token=token):
-                self.assertIn(token, shared)
-        preparation = (ROOT / "install-slot/data-archive-restore.js").read_text(encoding="utf-8")
-        for token in (
-            "validateSingleGroupRestoreManifest(manifest)",
-            "validateDataArchivePayloads(manifest, payloads, sha256Hex)",
-            "DATA payload length is not aligned to the allocation granule",
-        ):
-            with self.subTest(token=token):
-                self.assertIn(token, preparation)
-        self.assertLess(restore.index("prepareDataArchiveRestore(manifest, payloads"),
-                        restore.index("await loadSlotModel()"))
+        parser_start = usb.index('$("restore-input").addEventListener')
+        handler_start = usb.index('$("btn-restore").addEventListener', parser_start)
+        parser = usb[parser_start:handler_start]
+        self.assertIn('rawManifest?.kind === "meta-pass-storage-snapshot"', parser)
+        self.assertIn("旧 APP+DATA v2 逻辑归档", parser)
+        self.assertNotIn("validateDataArchiveManifest(rawManifest)", parser)
+        handler = usb[handler_start:usb.index('// ===== 4. 安装 =====', handler_start)]
+        self.assertIn("await restoreLegacyV1ArchiveUsb()", handler)
+        self.assertNotIn("restoreV2ArchiveUsb", handler)
 
     def test_mobile_viewport_and_page_health_are_checked(self):
         for token in ("M01 no horizontal page overflow", "responsive layout", "no console errors",
