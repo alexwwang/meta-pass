@@ -911,7 +911,7 @@ const I18N = {
     backup_desc: "In dynamic mode, back up one complete APP+DATA group per archive; legacy layouts remain APP-only.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 archives retain sequential APP/NVS restore compatibility (multi-APP restore is not atomic).",
+    restore_desc: "v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only.",
     restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
     btn_restore: "Restore",
     data_backup_unavailable: "USB dynamic-mode backup includes verified DATA bytes for one selected APP+DATA group per archive. Backup ZIP files are unencrypted and may contain raw NVS data such as Wi-Fi credentials; do not upload or share them. v2 restore verifies any archived NVS bytes but preserves the destination device NVS; legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.",
@@ -2587,55 +2587,6 @@ $("restore-input").addEventListener("change", async (ev) => {
     // v1 sequential APP/NVS restore is intentionally no longer supported; it
     // cannot preserve the same ownership and transaction guarantees as v2.
     throw new Error("Only complete v2 APP+DATA archives are supported; legacy v1 restore is not supported.");
-    const manifest = parseManifest(rawManifest);
-    const filesBySlot = new Map();
-    for (const s of manifest.slots) {
-      const m = new Map();
-      for (const f of s.files) {
-        const data = entries.get(f.name);
-        if (!data) throw new Error(t("err_restore_missing_file", { name: f.name }));
-        if (data.length !== f.bytes) {
-          throw new Error(t("msg_restore_bad_zip", { err: `${f.name} is ${data.length} bytes, manifest says ${f.bytes}` }));
-        }
-        m.set(f.name, data);
-      }
-      filesBySlot.set(s.slot, m);
-    }
-    // NVS(manifest.nvs,可选):与槽位文件同规则校验(存在性 + 字节数)后载入
-    let nvsData = null;
-    if (manifest.nvs) {
-      const d = entries.get(manifest.nvs.file);
-      if (!d) throw new Error(t("err_restore_missing_file", { name: manifest.nvs.file }));
-      if (d.length !== manifest.nvs.bytes) {
-        throw new Error(t("msg_restore_bad_zip", { err: `${manifest.nvs.file} is ${d.length} bytes, manifest says ${manifest.nvs.bytes}` }));
-      }
-      nvsData = d;
-    }
-    restoreZip = { manifest, filesBySlot, nvsData };
-    const slotList = manifest.slots.map((s) => s.slot);
-    $("restore-info").textContent = t("msg_restore_loaded", { slots: slotList.join(", ") });
-    $("restore-info").className = "ok";
-    log(t("msg_restore_loaded", { slots: slotList.join(", ") }), "ok");
-    // 每个备份槽位一行:选择目标槽位(默认原位)
-    const wrap = $("restore-slots");
-    for (const from of slotList) {
-      const row = document.createElement("p");
-      const label = document.createElement("label");
-      label.textContent = t("msg_restore_slot_label", { from });
-      label.htmlFor = `restore-target-${from}`;
-      const sel = document.createElement("select");
-      sel.id = `restore-target-${from}`;
-      for (let s = 0; s < deviceSlots.length; s++) {
-        const opt = document.createElement("option");
-        opt.value = String(s);
-        opt.textContent = s === from ? t("msg_restore_same_slot", { slot: s }) : `Slot ${s}`;   // 动态行:行号即槽位号,不再依赖 slot_N 字典
-        if (s === from) opt.selected = true;
-        sel.appendChild(opt);
-      }
-      row.append(label, sel);
-      wrap.appendChild(row);
-    }
-    $("btn-restore").disabled = busy || !loader;
   } catch (err) {
     $("restore-info").textContent = t("msg_restore_bad_zip", { err: err.message });
     $("restore-info").className = "error";
@@ -2764,99 +2715,6 @@ $("btn-restore").addEventListener("click", async () => {
       throw new Error("Only complete v2 APP+DATA archives are supported; legacy v1 restore is not supported.");
     }
     await restoreV2ArchiveUsb();
-    return;
-    const jobs = restoreZip.manifest.slots.map((s) => ({
-      from: s.slot,
-      to: Number($(`restore-target-${s.slot}`).value),
-    }));
-    if (jobs.length === 0) throw new Error(t("msg_restore_pick_target"));
-    // N4: 校验 job.to 在 deviceSlots 范围内,防 DOM 篡改或槽数变化导致越界
-    for (const job of jobs) {
-      if (!Number.isInteger(job.to) || job.to < 0 || job.to >= deviceSlots.length) {
-        throw new Error(t("err_restore_target_invalid", { slot: job.to }));
-      }
-    }
-    let done = 0;
-    const restoredSlots = [];
-    for (const job of jobs) {
-      const s = deviceSlots[job.to];
-      const files = manifestFilesForSlot(restoreZip.manifest, job.from);
-      const dataMap = restoreZip.filesBySlot.get(job.from);
-      log(t("msg_restore_checking", { slot: job.to }));
-      // 1) 空间自检(自适应核心:按 manifest 字节数,与源分区大小无关)
-      const fit = checkRestoreFit(files, s.size);
-      if (!fit.ok) throw new Error(t("err_restore_no_space", { slot: job.to, reason: fit.reason }));
-      // 2) 一致性校验:实际字节 sha256 必须等于 manifest 声明
-      for (const f of restoreOrder(files)) {
-        const data = dataMap.get(f.name);
-        const digest = await sha256Hex(data);
-        if (digest !== f.sha256) {
-          throw new Error(t("err_restore_sha", { name: f.name, expected: f.sha256, got: digest }));
-        }
-      }
-      // 3) 槽位级残留清理(装到哪个槽只清哪个槽;先于任何写入,避免恢复后的
-      //    extra 数据被后续写入的擦除影响,也把槽拉回与 manifest 一致的干净态)
-      const wiped = await wipeSlotResidue(
-        s, s.offset, s.offset + s.size,
-        (p) => setRestoreProgress(((done + p * 0.2) / jobs.length) * 100),
-      );
-      if (wiped) log(t("msg_residue_wiped", { slot: job.to, addr: hex(s.offset), size: fmtBytes(s.size) }));
-      // 4) 按序写入:firmware → extra → tail(tail 最后,防扇区重擦)
-      const ordered = restoreOrder(files);
-      for (let i = 0; i < ordered.length; i++) {
-        const f = ordered[i];
-        const data = dataMap.get(f.name);
-        // 地址按"槽内布局"重建,而非沿用源设备偏移:app@0,tail/extra 在 app 之后依次排列。
-        // 固件 → 从槽位起点写;extra → 紧跟 tail sector 之后(与备份时布局一致);
-        // tail → app 之后的 4K 对齐扇区。
-        let addr;
-        if (f.type === "raw" || f.name.endsWith("_raw.bin")) {
-          addr = s.offset;   // dd 兜底:整槽镜像从槽位起点原样写回(无 app/tail 结构)
-          log(t("msg_restore_raw_write", { slot: job.to, addr: hex(addr) }));
-        } else if (f.name.endsWith("_firmware.bin")) {
-          addr = s.offset;
-        } else if (f.name.endsWith("_tail.bin")) {
-          addr = s.offset + Math.ceil(dataMap.get(firmwareFileName(job.from)).length / 4096) * 4096;
-        } else {
-          addr = s.offset + Math.ceil(dataMap.get(firmwareFileName(job.from)).length / 4096) * 4096 + 4096;
-        }
-        log(t("msg_restore_writing", { name: f.name, size: fmtBytes(data.length), slot: job.to, addr: hex(addr) }));
-        await loader.writeFlash({
-          fileArray: [{ data: u8ToBinaryString(data), address: addr }],
-          flashSize: "keep",
-          flashMode: "keep",
-          flashFreq: "keep",
-          compress: true,
-          reportProgress: (_i, written, total) =>
-            setRestoreProgress(((done + 0.2 + (0.8 * (i + written / total)) / ordered.length) / jobs.length) * 100),
-        });
-      }
-      restoredSlots.push(`${job.from}→${job.to}`);
-      done++;
-    }
-    // NVS 自动还原(与备份对称):sha256 校验后写回设备分区表定位的 NVS 分区。
-    // 用户决策 2026-09-18:自动执行,无 UI 选项。
-    if (restoreZip.nvsData) {
-      const nv = await ensureDeviceNvs();
-      if (!nv) throw new Error(t("err_restore_nvs_missing"));
-      const digest = await sha256Hex(restoreZip.nvsData);
-      if (digest !== restoreZip.manifest.nvs.sha256) {
-        throw new Error(t("err_restore_sha", { name: restoreZip.manifest.nvs.file, expected: restoreZip.manifest.nvs.sha256, got: digest }));
-      }
-      log(t("msg_restore_nvs_write", { size: fmtBytes(restoreZip.nvsData.length), addr: hex(nv.offset) }));
-      await loader.writeFlash({
-        fileArray: [{ data: u8ToBinaryString(restoreZip.nvsData), address: nv.offset }],
-        flashSize: "keep",
-        flashMode: "keep",
-        flashFreq: "keep",
-        compress: true,
-        reportProgress: (_i, written, total) => setRestoreProgress(Math.min(99, 95 + (written / total) * 4)),
-      });
-    }
-    setRestoreProgress(100);
-    $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") });
-    $("restore-status").className = "ok";
-    log(t("msg_restore_done", { slots: restoredSlots.join(", ") }), "ok");
   } catch (err) {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
     $("restore-status").className = "error";
