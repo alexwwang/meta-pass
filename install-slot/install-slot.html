@@ -303,7 +303,7 @@ import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
 import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
-import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, validateStorageSnapshotManifest, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
+import { captureStorageSnapshot, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
 import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
@@ -2350,6 +2350,10 @@ function usbSnapshotDevice(inventory) {
       const bytes = await loader.readFlash(p.offset + offset, length);
       return { ok: true, bytes };
     },
+    async storageReadPartition(partition, onProgress) {
+      const p = resolve(partition);
+      return readFlashChunked(p.offset, p.size, onProgress);
+    },
     async storageErase(partition) {
       const p = resolve(partition);
       await wipeRange(p.offset, p.size);
@@ -2369,43 +2373,13 @@ function usbSnapshotDevice(inventory) {
 
 async function createUsbStorageSnapshot(onProgress = () => {}) {
   const inventory = await readUsbStorageInventory();
-  const eligible = eligibleSnapshotPartitions(inventory.partitions, inventory.running_host, []);
-  const payloads = new Map();
-  const snapshotPartitions = [];
-  let done = 0;
-  const total = eligible.reduce((sum, p) => sum + p.size, 0);
-  for (const part of eligible) {
-    const extents = [];
-    // Read in bounded 512 KiB sessions; do not reset the serial session for
-    // every 4 KiB extent or let a long snapshot silently exceed session limits.
-    const partitionBytes = await readFlashChunked(part.offset, part.size,
-      got => onProgress((done + got) / total));
-    for (let offset = 0; offset < part.size; offset += 4096) {
-      const length = Math.min(4096, part.size - offset);
-      const bytes = partitionBytes.subarray(offset, offset + length);
-      if (!isAllFF(bytes)) {
-        const file = "extents/" + part.label + "-" + offset.toString(16).padStart(8, "0") + ".bin";
-        extents.push({ file, offset, bytes: length, sha256: await sha256Hex(bytes) });
-        payloads.set(file, bytes);
-      }
-    }
-    done += part.size;
-    onProgress(done / total);
-    snapshotPartitions.push({ label: part.label, type: part.type, subtype: part.subtype, offset: part.offset, size: part.size, extents });
-  }
-  const version = inventory.meta_pass_version;
-  const manifest = buildStorageSnapshotManifest({
-    partitions: snapshotPartitions,
-    metaPassVersion: version,
-    compatibleMetaPassVersions: { min_inclusive: version, max_inclusive: version },
+  const device = usbSnapshotDevice(inventory);
+  const snapshot = await captureStorageSnapshot(device, {
+    sha256Hex,
+    onProgress: event => onProgress(event.totalBytes ? event.bytesRead / event.totalBytes : 0),
   });
-  validateStorageSnapshotManifest(manifest, {
-    targetPartitions: inventory.partitions,
-    runningHostPartition: inventory.running_host,
-    protectedRanges: [],
-  });
-  const zip = await buildStorageSnapshotZip({ manifest, payloads }, sha256Hex);
-  return { zip, manifest, inventory };
+  const zip = await buildStorageSnapshotZip(snapshot, sha256Hex);
+  return { zip, manifest: snapshot.manifest, inventory };
 }
 
 function downloadStorageSnapshot(zip, version) {
