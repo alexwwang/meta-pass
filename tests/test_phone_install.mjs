@@ -40,7 +40,7 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
   globalThis.fetch = async (url, options = {}) => {
     seen.push({ url: String(url), headers: options.headers || {} });
     if (String(url).endsWith("/api/install/storage/info")) {
-      return new Response(JSON.stringify({ running_host: { label: "ota_0" }, partitions: [] }), { status: 200 });
+      return new Response(JSON.stringify({ meta_pass_version: "2.1.0", running_host: { label: "ota_0" }, partitions: [] }), { status: 200 });
     }
     if (String(url).endsWith("/api/install/storage/read")) {
       return new Response(new Uint8Array([0, 255, 1, 128]), { status: 200 });
@@ -76,7 +76,7 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
   ];
   const reads = [];
   const bridge = {
-    storageInfo: async () => ({ ok: true, text: JSON.stringify({ running_host: host, partitions }) }),
+    storageInfo: async () => ({ ok: true, text: JSON.stringify({ meta_pass_version: "2.1.0", running_host: host, partitions }) }),
     storageRead: async (part, offset, length) => {
       reads.push({ label: part.label, offset, length });
       const bytes = new Uint8Array(length).fill(0xff);
@@ -101,6 +101,7 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
   assert.equal(preflight.restorePlan.partitionCount, 2);
   const incompatibleBridge = {
     storageInfo: async () => ({ ok: true, text: JSON.stringify({
+      meta_pass_version: "2.1.0",
       running_host: host,
       partitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
     }) }),
