@@ -25,6 +25,9 @@ const partitions = [
 const eligible = eligibleSnapshotPartitions(partitions, host, []);
 assert.deepEqual(eligible.map((p) => p.label), ["nvs", "store", "pool_0"],
   "snapshot includes allocated NVS/storage, but excludes running host firmware and cardid");
+const withProtected = [...partitions, { label: "secure", type: 1, subtype: 0x43, offset: 0x1d0000, size: 0x1000, protected: true }];
+assert.deepEqual(eligibleSnapshotPartitions(withProtected, host, []).map((p) => p.label),
+  ["nvs", "store", "pool_0"], "device-reported protected flags exclude otherwise valid partitions");
 
 const payload = new Uint8Array([1, 2, 3, 4]);
 const manifest = buildStorageSnapshotManifest({
