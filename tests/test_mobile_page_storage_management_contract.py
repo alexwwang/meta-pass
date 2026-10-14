@@ -20,9 +20,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("备份设备快照", mobile)
         self.assertIn("validateStorageSnapshotArchiveForDevice", mobile)
         self.assertIn("事务化写入/回滚协议", mobile)
-        self.assertIn("classifyPhoneArchiveVersion(manifest)", mobile)
-        self.assertIn('manifest?.kind === "meta-pass-storage-snapshot"', mobile)
-        self.assertIn('archiveKind === "legacy-v1"', mobile)
+        self.assertIn('manifest.kind !== "meta-pass-storage-snapshot"', mobile)
         self.assertIn("归档未加密", mobile)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", mobile)
 
