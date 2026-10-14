@@ -47,6 +47,17 @@ const zip = await buildStorageSnapshotZip({
 const restoredArchive = await readStorageSnapshotZip(zip, async (bytes) => hash(bytes));
 assert.equal(restoredArchive.manifest.kind, STORAGE_SNAPSHOT_KIND);
 assert.equal(restoredArchive.payloads.get("extents/store-000010.bin").length, payload.length);
+const legacyLogicalZip = buildDataArchiveZip([{
+  name: "manifest.json",
+  data: new TextEncoder().encode(JSON.stringify({
+    manifest_version: 2, kind: "meta-pass-slot-backup", complete: true,
+    created_utc: "2026-10-14T00:00:00.000Z", slots: [], data: [],
+  })),
+}]);
+await assert.rejects(
+  () => readStorageSnapshotZip(legacyLogicalZip, async (bytes) => hash(bytes)),
+  /expected a v2 storage snapshot/,
+);
 const zip = await buildStorageSnapshotZip({
   manifest,
   payloads: new Map([["extents/store-000010.bin", payload]]),
