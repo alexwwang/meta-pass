@@ -4,7 +4,7 @@ Language: [简体中文](usb-backup-segmented-session-test-report-2026-10-14.zh_
 
 ## Verdict
 
-**PASS.** The production USB page backup button (`#btn-backup`) now completes a full APP+DATA+NVS archive in a single page session on the host where the single-session reader previously died mid-read. One click, no reloads, no host-side assembly.
+**PASS.** The local-test USB page backup button (`#btn-backup`) now completes a full APP+DATA+NVS archive in a single page session on the host where the single-session reader previously died mid-read. One click, no reloads, no host-side assembly.
 
 ## What changed under test
 
@@ -14,7 +14,7 @@ Commit `db39bf8` on `feat/storage`, fixing `ee64d79 fix(backup): renew serial se
 
 | Criterion (handoff) | Result |
 |---|---|
-| One click on production UI; no manual reload / host segmented script | PASS — driver clicked `#btn-backup` once; single persistent page session |
+| One click on local-test UI; no manual reload / host segmented script | PASS — driver clicked `#btn-backup` once; single persistent page session |
 | Archive complete, exactly one APP group + owned DATA | PASS — `manifest.complete=true`, manifest_version 2, one slot + one DATA record + NVS |
 | Payload byte counts and SHA-256 accurate | PASS — 3/3 in-page verified; ZIP SHA-256 `3b578dd15f85…` (page-computed value identical) |
 | Independent esptool.py dump byte-equal to archive | PASS — APP firmware `f519f076…`, slot tail `f78752cb…`, DATA `cba83ea5…` all byte-equal (tail = last 4 KiB of slot holding the `MNAM` name record; intra-slot 4 KiB 0xFF padding intentionally not archived) |
@@ -23,7 +23,7 @@ Commit `db39bf8` on `feat/storage`, fixing `ee64d79 fix(backup): renew serial se
 
 Backup: 577.9s @115200, archive 6,325,913 bytes. Per-read pace flat (~2.85 s/32 KiB).
 
-## Session renewal fired in production conditions
+## Session renewal fired in local-test conditions
 
 At `0x3d8000` (DATA, ~22 min in) the reader hit `Packet content transfer stopped` — the exact failure that killed all four single-session attempts on this host (see [Stage C of the previous report](usb-data-backup-read-test-report-2026-10-14.md)). The page logged `DATA backup: opening a fresh serial/loader session at segment boundary`, re-synced a fresh loader, verified carve metadata was unchanged, and continued to a complete archive.
 
