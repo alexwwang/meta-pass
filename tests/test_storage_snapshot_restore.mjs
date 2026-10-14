@@ -38,18 +38,27 @@ function mockDevice({ version = "2.2.0", corruptReadback = false, failWriteAt = 
       calls.push(["info"]);
       return { ok: true, meta_pass_version: version, running_host: host, partitions };
     },
-    async writeFlash(address, bytes) {
-      calls.push(["write", address, bytes.length]);
+    async storageErase(partition) {
+      calls.push(["erase", partition.label]);
+      writes++;
+      if (failWriteAt !== null && writes === failWriteAt) throw new Error("simulated erase failure");
+      for (let i = 0; i < partition.size; i++) flash.set(partition.offset + i, 0xff);
+      return { ok: true };
+    },
+    async storageWrite(partition, offset, bytes) {
+      calls.push(["write", partition.label, offset, bytes.length]);
       writes++;
       if (failWriteAt !== null && writes === failWriteAt) throw new Error("simulated write failure");
-      for (let i = 0; i < bytes.length; i++) flash.set(address + i, bytes[i]);
+      for (let i = 0; i < bytes.length; i++) flash.set(partition.offset + offset + i, bytes[i]);
+      return { ok: true };
     },
-    async readFlash(address, length) {
-      calls.push(["read", address, length]);
+    async storageRead(partition, offset, length) {
+      calls.push(["read", partition.label, offset, length]);
+      const address = partition.offset + offset;
       const out = new Uint8Array(length);
       for (let i = 0; i < length; i++) out[i] = flash.has(address + i) ? flash.get(address + i) : 0xff;
-      if (corruptReadback && address === 0x21000) out[0x10] ^= 0x01;
-      return out;
+      if (corruptReadback && partition.label === "store" && offset === 0) out[0x10] ^= 0x01;
+      return { ok: true, bytes: out };
     },
     async rebootAndReconnect() {
       calls.push(["reboot"]);
@@ -66,7 +75,7 @@ for (const version of ["3.0.0", undefined]) {
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
     /outside this snapshot's supported range|did not report a valid MetaPass version/,
   );
-  assert.equal(device.calls.some(c => c[0] === "write"), false, "version preflight runs before writes");
+  assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false, "version preflight runs before writes");
 }
 
 // Success covers erase, sparse 0xFF gaps, payload writes, full partition readback, and reboot.
@@ -79,11 +88,11 @@ for (const version of ["3.0.0", undefined]) {
   });
   assert.equal(result.dataVerified, true);
   assert.equal(result.bootValidated, true);
-  assert.ok(device.calls.some(c => c[0] === "read" && c[1] === 0x21000));
+  assert.ok(device.calls.some(c => c[0] === "read" && c[1] === "store"));
   assert.ok(device.calls.some(c => c[0] === "reboot"));
   assert.ok(progress.includes("data-verified") && progress.includes("complete"));
-  assert.equal(device.calls.some(c => c[0] === "write" && c[1] === host.offset), false);
-  assert.equal(device.calls.some(c => c[0] === "write" && c[1] === 0x20000), false);
+  assert.equal(device.calls.some(c => c[0] === "write" && c[1] === "ota_0"), false);
+  assert.equal(device.calls.some(c => c[0] === "write" && c[1] === "cardid"), false);
 }
 
 // A byte mismatch reports the exact partition and relative offset, then stops.
