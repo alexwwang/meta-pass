@@ -1508,10 +1508,10 @@ export function boot(opts = {}) {
   let archiveMessage = "";
   let archiveDownload = null;
 
-  async function doBackup(slotIndex) {
+  async function doBackup() {
     if (archiveBusy) return;
     archiveBusy = true;
-    archiveMessage = "正在读取 APP 与关联 DATA 字节…";
+    archiveMessage = "正在读取设备已分配存储并生成快照…";
     try {
       const assertIdle = async () => {
         const status = await bridge.status();
@@ -1523,100 +1523,26 @@ export function boot(opts = {}) {
         }
       };
       await assertIdle();
-      const listing = await bridge.slots();
-      if (!listing.ok) throw new Error("设备清单读取失败 (HTTP " + listing.status + ")");
-      const info = parseSlots(listing.text);
-      if (!info) throw new Error("设备槽位清单格式无效");
-      const slot = info.slots.find((item) => item.slot === slotIndex);
-      if (!slot || slot.kind !== "app" || slot.state === "empty" ||
-          !Number.isSafeInteger(slot.play_id) || slot.play_id <= 0) {
-        throw new Error("该槽位没有可用于备份的稳定 APP 所有权标识");
-      }
-      const appFile = "slot" + slot.slot + "_raw.bin";
-      const appRead = await readAppSlotReservation(bridge, { play_id: slot.play_id, size: slot.size }, {
-        sha256Hex,
-        onProgress: (p) => { archiveMessage = "正在备份 APP 字节 " + Math.floor(p.completed * 100 / p.total) + "%"; },
+      const snapshot = await createStorageSnapshotArchive(bridge, {
+        onProgress: (p) => {
+          archiveMessage = "正在备份分区 " + p.partition + "：" +
+            Math.floor(p.bytesRead * 100 / Math.max(1, p.totalBytes)) + "%";
+          const node = $("mp-backup-status");
+          if (node) node.textContent = archiveMessage;
+        },
       });
-      const owned = info.data.filter((record) => record.play_id === slot.play_id);
-      const dataPayloads = [];
-      const dataInputs = [];
-      for (let i = 0; i < owned.length; i++) {
-        const record = owned[i];
-        const read = await readDataReservation(bridge, record, {
-          sha256Hex,
-          onProgress: (p) => { archiveMessage = "正在备份 DATA " + record.label + " " + Math.floor(p.completed * 100 / p.total) + "%"; },
-        });
-        dataPayloads.push(read.bytes);
-        dataInputs.push({ play_id: record.play_id, label: record.label, type: record.type,
-          subtype: record.subtype, state: record.state, bytes: read.bytes.length, sha256: read.sha256 });
-      }
-      // NVS is global rather than APP-owned. Read only the fixed, authenticated system-NVS
-      // endpoint; preserve its exact bytes in the archive, but restore never writes them.
-      const nvsInfoReply = await bridge.nvsInfo();
-      if (!nvsInfoReply.ok) throw new Error("无法读取系统 NVS 分区信息 (HTTP " + nvsInfoReply.status + ")");
-      let nvsInfo;
-      try { nvsInfo = JSON.parse(nvsInfoReply.text); } catch { throw new Error("系统 NVS 分区信息格式无效"); }
-      if (!Number.isSafeInteger(nvsInfo.size) || nvsInfo.size <= 0 || nvsInfo.size > 1024 * 1024) {
-        throw new Error("系统 NVS 分区大小无效或超出安全上限");
-      }
-      const readNvsSnapshot = async () => {
-        const bytes = new Uint8Array(nvsInfo.size);
-        for (let offset = 0; offset < bytes.length; offset += 4096) {
-          const length = Math.min(4096, bytes.length - offset);
-          const chunk = await bridge.nvsRead(offset, length);
-          if (!chunk.ok || !(chunk.bytes instanceof Uint8Array) || chunk.bytes.length !== length) {
-            throw new Error("读取系统 NVS 字节失败，offset=" + offset + " (HTTP " + chunk.status + ")");
-          }
-          bytes.set(chunk.bytes, offset);
-          archiveMessage = "正在备份系统 NVS " + Math.floor((offset + length) * 100 / bytes.length) + "%";
-        }
-        return bytes;
-      };
-      const nvsBytes = await readNvsSnapshot();
-      // Raw partition reads are chunked, so reject an obvious concurrent NVS mutation
-      // instead of packaging a mixed snapshot. This is a stability check, not a
-      // flash-level atomic snapshot guarantee.
-      const nvsVerification = await readNvsSnapshot();
-      if (nvsBytes.length !== nvsVerification.length ||
-          nvsBytes.some((byte, index) => byte !== nvsVerification[index])) {
-        throw new Error("备份期间系统 NVS 发生变化；为避免生成混合快照，请稍后重试");
-      }
-      const nvsSha256 = await sha256Hex(nvsBytes);
-
-      // Re-fetch ownership and install state after byte reads. A changed mapping or
-      // concurrent installation invalidates the archive rather than producing a mixed snapshot.
       await assertIdle();
-      const afterResponse = await bridge.slots();
-      const after = afterResponse.ok ? parseSlots(afterResponse.text) : null;
-      const afterSlot = after?.slots.find((item) => item.slot === slotIndex);
-      const afterData = after?.data.filter((record) => record.play_id === slot.play_id) || [];
-      if (!afterSlot || afterSlot.play_id !== slot.play_id || afterSlot.offset !== slot.offset ||
-          afterSlot.size !== slot.size || JSON.stringify(afterData) !== JSON.stringify(owned)) {
-        throw new Error("APP/DATA 所有权或分区几何在备份期间发生变化；已放弃归档");
-      }
-      const manifest = buildDataArchiveManifest({
-        slots: [{ play_id: slot.play_id, source_slot: slot.slot, name: slot.name,
-          files: [{ name: appFile, bytes: appRead.bytes.length, sha256: appRead.sha256, type: "raw" }] }],
-        data: dataInputs,
-        nvs: { file: "nvs.bin", bytes: nvsBytes.length, sha256: nvsSha256 },
-      });
-      const entries = [{ name: appFile, data: appRead.bytes }, { name: "nvs.bin", data: nvsBytes }];
-      for (let i = 0; i < manifest.data.length; i++) entries.push({ name: manifest.data[i].file, data: dataPayloads[i] });
-      const payloadMap = new Map(entries.map((entry) => [entry.name, entry.data]));
-      await validateDataArchivePayloads(manifest, payloadMap, sha256Hex);
-      entries.push({ name: "manifest.json", data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)) });
-      const zip = buildDataArchiveZip(entries);
       const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-      const filename = "metapass-data-backup-" + slot.play_id + "-" + stamp + ".zip";
-      const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
-      // Do not auto-click after async reads: mobile Safari may drop the original user
-      // activation. Render a real download link so the user can tap it explicitly.
+      const filename = "metapass-storage-snapshot-" + stamp + ".zip";
+      const url = URL.createObjectURL(new Blob([snapshot.zip], { type: "application/zip" }));
       if (archiveDownload?.url) URL.revokeObjectURL(archiveDownload.url);
       archiveDownload = { url, filename };
-      archiveMessage = "备份已生成并通过 SHA-256 校验：" + filename + "（" + owned.length + " 个 DATA 分区，含系统 NVS 原始字节）。恢复时 NVS 只校验、不写入目标设备。请点击下方下载链接保存；可在空间管理中恢复单个完整 APP+DATA 组。";
+      archiveMessage = "设备存储快照已生成并通过 SHA-256 校验：" + filename +
+        "（" + snapshot.manifest.partitions.length + " 个分区，读取 " +
+        fmtMB(snapshot.bytesRead) + "）。归档未加密，可能包含 Wi-Fi 凭证、安装会话状态和子固件数据等敏感信息；请妥善保管。";
       log(archiveMessage, "ok");
     } catch (error) {
-      archiveMessage = "备份失败：" + (error && error.message ? error.message : String(error));
+      archiveMessage = "快照备份失败：" + (error && error.message ? error.message : String(error));
       log(archiveMessage, "error");
     } finally {
       archiveBusy = false;
@@ -1629,50 +1555,18 @@ export function boot(opts = {}) {
   async function doRestoreArchive(file) {
     if (!file || archiveBusy) return;
     archiveBusy = true;
-    archiveMessage = "正在校验备份归档…";
+    archiveMessage = "正在校验设备存储快照…";
     try {
-      const zipEntries = readDataArchiveZip(new Uint8Array(await file.arrayBuffer()));
-      const manifestBytes = zipEntries.get("manifest.json");
-      if (!manifestBytes) throw new Error("备份缺少 manifest.json");
-      let manifest;
-      try { manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes)); }
-      catch { throw new Error("manifest.json 不是有效 UTF-8 JSON"); }
-      assertPhoneArchiveVersion(manifest);
-      zipEntries.delete("manifest.json");
-      const expectedFiles = new Set([
-        ...(Array.isArray(manifest?.slots) ? manifest.slots.flatMap((s) => Array.isArray(s.files) ? s.files.map((f) => f.name) : []) : []),
-        ...(Array.isArray(manifest?.data) ? manifest.data.map((d) => d.file) : []),
-        ...(manifest?.nvs?.file ? [manifest.nvs.file] : []),
-      ]);
-      for (const name of zipEntries.keys()) {
-        if (!expectedFiles.has(name)) throw new Error("归档包含未声明文件：" + name);
-      }
-      const [statusReply, listingReply] = await Promise.all([bridge.status(), bridge.slots()]);
-      if (!statusReply.ok || !listingReply.ok) throw new Error("无法读取设备状态/分区清单");
-      let state;
-      try { state = JSON.parse(statusReply.text); } catch { throw new Error("设备状态格式无效"); }
-      if (state.offer || state.confirmed || state.session) throw new Error("设备正在安装；请结束安装后再恢复");
-      const listing = parseSlots(listingReply.text);
-      if (!listing) throw new Error("设备分区清单格式无效");
-      archiveMessage = "已校验归档结构，准备通过设备安装事务恢复…";
-      await showMgmt();
-      const result = await restoreDataArchive(bridge, listing, manifest, zipEntries, {
-        stage: (stage) => {
-          archiveMessage = "恢复阶段：" + stage;
-          const node = $("mp-backup-status");
-          if (node) node.textContent = archiveMessage;
-        },
-        progress: (offset, total) => {
-          archiveMessage = "正在恢复 APP：" + Math.floor(offset * 100 / Math.max(1, total)) + "%";
-          const node = $("mp-backup-status");
-          if (node) node.textContent = archiveMessage;
-        },
-      });
-      if (!result.ok) throw new Error(result.reason || (result.stage + " failed"));
-      archiveMessage = `恢复成功：play_id ${result.playId}，DATA 分区 ${result.restoredData} 个。${result.nvsPreserved ? "归档中的 NVS 未写入，设备现有 NVS 保持不变。" : ""}请等待设备完成状态更新后再启动玩法。`;
-      log(archiveMessage, "ok");
+      const checked = await validateStorageSnapshotArchiveForDevice(
+        bridge, new Uint8Array(await file.arrayBuffer()));
+      // Do not fall back to the former APP+DATA v2 restore path: the v2 format
+      // now means a whole-device allocated-storage snapshot. The device-side
+      // transactional writer/rollback protocol is a hard prerequisite for writes.
+      archiveMessage = "归档完整性与目标分区布局校验通过（" +
+        checked.manifest.partitions.length + " 个分区），但当前固件尚未提供事务化快照写入与失败回滚协议。本次未写入任何 Flash。";
+      log(archiveMessage, "warn");
     } catch (error) {
-      archiveMessage = "恢复失败：" + (error?.message || String(error));
+      archiveMessage = "快照还原预检失败：" + (error?.message || String(error));
       log(archiveMessage, "error");
     } finally {
       archiveBusy = false;
