@@ -2374,9 +2374,14 @@ function usbSnapshotDevice(inventory) {
 async function createUsbStorageSnapshot(onProgress = () => {}) {
   const inventory = await readUsbStorageInventory();
   const device = usbSnapshotDevice(inventory);
+  let reportedProgress = 0;
   const snapshot = await captureStorageSnapshot(device, {
     sha256Hex,
-    onProgress: event => onProgress(event.totalBytes ? event.bytesRead / event.totalBytes : 0),
+    onProgress: event => {
+      const ratio = event.totalBytes ? event.bytesRead / event.totalBytes : 0;
+      reportedProgress = Math.max(reportedProgress, ratio);
+      onProgress(reportedProgress);
+    },
   });
   const zip = await buildStorageSnapshotZip(snapshot, sha256Hex);
   return { zip, manifest: snapshot.manifest, inventory };
