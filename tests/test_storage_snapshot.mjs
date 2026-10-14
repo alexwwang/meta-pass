@@ -95,16 +95,22 @@ assert.throws(() => validateStorageSnapshotManifest(manifest, {
   runningHostPartition: host,
 }), /incompatible/);
 assert.throws(() => buildStorageSnapshotManifest({
+  metaPassVersion: "2.0.0",
+  compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
   partitions: [
     { label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000, extents: [] },
     { label: "pool_0", type: 1, subtype: 0x42, offset: 0x1a8000, size: 0x10000, extents: [] },
   ],
 }), /overlap/);
 assert.throws(() => buildStorageSnapshotManifest({
+  metaPassVersion: "2.0.0",
+  compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
   partitions: [{ label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000,
     extents: [{ file: "../escape.bin", offset: 0, bytes: 4, sha256: hash(payload) }] }],
 }), /invalid snapshot extent/);
 assert.throws(() => buildStorageSnapshotManifest({
+  metaPassVersion: "2.0.0",
+  compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
   partitions: [{ label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000,
     extents: [{ file: "extents/unaligned.bin", offset: 1, bytes: 4, sha256: hash(payload) }] }],
 }), /invalid snapshot extent/);
