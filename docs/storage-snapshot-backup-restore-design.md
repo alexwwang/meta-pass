@@ -47,13 +47,14 @@ NVS is not special in this model: include it if it is an allocated partition and
 - Local firmware installation remains USB-only. Other storage backup/restore semantics must match across both pages.
 - Old APP+DATA logical archives must not be mistaken for snapshots. Use an unambiguous archive kind/version discriminator and show a clear error for ambiguous archives.
 
-## Implementation order
+## Implementation status and next steps
 
-1. Implement the shared pure manifest/extent validator and tests for overlapping ranges, protected partitions, unallocated gaps, sparse erased ranges, hash/length failures, incompatible layouts, and incomplete archives.
-2. Implement USB snapshot backup/restore using bounded chunked Flash reads/writes while preserving the v1.1 branch.
-3. Add device-side partition inventory/read/write APIs for the phone page. The device must resolve labels and validate absolute ranges against its live partition table and protected regions; never expose unrestricted arbitrary-address writes.
-4. Connect the phone v2 page to the shared snapshot format/validator and guarded device-side partition APIs.
-5. Update UI copy, design docs, and handoff. Run USB/phone browser automation first, then have the local agent run passport-sim and real-device checks.
+1. **Done (host-side foundation):** shared manifest/extent validation, snapshot ZIP encode/decode, payload length/SHA-256 checks, sparse erased-chunk representation, target-layout preflight, and host tests.
+2. **Done (device read path):** authenticated `/api/install/storage/info` reports the live partition table and `esp_ota_get_running_partition()` identity; `/api/install/storage/read` only reads a bounded range from an exact live partition identity and rejects `cardid` and the running host.
+3. **Done (phone backup/preflight):** mobile v2 exports the allocated-storage snapshot and validates a selected snapshot against the target layout without writing Flash.
+4. **Blocked (USB v2 backup):** USB serial/bootloader transport still cannot safely identify the running host partition. Do not infer it from hard-coded offsets or guessed OTA state.
+5. **Blocked (restore on both pages):** there is no safe device-side transactional erase/write, rollback journal, or write/read-back verification protocol. Keep restore preflight-only; do not add arbitrary-address write/erase endpoints.
+6. Next, design a bounded, recoverable device-side restore transaction with explicit staged data, power-loss recovery semantics, protected-range enforcement, sector-aligned erases, and post-write verification. Only then enable phone restore and consider a trusted running-host report for USB. Run host/browser tests before passport-sim and real-device acceptance.
 
 ## Explicitly out of scope
 
