@@ -63,7 +63,7 @@ Flash 擦除无法物理回滚，因此“原子”指逻辑上的可恢复提�
 
 ## 5. 备份与恢复
 
-> **2026-10-14 更新：** 本节早期“按 APP+DATA 组创建 v2 逻辑归档”的方案已被 [整设备存储快照设计](storage-snapshot-backup-restore-design.zh_CN.md) 取代。当前 v2 归档是整设备已分配存储快照；USB v1.1 固定槽历史归档仍单独保留。
+> **2026-10-14 更新：** 本节早期“按 APP+DATA 组创建 v2 逻辑归档”的方案已被 [整设备存储快照设计](../storage-snapshot-backup-restore-design.zh_CN.md) 取代。当前 v2 归档是整设备已分配存储快照；USB v1.1 固定槽历史归档仍单独保留。
 
 完整备份必须包含真实 DATA 字节，而不只是 offset/size/state/label 元数据。建议归档至少包括：
 
