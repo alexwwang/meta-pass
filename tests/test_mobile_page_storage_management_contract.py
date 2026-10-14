@@ -218,7 +218,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
                       "不提供单独删除 DATA 的用户操作",
                       "不允许用户选择卸载时保留 DATA",
                       "删除中断后重启",
-                      "UI 支持完整单 APP+DATA v2 归档恢复"):
+                      "当前 UI 支持 v2 整设备快照备份和恢复预检，但尚不支持快照写入"):
             with self.subTest(token=token):
                 self.assertIn(token, LIFECYCLE)
         installer = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
@@ -228,12 +228,11 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("备份设备快照", installer)
         self.assertIn("createStorageSnapshotArchive(bridge", installer)
         self.assertIn("事务化写入/回滚协议完成前不会执行恢复写入", installer)
-        self.assertIn("export async function restoreDataArchive", installer)
-        self.assertIn("readDataArchiveZip", installer)
+        self.assertIn("export async function readStorageSnapshot", installer)
         self.assertIn("validateStorageSnapshotArchiveForDevice", installer)
-        self.assertIn("readAppSlotReservation", installer)
-        self.assertIn("readDataReservation", installer)
-        self.assertIn("validateDataArchivePayloads(manifest, payloadMap, sha256Hex)", installer)
+        self.assertIn("validateStorageSnapshotPayloads(manifest, payloads, sha256Hex)", installer)
+        self.assertIn("buildStorageSnapshotRestorePlan", installer)
+        self.assertNotIn("export async function restoreDataArchive", installer)
         self.assertNotIn("data-export-pid", installer)
         device = (ROOT / "main/meta_store_install.c").read_text(encoding="utf-8")
         model = (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
