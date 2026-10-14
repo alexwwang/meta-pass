@@ -75,7 +75,8 @@ export async function restoreStorageSnapshotArchive(device, input, {
   onProgress = () => {},
 } = {}) {
   if (typeof sha256Hex !== "function") throw new TypeError("SHA-256 implementation is required");
-  if (!device || typeof device.storageInfo !== "function" || typeof device.storageErase !== "function") {
+  if (!device || typeof device.storageInfo !== "function" || typeof device.storageErase !== "function" ||
+      typeof device.storageWrite !== "function" || typeof device.storageRead !== "function") {
     throw new Error("Device does not provide live storage inventory");
   }
 
