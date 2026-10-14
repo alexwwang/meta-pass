@@ -301,6 +301,96 @@ export function buildStorageSnapshotRestorePlan(manifest, {
   };
 }
 
+export async function captureStorageSnapshot(device, {
+  sha256Hex,
+  onProgress = () => {},
+} = {}) {
+  if (!device || typeof device.storageInfo !== "function" || typeof device.storageRead !== "function") {
+    throw new Error("device storage snapshot bridge is unavailable");
+  }
+  if (typeof sha256Hex !== "function") throw new TypeError("SHA-256 implementation is required");
+  const response = await device.storageInfo();
+  if (!response?.ok) {
+    throw new Error("cannot read live device partition table: " + (response?.text || response?.status || "unknown error"));
+  }
+  let info;
+  try { info = typeof response.text === "string" ? JSON.parse(response.text) : response; }
+  catch { throw new Error("device partition inventory is not valid JSON"); }
+  const host = info?.running_host;
+  const partitions = info?.partitions;
+  if (!host || !Array.isArray(partitions) || partitions.length === 0) {
+    throw new Error("device partition inventory is incomplete");
+  }
+  const sourceVersion = info.meta_pass_version;
+  if (!parseVersion(sourceVersion)) {
+    throw new Error("device did not report a valid MetaPass system version; snapshot was not created");
+  }
+  const eligible = eligibleSnapshotPartitions(partitions, host, info.protected_ranges || []);
+  const totalBytes = eligible.reduce((sum, p) => sum + p.size, 0);
+  let bytesRead = 0;
+  const payloads = new Map();
+  const snapshotPartitions = [];
+  const recordPartition = async (part, readChunk, partitionBytes = null) => {
+    const extents = [];
+    for (let offset = 0; offset < part.size; offset += 4096) {
+      const length = Math.min(4096, part.size - offset);
+      const bytes = partitionBytes
+        ? partitionBytes.subarray(offset, offset + length)
+        : await readChunk(offset, length);
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength !== length) {
+        throw new Error("incomplete storage snapshot read: " + part.label + " at 0x" + offset.toString(16));
+      }
+      let erased = true;
+      for (let i = 0; i < bytes.length; i++) {
+        if (bytes[i] !== 0xff) { erased = false; break; }
+      }
+      if (!erased) {
+        const file = "extents/" + part.label + "-" + offset.toString(16).padStart(8, "0") + ".bin";
+        extents.push({ file, offset, bytes: length, sha256: await sha256Hex(bytes) });
+        payloads.set(file, bytes);
+      }
+      bytesRead += length;
+      onProgress({ label: part.label, offset: offset + length, partitionSize: part.size, bytesRead, totalBytes });
+    }
+    snapshotPartitions.push({
+      label: part.label, type: part.type, subtype: part.subtype,
+      offset: part.offset, size: part.size, extents,
+    });
+  };
+
+  for (const part of eligible) {
+    if (typeof device.storageReadPartition === "function") {
+      const readResult = await device.storageReadPartition(part, offset => {
+        onProgress({ label: part.label, offset, partitionSize: part.size, bytesRead: bytesRead + offset, totalBytes });
+      });
+      const bytes = readResult instanceof Uint8Array ? readResult : readResult?.bytes;
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength !== part.size) {
+        throw new Error("incomplete storage snapshot read: " + part.label + " (whole-partition reader returned invalid length)");
+      }
+      await recordPartition(part, null, bytes);
+    } else {
+      await recordPartition(part, async (offset, length) => {
+        const result = await device.storageRead(part, offset, length);
+        if (!result?.ok) throw new Error("incomplete storage snapshot read: " + part.label + " at 0x" + offset.toString(16) +
+          " (" + (result?.text || result?.status || "read failed") + ")");
+        return result.bytes;
+      });
+    }
+  }
+  const manifest = buildStorageSnapshotManifest({
+    partitions: snapshotPartitions,
+    metaPassVersion: sourceVersion,
+    compatibleMetaPassVersions: { min_inclusive: sourceVersion, max_inclusive: sourceVersion },
+  });
+  validateStorageSnapshotManifest(manifest, {
+    targetPartitions: partitions,
+    runningHostPartition: host,
+    protectedRanges: info.protected_ranges || [],
+  });
+  await validateStorageSnapshotPayloads(manifest, payloads, sha256Hex);
+  return { manifest, payloads, bytesRead, totalBytes, inventory: info };
+}
+
 export async function buildStorageSnapshotZip({ manifest, payloads }, sha256Hex) {
   validateStorageSnapshotManifest(manifest);
   if (!(payloads instanceof Map)) fail("snapshot payloads must be a Map");
