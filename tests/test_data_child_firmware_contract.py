@@ -170,7 +170,7 @@ for token, label in [
 ]:
     assert token in read_handler, f"missing DATA read API contract: {label}"
 assert "httpd_resp_set_hdr(req, \"Cache-Control\", \"no-store\")" in read_handler, "DATA read responses must not be cached"
-assert "动态存储设备备份一个完整 APP+DATA 组为 v2" in usb_page, "Chinese UI must disclose DATA export/restore boundary while retaining fixed-slot v1 compatibility"
+assert "动态 v2 整设备快照暂时阻塞" in usb_page and "旧 APP+DATA v2 归档不再作为新快照格式" in usb_page, "Chinese UI must disclose the snapshot gate and reject the retired logical archive"
 assert "commitCarve(nextCarve, { materialize: deferredDataInstall })" in usb_page, "DATA-bearing APP install must commit APP+DATA as one carve/table transaction"
 assert "boot-test-and-return" in runtime and "verify-deleted" in runtime, "runtime driver must match mobile-page runner contract"
 assert "dataPersistedAfterReboot" in runtime and "deletedSlotNotBootable" in runtime, "runtime driver must emit required lifecycle evidence"
