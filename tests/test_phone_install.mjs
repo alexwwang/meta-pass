@@ -92,6 +92,8 @@ console.log("PASS archive version gate: phone page accepts v2 only and directs v
   console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
 }
 const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
+const workerSource = readFileSync(path.join(ROOT, "install-slot", "_worker.js"), "utf8");
+assert.match(workerSource, /path === "\/storage-snapshot\.js"/, "snapshot module must be served with no-store dependency policy");
 const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
 const v2RestoreStart = usbPage.indexOf("async function restoreV2ArchiveUsb()", legacyRestoreStart);
 assert.ok(legacyRestoreStart >= 0 && v2RestoreStart > legacyRestoreStart, "USB restore handlers must remain identifiable");
