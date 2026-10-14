@@ -37,17 +37,17 @@ require(
     "failed reads must use bounded retries and a finite per-chunk timeout",
 )
 require(
-    r"async function readFlashChunkedSingleSession\\(start, size, onProgress, onRetry\\).*?"
-    r"await restartBackupReadSession\\(\\).*?"
-    r"withTimeout\\(.*?loader\\.readFlash\\(start \\+ got, n\\).*?BACKUP_READ_TIMEOUT_MS",
+    r"async function readFlashChunkedSingleSession\(start, size, onProgress, onRetry\).*?"
+    r"await restartBackupReadSession\(\).*?"
+    r"withTimeout\(.*?loader\.readFlash\(start \\+ got, n\).*?BACKUP_READ_TIMEOUT_MS",
     "a failed/timed-out chunk must restart the session and retry the same offset",
 )
 require(
-    r"function withTimeout\\(promise, ms, label\\).*?clearTimeout\\(timer\\)",
+    r"function withTimeout\(promise, ms, label\).*?clearTimeout\(timer\)",
     "successful reads must clear their timeout timer",
 )
 require(
-    r"async function restartBackupReadSession\\(\\).*?"
+    r"async function restartBackupReadSession\(\).*?"
     r"APP/DATA ownership metadata changed while restarting the backup session",
     "session restart must reject changed APP/DATA ownership metadata",
 )
