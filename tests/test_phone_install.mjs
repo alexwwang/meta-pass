@@ -38,7 +38,7 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
 {
   const seen = [];
   globalThis.fetch = async (url, options = {}) => {
-    seen.push({ url: String(url), headers: options.headers || {} });
+    seen.push({ url: String(url), headers: options.headers || {}, method: options.method || "GET", body: options.body });
     if (String(url).endsWith("/api/install/storage/info")) {
       return new Response(JSON.stringify({ meta_pass_version: "2.1.0", running_host: { label: "ota_0" }, partitions: [] }), { status: 200 });
     }
@@ -59,6 +59,19 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
   assert.equal(req.headers["X-Meta-Partition-Offset"], String(part.offset));
   assert.equal(req.headers["X-Meta-Offset"], "0");
   assert.equal(req.headers["X-Meta-Length"], "4");
+  const erased = await bridge.storageErase(part);
+  assert.equal(erased.ok, true);
+  const eraseReq = seen.find(x => x.url.endsWith("/api/install/storage/erase"));
+  assert.equal(eraseReq.method, "POST");
+  assert.equal(eraseReq.headers["X-Meta-Partition-Label"], "store");
+  const payload = new Uint8Array([1, 2, 3, 4]);
+  const written = await bridge.storageWrite(part, 4, payload);
+  assert.equal(written.ok, true);
+  const writeReq = seen.find(x => x.url.endsWith("/api/install/storage/write"));
+  assert.equal(writeReq.method, "POST");
+  assert.equal(writeReq.headers["X-Meta-Offset"], "4");
+  assert.equal(writeReq.headers["X-Meta-Length"], "4");
+  assert.deepEqual([...writeReq.body], [1, 2, 3, 4]);
   const count = seen.length;
   const invalid = await bridge.storageRead(part, part.size - 1, 2);
   assert.equal(invalid.ok, false);
