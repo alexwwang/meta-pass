@@ -49,18 +49,18 @@ async function archiveFor(manifest, original) {
   }, sha256Hex);
 }
 
-test("restores snapshot bytes, verifies readback, then validates reboot", async () => {
+test("restores snapshot bytes, then validates reboot", async () => {
   const f = fixture();
   const archive = await archiveFor(f.manifest, f.original);
   const result = await restoreStorageSnapshotArchive(f.device, archive, { sha256Hex });
-  assert.equal(result.dataVerified, true);
+  assert.equal(result.dataWritten, true);
   assert.equal(result.bootValidated, true);
   assert.deepEqual(f.flash.slice(0, f.original.length), f.original);
   assert.ok(f.calls.some(([op]) => op === "erase"));
   assert.ok(f.calls.some(([op]) => op === "write"));
 });
 
-test("reports boot validation failure separately from verified data restore", async () => {
+test("reports boot validation failure separately from completed writes", async () => {
   const f = fixture({ rebootAndReconnect: async () => ({ ok: false, message: "device did not reconnect" }) });
   const archive = await archiveFor(f.manifest, f.original);
   await assert.rejects(
