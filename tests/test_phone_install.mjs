@@ -45,6 +45,10 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
     if (String(url).endsWith("/api/install/storage/read")) {
       return new Response(new Uint8Array([0, 255, 1, 128]), { status: 200 });
     }
+    if (String(url).endsWith("/api/install/storage/erase") ||
+        String(url).endsWith("/api/install/storage/write")) {
+      return new Response("ok", { status: 200 });
+    }
     return new Response("not found", { status: 404 });
   };
   const bridge = phone.createBridge("http://device", "a".repeat(32));
