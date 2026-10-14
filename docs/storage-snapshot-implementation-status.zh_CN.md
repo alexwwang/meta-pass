@@ -16,6 +16,7 @@
 - USB 页面保留历史 v1.1 固定槽归档路径。NVS 恢复写入有明确的契约测试；不能用 v2 快照解析替换这条旧版兼容路径。
 - 较早测试版本的真机报告记录了分段 APP+DATA 逻辑归档备份/删除/恢复链路成功，也记录了 Chrome Web Serial/esptool-js 偶发失败。该报告只能作为历史证据：当前分支已退役旧 APP+DATA 逻辑 v2 还原 handler，因此它**不能证明当前 HEAD 的还原行为**。在真机验收前，必须针对当前固件/页面重新执行适用的 USB v1.1 兼容回归。
 - 自动化测试明确守住归档版本边界：USB 历史 v1 还原入口仍可识别；已退役的 APP+DATA 逻辑 v2 还原 handler 不存在；手机页面只接受 v2 整设备快照 discriminator。
+- 新增 [USB 历史 v1.1 归档兼容性真机 handoff](HANDOFF-usb-v1-archive-compatibility.zh_CN.md)：区分动态设备上的负向门禁检查与固定槽设备上的正向还原验证，避免把源码检查误报为真机 PASS。
 
 ## 尚未完成 / 当前阻塞
 
