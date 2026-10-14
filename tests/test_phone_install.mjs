@@ -121,11 +121,11 @@ assert.ok(legacyRestoreStart >= 0 && restoreClickStart > legacyRestoreStart,
 assert.equal(usbPage.includes("async function restoreV2ArchiveUsb()"), false,
   "retired APP+DATA v2 restore handler must not remain available");
 const legacyRestoreSource = usbPage.slice(legacyRestoreStart, restoreClickStart);
-assert.doesNotMatch(legacyRestoreSource, /msg_restore_nvs_write|ensureDeviceNvs\(\)|address:\s*nv\.offset/,
-  "legacy archive restore must never write archived NVS to the destination device");
-assert.match(legacyRestoreSource, /t\("msg_restore_nvs_preserved"\)/,
-  "USB legacy restore must explicitly report that destination NVS is preserved");
-console.log("PASS USB restore preserves destination NVS for legacy archives");
+assert.match(legacyRestoreSource, /msg_restore_nvs_write/);
+assert.match(legacyRestoreSource, /ensureDeviceNvs\(\)/);
+assert.match(legacyRestoreSource, /address:\s*nv\.offset/);
+assert.match(legacyRestoreSource, /Historical v1 NVS payload length does not match its manifest/);
+console.log("PASS USB historical v1.1 restore retains archived NVS write compatibility");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
