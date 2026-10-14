@@ -1576,7 +1576,10 @@ export function boot(opts = {}) {
         : "快照恢复尚未完成。";
       log(archiveMessage, result.bootValidated ? "ok" : "warn");
     } catch (error) {
-      archiveMessage = "快照还原预检失败：" + (error?.message || String(error));
+      const code = String(error?.code || "");
+      const restoring = code.startsWith("SNAPSHOT_RESTORE_");
+      archiveMessage = (restoring ? "快照恢复未完成/不一致：" : "快照还原预检失败：") +
+        (error?.message || String(error));
       log(archiveMessage, "error");
     } finally {
       archiveBusy = false;
