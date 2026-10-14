@@ -1497,7 +1497,7 @@ export function boot(opts = {}) {
       const accepted = confirm(
         "即将按快照覆盖 " + checked.manifest.partitions.length + " 个已分配分区。\n\n" +
         "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
-        "若写入或读回核验失败，请重新刷入该版本，再连接设备并重试。\n\n" +
+        "若写入中断或恢复后无法正常启动，请重新刷入该版本，再连接设备并重试。\n\n" +
         "继续恢复？"
       );
       if (!accepted) {
