@@ -1,3 +1,5 @@
+[English](HANDOFF-usb-data-backup-read.md)
+
 # Handoff｜USB DATA 备份读取与 APP+DATA 恢复真机测试
 
 ## 1. 当前代码与 CI 基线
