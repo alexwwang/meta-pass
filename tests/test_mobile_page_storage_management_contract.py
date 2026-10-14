@@ -23,17 +23,22 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertNotIn("包含全局 NVS 的归档会被拒绝", mobile)
         self.assertNotIn("当前尚不能导入恢复", mobile)
         self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
-        self.assertIn("Legacy v1 archives retain sequential APP/NVS restore compatibility", usb)
+        self.assertIn("legacy v1 restore is not supported", usb)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
 
-    def test_usb_restore_copy_documents_legacy_v1_compatibility(self):
+    def test_usb_restore_matches_mobile_v2_only_contract(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
-        self.assertIn("Legacy v1 archives retain sequential APP/NVS restore compatibility", usb)
+        self.assertIn("legacy v1 restore is not supported", usb)
+        self.assertIn("旧版 v1 归档恢复不再支持", usb)
         self.assertIn("归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变", usb)
-        self.assertIn("旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径", usb)
-        self.assertIn("multi-APP restore is not atomic", usb)
-        self.assertIn("多 APP 恢复不具备原子性", usb)
+        self.assertNotIn("multi-APP restore is not atomic", usb)
+        handler_start = usb.index('$("btn-restore").addEventListener')
+        handler_end = usb.index('// ===== 4. 安装 =====', handler_start)
+        restore_handler = usb[handler_start:handler_end]
+        self.assertIn("await restoreV2ArchiveUsb()", restore_handler)
+        self.assertNotIn("msg_restore_nvs_write", restore_handler)
+        self.assertNotIn("parseManifest(rawManifest)", usb[usb.index('$("restore-input").addEventListener'):handler_start])
 
     def test_usb_v2_restore_revalidates_single_app_data_group_before_mutation(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
