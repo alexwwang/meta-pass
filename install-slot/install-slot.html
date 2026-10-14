@@ -958,6 +958,8 @@ const I18N = {
     msg_restore_writing: "Writing {name} ({size}) to slot {slot} at {addr}…",
     msg_restore_raw_write: "Raw mirror: writing back from slot {slot} base address {addr} (no app/tail layout — size + SHA-256 verified only).",
     msg_restore_done: "Restore complete: {slots}. Power-cycle the device.",
+    msg_restore_nvs_preserved: "Destination NVS was not modified.",
+    msg_archive_nvs_verified: "Archived NVS was verified but not restored.",
     msg_restore_failed: "Restore failed: {err}",
     step_upgrade: "7. Upgrade launcher (keep NVS data & child firmware)",
     upgrade_desc: "Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.",
@@ -1172,6 +1174,8 @@ const I18N = {
     msg_restore_writing: "写入 {name}({size})到槽位 {slot} @ {addr}…",
     msg_restore_raw_write: "镜像兜底:从槽位 {slot} 起始地址 {addr} 原样写回(无固件/尾扇区布局 —— 仅做空间与 SHA-256 校验)。",
     msg_restore_done: "恢复完成:{slots}。请重新上电设备。",
+    msg_restore_nvs_preserved: "目标设备现有 NVS 保持不变。",
+    msg_archive_nvs_verified: "归档中的 NVS 已校验但未写入。",
     msg_restore_failed: "恢复失败:{err}",
     step_upgrade: "7. 升级 launcher(保留 NVS 数据与子固件)",
     upgrade_desc: "升级启动器,保留 NVS 存储数据(Wi-Fi 配置、应用内部状态)与已安装的全部子固件。",
@@ -2702,7 +2706,8 @@ async function restoreLegacyV1ArchiveUsb() {
   // state belong to the destination device, not to an APP restore operation.
   setRestoreProgress(100);
   $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") }) +
-    (nvsData ? " 归档中的 NVS 已校验但未写入，目标设备现有 NVS 保持不变。" : " 目标设备现有 NVS 保持不变。");
+    " " + t("msg_restore_nvs_preserved") +
+    (nvsData ? " " + t("msg_archive_nvs_verified") : "");
   $("restore-status").className = "ok";
   log($("restore-status").textContent, "ok");
   restoreZip = null;
