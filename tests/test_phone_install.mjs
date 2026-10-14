@@ -125,7 +125,15 @@ assert.match(legacyRestoreSource, /msg_restore_nvs_write/);
 assert.match(legacyRestoreSource, /ensureDeviceNvs\(\)/);
 assert.match(legacyRestoreSource, /address:\s*nv\.offset/);
 assert.match(legacyRestoreSource, /Historical v1 NVS payload length does not match its manifest/);
-console.log("PASS USB historical v1.1 restore retains archived NVS write compatibility");
+assert.match(legacyRestoreSource, /if \(isDynMode\(slotModel\.mode\)\)/,
+  "historical v1 restore must be blocked on dynamic v2 devices");
+assert.match(legacyRestoreSource, /Legacy v1 restore requires a detected fixed-slot device/);
+const restoreDispatchSource = usbPage.slice(restoreClickStart, usbPage.indexOf("// ===== 4. 安装 =====", restoreClickStart));
+assert.match(restoreDispatchSource, /restoreZip\.manifest\.manifest_version === 1/,
+  "USB restore dispatch must route only v1 archives to the legacy handler");
+assert.match(restoreDispatchSource, /Only historical v1 fixed-slot archives can be restored by the USB page at this time/,
+  "USB must fail closed for snapshot and retired APP+DATA v2 archives");
+console.log("PASS USB historical v1.1 restore is fixed-slot-only and rejects v2 archive formats");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
 
