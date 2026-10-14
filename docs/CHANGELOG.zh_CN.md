@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **手机内嵌页归档版本边界明确化**：手机内嵌安装页与 v2 设备配套部署，只接受 v2 APP+DATA 归档；上传 v1.1 旧归档时在任何设备状态/写入请求前明确拒绝，并提示改用 USB 服务页还原。USB 服务页继续保留 v1.1 与 v2 双版本支持；不新增手机端 v1.1 写入兼容层。新增手机模块版本边界测试。代码改动已提交到 feat/storage；CI 与真机验证状态以本次提交后的实际检查为准。
+
 - **首次真机存储管理 E2E（2026-10-11，专用测试机）**：通过真实手机页面安装 Play 28（新增默认关闭的 `play28-recordings-3m` 配置，3 MiB `recordings` carve；服务端需设 `ENABLE_TEST_DATA_PROFILES=1`）。真机验证通过：M01 视口/页面健康、M02 基线安全门、M04 页面安装 + 设备落槽 + DATA reservation 创建、取消卸载严格无操作、失败清理后基线恢复（`deviceRecovery=RESTORED`）。过程中发现并修复的硬阻塞：runner 空闲门要求 `active=false`（有 token 会话时不可满足）；手机页 DATA 容量选择页不经驱动点击「确认容量并安装」则流程永久停住；设备 httpd 需补 `/favicon.ico`（404 污染 console 错误门）且 `max_uri_handlers` 12→16（第 13 个 handler 注册失败会令整个 install 服务启动失败）；E2E 控制通道新增 `E2E SESSION_RESET` 与 offer 自动确认以支持无人值守。真机实证的硬性上限：动态池被固定 `cardid`/`store` 条目分为约 1.88 MiB + 4.61 MiB 两段，单段连续 DATA carve 上限约 4.6 MiB——现有市场 DATA 玩法（全部 ≥5.7 MiB）按声明大小均无法安装，两个市场 DATA 玩法的完整 A/B 共存从容量上即不可行；子固件运行时 DATA 证据（M04A/M05B 串口协议）仍只适用于 `e2edata` 专用固件，市场固件不响应。市场业务 DATA 生命周期保持部分覆盖；完整 E2E 仍需发布专用测试条目。
 
 - **Play 28 DATA 缩容测试配置**：新增默认关闭的 `play28-recordings-4m` profile，仅在服务端显式设置 `ENABLE_TEST_DATA_PROFILES=1` 且请求带 `?mp_test_data_profile=play28-recordings-4m` 时允许 Play ID 28 的单一 `recordings` FAT 分区由原声明大小按 4 MiB 分配；只接受出厂 DATA 全空（`initial_image_size=0`）的镜像，任何 ID/标签/类型/容量不匹配均 fail closed。服务端 analyze、手机预检与安装 offer 使用同一容量规则；新增 profile 单元和 analyzer 集成测试。真实市场镜像/真机验证仍未完成，默认安装行为不变。
