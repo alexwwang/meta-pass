@@ -1130,7 +1130,7 @@ const I18N = {
     backup_desc: "固定槽设备保留历史 v1 APP/NVS 备份；动态布局使用带来源版本元数据的 v2 原始存储快照。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "USB 在固定槽设备上保留历史 v1 APP/NVS 还原，并支持 v2 原始存储快照顺序恢复。恢复会逐字节核验；失败时需刷回快照来源 MetaPass 版本。",
+    restore_desc: "USB 在固定槽设备上保留历史 v1 APP/NVS 还原，并支持 v2 原始存储快照顺序恢复。写入前会校验归档；恢复后需重启确认能正常启动。失败时需刷回快照来源 MetaPass 版本。",
     restore_flow_hint: "选择历史 v1 归档或 v2 存储快照。恢复中断不会自动回滚；重试前请刷回归档来源 MetaPass 版本。",
     btn_restore: "开始恢复",
     data_backup_unavailable: "USB 固定槽设备保留历史 v1 APP/NVS 归档兼容；动态布局使用 v2 原始存储快照。ZIP 未加密，可能包含 Wi-Fi 凭证、设备状态和玩法数据。删除 APP 会同时删除其关联 DATA。",
@@ -2812,7 +2812,7 @@ $("btn-restore").addEventListener("click", async () => {
       const accepted = confirm(
         "即将按快照覆盖 " + restoreZip.restorePlan.partitionCount + " 个已分配分区。\n\n" +
         "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
-        "写入中断或读回核验失败时不会自动回滚；请刷回该版本后重试。\n\n继续恢复？"
+        "写入中断或重启后无法正常启动时不会自动回滚；请刷回该版本后重试。\n\n继续恢复？"
       );
       if (!accepted) throw new Error("已取消快照恢复；未写入 Flash。");
       const inventory = await readUsbStorageInventory();
@@ -2825,12 +2825,12 @@ $("btn-restore").addEventListener("click", async () => {
           $("restore-status").textContent = "快照恢复：" + event.phase + (event.partition ? " · " + event.partition : "") + offset;
         },
       });
-      $("restore-status").textContent = result.dataVerified
-        ? "数据写入与独立读回核验通过。请退出下载模式并重启设备，确认 MetaPass 可重新连接。"
+      $("restore-status").textContent = result.dataWritten
+        ? "快照数据已写入。请退出下载模式并重启设备，确认 MetaPass 能正常启动并重新连接。"
         : "快照恢复尚未完成。";
       $("restore-status").className = result.bootValidated ? "ok" : "warn";
       setRestoreProgress(100);
-      log("Snapshot data readback verified. Boot/reconnect remains a separate manual check.", "ok");
+      log("Snapshot write completed. Boot/reconnect remains a separate manual check.", result.bootValidated ? "ok" : "warn");
     } else if (restoreZip.manifest.manifest_version === 1) {
       await restoreLegacyV1ArchiveUsb();
     } else {
