@@ -23,7 +23,7 @@ for token in (
     "安装时创建 DATA 分区",
     "tools/realdevice/mobile_page_e2e.mjs",
     "tools/realdevice/usb_web_e2e.mjs",
-    "重启前后 SHA-256 对照",
+    "重启前后清单与 SHA-256",
     "两页都接入快照备份与顺序恢复代码",
     "PASS / FAIL / BLOCKED / NOT RUN",
 ):
