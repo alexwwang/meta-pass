@@ -83,4 +83,5 @@ assert.throws(() => eligibleSnapshotPartitions([
   ...partitions,
   { label: "overlap", type: 1, subtype: 0x43, offset: 0x1a8000, size: 0x1000 },
 ], host), /overlapping live partition table/);
-\nconsole.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");
+
+console.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");
