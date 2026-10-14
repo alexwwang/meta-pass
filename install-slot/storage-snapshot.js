@@ -16,6 +16,53 @@ function validInt(n) {
   return Number.isSafeInteger(n) && n >= 0;
 }
 
+
+function parseVersion(value) {
+  if (typeof value !== "string" || !/^\\d+\\.\\d+\\.\\d+$/.test(value)) return null;
+  const parts = value.split(".").map(Number);
+  return parts.every(Number.isSafeInteger) ? parts : null;
+}
+
+function compareVersions(a, b) {
+  const left = parseVersion(a), right = parseVersion(b);
+  if (!left || !right) return null;
+  for (let i = 0; i < 3; i++) {
+    if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+function validateMetaPassMetadata(metaPass) {
+  const source = parseVersion(metaPass?.system_version);
+  const min = parseVersion(metaPass?.compatible_versions?.min_inclusive);
+  const max = parseVersion(metaPass?.compatible_versions?.max_inclusive);
+  if (!source || !min || !max ||
+      compareVersions(metaPass.compatible_versions.min_inclusive, metaPass.compatible_versions.max_inclusive) > 0 ||
+      compareVersions(metaPass.system_version, metaPass.compatible_versions.min_inclusive) < 0 ||
+      compareVersions(metaPass.system_version, metaPass.compatible_versions.max_inclusive) > 0) {
+    fail("snapshot must declare a source MetaPass version and an inclusive compatible-version range");
+  }
+  return metaPass;
+}
+
+export function assertSnapshotVersionCompatible(manifest, currentVersion) {
+  validateMetaPassMetadata(manifest?.meta_pass);
+  if (!parseVersion(currentVersion)) {
+    throw new Error("Target device did not report a valid MetaPass version; restore refused before Flash writes");
+  }
+  const { min_inclusive: min, max_inclusive: max } = manifest.meta_pass.compatible_versions;
+  if (compareVersions(currentVersion, min) < 0 || compareVersions(currentVersion, max) > 0) {
+    const source = manifest.meta_pass.system_version;
+    const error = new Error(
+      `MetaPass ${currentVersion} is outside this snapshot's supported range ${min}–${max}. ` +
+      `Reflash MetaPass ${source} (the version used for this snapshot), reconnect, and retry.`
+    );
+    error.code = "SNAPSHOT_VERSION_INCOMPATIBLE";
+    throw error;
+  }
+  return true;
+}
+
 function rangeEnd(offset, size) {
   const end = offset + size;
   if (!validInt(offset) || !Number.isSafeInteger(size) || size <= 0 ||
@@ -94,9 +141,10 @@ function validateExtent(extent, partitionSize, seenNames) {
   seenNames.add(extent.file);
 }
 
-export function buildStorageSnapshotManifest({ createdUtc = new Date().toISOString(), partitions }) {
+export function buildStorageSnapshotManifest({ createdUtc = new Date().toISOString(), partitions, metaPassVersion, compatibleMetaPassVersions }) {
   if (typeof createdUtc !== "string" || !Number.isFinite(Date.parse(createdUtc)) ||
       !Array.isArray(partitions) || partitions.length === 0) fail("invalid snapshot input");
+  const metaPass = validateMetaPassMetadata({ system_version: metaPassVersion, compatible_versions: compatibleMetaPassVersions });
   const seen = new Set();
   const normalized = partitions.map((p) => {
     if (!validPartition(p) || !Array.isArray(p.extents)) {
@@ -115,6 +163,13 @@ export function buildStorageSnapshotManifest({ createdUtc = new Date().toISOStri
     kind: STORAGE_SNAPSHOT_KIND,
     created_utc: createdUtc,
     complete: true,
+    meta_pass: {
+      system_version: metaPass.system_version,
+      compatible_versions: {
+        min_inclusive: metaPass.compatible_versions.min_inclusive,
+        max_inclusive: metaPass.compatible_versions.max_inclusive,
+      },
+    },
     partitions: normalized,
   };
   validateStorageSnapshotManifest(manifest);
@@ -136,6 +191,7 @@ export function validateStorageSnapshotManifest(manifest, {
       !Array.isArray(manifest.partitions) || manifest.partitions.length === 0) {
     fail("snapshot is incomplete or malformed");
   }
+  validateMetaPassMetadata(manifest.meta_pass);
 
   const seenLabels = new Set();
   const seenFiles = new Set();
