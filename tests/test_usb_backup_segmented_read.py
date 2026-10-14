@@ -56,8 +56,12 @@ if "resyncAfterReadError" in PAGE:
     raise SystemExit("FAIL: obsolete layered recovery remains in the backup page")
 
 require(
-    r'if \(isDynMode\(slotModel\.mode\)\).*?未生成旧 APP\+DATA v2 备份',
-    "dynamic v2 backup must fail closed until running-host partition identity is available",
+    r"async function readUsbStorageInventory\(\).*?project !== \"FoloToy-AI-Passport\".*?async function createUsbStorageSnapshot",
+    "dynamic v2 snapshot must identify the host from the ESP app descriptor and use the raw snapshot builder",
+)
+require(
+    r"if \(isDynMode\(slotModel\.mode\)\).*?createUsbStorageSnapshot",
+    "dynamic mode must route backup through the v2 snapshot path",
 )
 require(
     r"const nvsData = await readFlashChunked\(",
