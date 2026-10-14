@@ -2,7 +2,9 @@
 
 简体中文 | [English](storage-four-goals-test-report-2026-10-12.md)
 
-日期：2026-10-12
+日期：2026-10-12（历史快照）
+
+> **状态校准（2026-10-14）：** 本报告只记录 10 月 12 日当时的测试结果。其后 USB 备份/恢复已完成真机闭环（见 [2026-10-13 USB 备份/恢复报告](backup-restore-test-report-2026-10-13.zh_CN.md)），USB 分段备份也已通过独立字节比较（见 [2026-10-14 第二轮报告](usb-backup-segmented-session-test-report-2026-10-14-round2.zh_CN.md)）。因此本报告中 USB BLOCKED、备份/恢复 NOT RUN 是历史状态，不代表当前状态；当前剩余的完整 UI 真机 E2E 缺口是手机内嵌页面的备份→删除→恢复→字节比较→重启持久性链路。
 执行：本地 Agent（无人工按键/读屏，全部经 LAN API、USB Serial/JTAG 测试控制通道、Chromium CDP）
 基线分支：`feat/storage` @ `302c466`（+ 修复提交 `e472d24`，本报告的代码变更随该提交）
 配套 handoff：`docs/assets/storage-four-goals-handoff.zh_CN.md`
