@@ -1,59 +1,59 @@
-# Storage snapshot backup/restore design (2026-10-14)
+# 存储快照式备份与还原设计（2026-10-14）
 
-## Decision
+## 设计决策
 
-The v2 backup/restore contract is a **device-storage snapshot**, not an APP+DATA ownership archive. The goal is to preserve the current device's persisted bytes without interpreting sub-firmware formats, NVS keys, namespaces, or filesystem internals.
+v2 备份/还原统一定义为**设备存储快照**，不再是按 APP+DATA 归属关系组织的逻辑归档。目标是在不解析子固件数据格式、NVS key/namespace 或文件系统内部结构的前提下，保留当前设备已分配存储区域中的实际字节。
 
-This supersedes the previous v2 proposal to back up one APP+DATA group and to preserve destination NVS during restore.
+本决策取代此前“v2 每次只备份一个 APP+DATA 组”以及“还原时保留目标设备 NVS 不变”的方案。
 
-## Snapshot scope
+## 快照范围
 
-Build the allowed range list from the connected device's live partition table. Include allocated storage partitions and their meaningful byte contents, with these exclusions:
+根据连接设备实时读取的分区表，确定允许纳入快照的已分配分区。排除：
 
-1. The currently running MetaPass host firmware partition.
-2. The `cardid` partition (device identity/factory-recovery boundary).
-3. Unallocated Flash gaps and other regions that are not owned by an eligible partition.
+1. 当前正在运行的 MetaPass 宿主固件所在分区。
+2. `cardid` 分区（设备身份和工厂恢复边界）。
+3. 未分配的 Flash 间隙，以及不属于允许分区的区域。
 
-Do not hardcode Flash addresses. Resolve partitions from the live partition table and identify the running host app from device-reported OTA/app partition information. Exclude the partition table itself from writes; it is used as the layout descriptor.
+不得硬编码 Flash 地址。宿主固件分区应通过设备报告的当前运行应用/OTA 分区识别；分区表只用作布局描述，不作为快照内容写回。
 
-NVS is not a special case in this model: if it is an allocated partition other than an explicit exclusion above, its bytes are part of the snapshot. Consequently, restoring a snapshot can restore host NVS state (including Wi-Fi credentials and install-session keys) to the captured state. The UI must warn users that archives may contain secrets and that restore replaces eligible destination storage bytes. There is no promise that destination NVS remains unchanged.
+NVS 在此模型中不再特殊处理：只要它是已分配分区且不属于上述排除项，就纳入快照。因此，还原快照可能把目标设备的宿主 NVS（包括 Wi-Fi 凭证、安装会话 key 等）恢复为备份时的状态。界面必须提示归档可能含有敏感信息，且还原会替换纳入范围的目标存储数据；不能再承诺目标 NVS 保持不变。
 
-## Byte representation and sparse encoding
+## 字节表示与稀疏存储
 
-- Each included partition has a manifest record with stable identity (label, type, subtype), source offset, partition size, and a list of stored extents.
-- Preserve exact offsets and lengths for every non-erased extent. Erased `0xFF` runs may be omitted from the ZIP only when their location and length are recorded so restore can recreate them.
-- Bytes inside an included partition are not semantically filtered. An all-`0xFF` extent inside a partition is sparse data, not an unallocated address range.
-- Each payload extent is length-checked and SHA-256 verified before any destination writes begin.
-- A snapshot is complete or it is not usable for restore. Read failures must not silently produce a partial snapshot.
+- 每个纳入快照的分区在 manifest 中记录稳定身份（label、type、subtype）、源 offset、分区大小，以及实际保存的字节 extent 列表。
+- 对连续的擦除态 `0xFF` 区域可以采用稀疏编码，但必须记录其位置与长度，以便还原时恢复原始布局。
+- 已纳入分区内部的字节不做语义过滤。分区内全 `0xFF` 的范围是可稀疏编码的数据，不等于未分配地址。
+- 所有 payload extent 在写入前都必须通过长度和 SHA-256 校验。
+- 快照必须完整；读取失败不能静默生成可还原的部分快照。
 
-## Restore contract
+## 还原规则
 
-1. Parse and validate the entire archive, reject duplicate/unsafe paths, and verify all payload hashes and ranges before writing.
-2. Read the target's live partition table and running host app partition.
-3. Require a compatible partition layout for every archived eligible partition. The initial implementation may require matching partition identity, offset, and size; incompatible layouts are rejected rather than guessed or silently remapped.
-4. Recompute the target's protected ranges and reject any archived extent that overlaps the running MetaPass firmware, `cardid`, the partition table, or unallocated Flash.
-5. Erase/write only eligible partition ranges. Restore omitted erased extents as erased bytes where necessary. Read back and verify the restored extents.
-6. Never write the running MetaPass firmware, `cardid`, partition table, or unallocated gaps. Do not modify carve/allocation metadata outside the eligible partition list unless it resides inside an explicitly included partition.
+1. 解析并校验整个归档：拒绝重复/不安全路径，并在开始写入前验证所有 payload 哈希和范围。
+2. 读取目标设备的实时分区表与当前运行的宿主固件分区。
+3. 要求归档中的每个目标分区与设备布局兼容。初版可要求分区身份、offset 和 size 完全一致；布局不兼容就拒绝还原，不猜测、不静默重映射。
+4. 重新计算目标设备的保护范围；任何归档 extent 若覆盖当前运行的 MetaPass 固件、`cardid`、分区表或未分配 Flash，必须拒绝。
+5. 只擦写允许范围内的分区。必要时将稀疏省略的擦除态区域恢复为擦除态；完成后读回并校验。
+6. 永不写入当前运行的 MetaPass 固件、`cardid`、分区表或未分配间隙。除非分配器/ carve 元数据本身位于明确纳入快照的分区中，否则不得额外改写这些元数据。
 
-## Version compatibility and page parity
+## 版本兼容与页面对齐
 
-- USB retains the historical v1.1 archive restore path unchanged for old archives.
-- USB v2 creates and restores the new snapshot format.
-- The phone embedded page supports v2 only and must use the same v2 manifest validation, protected-range policy, sparse extent semantics, and restore checks as USB.
-- USB-only local firmware installation remains USB-only; other storage backup/restore semantics must match.
-- The old v2 APP+DATA-only format must not be silently interpreted as a snapshot. Use a new manifest version/kind (or an unambiguous format discriminator) and reject ambiguous archives with an actionable message.
+- USB 页面保留历史 v1.1 归档的原有还原路径，不修改旧版兼容行为。
+- USB v2 生成并还原新的快照格式。
+- 手机内嵌页只支持 v2，必须与 USB 共用 v2 manifest 校验、保护范围策略、稀疏 extent 语义和还原检查。
+- 本地固件安装仍是 USB 独有功能；其他存储备份/还原语义必须一致。
+- 旧的 APP+DATA 逻辑归档不能被误识别为快照。应使用新的 manifest 版本/归档 kind，或其他无歧义的格式标识；对含糊归档给出明确错误提示。
 
-## Implementation sequence
+## 实施顺序
 
-1. Add pure shared snapshot-manifest/extent validation and tests (range overlap, protected partition exclusion, gaps, sparse erased extents, hash/length mismatch, incompatible layout, incomplete archives).
-2. Add USB snapshot backup/restore on top of the existing chunked flash read/write path. Retain the legacy v1.1 branch.
-3. Add device-side APIs for phone read/write of eligible partition ranges. The device, not the phone, resolves partition labels and validates absolute bounds against protected ranges; do not expose an unrestricted arbitrary-address write endpoint.
-4. Route phone v2 through the same snapshot manifest/validation module and device-side guarded range API.
-5. Update UI copy, docs, and handoff. Verify USB + mobile parity with browser tests, then have the local agent perform passport-sim and real-device tests.
+1. 先实现共享的纯快照 manifest/extent 校验模块及测试，覆盖范围重叠、保护分区排除、未分配间隙、稀疏擦除态 extent、哈希/长度错误、布局不兼容和归档不完整等情况。
+2. 在现有分块 Flash 读取/写入能力上实现 USB 快照备份/还原，保留 v1.1 旧分支。
+3. 为手机页面增加设备侧分区读取/写入 API。设备端负责解析分区标签，并验证绝对地址范围与保护区；不能暴露不受限制的任意地址写接口。
+4. 手机 v2 接入同一快照格式/校验模块及设备侧受保护的分区读写 API。
+5. 更新页面文案、设计文档和 handoff；先跑 USB/手机浏览器自动化测试，再由本地 agent 执行 passport-sim 和真机测试。
 
-## Explicit non-goals
+## 明确不做
 
-- No NVS key/namespace parsing or merge.
-- No per-app ownership inference for shared NVS.
-- No cross-layout address remapping in the initial implementation.
-- No resizing existing DATA partitions as part of backup/restore.
+- 不解析或合并 NVS key/namespace。
+- 不推断共享 NVS 中各 key 的子固件归属。
+- 初版不支持跨分区布局的地址重映射。
+- 备份还原不包含既有 DATA 分区扩缩容。
