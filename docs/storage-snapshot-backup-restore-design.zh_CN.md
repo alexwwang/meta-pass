@@ -1,4 +1,4 @@
- <p align="right">
+<p align="right">
   <a href="storage-snapshot-backup-restore-design.md">English</a> · <strong>简体中文</strong>
 </p>
 
