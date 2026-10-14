@@ -1,6 +1,7 @@
 // install-slot/storage-snapshot-restore.js
 // Sequential v2 snapshot restore: preflight, erase/write, then boot/reconnect check.
 // Archive hashes are verified before mutation; no full-flash readback or rollback.
+const CHUNK_BYTES = 4096;
 import {
   assertSnapshotVersionCompatible,
   buildStorageSnapshotRestorePlan,
