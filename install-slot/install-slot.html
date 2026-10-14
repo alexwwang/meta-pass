@@ -2409,8 +2409,11 @@ $("btn-backup").addEventListener("click", async () => {
     // Fixed-slot devices keep the historical v1 APP/NVS archive format.
     // Dynamic v2 snapshot backup is gated above until running-host identity can
     // be obtained reliably over this USB transport.
+    const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
     const manifestObj = {
       manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
+      complete: missingSlots.length === 0,
+      ...(missingSlots.length ? { missing_slots: missingSlots } : {}),
       slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
       ...(nvsEntry ? { nvs: nvsEntry } : {}),
     };
@@ -2418,7 +2421,6 @@ $("btn-backup").addEventListener("click", async () => {
       name: MANIFEST_NAME,
       data: new TextEncoder().encode(JSON.stringify(manifestObj, null, 2)),
     });
-    const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
     if (missingSlots.length) {
       log(`INCOMPLETE BACKUP: slot(s) ${missingSlots.join(", ")} could not be read; archive contains only the successfully verified subset.`, "warn");
     }
