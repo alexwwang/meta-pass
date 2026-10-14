@@ -1,3 +1,5 @@
+[简体中文](HANDOFF-usb-v1-archive-compatibility.zh_CN.md)
+
 # Handoff: USB historical v1.1 archive compatibility regression
 
 Branch: `feat/storage`. Never develop on `main`.
