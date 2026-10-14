@@ -12,6 +12,7 @@ import {
   readStorageSnapshotZip,
   buildStorageSnapshotRestorePlan,
   assertSnapshotVersionCompatible,
+  captureStorageSnapshot,
 } from "../install-slot/storage-snapshot.js";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -152,5 +153,32 @@ assert.throws(() => eligibleSnapshotPartitions([
   ...partitions,
   { label: "overlap", type: 1, subtype: 0x43, offset: 0x1a8000, size: 0x1000 },
 ], host), /overlapping live partition table/);
+
+{
+  const captureHost = { label: "factory", type: 0, subtype: 0, offset: 0x10000, size: 0x1000 };
+  const capturePartitions = [
+    captureHost,
+    { label: "nvs", type: 1, subtype: 2, offset: 0x20000, size: 0x1000 },
+    { label: "cardid", type: 1, subtype: 64, offset: 0x21000, size: 0x1000 },
+    { label: "store", type: 1, subtype: 65, offset: 0x22000, size: 0x1000 },
+  ];
+  const captureDevice = {
+    async storageInfo() {
+      return { ok: true, meta_pass_version: "v0.2.2-35-gaa25c52", running_host: captureHost, partitions: capturePartitions };
+    },
+    async storageRead() { throw new Error("whole-partition reader should be selected"); },
+    async storageReadPartition(partition) {
+      const bytes = new Uint8Array(partition.size).fill(0xff);
+      if (partition.label === "store") bytes[0x20] = 0x5a;
+      return bytes;
+    },
+  };
+  const captured = await captureStorageSnapshot(captureDevice, { sha256Hex: async bytes => hash(bytes) });
+  assert.equal(captured.manifest.meta_pass.system_version, "v0.2.2-35-gaa25c52");
+  assert.equal(captured.bytesRead, captured.totalBytes);
+  assert.deepEqual(captured.manifest.partitions.map(p => p.label), ["nvs", "store"]);
+  assert.equal(captured.manifest.partitions[1].extents[0].offset, 0x20);
+  assert.deepEqual([...captured.payloads.get(captured.manifest.partitions[1].extents[0].file)], [0x5a]);
+}
 
 console.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");
