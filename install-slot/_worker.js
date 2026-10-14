@@ -529,7 +529,7 @@ export default {
         path === "/store-analyze.js" || path === "/name-blob.js" ||
         path === "/dynslot-pool.js" || path === "/data-size-profile.js" ||
         path === "/data-size-options.js" || path === "/data-byte-archive.js" ||
-        path === "/data-archive-restore.js" || path === "/storage-snapshot.js") {
+        path === "/data-archive-restore.js" || path === "/storage-snapshot.js" || path === "/storage-snapshot-restore.js") {
       const asset = await env.ASSETS.fetch(new Request(new URL(path, req.url), req));
       if (!asset.ok) return err(404, "phone-install module missing from bundle");
       const headers = new Headers(asset.headers);
