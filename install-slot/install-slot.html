@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only.</p>
+    <p class="subtitle" data-i18n="restore_desc">Restore dispatches by detected device mode and archive version: v1 APP/NVS archives on legacy fixed-slot devices, or complete v2 single APP+DATA archives on dynamic devices. v1 retains historical NVS restore; v2 verifies archived NVS but preserves destination NVS.</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
@@ -217,7 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
-    <p class="hint" data-i18n="data_backup_unavailable">USB dynamic-mode backup includes verified DATA bytes for one APP+DATA group per archive. v2 restore verifies archived NVS bytes but preserves the destination device NVS. Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only. Removing an APP also deletes its owned DATA.</p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB fixed-slot devices retain v1 APP/NVS backup and restore. Dynamic devices back up one complete APP+DATA group as v2; v2 restore verifies archived NVS but preserves destination NVS. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -1127,10 +1127,10 @@ const I18N = {
     backup_desc: "动态存储模式下每个归档备份一个完整 APP+DATA 组；旧布局仍仅备份 APP。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。旧版 v1 归档恢复不再支持；仅接受完整的 v2 单 APP+DATA 归档。",
+    restore_desc: "恢复流程按握手识别的设备模式与归档版本分流：旧版固定槽设备使用 v1 APP/NVS 归档；动态存储设备使用完整 v2 单 APP+DATA 归档。v1 保留历史 NVS 恢复行为；v2 只校验归档 NVS，保留目标设备现有 NVS。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
-    data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。备份 ZIP 未加密，可能包含 Wi-Fi 凭证等 NVS 原始数据，请勿上传或分享。v2 恢复会校验归档中的 NVS 字节，但保留目标设备现有 NVS、不写入归档 NVS；旧版 v1 归档恢复不再支持；仅接受完整的 v2 单 APP+DATA 归档。删除 APP 会同时删除其关联 DATA。",
+    data_backup_unavailable: "USB 固定槽设备保留 v1 APP/NVS 备份与恢复；动态存储设备备份一个完整 APP+DATA 组为 v2。备份 ZIP 未加密，可能包含 Wi-Fi 凭证等 NVS 原始数据，请勿上传或分享。v1 保留历史 NVS 恢复行为；v2 只校验归档 NVS，保留目标设备现有 NVS。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_single_group: "每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
