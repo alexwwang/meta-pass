@@ -1,3 +1,5 @@
+[English](HANDOFF-usb-v1-archive-compatibility.md)
+
 # Handoff：USB 历史 v1.1 归档兼容性回归
 
 分支：`feat/storage`。禁止在 `main` 上开发。
