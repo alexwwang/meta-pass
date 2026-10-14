@@ -71,8 +71,9 @@ export function eligibleSnapshotPartitions(partitions, runningHostPartition, pro
     }
     return overlaps(p.offset, p.size, r.offset, r.size);
   });
+  if (partitions.some(protectedOverlap)) fail("live partition overlaps a protected range");
   return partitions.filter((p) => !isProtectedPartition(p, runningHostPartition) &&
-    p.label !== "cardid" && !protectedOverlap(p));
+    p.label !== "cardid");
 }
 
 function validateExtent(extent, partitionSize, seenNames) {
