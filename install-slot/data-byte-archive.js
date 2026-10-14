@@ -297,8 +297,8 @@ function zipCrc32(bytes) {
 }
 
 // Minimal ZIP writer using STORE (no compression), matching the USB page format.
-export function buildDataArchiveZip(entries) {
-  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 128) fail("invalid ZIP entry count");
+export function buildDataArchiveZip(entries, { maxEntries = 128 } = {}) {
+  if (!Array.isArray(entries) || entries.length < 1 || !Number.isSafeInteger(maxEntries) || maxEntries < 1 || maxEntries > 65535 || entries.length > maxEntries) fail("invalid ZIP entry count");
   const enc = new TextEncoder();
   const chunks = [];
   const central = [];
