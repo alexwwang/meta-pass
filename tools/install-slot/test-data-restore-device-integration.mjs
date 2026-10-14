@@ -48,4 +48,4 @@ const checked = await phone.validateStorageSnapshotArchiveForDevice(bridge, arch
 assert.equal(checked.manifest.kind, "meta-pass-storage-snapshot");
 assert.ok(checked.restorePlan.partitionCount > 0);
 assert.equal(reads.length, beforePreflight, "restore preflight must inspect inventory only and perform no Flash writes");
-console.log("PASS snapshot backup and non-mutating restore preflight; retired APP+DATA v2 restore is not exposed");
+console.log("PASS snapshot backup and read-only preflight; sequential v2 restore is covered separately; retired APP+DATA v2 restore is not exposed");
