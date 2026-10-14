@@ -121,6 +121,7 @@ export function validateStorageSnapshotManifest(manifest, {
   runningHostPartition,
   protectedRanges = [],
 } = {}) {
+  if (!Array.isArray(protectedRanges)) fail("device-provided protected ranges are required");
   if (!manifest || manifest.kind !== STORAGE_SNAPSHOT_KIND ||
       manifest.manifest_version !== STORAGE_SNAPSHOT_VERSION) {
     fail("unsupported archive: expected a v2 storage snapshot");
