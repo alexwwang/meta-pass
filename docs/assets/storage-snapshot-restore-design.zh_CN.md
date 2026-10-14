@@ -1,3 +1,7 @@
+<p align="right">
+  <a href="storage-snapshot-restore-design.md">English</a> · <strong>简体中文</strong>
+</p>
+
 # MetaPass v2 存储快照恢复设计
 
 状态：feat/storage 分支实施中；真机验证待完成
