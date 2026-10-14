@@ -7,6 +7,8 @@ import {
   buildStorageSnapshotManifest,
   validateStorageSnapshotManifest,
   validateStorageSnapshotPayloads,
+  buildStorageSnapshotZip,
+  readStorageSnapshotZip,
 } from "../install-slot/storage-snapshot.js";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
