@@ -23,22 +23,23 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertNotIn("包含全局 NVS 的归档会被拒绝", mobile)
         self.assertNotIn("当前尚不能导入恢复", mobile)
         self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
-        self.assertIn("Legacy v1 restore is not supported", usb)
+        self.assertIn("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", usb)
         self.assertNotIn("v2 APP+DATA archive restore is not implemented yet", usb)
 
-    def test_usb_restore_matches_mobile_v2_only_contract(self):
+    def test_usb_restore_supports_v1_fixed_slot_and_v2_dynamic_contracts(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("v2 restores one complete APP+DATA group and preserves the destination device NVS", usb)
-        self.assertIn("legacy v1 restore is not supported", usb)
-        self.assertIn("旧版 v1 归档恢复不再支持", usb)
+        self.assertIn("restoreLegacyV1ArchiveUsb()", usb)
+        self.assertIn("if (isDynMode(slotModel.mode))", usb)
+        self.assertIn("if (rawManifest?.manifest_version === 1)", usb)
         self.assertIn("归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变", usb)
         self.assertNotIn("multi-APP restore is not atomic", usb)
         handler_start = usb.index('$("btn-restore").addEventListener')
         handler_end = usb.index('// ===== 4. 安装 =====', handler_start)
         restore_handler = usb[handler_start:handler_end]
         self.assertIn("await restoreV2ArchiveUsb()", restore_handler)
-        self.assertNotIn("msg_restore_nvs_write", restore_handler)
-        self.assertNotIn("parseManifest(rawManifest)", usb[usb.index('$("restore-input").addEventListener'):handler_start])
+        self.assertIn("await restoreLegacyV1ArchiveUsb()", restore_handler)
+        self.assertIn("parseManifest(manifestText)", usb[usb.index('$("restore-input").addEventListener'):handler_start])
 
     def test_usb_and_mobile_backup_are_single_app_data_group(self):
         mobile = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
@@ -50,24 +51,23 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("buildDataArchiveManifest({", mobile)
         self.assertIn("buildDataArchiveManifest({", usb)
 
-    def test_usb_backup_never_emits_unrestorable_v1_archive(self):
+    def test_usb_backup_preserves_v1_fixed_slot_archive_compatibility(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("btn-backup").addEventListener')
         end = usb.index('// --- 6. 恢复 ---', start)
         backup = usb[start:end]
-        self.assertIn("if (!isDynMode(slotModel.mode))", backup)
-        self.assertIn("msg_backup_v2_required", backup)
-        self.assertIn("Cannot create a restorable v2 archive without stable APP play_id ownership metadata.", backup)
-        self.assertNotIn("manifest_version: 1", backup)
+        self.assertIn("if (isDynMode(slotModel.mode) && slots.length !== 1)", backup)
+        self.assertIn("manifest_version: 1", backup)
+        self.assertIn("slots: manifestEntries.map(({ slot, files }) => ({ slot, files }))", backup)
 
-    def test_usb_rejects_v1_archive_before_restore_mutation(self):
+    def test_usb_v1_archive_uses_legacy_restore_only_for_fixed_slot_device(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         start = usb.index('$("restore-input").addEventListener')
         end = usb.index('async function restoreV2ArchiveUsb()', start)
         parser = usb[start:end]
-        self.assertIn("legacy v1 restore is not supported", parser)
-        self.assertNotIn("const manifest = parseManifest(rawManifest)", parser)
-        self.assertNotIn("manifest_version: 1", parser)
+        self.assertIn("rawManifest?.manifest_version === 1", parser)
+        self.assertIn("if (isDynMode(slotModel.mode))", parser)
+        self.assertIn("const manifest = parseManifest(manifestText)", parser)
 
     def test_usb_v2_restore_revalidates_single_app_data_group_before_mutation(self):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
