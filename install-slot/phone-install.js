@@ -41,9 +41,9 @@ const TAIL_SECTOR = 0x1000;              // 槽位尾部 4KB 名字 blob sector
 const METAPASS = "https://metapass.chuanxilu.net";
 const NAME_MAX = 32;                     // 设备端可显示名上限(META_NAME_LEN)
 
-// The embedded phone page ships only with v2+ devices and therefore accepts
-// only transactional MPTB v2 APP+DATA archives. Legacy v1.1 archives remain a
-// USB-page compatibility feature; reject them before making any device request.
+// The embedded phone page ships only with v2+ devices and accepts only the
+// unambiguous v2 whole-device storage snapshot kind. Legacy USB v1.1 and the
+// retired APP+DATA logical v2 archive must never be interpreted as snapshots.
 export function assertPhoneArchiveVersion(manifest) {
   if (!manifest || manifest.manifest_version !== 2 || manifest.kind !== "meta-pass-storage-snapshot") {
     throw new Error("手机内嵌页只接受 v2 设备存储快照归档；旧 APP+DATA 逻辑归档不能按快照还原");
@@ -1579,7 +1579,7 @@ export function boot(opts = {}) {
   function renderMgmt(info, busy) {
     const backupSection = `
       <h4 style="margin-top:14px">设备存储快照</h4>
-      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。恢复会覆盖归档纳入范围内的目标存储。当前版本只提供备份和恢复预检，事务化写入/回滚协议完成前不会执行恢复写入。</p>
+      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。当前版本只提供备份和恢复预检，事务化写入/回滚协议完成前不会执行恢复写入。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>校验快照归档</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
