@@ -1,3 +1,7 @@
+ <p align="right">
+  <a href="storage-snapshot-backup-restore-design.md">English</a> · <strong>简体中文</strong>
+</p>
+
 # 存储快照式备份与还原设计（2026-10-14）
 
 ## 设计决策
