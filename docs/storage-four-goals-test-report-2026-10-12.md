@@ -1,6 +1,8 @@
 # Storage Four-Goals Real-Device Test Report
 
-Date: 2026-10-12 | [简体中文](storage-four-goals-test-report-2026-10-12.zh_CN.md)
+Date: 2026-10-12 (historical snapshot) | [简体中文](storage-four-goals-test-report-2026-10-12.zh_CN.md)
+
+> **Status calibration (2026-10-14):** This report records the state as of October 12 only. USB backup/restore subsequently passed the full real-device lifecycle (see [the October 13 report](backup-restore-test-report-2026-10-13.md)), and segmented USB backup passed independent byte comparison (see [the October 14 round-two report](usb-backup-segmented-session-test-report-2026-10-14-round2.md)). The BLOCKED/NOT RUN entries below are historical, not current status. The remaining full UI-driven hardware E2E gap is the mobile embedded page's backup → APP+DATA deletion → restore → byte comparison → reboot-persistence path.
 
 Executor: local agent (no human button presses or screen reading; everything driven over the LAN API, the USB Serial/JTAG test control channel, and Chromium CDP).
 Baseline branch: `feat/storage` @ `302c466` (plus fix commit `e472d24`, which carries all code changes from this report).

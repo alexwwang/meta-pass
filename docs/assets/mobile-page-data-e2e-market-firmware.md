@@ -4,7 +4,9 @@
 
 # Mobile-page DATA E2E: selecting a real marketplace firmware
 
-Status: the target is selected and an explicit opt-in size profile is wired into analysis and the install offer; real marketplace-binary and hardware acceptance are still pending.
+Status: the target is selected and an explicit opt-in DATA capacity profile is wired into analysis and the install offer; real marketplace-binary and hardware acceptance are still pending.
+
+> The profile changes only the requested capacity for a new install. It does not provide in-place resize or data migration for an existing DATA extent; existing-DATA resize is outside this phase.
 
 ## Decision
 

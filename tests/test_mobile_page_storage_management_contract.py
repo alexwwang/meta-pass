@@ -45,7 +45,7 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
         self.assertIn("async function doBackup(slotIndex)", mobile)
         self.assertIn("slots: [{ play_id: slot.play_id", mobile)
-        self.assertIn("if (isDynMode(slotModel.mode) && slots.length !== 1)", usb)
+        self.assertIn("if (slots.length !== 1)", usb)
         self.assertIn("msg_backup_single_group", usb)
         self.assertIn("buildDataArchiveManifest({", mobile)
         self.assertIn("buildDataArchiveManifest({", usb)
