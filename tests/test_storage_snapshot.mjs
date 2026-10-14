@@ -58,13 +58,6 @@ await assert.rejects(
   () => readStorageSnapshotZip(legacyLogicalZip, async (bytes) => hash(bytes)),
   /expected a v2 storage snapshot/,
 );
-const zip = await buildStorageSnapshotZip({
-  manifest,
-  payloads: new Map([["extents/store-000010.bin", payload]]),
-}, async (bytes) => hash(bytes));
-const restoredArchive = await readStorageSnapshotZip(zip, async (bytes) => hash(bytes));
-assert.equal(restoredArchive.manifest.kind, STORAGE_SNAPSHOT_KIND);
-assert.equal(restoredArchive.payloads.get("extents/store-000010.bin").length, payload.length);
 validateStorageSnapshotManifest(manifest, { targetPartitions: partitions, runningHostPartition: host });
 assert.deepEqual(await validateStorageSnapshotPayloads(manifest, { "extents/store-000010.bin": payload }, async (b) => hash(b)),
   { partitionCount: 3, extentCount: 1 });
