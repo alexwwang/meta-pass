@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 archives retain sequential APP/NVS restore compatibility (multi-APP restore is not atomic).</p>
+    <p class="subtitle" data-i18n="restore_desc">v2 restores one complete APP+DATA group and preserves the destination device NVS; any archived NVS bytes are verified but not written. Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only.</p>
     <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
@@ -217,7 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
-    <p class="hint" data-i18n="data_backup_unavailable">USB dynamic-mode backup includes verified DATA bytes for one APP+DATA group per archive. v2 restore verifies archived NVS bytes but preserves the destination device NVS. Legacy v1 archives retain sequential APP/NVS restore compatibility. Removing an APP also deletes its owned DATA.</p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB dynamic-mode backup includes verified DATA bytes for one APP+DATA group per archive. v2 restore verifies archived NVS bytes but preserves the destination device NVS. Legacy v1 restore is not supported; restore accepts complete v2 single APP+DATA archives only. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -1126,10 +1126,10 @@ const I18N = {
     backup_desc: "动态存储模式下每个归档备份一个完整 APP+DATA 组；旧布局仍仅备份 APP。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径（多 APP 恢复不具备原子性）。",
+    restore_desc: "v2 归档恢复一个完整的 APP+DATA 组；归档中的 NVS 字节会校验但不会写入，目标设备现有 NVS 保持不变。旧版 v1 归档恢复不再支持；仅接受完整的 v2 单 APP+DATA 归档。",
     restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
     btn_restore: "开始恢复",
-    data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。备份 ZIP 未加密，可能包含 Wi-Fi 凭证等 NVS 原始数据，请勿上传或分享。v2 恢复会校验归档中的 NVS 字节，但保留目标设备现有 NVS、不写入归档 NVS；旧版 v1 归档保留顺序恢复 APP/NVS 的兼容路径。删除 APP 会同时删除其关联 DATA。",
+    data_backup_unavailable: "USB 动态存储模式备份可包含经校验的 DATA 字节，每个归档只备份一个所选 APP+DATA 组。备份 ZIP 未加密，可能包含 Wi-Fi 凭证等 NVS 原始数据，请勿上传或分享。v2 恢复会校验归档中的 NVS 字节，但保留目标设备现有 NVS、不写入归档 NVS；旧版 v1 归档恢复不再支持；仅接受完整的 v2 单 APP+DATA 归档。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_single_group: "动态存储模式下每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
@@ -2582,6 +2582,11 @@ $("restore-input").addEventListener("change", async (ev) => {
       log("v2 APP+DATA archive preflight passed; waiting for explicit restore action.", "ok");
       return;
     }
+    // The supported archive contract is v2: one complete APP+DATA group,
+    // with archived NVS verified but never written to the destination device.
+    // v1 sequential APP/NVS restore is intentionally no longer supported; it
+    // cannot preserve the same ownership and transaction guarantees as v2.
+    throw new Error("Only complete v2 APP+DATA archives are supported; legacy v1 restore is not supported.");
     const manifest = parseManifest(rawManifest);
     const filesBySlot = new Map();
     for (const s of manifest.slots) {
@@ -2755,10 +2760,11 @@ $("btn-restore").addEventListener("click", async () => {
   $("restore-status").textContent = "";
   setRestoreProgress(0);
   try {
-    if (restoreZip.manifest.manifest_version === 2) {
-      await restoreV2ArchiveUsb();
-      return;
+    if (restoreZip.manifest.manifest_version !== 2) {
+      throw new Error("Only complete v2 APP+DATA archives are supported; legacy v1 restore is not supported.");
     }
+    await restoreV2ArchiveUsb();
+    return;
     const jobs = restoreZip.manifest.slots.map((s) => ({
       from: s.slot,
       to: Number($(`restore-target-${s.slot}`).value),
