@@ -2178,6 +2178,10 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    bool recovered_remove = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered_remove);
+    if (recovery != ESP_OK) return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    if (recovered_remove) return reply(req, "409 Conflict", "previous uninstall recovered; refresh storage inventory");
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2233,6 +2237,10 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    bool recovered_remove = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered_remove);
+    if (recovery != ESP_OK) return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    if (recovered_remove) return reply(req, "409 Conflict", "previous uninstall recovered; refresh storage inventory");
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
