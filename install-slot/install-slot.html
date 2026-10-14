@@ -2819,9 +2819,9 @@ $("btn-restore").addEventListener("click", async () => {
     if (restoreZip.kind === "snapshot") {
       const sourceVersion = restoreZip.manifest.meta_pass.system_version;
       const accepted = confirm(
-        "即将按快照覆盖 " + restoreZip.restorePlan.partitionCount + " 个已分配分区。\\n\\n" +
-        "归档对应的 MetaPass 版本：" + sourceVersion + "。\\n" +
-        "写入中断或读回核验失败时不会自动回滚；请刷回该版本后重试。\\n\\n继续恢复？"
+        "即将按快照覆盖 " + restoreZip.restorePlan.partitionCount + " 个已分配分区。\n\n" +
+        "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
+        "写入中断或读回核验失败时不会自动回滚；请刷回该版本后重试。\n\n继续恢复？"
       );
       if (!accepted) throw new Error("已取消快照恢复；未写入 Flash。");
       const inventory = await readUsbStorageInventory();
