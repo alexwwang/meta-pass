@@ -2781,7 +2781,7 @@ esp_err_t meta_install_net_start(void)
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    // 17 个 handler(2026-10-12 真机:新增 nvs/info+nvs/read 后 17 > 16,
+    // 19 个 handler(新增 storage/info+storage/read 后仍需高于默认 16,
     // 末位注册失败令整个 install 服务启动失败,resume 路径报
     // "install service resume failed")。留 3 个余量,再加端点不必同步改这里。
     hcfg.max_uri_handlers = 20;
@@ -2813,6 +2813,8 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
         { "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL },
         { "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL },
+        { "/api/install/storage/info", HTTP_GET, h_install_storage_info, NULL },
+        { "/api/install/storage/read", HTTP_GET, h_install_storage_read, NULL },
         { "/api/install/slot/read",HTTP_GET,  h_install_slot_read,NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
