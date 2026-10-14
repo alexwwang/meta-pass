@@ -2,9 +2,9 @@
 
 Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.md)
 
-日期：2026-10-12  
+日期：2026-10-14  
 目标分支：`feat/storage`  
-适用范围：手机内嵌页面、USB 服务页面的 APP + DATA 备份/恢复，以及真实设备上 DATA 存取确认。
+适用范围：v2 整设备存储快照、USB v1.1 历史归档兼容，以及安装后真实设备 DATA 存取人工确认。
 
 ## 0. 不可绕过的测试纪律（先读）
 
@@ -25,9 +25,10 @@ Language: [English](HANDOFF-realdevice-backup-restore-manual-data-confirmation.m
 ## 1. 当前状态与开始条件
 
 - 代码工作仍在 `feat/storage`，不要切换到 `main` 上开发。
-- 最近一轮加入了共享 v2 归档恢复预处理模块 `install-slot/data-archive-restore.js`，由手机端和 USB 页面共同使用，并加入宿主测试 `tools/install-slot/test-data-archive-restore.mjs`。
-- 近期 CI 曾先后出现旧版 USB 恢复 contract 断言不匹配，以及静态检查发现本中文 handoff 缺少英文默认文档的问题。共享预处理 contract 已更新，并已补齐英文文档及双向语言链接；仍必须在当前最新 HEAD 重新确认静态检查结果，不能把修复前的失败或旧 commit 的 PASS 当作当前结论。
-- 最新代码改动的静态检查与固件构建状态尚未全部确认；以当前 commit 对应的最新 CI 结果为准。
+- v2 归档语义已改为整设备已分配存储快照，取代 APP+DATA 逻辑归档；归档 kind 为 `meta-pass-storage-snapshot`。
+- 手机页支持快照导出和恢复预检，但恢复写入未实现。设备侧目前只有受保护的分区清单/读取 API。
+- USB 固定槽设备保留历史 v1.1 归档路径；USB 动态 v2 快照备份因串口通道不能可信确认当前运行宿主分区而暂时阻塞。USB 和手机均不得把旧 APP+DATA v2 归档当作新快照。
+- 最近核验的提交 `3900829f91d15ffffe1341b50960e2c4df1f2d7a` 的 Static checks 与 Firmware checks 均通过；新提交后仍必须检查新 HEAD 的 CI，不能沿用旧结果。
 - 进入真机测试前，先确认当前工作区/commit、宿主测试和固件构建状态。若静态检查或构建失败，先修复代码并重新验证，不要用真机测试掩盖代码门禁失败。
 
 建议开始命令：
@@ -71,21 +72,19 @@ git rev-parse HEAD
 
 至少确认以下覆盖被实际执行并通过：
 
-- `tools/install-slot/test-data-byte-archive.mjs`
-- `tools/install-slot/test-data-archive-restore.mjs`
-- `tools/install-slot/test-data-archive-zip.mjs`
-- `tools/install-slot/test-data-restore-transaction.mjs`
-- `tools/install-slot/test-data-restore-device-integration.mjs`
+- `tests/test_storage_snapshot.mjs`
+- `tests/test_storage_snapshot_device_contract.py`
+- `tools/install-slot/test-data-restore-device-integration.mjs`（当前验证快照备份与非写入预检，不再验证 APP+DATA 写入）
 - `tests/test_phone_install.mjs`
-- `tests/test_mobile_page_storage_management_contract.py`（由 validate 流程执行对应 contract）
-- USB / 手机内嵌页面的存储管理与页面健康 contract tests。
+- `tests/test_mobile_page_storage_management_contract.py`
+- USB 页面 contract / 浏览器 smoke tests。
 
 同时确认：
-- 手机与 USB 页面使用同一个 `prepareDataArchiveRestore()` 处理 v2 APP+DATA 归档语义。
-- v2 恢复验证归档 NVS，但不写入目标设备的全局 NVS。
-- 恢复事务在提交状态不确定时不清理可能已被引用的 staging DATA。
-- DATA 负载长度、SHA-256 和分配粒度均经过验证。
-- 当前 commit 的固件构建成功。
+- 快照完整性、payload 长度和 SHA-256 均通过验证。
+- 目标布局必须与快照完全匹配，宿主固件和 `cardid` 被排除。
+- 手机恢复预检只读分区清单，不写 Flash。
+- USB 固定槽 v1.1 历史恢复仍走旧路径；动态 v2 快照暂时阻塞。
+- 当前 commit 的 Static checks 与 Firmware checks 成功；本地真机测试仍需单独执行。
 
 如任一项失败，先修复并重跑受影响测试；不要进入“最终 PASS”报告。
 
@@ -129,18 +128,18 @@ git rev-parse HEAD
 
 1. 在用户明确触发备份后，通过页面导出归档。
 2. 检查 ZIP 可解析、manifest 完整，所有条目长度与 SHA-256 一致。
-3. 确认归档仅包含所选 APP 组及其 DATA；记录是否含全局 NVS。
-4. NVS 归档可能包含 Wi-Fi 凭证及设备配置，归档未加密。不要上传或分享归档，也不要在日志中输出 NVS 原始字节。
+3. 对 v2 手机快照，确认归档包含除运行中的宿主固件、`cardid` 和未分配间隙以外的已分配分区原始字节；NVS 可能包含在内。
+4. ZIP 未加密，可能包含 Wi-Fi 凭证、安装会话状态和玩法数据。不要上传/分享归档，也不要在日志中输出原始敏感字节。USB 动态 v2 快照备份当前应显示阻塞，不能以旧 APP+DATA v2 代替。
 5. 将备份存放到受控位置，记录文件大小与 SHA-256，不把备份文件本身提交到 Git。
 
 ### T4：恢复到可安全测试的目标设备
 
 1. 先确认目标设备允许写入，且归档来自预期来源。
 2. 恢复前记录目标设备的 APP/DATA/NVS 基线。
-3. v2 恢复应只恢复 APP + DATA；归档中的全局 NVS 只做完整性校验，不写入目标设备。
-4. 记录恢复预检、APP/DATA 写入/回读、carve 提交和最终设备清单。
-5. 恢复成功后，必须再次执行 T2 的人工 DATA 读写确认；没有确认不得继续。
-6. 若提交结果不确定，停止后续恢复/删除，不要盲目重试或清理 staging。先读取设备状态并收集日志。
+3. 当前只允许执行快照归档验证和目标布局预检；由于事务化写入/回滚尚未实现，不执行任何快照恢复写入。
+4. 记录目标分区清单、布局匹配结果、payload hash 校验结果，以及未执行写入的明确状态。
+5. 当前快照恢复没有成功状态；不得声称已恢复，也不要用 APP/DATA 流程的结果替代快照恢复验收。
+6. 将来恢复事务实现后，若提交状态不确定，停止后续恢复/删除，不要盲目重试或清理 staging；先读取设备状态并收集日志。
 
 ### T5：删除与重新安装（仅在备份和人工确认完成后）
 
@@ -196,10 +195,10 @@ git rev-parse HEAD
 本任务只有同时满足以下条件才算完成：
 
 1. 当前 HEAD 的静态/宿主测试和固件构建通过。
-2. 手机内嵌页和 USB 服务页的目标备份/恢复路径均有实际测试记录。
+2. 手机快照备份/预检、USB v1.1 历史兼容均有实际测试记录；USB v2 快照和两端快照恢复在实现前必须明确标为 BLOCKED。
 3. 真实市场 28 号固件的每次安装后均有人工 DATA 存取确认；未确认的场景明确保持 BLOCKED。
-4. 恢复后的 APP/DATA 能实际读取并写入，且在要求的重读/重启检查后数据正确。
-5. 备份归档结构、内容长度和 SHA-256 验证通过；恢复的 DATA 与目标设备状态有证据支持。
+4. 快照恢复事务实现后，恢复分区须通过写后读回校验；任何恢复后的玩法 DATA 读写仍须按 T2 执行人工确认。
+5. 备份归档结构、内容长度和 SHA-256 验证通过；不得把预检报告冒充实际恢复证据。
 6. 所有失败都有日志、归因和处置结论。
 7. 没有把自动化成功、页面成功提示或模拟设备结果冒充人工确认或真实市场固件 PASS。
 
