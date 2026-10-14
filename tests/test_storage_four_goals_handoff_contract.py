@@ -24,6 +24,9 @@ for token in (
     "tools/realdevice/mobile_page_e2e.mjs",
     "tools/realdevice/usb_web_e2e.mjs",
     "重启前后 SHA-256 对照",
+    "手机页可备份并做恢复预检",
+    "USB 动态快照备份尚未接入",
+    "两端均未实现快照写入/事务回滚",
     "PASS / FAIL / BLOCKED / NOT RUN",
 ):
     assert token in HANDOFF, f"handoff missing required coverage: {token}"
@@ -65,6 +68,7 @@ assert "loader.flashMd5sum(offset, length)" in USB
 assert "md5-verify-done" in USB
 assert "async function restoreV2ArchiveUsb()" not in USB
 assert "USB v2 快照备份暂不可用" in USB
+assert "USB 动态模式拒绝生成旧 APP+DATA v2 归档" in HANDOFF
 assert "async function restoreV2ArchiveUsb()" not in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
