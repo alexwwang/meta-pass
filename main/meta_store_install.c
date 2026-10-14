@@ -2222,7 +2222,7 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
     }
     s_storage_info_json[used++] = ']';
     s_storage_info_json[used++] = '}';
-    s_storage_info_json[used] = '\\0';
+    s_storage_info_json[used] = '\0';
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, s_storage_info_json, (ssize_t)used);
@@ -2242,7 +2242,7 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
     char off_str[16], len_str[16];
     uint32_t type = 0, subtype = 0, part_offset = 0, part_size = 0, offset = 0, length = 0;
     if (httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_LABEL_HDR, label, sizeof(label)) != ESP_OK ||
-        label[0] == '\\0' ||
+        label[0] == '\0' ||
         httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_TYPE_HDR, type_str, sizeof(type_str)) != ESP_OK ||
         !parse_u32(type_str, &type) || type > UINT8_MAX ||
         httpd_req_get_hdr_value_str(req, STORAGE_PARTITION_SUBTYPE_HDR, subtype_str, sizeof(subtype_str)) != ESP_OK ||
