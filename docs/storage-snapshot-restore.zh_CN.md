@@ -1,4 +1,4 @@
-# 存储快照恢复：设计与测试交接
+<p align="right">\n  <a href="storage-snapshot-restore.md">English</a> · <strong>简体中文</strong>\n</p>\n\n# 存储快照恢复：设计与测试交接
 
 状态：`feat/storage` 分支实施中。本文描述 v2 快照恢复的目标行为；本文档不代表已经完成真机测试。
 
