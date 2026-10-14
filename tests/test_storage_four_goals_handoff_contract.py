@@ -24,9 +24,7 @@ for token in (
     "tools/realdevice/mobile_page_e2e.mjs",
     "tools/realdevice/usb_web_e2e.mjs",
     "重启前后 SHA-256 对照",
-    "手机页可备份并做恢复预检",
-    "USB 动态快照备份尚未接入",
-    "两端均未实现快照写入/事务回滚",
+    "两页都接入快照备份与顺序恢复代码",
     "PASS / FAIL / BLOCKED / NOT RUN",
 ):
     assert token in HANDOFF, f"handoff missing required coverage: {token}"
@@ -67,13 +65,13 @@ assert "verifyFlashRangeByMd5" in USB
 assert "loader.flashMd5sum(offset, length)" in USB
 assert "md5-verify-done" in USB
 assert "async function restoreV2ArchiveUsb()" not in USB
-assert "USB v2 快照备份暂不可用" in USB
-assert "USB 动态模式拒绝生成旧 APP+DATA v2 归档" in HANDOFF
+assert "async function createUsbStorageSnapshot" in USB
+assert "USB 通过 ESP app descriptor 识别唯一 MetaPass 宿主分区" in HANDOFF
 assert "async function restoreV2ArchiveUsb()" not in USB
 assert "tools/install-slot/test-flash-readback-verify.mjs" in VALIDATE
 assert "tools/install-slot/test-flash-read-transfer.mjs" not in VALIDATE
 assert '"/flash-read-transfer.js"' not in SERVER
-assert "事务化写入/回滚协议完成前不会执行恢复写入" in PHONE
+assert "恢复采用逐分区擦除、写入与独立读回核验" in PHONE
 
 # USB-only local firmware installation remains a required asymmetric capability.
 assert 'data-tab="local"' in USB and 'id="file-input"' in USB, "USB must retain its local-file firmware installation path"
