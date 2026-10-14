@@ -2333,6 +2333,114 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
     return httpd_resp_send(req, (const char *)read_buf, (int)length);
 }
 
+// Resolve a snapshot target only through an exact identity in the current live partition table.
+// The caller never supplies an absolute Flash address as a write target.
+static esp_err_t install_snapshot_target(httpd_req_t *req, const esp_partition_t **out_part,
+                                         uint32_t *out_offset, uint32_t *out_length,
+                                         bool need_range)
+{
+    char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
+    uint32_t type = 0, subtype = 0, part_offset = 0, part_size = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Label", label, sizeof(label)) != ESP_OK ||
+        label[0] == '\0' ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Type", type_str, sizeof(type_str)) != ESP_OK ||
+        !parse_u32(type_str, &type) || type > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Subtype", subtype_str, sizeof(subtype_str)) != ESP_OK ||
+        !parse_u32(subtype_str, &subtype) || subtype > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Offset", part_off_str, sizeof(part_off_str)) != ESP_OK ||
+        !parse_u32(part_off_str, &part_offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Size", part_size_str, sizeof(part_size_str)) != ESP_OK ||
+        !parse_u32(part_size_str, &part_size) || part_size == 0) {
+        return reply(req, "400 Bad Request", "missing/bad snapshot partition identity");
+    }
+    if (need_range &&
+        (httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, part_off_str, sizeof(part_off_str)) != ESP_OK ||
+         !parse_u32(part_off_str, &offset) ||
+         httpd_req_get_hdr_value_str(req, "X-Meta-Length", part_size_str, sizeof(part_size_str)) != ESP_OK ||
+         !parse_u32(part_size_str, &length) || length == 0 || length > INSTALL_IO_BUF ||
+         (offset & 3U) != 0 || (length & 3U) != 0)) {
+        return reply(req, "400 Bad Request", "snapshot write range must be non-empty, bounded, and 4-byte aligned");
+    }
+
+    const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
+    if (!part || part->address != part_offset || part->size != part_size) {
+        return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+    }
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+    if (strcmp(part->label, "cardid") == 0 || install_partition_same(part, running) ||
+        part->readonly || part->erase_size == 0) {
+        return reply(req, "403 Forbidden", "snapshot target is protected or read-only");
+    }
+    if (need_range && (offset > part->size || length > part->size - offset)) {
+        return reply(req, "416 Range Not Satisfiable", "snapshot write range out of bounds");
+    }
+    *out_part = part;
+    if (out_offset) *out_offset = offset;
+    if (out_length) *out_length = length;
+    return ESP_OK;
+}
+
+// POST /api/install/storage/erase: erase one exact eligible partition, including NVS.
+// This is intentionally a simple sequential restore primitive, not an atomic transaction:
+// if a later write fails, the host must report an incomplete restore and must not claim rollback.
+static esp_err_t h_install_storage_erase(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage restore unavailable during installation");
+
+    const esp_partition_t *part = NULL;
+    esp_err_t e = install_snapshot_target(req, &part, NULL, NULL, false);
+    if (e != ESP_OK) return e;
+    if ((part->address % part->erase_size) != 0 || (part->size % part->erase_size) != 0) {
+        return reply(req, "409 Conflict", "partition geometry is not erase-sector aligned");
+    }
+    e = esp_partition_erase_range(part, 0, part->size);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "snapshot erase failed label=%s: %s", part->label, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "snapshot partition erase failed");
+    }
+    return reply(req, "200 OK", "erased");
+}
+
+// POST /api/install/storage/write: bounded raw bytes within an exact eligible partition.
+// This API accepts no absolute target address and rejects cardid/the running host partition.
+static esp_err_t h_install_storage_write(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage restore unavailable during installation");
+
+    const esp_partition_t *part = NULL;
+    uint32_t offset = 0, length = 0;
+    esp_err_t e = install_snapshot_target(req, &part, &offset, &length, true);
+    if (e != ESP_OK) return e;
+    if (req->content_len != (int)length) {
+        return reply(req, "400 Bad Request", "snapshot body length does not match X-Meta-Length");
+    }
+    static uint8_t write_buf[INSTALL_IO_BUF];
+    size_t received = 0;
+    while (received < length) {
+        int n = httpd_req_recv(req, (char *)write_buf + received, (size_t)length - received);
+        if (n <= 0) return reply(req, "408 Request Timeout", "snapshot write body incomplete");
+        received += (size_t)n;
+    }
+    e = esp_partition_write(part, offset, write_buf, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "snapshot write failed label=%s off=%" PRIu32 ": %s",
+                 part->label, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "snapshot partition write failed");
+    }
+    return reply(req, "200 OK", "written");
+}
+
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
@@ -2824,6 +2932,8 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
         { "/api/install/storage/info", HTTP_GET, h_install_storage_info, NULL },
         { "/api/install/storage/read", HTTP_GET, h_install_storage_read, NULL },
+        { "/api/install/storage/erase", HTTP_POST, h_install_storage_erase, NULL },
+        { "/api/install/storage/write", HTTP_POST, h_install_storage_write, NULL },
         { "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL },
         { "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL },
         { "/api/install/slot/read",HTTP_GET,  h_install_slot_read,NULL },
