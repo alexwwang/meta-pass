@@ -16,6 +16,7 @@ Branch: `feat/storage`.
 - The USB page retains the historical v1.1 fixed-slot archive path. The NVS restore write path has an explicit contract test; do not replace this legacy path with v2 snapshot parsing.
 - A real-device report from an earlier tested revision records a successful segmented APP+DATA logical-archive backup/delete/restore cycle and intermittent Chrome Web Serial/esptool-js failures. That report is historical evidence only: the current branch has retired the old APP+DATA logical-v2 restore handler, so it does **not** prove current-HEAD restore behavior. Re-run the applicable USB v1.1 compatibility regression on the current firmware/page before hardware acceptance.
 - The tests explicitly preserve the version boundary: USB historical v1 restore remains identifiable, the retired APP+DATA logical-v2 restore handler is absent, and the phone page accepts only the v2 whole-device snapshot discriminator.
+- Added a [USB historical v1.1 archive compatibility hardware-test handoff](HANDOFF-usb-v1-archive-compatibility.md), separating the negative gate test on dynamic devices from positive restore validation on fixed-slot hardware.
 
 ## Not complete / blocked
 
