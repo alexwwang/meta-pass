@@ -190,7 +190,7 @@
 
   <section>
     <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic v2 snapshot backup is temporarily unavailable over USB until the page can identify the running host partition safely.</p>
+    <p class="subtitle" data-i18n="backup_desc">Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic devices use v2 raw storage snapshots.</p>
     <p>
       <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
       <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
@@ -208,8 +208,8 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">USB restore currently accepts historical v1 APP/NVS archives only on fixed-slot devices. V2 whole-device snapshots remain blocked until safe running-host identification and transactional rollback are available; old APP+DATA v2 archives are rejected.</p>
-    <p class="hint" data-i18n="restore_flow_hint">Select a historical v1 archive to restore on a fixed-slot device. V2 snapshot restore remains blocked until safe host-partition identification and transactional rollback are available.</p>
+    <p class="subtitle" data-i18n="restore_desc">USB accepts historical v1 APP/NVS archives on fixed-slot devices and v2 whole-device snapshots. Failed write/readback verification requires reflashing the MetaPass version recorded in the snapshot.</p>
+    <p class="hint" data-i18n="restore_flow_hint">Select a historical v1 archive or a v2 whole-device snapshot. Interrupted restores are not rolled back; reflash the snapshot source MetaPass version before retrying.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
     <button id="btn-restore" class="primary" disabled data-i18n="btn_restore">Restore</button>
@@ -303,6 +303,8 @@ import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
 import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
+import { buildStorageSnapshotManifest, eligibleSnapshotPartitions, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
+import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -2299,12 +2301,133 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
   return buf;
 }
 
+
+async function readUsbStorageInventory() {
+  assertLoader("读取分区表以识别 MetaPass 宿主");
+  const table = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
+  const partitions = parsePartitionTable(table);
+  const candidates = partitions.filter(p => p.type === 0 && (p.subtype === 0 || (p.subtype >= 0x10 && p.subtype <= 0x1f)));
+  const hosts = [];
+  for (const part of candidates) {
+    if (part.size < 0x100) continue;
+    const head = await loader.readFlash(part.offset, 0x100);
+    if (!(head instanceof Uint8Array) || head.length !== 0x100 || head[0] !== 0xe9) continue;
+    const desc = head.subarray(0x20);
+    const decoder = new TextDecoder();
+    const project = decoder.decode(desc.subarray(48, 80)).split("\0", 1)[0];
+    if (project !== "FoloToy-AI-Passport") continue;
+    const version = decoder.decode(desc.subarray(16, 48)).split("\0", 1)[0].trim();
+    if (!/^\d+\.\d+\.\d+$/.test(version)) {
+      throw new Error("MetaPass host image has no valid semantic version; snapshot operation refused");
+    }
+    hosts.push({ ...part, version });
+  }
+  if (hosts.length !== 1) {
+    throw new Error("USB could not uniquely identify the MetaPass host partition from its ESP app descriptor; found " + hosts.length + ". No snapshot operation was started.");
+  }
+  return {
+    meta_pass_version: hosts[0].version,
+    running_host: { label: hosts[0].label, type: hosts[0].type, subtype: hosts[0].subtype, offset: hosts[0].offset, size: hosts[0].size },
+    partitions,
+  };
+}
+
+function usbSnapshotDevice(inventory) {
+  const resolve = identity => {
+    const p = inventory.partitions.find(x => x.label === identity.label && x.type === identity.type &&
+      x.subtype === identity.subtype && x.offset === identity.offset && x.size === identity.size);
+    if (!p) throw new Error("Live partition identity changed: " + identity.label);
+    return p;
+  };
+  return {
+    async storageInfo() { return { ok: true, ...inventory }; },
+    async storageRead(partition, offset, length) {
+      const p = resolve(partition);
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > p.size) return { ok: false, text: "partition-relative read out of bounds" };
+      const bytes = await loader.readFlash(p.offset + offset, length);
+      return { ok: true, bytes };
+    },
+    async storageErase(partition) {
+      const p = resolve(partition);
+      await wipeRange(p.offset, p.size);
+      return { ok: true };
+    },
+    async storageWrite(partition, offset, bytes) {
+      const p = resolve(partition);
+      if (offset < 0 || offset + bytes.length > p.size) return { ok: false, text: "partition-relative write out of bounds" };
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(bytes), address: p.offset + offset }],
+        flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      });
+      return { ok: true };
+    },
+  };
+}
+
+async function createUsbStorageSnapshot(onProgress = () => {}) {
+  const inventory = await readUsbStorageInventory();
+  const eligible = eligibleSnapshotPartitions(inventory.partitions, inventory.running_host, []);
+  const payloads = new Map();
+  const snapshotPartitions = [];
+  let done = 0;
+  const total = eligible.reduce((sum, p) => sum + p.size, 0);
+  for (const part of eligible) {
+    const extents = [];
+    for (let offset = 0; offset < part.size; offset += 4096) {
+      const length = Math.min(4096, part.size - offset);
+      const bytes = await readFlashChunked(part.offset + offset, length);
+      if (!isAllFF(bytes)) {
+        const file = "extents/" + part.label + "-" + offset.toString(16).padStart(8, "0") + ".bin";
+        extents.push({ file, offset, bytes: length, sha256: await sha256Hex(bytes) });
+        payloads.set(file, bytes);
+      }
+      done += length;
+      onProgress(done / total);
+    }
+    snapshotPartitions.push({ label: part.label, type: part.type, subtype: part.subtype, offset: part.offset, size: part.size, extents });
+  }
+  const version = inventory.meta_pass_version;
+  const manifest = buildStorageSnapshotManifest({
+    partitions: snapshotPartitions,
+    metaPassVersion: version,
+    compatibleMetaPassVersions: { min_inclusive: version, max_inclusive: version },
+  });
+  const zip = await buildStorageSnapshotZip({ manifest, payloads }, sha256Hex);
+  return { zip, manifest, inventory };
+}
+
+function downloadStorageSnapshot(zip, version) {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const name = "metapass-storage-snapshot-v2_" + version + "_" + ts + ".zip";
+  const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+  return name;
+}
+
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
   if (isDynMode(slotModel.mode)) {
-    const message = "USB v2 快照备份暂不可用：无法从当前串口会话可靠取得设备报告的运行中宿主分区。为避免错误归档，未生成旧 APP+DATA v2 备份。";
-    $("backup-status").textContent = message;
-    log(message, "warn");
+    busy = true;
+    refreshInstallButton();
+    try {
+      $("backup-status").textContent = "正在读取设备存储快照…";
+      const snapshot = await createUsbStorageSnapshot(pct => setBackupProgress(pct * 100));
+      const name = downloadStorageSnapshot(snapshot.zip, snapshot.manifest.meta_pass.system_version);
+      $("backup-status").textContent = "快照备份完成：" + name;
+      $("backup-status").className = "ok";
+      log("v2 storage snapshot created for MetaPass " + snapshot.manifest.meta_pass.system_version, "ok");
+      setBackupProgress(100);
+    } catch (err) {
+      $("backup-status").textContent = "快照备份失败：" + err.message;
+      $("backup-status").className = "error";
+      log("USB snapshot backup failed: " + err.message, "error");
+      setBackupProgress(0);
+    } finally {
+      busy = false;
+      refreshInstallButton();
+    }
     return;
   }
   const slots = deviceSlots.map((_, i) => i).filter((i) => $(`bk-slot${i}`)?.checked);
@@ -2500,7 +2623,8 @@ $("restore-input").addEventListener("change", async (ev) => {
   const file = ev.target.files[0];
   if (!file) return;
   try {
-    const entries = readDataArchiveZip(new Uint8Array(await file.arrayBuffer()));
+    const archiveBytes = new Uint8Array(await file.arrayBuffer());
+    const entries = readDataArchiveZip(archiveBytes);
     const manifestBytes = entries.get(MANIFEST_NAME);
     if (!manifestBytes) throw new Error(t("msg_restore_manifest_missing", { name: MANIFEST_NAME }));
     const manifestText = new TextDecoder().decode(manifestBytes);
@@ -2511,7 +2635,19 @@ $("restore-input").addEventListener("change", async (ev) => {
       throw new Error(t("msg_restore_partial_archive", { slots: missing }));
     }
     if (rawManifest?.kind === "meta-pass-storage-snapshot") {
-      throw new Error("USB 快照还原暂不可用：当前串口会话无法可靠确认设备运行中的宿主分区，且事务化回滚协议尚未完成；未写入 Flash。");
+      const archive = await readStorageSnapshotZip(archiveBytes, sha256Hex);
+      const inventory = await readUsbStorageInventory();
+      assertSnapshotVersionCompatible(archive.manifest, inventory.meta_pass_version);
+      const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
+        targetPartitions: inventory.partitions, runningHostPartition: inventory.running_host, protectedRanges: [],
+      });
+      restoreZip = { kind: "snapshot", bytes: archiveBytes, manifest: archive.manifest, restorePlan };
+      $("restore-info").textContent = "v2 快照预检通过：" + restorePlan.partitionCount +
+        " 个分区；来源 MetaPass " + archive.manifest.meta_pass.system_version;
+      $("restore-info").className = "ok";
+      $("btn-restore").disabled = busy || !loader;
+      log("v2 storage snapshot validated against live USB partition table", "ok");
+      return;
     }
     if (rawManifest?.manifest_version === 2) {
       throw new Error("不再接受旧 APP+DATA v2 逻辑归档；v2 归档必须使用 meta-pass-storage-snapshot 格式。");
@@ -2680,10 +2816,34 @@ $("btn-restore").addEventListener("click", async () => {
   $("restore-status").textContent = "";
   setRestoreProgress(0);
   try {
-    if (restoreZip.manifest.manifest_version === 1) {
+    if (restoreZip.kind === "snapshot") {
+      const sourceVersion = restoreZip.manifest.meta_pass.system_version;
+      const accepted = confirm(
+        "即将按快照覆盖 " + restoreZip.restorePlan.partitionCount + " 个已分配分区。\\n\\n" +
+        "归档对应的 MetaPass 版本：" + sourceVersion + "。\\n" +
+        "写入中断或读回核验失败时不会自动回滚；请刷回该版本后重试。\\n\\n继续恢复？"
+      );
+      if (!accepted) throw new Error("已取消快照恢复；未写入 Flash。");
+      const inventory = await readUsbStorageInventory();
+      const device = usbSnapshotDevice(inventory);
+      const result = await restoreStorageSnapshotArchive(device, restoreZip.bytes, {
+        sha256Hex,
+        onProgress: event => {
+          if (Number.isFinite(event.completedBytes) && event.totalBytes > 0) setRestoreProgress(event.completedBytes / event.totalBytes * 100);
+          const offset = Number.isInteger(event.relativeOffset) ? " · 相对偏移 0x" + event.relativeOffset.toString(16) : "";
+          $("restore-status").textContent = "快照恢复：" + event.phase + (event.partition ? " · " + event.partition : "") + offset;
+        },
+      });
+      $("restore-status").textContent = result.dataVerified
+        ? "数据写入与独立读回核验通过。请退出下载模式并重启设备，确认 MetaPass 可重新连接。"
+        : "快照恢复尚未完成。";
+      $("restore-status").className = "ok";
+      setRestoreProgress(100);
+      log("Snapshot data readback verified. Boot/reconnect remains a separate manual check.", "ok");
+    } else if (restoreZip.manifest.manifest_version === 1) {
       await restoreLegacyV1ArchiveUsb();
     } else {
-      throw new Error("Only historical v1 fixed-slot archives can be restored by the USB page at this time.");
+      throw new Error("Unsupported restore archive kind");
     }
   } catch (err) {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
