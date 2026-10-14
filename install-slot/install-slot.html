@@ -208,7 +208,7 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">USB accepts historical v1 APP/NVS archives on fixed-slot devices and v2 whole-device snapshots. Failed write/readback verification requires reflashing the MetaPass version recorded in the snapshot.</p>
+    <p class="subtitle" data-i18n="restore_desc">USB accepts historical v1 APP/NVS archives on fixed-slot devices and v2 whole-device snapshots. An interrupted write or failed boot requires reflashing the MetaPass version recorded in the snapshot.</p>
     <p class="hint" data-i18n="restore_flow_hint">Select a historical v1 archive or a v2 whole-device snapshot. Interrupted restores are not rolled back; reflash the snapshot source MetaPass version before retrying.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
