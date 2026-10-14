@@ -57,6 +57,8 @@ Never release extents before removing references and safely erasing old content;
 
 ## 5. Backup and restore
 
+> **Update 2026-10-14:** The earlier design for v2 logical APP+DATA archives is superseded by the [whole-device storage snapshot design](storage-snapshot-backup-restore-design.md). Current v2 archives represent snapshots of allocated device storage; historical USB v1.1 fixed-slot archives remain a separate compatibility path.
+
 A complete backup contains actual DATA bytes, not just offset/size/state/label metadata. It should include format version and checksums, logical APP identity, source `install_id`, firmware/data-format version, each DATA label/type/size/format, actual bytes, and per-object SHA-256.
 
 The archive must not depend on source slot numbers or Flash offsets. Restore validates the archive, allocates fresh extents, writes and verifies every object, and only then commits DATA records. Failed restore releases uncommitted extents. The target APP and format compatibility must be explicit.
