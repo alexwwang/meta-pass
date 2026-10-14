@@ -2900,10 +2900,9 @@ esp_err_t meta_install_net_start(void)
     }
 
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    // 19 个 handler(新增 storage/info+storage/read 后仍需高于默认 16,
-    // 末位注册失败令整个 install 服务启动失败,resume 路径报
-    // "install service resume failed")。留 3 个余量,再加端点不必同步改这里。
-    hcfg.max_uri_handlers = 20;
+    // Storage snapshot adds bounded partition erase/write endpoints alongside info/read.
+    // Keep explicit headroom so the service does not fail to start at URI registration.
+    hcfg.max_uri_handlers = 24;
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
