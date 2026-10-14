@@ -2840,7 +2840,7 @@ $("btn-restore").addEventListener("click", async () => {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
     $("restore-status").className = "error";
     log(t("msg_restore_failed", { err: err.message }), "error");
-    setRestoreProgress(0);   // N16: 失败时重置进度条
+    if (restoreZip?.kind !== "snapshot") setRestoreProgress(0); // Snapshot failures may follow Flash mutations; keep partial progress visible.
   } finally {
     busy = false;
     deviceNvs = null;   // 设备分区表缓存随连接会话失效
