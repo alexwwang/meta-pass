@@ -56,7 +56,7 @@ assert "总空闲空间" in PHONE and "最大连续空闲空间" in PHONE
 assert "total free" in USB and "max contiguous" in USB
 assert "await restoreV2ArchiveUsb()" not in USB
 assert "不再接受旧 APP+DATA v2 逻辑归档" in USB
-assert "未生成旧 APP+DATA v2 备份" in USB
+assert "async function createUsbStorageSnapshot" in USB
 assert "const BACKUP_CHUNK = 0x8000;" in USB
 assert "const nvsData = await readFlashChunked(" in USB
 assert 'from "./flash-readback-verify.js"' in USB
