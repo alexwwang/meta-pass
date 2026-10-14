@@ -2422,7 +2422,7 @@ static esp_err_t h_install_storage_write(httpd_req_t *req)
     uint32_t offset = 0, length = 0;
     esp_err_t e = install_snapshot_target(req, &part, &offset, &length, true);
     if (e != ESP_OK) return e;
-    if (req->content_len != (int)length) {
+    if (req->content_len != (size_t)length) {
         return reply(req, "400 Bad Request", "snapshot body length does not match X-Meta-Length");
     }
     static uint8_t write_buf[INSTALL_IO_BUF];
