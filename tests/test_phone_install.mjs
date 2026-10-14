@@ -115,9 +115,12 @@ const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"
 const workerSource = readFileSync(path.join(ROOT, "install-slot", "_worker.js"), "utf8");
 assert.match(workerSource, /path === "\/storage-snapshot\.js"/, "snapshot module must be served with no-store dependency policy");
 const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
-const v2RestoreStart = usbPage.indexOf("async function restoreV2ArchiveUsb()", legacyRestoreStart);
-assert.ok(legacyRestoreStart >= 0 && v2RestoreStart > legacyRestoreStart, "USB restore handlers must remain identifiable");
-const legacyRestoreSource = usbPage.slice(legacyRestoreStart, v2RestoreStart);
+const restoreClickStart = usbPage.indexOf('$("btn-restore").addEventListener("click"', legacyRestoreStart);
+assert.ok(legacyRestoreStart >= 0 && restoreClickStart > legacyRestoreStart,
+  "USB historical v1 restore handler must remain identifiable");
+assert.equal(usbPage.includes("async function restoreV2ArchiveUsb()"), false,
+  "retired APP+DATA v2 restore handler must not remain available");
+const legacyRestoreSource = usbPage.slice(legacyRestoreStart, restoreClickStart);
 assert.doesNotMatch(legacyRestoreSource, /msg_restore_nvs_write|ensureDeviceNvs\(\)|address:\s*nv\.offset/,
   "legacy archive restore must never write archived NVS to the destination device");
 assert.match(legacyRestoreSource, /t\("msg_restore_nvs_preserved"\)/,
