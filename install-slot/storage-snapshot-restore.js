@@ -1,12 +1,13 @@
 // install-slot/storage-snapshot-restore.js
 // Sequential v2 snapshot restore: preflight, erase/write, then boot/reconnect check.
 // Archive hashes are verified before mutation; no full-flash readback or rollback.
-const CHUNK_BYTES = 4096;
 import {
   assertSnapshotVersionCompatible,
   buildStorageSnapshotRestorePlan,
   readStorageSnapshotZip,
 } from "./storage-snapshot.js";
+
+const CHUNK_BYTES = 4096;
 
 function restoreError(message, code, details = {}) {
   const error = new Error(message);
@@ -102,6 +103,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
         report("write", p, partitionRelativeOffset + chunk.length);
       }
     }
+  }
 
   report("data-written", null, null);
   // Reboot is deliberately a separate validation step, not part of data integrity.
