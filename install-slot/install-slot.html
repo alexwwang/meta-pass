@@ -2308,13 +2308,6 @@ $("btn-backup").addEventListener("click", async () => {
     $("backup-status").textContent = t("msg_backup_pick_slot");
     return;
   }
-  // Dynamic v2 archives are transactional single APP+DATA groups. Fixed-slot
-  // devices retain the established v1 multi-slot backup format.
-  if (isDynMode(slotModel.mode) && slots.length !== 1) {
-    $("backup-status").textContent = t("msg_backup_single_group");
-    log(t("msg_backup_single_group"), "warn");
-    return;
-  }
   busy = true;
   refreshInstallButton();
   $("backup-status").textContent = "";
@@ -2409,55 +2402,14 @@ $("btn-backup").addEventListener("click", async () => {
     } catch (err) {
       log(t("msg_backup_nvs_failed", { err: err.message }), "warn");
     }
-    // v2 archives carry stable APP ownership and DATA bytes. Fixed-slot
-    // devices retain the original v1 APP/NVS archive contract.
-    let manifestObj;
-    const v2Slots = manifestEntries.map((entry) => ({
-      play_id: entry.play_id, source_slot: entry.slot, name: entry.name, files: entry.files,
-    }));
-    const canArchiveData = isDynMode(slotModel.mode) && v2Slots.length > 0 &&
-      v2Slots.every((entry) => Number.isSafeInteger(entry.play_id) && entry.play_id > 0);
-    if (canArchiveData) {
-      if (slots.length !== 1) throw new Error(t("msg_backup_single_group"));
-      const selectedPlayIds = new Set(v2Slots.map((entry) => entry.play_id));
-      const dataRecords = (slotModel.carve?.data || []).filter((record) => selectedPlayIds.has(record.playId));
-      const dataPayloads = [];
-      for (const record of dataRecords) {
-        log(`DATA backup: ${record.label} (${record.playId}) · ${fmtBytes(record.size)}`);
-        const payload = await readFlashChunked(record.offset, record.size,
-          (got) => setBackupProgress(Math.min(99, 80 + (got / record.size) * 19)),
-          (addr, err, attempt) => log(`[DATA] read ${hex(addr)} error(${attempt}) — ${err.message}`, "warn"));
-        dataPayloads.push(payload);
-      }
-      const stableA = await loader.readFlash(STORE_OFFSET, STORE_SECTOR_SIZE);
-      const stableB = await loader.readFlash(STORE_OFFSET + STORE_SECTOR_SIZE, STORE_SECTOR_SIZE);
-      const stable = pickRecord(stableA, stableB);
-      if (!stable?.rec || stable.rec.seq !== slotModel.seq ||
-          JSON.stringify(stable.rec.slots) !== JSON.stringify(slotModel.carve?.slots || []) ||
-          JSON.stringify(stable.rec.data) !== JSON.stringify(slotModel.carve?.data || [])) {
-        throw new Error("DATA ownership metadata changed during backup; archive was not created");
-      }
-      const dataInputs = await Promise.all(dataRecords.map(async (record, index) => ({
-        play_id: record.playId, label: record.label, type: record.type, subtype: record.subtype,
-        state: record.state, bytes: dataPayloads[index].length, sha256: await sha256Hex(dataPayloads[index]),
-      })));
-      const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
-      manifestObj = buildDataArchiveManifest({ slots: v2Slots, data: dataInputs,
-        complete: missingSlots.length === 0, missingSlots });
-      if (nvsEntry) manifestObj.nvs = nvsEntry;
-      for (let i = 0; i < manifestObj.data.length; i++) {
-        entries.push({ name: manifestObj.data[i].file, data: dataPayloads[i] });
-      }
-      const payloadMap = new Map(entries.map((entry) => [entry.name, entry.data]));
-      await validateDataArchivePayloads(manifestObj, payloadMap, sha256Hex);
-      log(`DATA backup verified: ${manifestObj.data.length} reservation(s), real bytes + SHA-256`, "ok");
-    } else {
-      manifestObj = {
-        manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
-        slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
-        ...(nvsEntry ? { nvs: nvsEntry } : {}),
-      };
-    }
+    // Fixed-slot devices keep the historical v1 APP/NVS archive format.
+    // Dynamic v2 snapshot backup is gated above until running-host identity can
+    // be obtained reliably over this USB transport.
+    const manifestObj = {
+      manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
+      slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
+      ...(nvsEntry ? { nvs: nvsEntry } : {}),
+    };
     entries.push({
       name: MANIFEST_NAME,
       data: new TextEncoder().encode(JSON.stringify(manifestObj, null, 2)),
