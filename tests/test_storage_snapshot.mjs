@@ -177,8 +177,9 @@ assert.throws(() => eligibleSnapshotPartitions([
   assert.equal(captured.manifest.meta_pass.system_version, "v0.2.2-35-gaa25c52");
   assert.equal(captured.bytesRead, captured.totalBytes);
   assert.deepEqual(captured.manifest.partitions.map(p => p.label), ["nvs", "store"]);
-  assert.equal(captured.manifest.partitions[1].extents[0].offset, 0x20);
-  assert.deepEqual([...captured.payloads.get(captured.manifest.partitions[1].extents[0].file)], [0x5a]);
+  assert.equal(captured.manifest.partitions[1].extents[0].offset, 0);
+  assert.equal(captured.payloads.get(captured.manifest.partitions[1].extents[0].file).length, 4096);
+  assert.equal(captured.payloads.get(captured.manifest.partitions[1].extents[0].file)[0x20], 0x5a);
 }
 
 console.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");
