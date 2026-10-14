@@ -2232,7 +2232,14 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    esp_err_t e = httpd_resp_sendstr_chunk(req, "{\"running_host\":");
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    const char *version = (app_desc && app_desc->version[0] != '\0')
+                          ? app_desc->version : "unknown";
+    char version_escaped[96];
+    json_escape(version, version_escaped, sizeof(version_escaped));
+    char prefix[160];
+    snprintf(prefix, sizeof(prefix), "{\"meta_pass_version\":\"%s\",\"running_host\":", version_escaped);
+    esp_err_t e = httpd_resp_sendstr_chunk(req, prefix);
     if (e != ESP_OK) return e;
     char label[40], item[256];
     json_escape(running->label, label, sizeof(label));
