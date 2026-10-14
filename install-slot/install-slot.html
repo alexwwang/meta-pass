@@ -2719,7 +2719,7 @@ $("restore-input").addEventListener("change", async (ev) => {
       throw new Error("Unsupported archive version: " + String(rawManifest?.manifest_version));
     }
   } catch (err) {
-    $("restore-info").textContent = t("msg_restore_bad_zip", { err: err.message });
+    $("restore-info").textContent = t("msg_restore_bad_zip", { err: err.message }) + "（预检失败，未写入 Flash）";
     $("restore-info").className = "error";
     log(t("msg_restore_bad_zip", { err: err.message }), "error");
   }
@@ -2842,7 +2842,7 @@ $("btn-restore").addEventListener("click", async () => {
       $("restore-status").textContent = result.dataVerified
         ? "数据写入与独立读回核验通过。请退出下载模式并重启设备，确认 MetaPass 可重新连接。"
         : "快照恢复尚未完成。";
-      $("restore-status").className = "ok";
+      $("restore-status").className = result.bootValidated ? "ok" : "warn";
       setRestoreProgress(100);
       log("Snapshot data readback verified. Boot/reconnect remains a separate manual check.", "ok");
     } else if (restoreZip.manifest.manifest_version === 1) {
