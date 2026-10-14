@@ -33,6 +33,28 @@ require(
     "session restart must resync and reject changed APP/DATA ownership metadata",
 )
 require(
+    r"const BACKUP_RETRIES = 3;.*?const BACKUP_READ_TIMEOUT_MS = 15000;",
+    "failed reads must use bounded retries and a finite per-chunk timeout",
+)
+require(
+    r"async function readFlashChunkedSingleSession\\(start, size, onProgress, onRetry\\).*?"
+    r"await restartBackupReadSession\\(\\).*?"
+    r"withTimeout\\(.*?loader\\.readFlash\\(start \\+ got, n\\).*?BACKUP_READ_TIMEOUT_MS",
+    "a failed/timed-out chunk must restart the session and retry the same offset",
+)
+require(
+    r"function withTimeout\\(promise, ms, label\\).*?clearTimeout\\(timer\\)",
+    "successful reads must clear their timeout timer",
+)
+require(
+    r"async function restartBackupReadSession\\(\\).*?"
+    r"APP/DATA ownership metadata changed while restarting the backup session",
+    "session restart must reject changed APP/DATA ownership metadata",
+)
+if "resyncAfterReadError" in PAGE:
+    raise SystemExit("FAIL: obsolete layered recovery remains in the backup page")
+
+require(
     r"const payload = await readFlashChunked\(record\.offset, record\.size",
     "DATA backup must use the production segmented reader",
 )
