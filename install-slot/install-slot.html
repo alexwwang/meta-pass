@@ -2167,84 +2167,10 @@ const BACKUP_READ_TIMEOUT_MS = 15000; // 真机 32 KiB 块通常数秒；给慢�
 //      乱码(Invalid head of packet),同一地址 5 连败整槽报废(实测 13:52 日志)。
 //   e) L2 也失败 → L3:整机 USB-JTAG 复位回 ROM bootloader + 重新上传 stub + 同步,
 //      全自动无需用户干预。stub 已死/会话彻底报废时的最后兜底。
-async function resyncAfterReadError(chunkSize, attempt = 2) {
-  const dbg = (m) => { if (debugMode()) log("[debug] " + m, "warn"); };
-  // ---- L1 软恢复:补 ACK → 排空 → sync(通常足以处理瞬时错位) ----
-  // ACK 值用 0xFFFFFFFF(发送方计数器可表示的最大值):stub 的恢复逻辑是
-  // num_acked >= num_sent 即退出本次读、发 digest、回命令循环。此前补 chunkSize
-  // (0x8000)时退出时机不确定——已发 <0x8000 会继续把剩余数据吐完(拖长交叠窗口,
-  // 排空经常接不住),已发 >0x8000 才放弃——这就是恢复后仍脏、连败的根源。
-  // 0xFFFFFFFF 恒大于 num_sent → stub 必然立即中止 → 发 digest → 回命令循环,
-  // 恢复成为确定性流程。digest 残余与线路脏字节由下一步排空统一清掉。
-  const ack = new Uint8Array([255, 255, 255, 255]);
-  try { await withTimeout(loader.transport.write(ack), 3000, "resync: ACK 写入超时"); }
-  catch (e) { dbg("ACK 补发: " + e.message); }
-  const t0 = Date.now();
-  for (;;) {
-    if (Date.now() - t0 > RESYNC_DRAIN_CAP_MS) break;   // 上限保护:stub 若持续乱吐,交 L2
-    const want = Math.max(1, loader.transport.inWaiting());
-    let chunk = null;
-    try { chunk = await loader.transport.newRead(want, RESYNC_DRAIN_SILENCE_MS); } catch { break; }
-    if (!chunk || chunk.length === 0) break;
-  }
-  dbg(`排空完成(耗时 ${Date.now() - t0}ms),开始 sync…`);
-  try {
-    await withTimeout(loader.sync(), RESYNC_SYNC_TIMEOUT_MS, "resync: sync 超时");
-    await new Promise((r) => setTimeout(r, 50));
-    return "L1";   // 软恢复成功:loader/stub 状态保持,继续用
-  } catch (e1) {
-    dbg("L1 sync 失败(" + e1.message + ")");
-  }
-  // ---- L2 重开串口:必须用会话波特率(stub 仍在设备上跑);残留缓冲必须清空,
-  //      否则脏字节会让 sync 的 SLIP 解析吃垃圾 ----
-  try {
-    log(t("msg_resync_l2", { baud: linkBaud }), "warn");
-    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: 关闭串口超时"); } catch { /* 半开由重开兑底 */ }
-    try { await withTimeout(loader.transport.connect(linkBaud), 5000, "resync: 重开串口超时"); }
-    catch (e2) { throw new Error("重开串口失败: " + e2.message); }
-    loader.transport.buffer = new Uint8Array(0);   // 清残留脏字节
-    // stub 若在重开期间被冲掉,sync 会报错 → 交由 L3 处理
-    await withTimeout(loader.sync(), 10000, "resync: L2 sync 超时");
-    await new Promise((r) => setTimeout(r, 50));
-    return "L2";
-  } catch (e2) {
-    dbg("L2 失败(" + e2.message + ")");
-  }
-  // ---- L3 整机复位 + 重传 stub:最后兜底 ----
-  // 顺序严格对齐 vendor 语义:connect 内部自己开端口(romBaudrate)+ 执行复位序列,
-  // 绝不能在它之前手动 transport.connect(否则 "port already open")。换波特率用
-  // 全新 loader 实例执行 changeBaud(命令在 115200 发出、设备切换、宿主重开),
-  // 避免在旧 loader 上留下"命令已发但宿主未跟上"的模糊状态。
-  if (attempt < 3) throw new Error("L1/L2 恢复失败,升级 L3 仅在 retry ≥ 3 时执行");
-  try {
-    log(t("msg_resync_l3"), "warn");
-    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: L3 关闭串口超时"); } catch { /* ignore */ }
-    loader.IS_STUB = false;          // 重传 stub 的前置状态(显式清零,
-    loader.syncStubDetected = false; // 防 runStub 被误跳过)
-    // "usb_reset" 强制走 USB-JTAG 复位序列把设备打回 ROM bootloader
-    await loader.connect("usb_reset");   // 同步 ROM + 识别芯片(内部开端口+复位)
-    await loader.runStub();               // 重新上传 stub(ROM 波特率,与首次连接一致)
-    if (linkBaud !== ROM_BAUD) {
-      try {
-        const ld = new ESPLoader({ transport: loader.transport, baudrate: linkBaud, romBaudrate: ROM_BAUD });
-        await withTimeout(ld.changeBaud(), 10000, "resync: 恢复高速波特率超时");
-        await withTimeout(ld.sync(), 8000, "resync: 高波特率确认超时");
-        loader = ld;   // 会话 loader 整体替换:状态清晰(波特率/同步全部属于新实例)
-      } catch (eBaud) {
-        dbg("changeBaud 失败(" + eBaud.message + "),链路降级 115200 继续");
-        linkBaud = 115200;
-        loader.baudrate = 115200;
-        await withTimeout(loader.sync(), 8000, "resync: 降级 115200 确认超时");
-      }
-    } else {
-      await withTimeout(loader.sync(), 8000, "resync: L3 sync 超时");
-    }
-    await new Promise((r) => setTimeout(r, 50));
-    return "L3";
-  } catch (e3) {
-    throw new Error("L3 整机复位恢复失败: " + e3.message);
-  }
-}
+// Recovery is intentionally simple: after a failed/timed-out chunk, restart the
+// serial/loader session and retry that exact flash offset. The bounded-session
+// reader below still renews the session every 512 KiB on the normal path.
+
 function archiveSlotIdentity(slot, physicalSlot) {
   const carveSlot = slotModel.carve?.slots?.find((candidate) => candidate.offset === physicalSlot.offset);
   return {
