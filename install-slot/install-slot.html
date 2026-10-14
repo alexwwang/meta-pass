@@ -2253,7 +2253,86 @@ function archiveSlotIdentity(slot, physicalSlot) {
       : (typeof physicalSlot.name === "string" && physicalSlot.name ? physicalSlot.name : `slot-${slot}`),
   };
 }
+// Chrome/macOS Web Serial 的大范围读取在多次 readFlash 调用后可能失去响应。
+// 真机验证的可行规避路径是将读取拆为 512 KiB 段，并在段间建立全新的
+// Transport/ESPLoader 会话。段大小只限制一次会话读取量，不改变 flash 地址规划。
+// 如果重建会话失败，直接终止备份；绝不生成不完整 ZIP。
+const BACKUP_SESSION_SEGMENT = 0x80000;
+
+async function restartBackupReadSession() {
+  const port = transport?.device;
+  if (!port || !ESPLoader || !Transport) {
+    throw new Error("Cannot restart backup read session: serial port or esptool is unavailable");
+  }
+  const oldLoader = loader;
+  const oldTransport = transport;
+  const before = {
+    seq: slotModel.seq,
+    slots: JSON.stringify(slotModel.carve?.slots || []),
+    data: JSON.stringify(slotModel.carve?.data || []),
+  };
+  log("DATA backup: opening a fresh serial/loader session at segment boundary", "warn");
+  try { await withTimeout(oldTransport.disconnect(), 5000, "backup session close timed out"); }
+  catch (err) { log("Previous backup session close: " + err.message, "warn"); }
+
+  const nextTransport = new Transport(port, false);
+  const nextLoader = new ESPLoader({
+    transport: nextTransport,
+    baudrate: linkBaud,
+    romBaudrate: ROM_BAUD,
+  });
+  try {
+    const chip = await withTimeout(nextLoader.main(), 20000, "backup session sync timed out");
+    await withTimeout(nextLoader.readReg(nextLoader.CHIP_DETECT_MAGIC_REG_ADDR), 5000,
+      "backup session baud verification timed out");
+    globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
+    transport = nextTransport;
+    loader = nextLoader;
+    await loadSlotModel();
+    const after = {
+      seq: slotModel.seq,
+      slots: JSON.stringify(slotModel.carve?.slots || []),
+      data: JSON.stringify(slotModel.carve?.data || []),
+    };
+    if (before.seq !== after.seq || before.slots !== after.slots || before.data !== after.data) {
+      throw new Error("APP/DATA ownership metadata changed while restarting the backup session");
+    }
+    log("Fresh backup read session ready (" + chip + ")", "ok");
+  } catch (err) {
+    try { await nextTransport.disconnect(); } catch {}
+    loader = null;
+    transport = null;
+    deviceNvs = null;
+    $("chip-status").textContent = t("msg_device_gone");
+    $("chip-status").className = "error";
+    throw new Error("Cannot resume backup after session restart: " + err.message);
+  }
+}
+
+// Public backup reader: preserve the v1.1 32 KiB chunk/retry implementation within
+// each bounded segment, then renew the serial/loader session before continuing.
 async function readFlashChunked(start, size, onProgress, onRetry) {
+  const out = new Uint8Array(size);
+  let offset = 0;
+  while (offset < size) {
+    const length = Math.min(BACKUP_SESSION_SEGMENT, size - offset);
+    const part = await readFlashChunkedSingleSession(
+      start + offset,
+      length,
+      (got) => onProgress?.(offset + got),
+      onRetry,
+    );
+    if (!(part instanceof Uint8Array) || part.length !== length) {
+      throw new Error(`Backup segment at 0x${(start + offset).toString(16)} returned an invalid byte length`);
+    }
+    out.set(part, offset);
+    offset += length;
+    if (offset < size) await restartBackupReadSession();
+  }
+  return out;
+}
+
+async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
   const buf = new Uint8Array(size);
   let got = 0;
   while (got < size) {
@@ -3128,7 +3207,7 @@ log(t("msg_ready"));
 //   直接以 file:// 打开(无替换)→ 显示原始占位符 __PAGE_VERSION__,
 //   本身即"未经部署管线"的标识。
 // 由 tools/validate.sh --static 守护:占位符被源码中误写死版本号即失败。
-log(`[page] __PAGE_VERSION__ · chunk=32KB stop-and-wait baud=921600(fallback 115200) · NVS 自动备份/还原已启用(无 UI 选项,见备份/还原日志)`, "warn");
+log(`[page] __PAGE_VERSION__ · chunk=32KB / session-segment=512KB · stop-and-wait baud=921600(fallback 115200) · NVS 自动备份/还原已启用(无 UI 选项,见备份/还原日志)`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。
