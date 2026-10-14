@@ -185,6 +185,43 @@ export function validateStorageSnapshotManifest(manifest, {
   return manifest;
 }
 
+// Build a deterministic, non-mutating restore plan. Erasing each eligible
+// partition before writing its extents restores omitted sparse ranges to 0xFF;
+// no operation addresses an unallocated Flash gap.
+export function buildStorageSnapshotRestorePlan(manifest, {
+  targetPartitions,
+  runningHostPartition,
+  protectedRanges = [],
+} = {}) {
+  validateStorageSnapshotManifest(manifest, {
+    targetPartitions,
+    runningHostPartition,
+    protectedRanges,
+  });
+  const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition, protectedRanges);
+  const partitions = eligible.map((target) => {
+    const source = manifest.partitions.find((p) => p.label === target.label &&
+      p.type === target.type && p.subtype === target.subtype);
+    if (!source) fail("restore plan is missing partition: " + target.label);
+    return {
+      partition: {
+        label: target.label, type: target.type, subtype: target.subtype,
+        offset: target.offset, size: target.size,
+      },
+      erase: { relativeOffset: 0, bytes: target.size },
+      extents: source.extents.map((e) => ({
+        file: e.file, relativeOffset: e.offset, bytes: e.bytes, sha256: e.sha256,
+      })),
+    };
+  });
+  return {
+    kind: STORAGE_SNAPSHOT_KIND,
+    partitionCount: partitions.length,
+    totalEraseBytes: partitions.reduce((sum, p) => sum + p.erase.bytes, 0),
+    partitions,
+  };
+}
+
 export async function buildStorageSnapshotZip({ manifest, payloads }, sha256Hex) {
   validateStorageSnapshotManifest(manifest);
   if (!(payloads instanceof Map)) fail("snapshot payloads must be a Map");
