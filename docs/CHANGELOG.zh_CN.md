@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **v2 整机快照备份/还原真机验证（2026-10-15）**：修复快照 inventory 漏掉非活动 child DATA 的严重缺陷；设备侧按 carve DATA 身份补齐 inventory/read/erase/write，USB 页面合并 carve DATA，并修复 dev server 快照模块 404 与 `assertLoader` 作用域错误。USB v2 备份、USB v2 恢复、手机页 v2 恢复通过真机验证；两条恢复路径人工重启后均正常启动并重连，44/44 extents 与归档逐字节一致；分区表形状不匹配在首次擦除前拒绝。USB v1 host 测试有记录，v1 真机恢复 NOT RUN。详见 `docs/storage-snapshot-restore-test-report-2026-10-15.zh_CN.md`。
+
 - **统一归档还原的系统 NVS 策略**：USB 与手机页面一致，所有归档版本均可校验归档内 NVS 的长度/摘要，但恢复时绝不把归档 NVS 写入目标设备；目标设备现有 NVS（包括 Wi-Fi 凭证和设备本地状态）保持不变。USB v1.1 归档仍可用于旧固定槽设备的 APP 还原，归档中的 NVS 仅用于校验/留存，不再自动覆盖设备 NVS。新增静态契约回归，防止 USB v1 恢复路径重新引入 NVS 写入。
 
 - **手机内嵌页归档版本边界明确化**：手机内嵌安装页与 v2 设备配套部署，只接受 v2 APP+DATA 归档；上传 v1.1 旧归档时在任何设备状态/写入请求前明确拒绝，并提示改用 USB 服务页还原。USB 服务页继续保留 v1.1 与 v2 双版本支持；不新增手机端 v1.1 写入兼容层。新增手机模块版本边界测试。代码改动已提交到 feat/storage；CI 与真机验证状态以本次提交后的实际检查为准。
