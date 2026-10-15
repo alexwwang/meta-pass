@@ -34,7 +34,7 @@ assert "sizeRows.hidden = !allocateBox.checked;" in phone_choice
 assert "resolve([])" in phone_choice
 assert "pre.offer.data = [];" in phone_choice and "pre.dataImages = [];" in phone_choice
 assert "resolveAppDataChoice({ allocate: true, declaredImages: dataImages })" in phone_choice
-assert "if (geom?.listing && dataImages.length > 0)" in phone_choice
+assert "if (geom?.listing)" in phone_choice
 assert "makeBlankAppDataImage" not in phone
 assert "options.some((o) => o.unavailable)" in phone_choice
 assert "options[i].unavailable" in phone_choice
