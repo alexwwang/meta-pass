@@ -2980,6 +2980,12 @@ $("btn-install").addEventListener("click", async () => {
     // the old instance's DATA.
     if (dynMode) {
       if (!carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
+      const oldTarget = slotModel.carve.slots[plan.index];
+      const oldTargetHasData = oldTarget && oldTarget.playId &&
+        slotModel.carve.data.some((d) => d.playId === oldTarget.playId);
+      if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY && oldTargetHasData) {
+        throw new Error("This APP already owns DATA. Remove the existing APP first so its DATA is reclaimed together; installing APP-only over it would orphan the old DATA.");
+      }
       if (!dataPlayId) dataPlayId = nextDataPlayId(carveForInstall);
       if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
       const choice = await chooseUsbDataSizes(dataImages, carveForInstall, dataPlayId);
