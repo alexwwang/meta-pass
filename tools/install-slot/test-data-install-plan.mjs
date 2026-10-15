@@ -2,7 +2,7 @@
 // Pure DATA allocation tests used by USB local-firmware install.
 import assert from "node:assert/strict";
 import { planDataReservations, nextDataPlayId } from "../../install-slot/data-install-plan.js";
-import { makeBlankAppDataImage, resolveAppDataChoice } from "../../install-slot/data-allocation-choice.js";
+import { resolveAppDataChoice } from "../../install-slot/data-allocation-choice.js";
 import { carveValid, SLOT_KIND, SLOT_STATE } from "../../install-slot/dynslot-record.js";
 
 const empty = {
@@ -56,18 +56,11 @@ const images = [
 }
 {
   const id = nextDataPlayId(empty);
-  const blank = resolveAppDataChoice({ allocate: true, declaredImages: [], playId: id });
-  const plan = planDataReservations(empty, blank, [0x10000], id);
-  assert.equal(plan.ok, true, "an APP without declared DATA can reserve a blank private partition");
-  assert.equal(plan.records[0].label, `mp${id.toString(16)}`);
-  assert.equal(plan.records[0].subtype, 0x82, "blank DATA uses registered SPIFFS subtype, not test-only e2edata");
-  assert.equal(plan.records[0].initial_image_size, 0);
-  assert.equal(plan.records[0].data.length, 0);
-  assert.equal(plan.carve.data[0].playId, id, "blank DATA is owned by the APP install ID");
-  assert.equal(resolveAppDataChoice({ allocate: false, declaredImages: [], playId: id }).length, 0,
-    "choosing APP-only creates no DATA reservation");
-  const tooLarge = planDataReservations(empty, blank, [0x2000000], id);
-  assert.equal(tooLarge.ok, false, "insufficient contiguous space must fail closed");
-  console.log("PASS 4: blank APP-owned DATA is allocated through the dynamic planner; APP-only creates none");
+  assert.throws(() => resolveAppDataChoice({ allocate: true, declaredImages: [] }),
+    /declares no DATA partition\/access contract/,
+    "installer must not invent a DATA label/subtype for firmware with no declared access contract");
+  assert.equal(resolveAppDataChoice({ allocate: false, declaredImages: [] }).length, 0,
+    "APP-only install creates no DATA reservation");
+  console.log("PASS 4: undeclared DATA fails closed; APP-only creates none");
 }
 console.log("ALL USB DATA INSTALL PLAN TESTS PASSED");
