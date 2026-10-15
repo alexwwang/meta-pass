@@ -122,6 +122,8 @@ Repository documentation is organized by function area. `authoritative` document
 - [`docs/reference/`](reference/README.md) — reference material: reusable development experience and archived application playbooks, grouped by contributor (`reference/<username>/`).
 - [`docs/`](README.md) top-level — [`CHANGELOG.md`](CHANGELOG.md) and [`fork-guide.md`](fork-guide.md).
 - [`docs/assets/usb-web-e2e-design.md`](assets/usb-web-e2e-design.md) — real-device USB Web UI E2E design and execution runbook.
+- [`storage-snapshot-restore-test-report-2026-10-15.md`](storage-snapshot-restore-test-report-2026-10-15.md) — v2 whole-device snapshot backup/restore hardware results, coverage boundaries, and unrun items.
+- [`HANDOFF-realdevice-storage.md`](HANDOFF-realdevice-storage.md) — storage real-device test protocol and current snapshot-restore status.
 
 GitHub community documents: [CONTRIBUTING.md](../.github/CONTRIBUTING.md), [CODE_OF_CONDUCT.md](../.github/CODE_OF_CONDUCT.md), [SECURITY.md](../.github/SECURITY.md), and [SUPPORT.md](../.github/SUPPORT.md).
 
