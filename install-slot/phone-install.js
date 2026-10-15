@@ -1862,7 +1862,7 @@ export function boot(opts = {}) {
     // DATA sizing is a general installation option, not a Play/test-profile
     // switch. The device remains authoritative and revalidates every size.
     const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
-    if (geom?.listing && dataImages.length > 0) {
+    if (geom?.listing) {
       const sizingImages = dataImages;
       const declared = sizingImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
       const minimums = sizingImages.map((d) => dataPartitionMinimum(d));
@@ -1920,8 +1920,8 @@ export function boot(opts = {}) {
         }).join("");
         setPanel(`<section class=mp-panel>
           <h4>数据分区配置</h4>
-          <p class=mp-sub>可以不分配 DATA；选择分配后，该 DATA 只归属当前 APP。容量按 MiB 展示，设备会再次校验。</p>
-          <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id=mp-data-allocate type=checkbox ${dataImages.length ? "checked" : ""}> 分配专属 DATA 空间</label>
+          <p class=mp-sub>${dataImages.length ? "可以不分配 DATA；选择分配后，按固件声明分配并归属当前 APP。容量按 MiB 展示，设备会再次校验。" : "该固件没有声明 DATA 分区。MetaPass 无法推断子固件如何发现或初始化 DATA，因此本次只能安装 APP，不能安全地自动创建空 DATA 分区。"}</p>
+          <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id=mp-data-allocate type=checkbox ${dataImages.length ? "checked" : ""} ${dataImages.length ? "" : "disabled"}> ${dataImages.length ? "分配专属 DATA 空间" : "未声明 DATA，无法分配"}</label>
           <div id=mp-data-rows>${rows}</div>
           <p class=mp-note>范围受当前连续空闲空间、分区对齐和固件声明的最小容量限制；请核对最大连续空闲空间与总空闲空间。</p>
           <div class=mp-actions>
