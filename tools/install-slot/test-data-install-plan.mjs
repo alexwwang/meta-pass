@@ -2,6 +2,7 @@
 // Pure DATA allocation tests used by USB local-firmware install.
 import assert from "node:assert/strict";
 import { planDataReservations, nextDataPlayId } from "../../install-slot/data-install-plan.js";
+import { resolveAppDataChoice } from "../../install-slot/data-allocation-choice.js";
 import { carveValid, SLOT_KIND, SLOT_STATE } from "../../install-slot/dynslot-record.js";
 
 const empty = {
@@ -52,5 +53,14 @@ const images = [
   assert.equal(plan.ok, false);
   assert.equal(plan.reason, "no-space");
   console.log("PASS 3: DATA planner fails closed when DATA record capacity is exhausted");
+}
+{
+  const id = nextDataPlayId(empty);
+  assert.throws(() => resolveAppDataChoice({ allocate: true, declaredImages: [] }),
+    /declares no DATA partition\/access contract/,
+    "installer must not invent a DATA label/subtype for firmware with no declared access contract");
+  assert.equal(resolveAppDataChoice({ allocate: false, declaredImages: [] }).length, 0,
+    "APP-only install creates no DATA reservation");
+  console.log("PASS 4: undeclared DATA fails closed; APP-only creates none");
 }
 console.log("ALL USB DATA INSTALL PLAN TESTS PASSED");

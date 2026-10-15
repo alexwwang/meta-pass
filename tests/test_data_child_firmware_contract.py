@@ -116,7 +116,7 @@ gate_handler = install_net[gate_start:gate_end]
 assert "if (!s_remove_recovery_needed)" in gate_handler and "return ESP_OK;" in gate_handler, "steady-state DATA chunk reads must not reopen NVS for each 4 KiB request"
 assert "if (e != ESP_OK) return e;" in install_net[install_net.index("static esp_err_t remove_recover_pending"):install_net.index("// POST /api/install/remove")], "failed cleanup must keep durable intent pending"
 assert "const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];" in usb_page, "USB local firmware must parse DATA images instead of silently discarding them"
-assert "await chooseUsbDataSizes(dataImages, carveForInstall)" in usb_page, "USB DATA installation must expose a capacity-selection step"
+assert "await chooseUsbDataSizes(dataImages, carveForInstall, dataPlayId)" in usb_page, "USB DATA installation must expose an optional capacity-selection step"
 assert "await writeDataPayload(dataImage, dataImage)" in usb_page, "USB DATA payload must be written and read-back verified before commit"
 assert 'if (isDynMode(slotModel.mode))' in usb_page and "const snapshot = await createUsbStorageSnapshot" in usb_page, "USB dynamic mode must emit raw v2 snapshots instead of the retired logical archive"
 assert 'data_backup_unavailable: "Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic layouts use v2 raw storage snapshots' in usb_page, "USB UI must disclose the v1 compatibility boundary and dynamic snapshot path"

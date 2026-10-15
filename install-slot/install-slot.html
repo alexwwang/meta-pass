@@ -179,6 +179,7 @@
     <form method="dialog" id="data-size-form">
       <h2 id="data-size-title">DATA partition sizes</h2>
       <p id="data-size-help" class="subtitle">Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.</p>
+      <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id="data-size-allocate" type="checkbox" checked> <span id="data-size-allocate-label">分配专属 DATA 空间</span></label>
       <div id="data-size-rows"></div>
       <p id="data-size-error" class="error" role="alert"></p>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
@@ -259,6 +260,7 @@
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, extractDataImages, isFullImage, hex } from "./extract-app-image.js";
+import { resolveAppDataChoice } from "./data-allocation-choice.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
@@ -300,6 +302,7 @@ import {
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
+
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
 import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
@@ -1412,8 +1415,8 @@ function dataSizingListing(carve) {
 
 // Capacity selector mirrors the phone installer: declared minimums and every
 // selected size are revalidated against the shared pool before any flash write.
-async function chooseUsbDataSizes(dataImages, carve) {
-  if (!dataImages.length) return [];
+async function chooseUsbDataSizes(dataImages, carve, playId) {
+  const sizingImages = dataImages;
   const dialog = $("data-size-dialog");
   const rows = $("data-size-rows");
   const error = $("data-size-error");
@@ -1423,50 +1426,51 @@ async function chooseUsbDataSizes(dataImages, carve) {
     ? "为每个 DATA 分区选择容量。范围受当前连续空闲空间约束，提交前会再次验证。"
     : "Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.";
   $("data-size-cancel").textContent = zh ? "取消" : "Cancel";
-  $("data-size-confirm").textContent = zh ? "确认容量" : "Confirm sizes";
+  $("data-size-confirm").textContent = zh ? "确认并继续" : "Confirm and continue";
+  $("data-size-allocate-label").textContent = zh ? "为此 APP 分配专属 DATA 空间" : "Allocate private DATA space for this APP";
+  const allocate = $("data-size-allocate");
+  allocate.checked = dataImages.length > 0;
+  allocate.disabled = dataImages.length === 0;
+  if (dataImages.length === 0) {
+    $("data-size-help").textContent = zh
+      ? "该固件没有声明 DATA 分区，MetaPass 无法推断它如何发现或初始化 DATA。本次只能安装 APP；需要 DATA 的固件必须提供明确的分区声明/访问约定。"
+      : "This firmware declares no DATA partition. MetaPass cannot infer how it discovers or initializes DATA, so this install is APP-only. Firmware that needs DATA must provide an explicit partition/access contract.";
+    $("data-size-allocate-label").textContent = zh ? "该固件未声明 DATA，无法分配" : "DATA unavailable: not declared by this firmware";
+  }
   const listing = dataSizingListing(carve);
-  const minimums = dataImages.map((d) => dataPartitionMinimum(d));
+  const minimums = sizingImages.map((d) => dataPartitionMinimum(d));
   if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
     throw new Error("DATA partition has an invalid declared minimum size");
   }
-  for (let i = 0; i < dataImages.length; i++) {
-    for (let j = 0; j < carve.data.length; j++) {
-      const d = carve.data[j];
-      if (d.label === dataImages[i].label && d.subtype === dataImages[i].subtype) {
-        throw new Error(`DATA label/subtype already exists: ${dataImages[i].label} (remove or back up the existing owner first)`);
-      }
-    }
-    for (let j = 0; j < i; j++) {
-      if (dataImages[i].label === dataImages[j].label &&
-          dataImages[i].subtype === dataImages[j].subtype) {
-        throw new Error(`duplicate DATA label/subtype: ${dataImages[i].label}`);
-      }
-    }
-  }
 
-  const options = dataImages.map((d, i) => {
+
+  const options = sizingImages.map((d, i) => {
     const bounds = dataSizeBounds(listing, null, minimums[i],
       minimums.filter((_, j) => j !== i));
     const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
     const min = minimums[i];
-    if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest contiguous gap ${fmtBytes(max)}, total free ${fmtBytes(bounds.available)}. Fixed partitions cannot be moved or crossed.`);
+    if (max < min) return { min, max, values: [], defaultSize: null, available: bounds.available, selected: null, unavailable: true };
     const declared = Number(d.required_size);
     const optionSet = buildDataSizeOptions(min, max, declared, DATA_SIZE_STEP);
-    return { ...optionSet, available: bounds.available, selected: optionSet.defaultSize };
+    return { ...optionSet, available: bounds.available, selected: optionSet.defaultSize, unavailable: false };
   });
 
   rows.replaceChildren();
+  const refreshRows = () => { rows.hidden = !allocate.checked; };
+  allocate.onchange = refreshRows;
+  refreshRows();
   options.forEach((o, i) => {
     const label = document.createElement("label");
     label.style.display = "block";
     label.style.margin = "12px 0 4px";
-    label.textContent = zh
-      ? `${dataImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大连续 ${fmtBytes(o.max)} · 总空闲 ${fmtBytes(o.available)}`
-      : `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} max contiguous · ${fmtBytes(o.available)} total free`;
+    label.textContent = o.unavailable
+      ? (zh ? `${sizingImages[i].label} · 连续空间不足，无法分配` : `${sizingImages[i].label} · insufficient contiguous space`)
+      : (zh ? `${sizingImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大连续 ${fmtBytes(o.max)} · 总空闲 ${fmtBytes(o.available)}` : `${sizingImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} max contiguous · ${fmtBytes(o.available)} total free`);
     const select = document.createElement("select");
     select.dataset.dataSize = String(i);
     select.style.width = "100%";
     select.style.padding = "8px";
+    select.disabled = o.unavailable;
     for (const size of o.values) {
       const option = document.createElement("option");
       option.value = String(size);
@@ -1487,12 +1491,33 @@ async function chooseUsbDataSizes(dataImages, carve) {
     };
     $("data-size-cancel").onclick = () => finish(null);
     $("data-size-confirm").onclick = () => {
+      if (!allocate.checked) { finish({ allocate: false, sizes: [] }); return; }
+        for (let i = 0; i < sizingImages.length; i++) {
+          for (let j = 0; j < carve.data.length; j++) {
+            const d = carve.data[j];
+            if (d.label === sizingImages[i].label && d.subtype === sizingImages[i].subtype) {
+              error.textContent = zh ? `DATA 标签/类型已被占用：${sizingImages[i].label}。可取消勾选，仅安装 APP。` : `DATA label/subtype already exists: ${sizingImages[i].label}. Uncheck allocation to install APP only.`;
+              return;
+            }
+          }
+          for (let j = 0; j < i; j++) {
+            if (sizingImages[i].label === sizingImages[j].label &&
+                sizingImages[i].subtype === sizingImages[j].subtype) {
+              error.textContent = zh ? `DATA 标签/类型重复：${sizingImages[i].label}。可取消勾选，仅安装 APP。` : `Duplicate DATA label/subtype: ${sizingImages[i].label}. Uncheck allocation to install APP only.`;
+              return;
+            }
+          }
+        }
+      if (options.some((o) => o.unavailable)) {
+        error.textContent = zh ? "连续空间不足，无法分配 DATA；可取消勾选以仅安装 APP。" : "Insufficient contiguous space for DATA. Uncheck allocation to install APP only.";
+        return;
+      }
       const sizes = [...rows.querySelectorAll("select[data-data-size]")].map((el) => Number(el.value));
       let planned = carve;
-      for (let i = 0; i < dataImages.length; i++) {
+      for (let i = 0; i < sizingImages.length; i++) {
         const size = normalizeDataSize(sizes[i], { min: options[i].min, max: options[i].max });
         if (size === null || size < minimums[i]) {
-          error.textContent = zh ? `DATA ${dataImages[i].label} 容量无效` : `Invalid size for DATA ${dataImages[i].label}`;
+          error.textContent = zh ? `DATA ${sizingImages[i].label} 容量无效` : `Invalid size for DATA ${sizingImages[i].label}`;
           return;
         }
         const place = placeNewData(planned, size);
@@ -1504,16 +1529,16 @@ async function chooseUsbDataSizes(dataImages, carve) {
           slots: planned.slots.slice(),
           data: [...planned.data, {
             playId: 0xfffffffe, offset: place.offset, size,
-            state: DATA_STATE.PRISTINE, subtype: dataImages[i].subtype,
-            type: 1, label: dataImages[i].label,
+            state: DATA_STATE.PRISTINE, subtype: sizingImages[i].subtype,
+            type: 1, label: sizingImages[i].label,
           }],
         };
         if (!carveValid(planned)) {
-          error.textContent = zh ? `DATA ${dataImages[i].label} 分配无效` : `Invalid DATA allocation for ${dataImages[i].label}`;
+          error.textContent = zh ? `DATA ${sizingImages[i].label} 分配无效` : `Invalid DATA allocation for ${sizingImages[i].label}`;
           return;
         }
       }
-      finish(sizes);
+      finish({ allocate: true, sizes });
     };
     dialog.oncancel = (ev) => { ev.preventDefault(); finish(null); };
     dialog.showModal();
@@ -2927,7 +2952,7 @@ $("btn-install").addEventListener("click", async () => {
     if (!target) throw new Error(t("err_pick_slot_first"));
 
     const dynMode = isDynMode(slotModel.mode);
-    const dataImages = Array.isArray(image.dataImages) ? image.dataImages : [];
+    let dataImages = Array.isArray(image.dataImages) ? image.dataImages.slice() : [];
     let s;
     let slot;
     let slotLimit;
@@ -2963,23 +2988,34 @@ $("btn-install").addEventListener("click", async () => {
     // rollback source until the replacement has been fully written and committed.
     // Refuse this ambiguous case rather than creating duplicate labels or orphaning
     // the old instance's DATA.
-    if (dataImages.length) {
-      if (!dynMode || !carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
+    if (dynMode) {
+      if (!carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
       const oldTarget = slotModel.carve.slots[plan.index];
-      if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY) {
-        throw new Error("For a recoverable APP+DATA install, choose an empty slot or Auto. Remove the existing APP first rather than overwriting a live installation.");
+      const oldTargetHasData = oldTarget && oldTarget.playId &&
+        slotModel.carve.data.some((d) => d.playId === oldTarget.playId);
+      if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY && oldTargetHasData) {
+        throw new Error("This APP already owns DATA. Remove the existing APP first so its DATA is reclaimed together; installing APP-only over it would orphan the old DATA.");
       }
-      const sizes = await chooseUsbDataSizes(dataImages, carveForInstall);
-      if (!sizes) { log(t("msg_install_cancelled"), "warn"); return; }
-      dataPlayId = nextDataPlayId(carveForInstall);
+      if (!dataPlayId) dataPlayId = nextDataPlayId(carveForInstall);
       if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
-      const dataPlan = planDataReservations(carveForInstall, dataImages, sizes, dataPlayId);
+      const choice = await chooseUsbDataSizes(dataImages, carveForInstall, dataPlayId);
+      if (!choice) { log(t("msg_install_cancelled"), "warn"); return; }
+      const selectedDataImages = resolveAppDataChoice({ allocate: choice.allocate, declaredImages: dataImages });
+      if (!selectedDataImages.length) {
+        plannedData = [];
+      } else {
+        const oldTarget = slotModel.carve.slots[plan.index];
+        if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY) {
+          throw new Error("For a recoverable APP+DATA install, choose an empty slot or Auto. Remove the existing APP first rather than overwriting a live installation.");
+        }
+      const dataPlan = planDataReservations(carveForInstall, selectedDataImages, choice.sizes, dataPlayId);
       if (!dataPlan.ok) {
         throw new Error(`DATA allocation failed (${dataPlan.reason})${dataPlan.index == null ? "" : ` at partition ${dataPlan.index + 1}`}`);
       }
       plannedData = dataPlan.records;
       carveForInstall = dataPlan.carve;
       deferredDataInstall = true;
+      }
     }
 
     // 覆盖已安装子固件(VALID 槽)必须显式确认。

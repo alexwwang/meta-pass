@@ -16,6 +16,7 @@ run_static_checks() {
     python3 tests/test_storage_four_goals_handoff_contract.py
     python3 tests/test_usb_backup_segmented_read.py
     python3 tests/test_storage_snapshot_device_contract.py
+    python3 tests/test_optional_app_data_allocation_contract.py
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
     if [[ -z "${actionlint_bin}" ]]; then
@@ -320,6 +321,7 @@ PATHCHECK
         "${node_bin}" tools/install-slot/test-data-install-plan.mjs
         "${node_bin}" tools/install-slot/test-data-restore-plan.mjs
         "${node_bin}" tools/install-slot/test-data-size-options.mjs
+        "${node_bin}" tools/install-slot/test-data-allocation-choice.mjs
         "${node_bin}" tools/install-slot/test-flash-readback-verify.mjs
         "${node_bin}" tools/install-slot/test-data-restore-transaction.mjs
         "${node_bin}" tools/install-slot/test-data-restore-device-integration.mjs
