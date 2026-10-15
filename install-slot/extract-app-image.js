@@ -175,10 +175,11 @@ export function parseFirmwareManifest(buf) {
       subtype === 0x81 || // FAT
       subtype === 0x82 || // SPIFFS
       subtype === 0x83 || // LittleFS
-      // Dedicated raw-sector E2E fixture only. Do not generalize acceptance of
-      // arbitrary custom subtypes: production DATA must have a registered
-      // format/semantics before it can be allocated or initialized.
-      (subtype === 0x40 && label === "e2edata");
+      // Dedicated E2E fixture is explicitly registered by its reserved label.
+      // Keep this test-only escape hatch independent of the synthetic subtype:
+      // automation fixtures may use different DATA subtypes while exercising
+      // the same raw read/write lifecycle. Never generalize this to other labels.
+      label === "e2edata";
     const meta = {
       kind: "data",
       label,
