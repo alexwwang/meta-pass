@@ -302,6 +302,7 @@ import {
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
 import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
+import { resolveDataAllocationChoice } from "./optional-data-allocation.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
 import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
@@ -2941,7 +2942,7 @@ $("btn-install").addEventListener("click", async () => {
     if (!target) throw new Error(t("err_pick_slot_first"));
 
     const dynMode = isDynMode(slotModel.mode);
-    const dataImages = Array.isArray(image.dataImages) ? image.dataImages : [];
+    let dataImages = Array.isArray(image.dataImages) ? image.dataImages.slice() : [];
     let s;
     let slot;
     let slotLimit;
@@ -2967,6 +2968,22 @@ $("btn-install").addEventListener("click", async () => {
       if (!s) throw new Error(t("err_pick_slot_first"));
       slotLimit = maxAppImageSize(s.size);
     }
+    if (dynMode) {
+      const zh = currentLang === "zh";
+      const allocateData = window.confirm(zh
+        ? "是否为此 APP 分配专属 DATA 空间？确定后可选择容量；取消则只安装 APP，不创建 DATA。"
+        : "Allocate a dedicated DATA partition for this app? Choose OK to select a size, or Cancel to install without DATA.");
+      if (allocateData) {
+        if (!dataPlayId) {
+          dataPlayId = nextDataPlayId(carveForInstall);
+          if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
+        }
+        dataImages = resolveDataAllocationChoice(dataImages, true, dataPlayId, carveForInstall.data);
+      } else {
+        dataImages = [];
+      }
+    }
+
     if (image.length > slotLimit) {
       throw new Error(t("err_install_too_large", {
         image: fmtBytes(image.length), slot, limit: fmtBytes(slotLimit),
@@ -2983,7 +3000,7 @@ $("btn-install").addEventListener("click", async () => {
       if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY) {
         throw new Error("For a recoverable APP+DATA install, choose an empty slot or Auto. Remove the existing APP first rather than overwriting a live installation.");
       }
-      dataPlayId = nextDataPlayId(carveForInstall);
+      if (!dataPlayId) dataPlayId = nextDataPlayId(carveForInstall);
       if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
       const choice = await chooseUsbDataSizes(dataImages, carveForInstall, dataPlayId);
       if (!choice) { log(t("msg_install_cancelled"), "warn"); return; }
