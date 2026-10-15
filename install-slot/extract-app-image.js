@@ -164,9 +164,9 @@ export function parseFirmwareManifest(buf) {
     // - other custom DATA is rejected rather than silently copied.
     const metaOwned =
       subtype === 0x00 || // OTA metadata is owned by MetaPass
+      subtype === 0x01 || // PHY calibration is a shared system resource
       label === "cardid" ||
-      label === "nvs" || // the shared system NVS cannot be carved per child
-      label === "phy_init"; // shared PHY calibration is not child DATA
+      label === "nvs"; // the default shared NVS label cannot be carved per child
     if (metaOwned) continue;
 
     const supported =
@@ -291,7 +291,7 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      if (subtype === 0x00 || label === "cardid" || label === "nvs" || label === "phy_init") continue;
+      if (subtype === 0x00 || subtype === 0x01 || label === "cardid" || label === "nvs") continue;
       const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 || subtype === 0x02 ||
         (subtype === 0x40 && label === "e2edata");
       if (!supported) continue;
