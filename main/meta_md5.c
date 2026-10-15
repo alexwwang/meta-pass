@@ -3,6 +3,25 @@
 
 #include <string.h>
 
+#if defined(META_MD5_USE_ROM)
+
+/* The second-stage bootloader already ships the ESP32-C3 ROM MD5 engine.
+ * Reuse it here instead of carrying the 64-word RFC-1321 K table + rotation
+ * table in bootloader DRAM rodata (~320 bytes).  The host/app implementation
+ * below remains self-contained so the same public API and golden vectors stay
+ * available outside the bootloader. */
+#include "esp_rom_md5.h"
+
+void meta_md5(const void *data, size_t len, uint8_t out[16])
+{
+    md5_context_t ctx;
+    esp_rom_md5_init(&ctx);
+    esp_rom_md5_update(&ctx, (const unsigned char *)data, len);
+    esp_rom_md5_final(out, &ctx);
+}
+
+#else
+
 typedef struct {
     uint32_t state[4];
     uint64_t nbytes;
@@ -143,3 +162,6 @@ void meta_md5(const void *data, size_t len, uint8_t out[16])
     md5_update(&c, (const uint8_t *)data, len);
     md5_final(&c, out);
 }
+
+
+#endif

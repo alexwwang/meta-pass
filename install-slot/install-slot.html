@@ -175,9 +175,22 @@
     <div class="progress"><div id="progress-bar"></div></div>
   </section>
 
+  <dialog id="data-size-dialog" style="max-width:560px;width:calc(100% - 32px);border:1px solid #ccd0d5;border-radius:10px;padding:18px;">
+    <form method="dialog" id="data-size-form">
+      <h2 id="data-size-title">DATA partition sizes</h2>
+      <p id="data-size-help" class="subtitle">Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.</p>
+      <div id="data-size-rows"></div>
+      <p id="data-size-error" class="error" role="alert"></p>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+        <button type="button" id="data-size-cancel">Cancel</button>
+        <button type="button" id="data-size-confirm" class="primary">Confirm sizes</button>
+      </div>
+    </form>
+  </dialog>
+
   <section>
-    <h2 data-i18n="step_backup">5. Backup child firmware (read slots → zip)</h2>
-    <p class="subtitle" data-i18n="backup_desc">Backs up the selected slots to a verified zip file on this computer.</p>
+    <h2 data-i18n="step_backup">5. Backup (fixed-slot APP/NVS or dynamic storage snapshot)</h2>
+    <p class="subtitle" data-i18n="backup_desc">Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic devices use v2 raw storage snapshots.</p>
     <p>
       <label><input type="checkbox" id="bk-slot0" checked> <span data-i18n="slot_0">Slot 0</span></label>
       <label><input type="checkbox" id="bk-slot1" checked> <span data-i18n="slot_1">Slot 1</span></label>
@@ -195,8 +208,8 @@
 
   <section>
     <h2 data-i18n="step_restore">6. Restore from backup (zip → slot)</h2>
-    <p class="subtitle" data-i18n="restore_desc">Restores a backup zip onto the device slots, with automatic space and integrity checks.</p>
-    <p class="hint" data-i18n="restore_flow_hint">Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.</p>
+    <p class="subtitle" data-i18n="restore_desc">USB accepts historical v1 APP/NVS archives on fixed-slot devices and v2 whole-device snapshots. An interrupted write or failed boot requires reflashing the MetaPass version recorded in the snapshot.</p>
+    <p class="hint" data-i18n="restore_flow_hint">Select a historical v1 archive or a v2 whole-device snapshot. Interrupted restores are not rolled back; reflash the snapshot source MetaPass version before retrying.</p>
     <p><input type="file" id="restore-input" accept=".zip,application/zip"> <span id="restore-info"></span></p>
     <div id="restore-slots"></div>
     <button id="btn-restore" class="primary" disabled data-i18n="btn_restore">Restore</button>
@@ -204,6 +217,7 @@
     <div class="progress"><div id="restore-bar"></div></div>
   </section>
     <p id="dynslot-restore-warn" class="hint" style="display:none;margin-top:8px;font-size:0.9em;" data-i18n="dynslot_restore_test"></p>
+    <p class="hint" data-i18n="data_backup_unavailable">USB fixed-slot devices retain historical v1 APP/NVS archive compatibility; dynamic layouts use v2 raw storage snapshots. ZIP files are unencrypted and may contain Wi-Fi credentials, device state and child-firmware data. Removing an APP also deletes its owned DATA.</p>
 
   <section>
     <h2 data-i18n="step_upgrade">7. Upgrade launcher (keep NVS data & child firmware)</h2>
@@ -244,7 +258,7 @@
 
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
-import { extractAppImage, hex } from "./extract-app-image.js";
+import { extractAppImage, extractDataImages, isFullImage, hex } from "./extract-app-image.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
@@ -279,11 +293,18 @@ import {
   MODE, PLAN, SLOT_STATE, SLOT_KIND,
   STORE_OFFSET, STORE_SECTOR_SIZE, REC_SIZE, PT_SIZE,
   emptyCarve, carveValid, pickRecord, decodeAndValidate,
-  encodeRecord, materializeTable, insertSlot,
-  planInstall, planRemove, detectSlotMode, isDynMode, buildSlotView, checkTable,
+  encodeRecord, materializeTable, insertSlot, placeNewData,
+  DATA_STATE, planInstall, planRemove, detectSlotMode, isDynMode, buildSlotView, checkTable,
 } from "./dynslot-record.js";
 // mock 设备(?mock=1):内存 flash 模拟真机读写语义,供无硬件的浏览器走查(设计 §10)。
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
+import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
+import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
+import { buildDataSizeOptions } from "./data-size-options.js";
+import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
+import { verifyFlashRangeByMd5 } from "./flash-readback-verify.js";
+import { captureStorageSnapshot, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
+import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // 3-Slot 固定几何:fallback。原厂 FoloToy 布局(分区表无 ota_N 条目)下,
 // 用户先按 legacy 偏移裸写游戏、再升级 launcher 由 seed_legacy 收编 —— 该
@@ -401,8 +422,6 @@ async function loadSlotModel() {
 // 失败抛错:E4 语义(记录已立,引导钩子下次启动物化表,状态不模糊)。
 async function commitCarve(nextCarve, { materialize = true } = {}) {
   if (!carveValid(nextCarve)) throw new Error(t("err_carve_invalid"));
-  // H2: 每次 await 前校验 loader 未断开
-  function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected", { label: label ?? "操作" })); }
   let seq = (slotModel.seq + 1) >>> 0;
   if (seq === 0 || seq === 0xffffffff) seq = 1;   // = meta_carve_flash.c 回绕规则
   const rec = encodeRecord({ seq, slots: nextCarve.slots, data: nextCarve.data });
@@ -659,6 +678,9 @@ async function removeSlotAction(index) {
   const slot = slotModel.carve?.slots?.[index];
   if (!slot) { log(t("err_remove_target"), "error"); return; }
   const name = slot.name || t("slot_unnamed", { n: index });
+  const ownedData = slot.playId
+    ? slotModel.carve.data.filter((d) => d.playId === slot.playId)
+    : [];
   busy = true;
   refreshInstallButton();
   const ok = window.confirm(t("confirm_remove_slot", {
@@ -666,23 +688,36 @@ async function removeSlotAction(index) {
   }));
   try {
     if (!ok) { log(t("msg_remove_cancelled"), "warn"); return; }
-    if (slot.kind === SLOT_KIND.APP) {
+    const rm = planRemove(slotModel.carve, index);
+    if (!rm) throw new Error(t("err_remove_target"));
+
+    // Commit lifecycle metadata first. If the record/table commit fails, do not
+    // erase bytes belonging to an APP/DATA instance that is still registered.
+    slotPickUserSet = false;   // 删除会让后续行改号:显式选择作废,回默认推导
+    const info = await commitCarve(rm.carve, { materialize: true });
+    log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+    log(t("msg_table_materialized"), "ok");
+
+    // Once unregistered, clear the APP header and every DATA extent owned by
+    // the removed installation. Failure is reported distinctly: metadata is
+    // already committed, so the bytes are unreachable and future allocation
+    // must wipe the extent before reuse.
+    let eraseFailed = false;
+    try {
       const ff = new Uint8Array(0x1000).fill(0xff);
       await loader.writeFlash({
         fileArray: [{ data: u8ToBinaryString(ff), address: slot.offset }],
         flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
       });
-      log(t("msg_slot_header_erased", { addr: hex(slot.offset) }), "ok");
-    } else {
-      log(t("msg_slot_storage_kept"), "warn");
+      for (const d of ownedData) {
+        await wipeRange(d.offset, d.size);
+        log(`DATA ${d.label} erased (${fmtBytes(d.size)} at ${hex(d.offset)})`, "ok");
+      }
+    } catch (err) {
+      eraseFailed = true;
+      log(t("msg_remove_failed", { err: `metadata is removed, but physical erase failed: ${err.message}` }), "error");
     }
-    const rm = planRemove(slotModel.carve, index);
-    if (!rm) throw new Error(t("err_remove_target"));
-    slotPickUserSet = false;   // 删除会让后续行改号:显式选择作废,回默认推导
-    const info = await commitCarve(rm.carve, { materialize: true });
-    log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
-    log(t("msg_table_materialized"), "ok");
-    log(t("msg_slot_removed", { name, freed: fmtBytes(rm.removed.size) }), "ok");
+    log(t("msg_slot_removed", { name, freed: fmtBytes(rm.removed.size + ownedData.reduce((n, d) => n + d.size, 0)) }), eraseFailed ? "warn" : "ok");
   } catch (err) {
     log(t("msg_remove_failed", { err: err.message }), "error");
   } finally {
@@ -719,7 +754,17 @@ async function connectMock() {
 
 // ===== 串口/读取协议配置(单一事实源:波特率与协议参数只允许在这里改) =====
 const ROM_BAUD = 115200;        // ROM bootloader 固定 115200(esptool 规范,不可调)
-const HIGH_BAUD = 921600;       // 会话波特率:实测读取提速 7.6 倍,esptool.py 同配置 5/5 稳定
+// 会话波特率:实测读取提速 7.6 倍,esptool.py 同配置 5/5 稳定。
+// ?baud=115200(e2e/诊断用):强制停留 ROM 波特,慢 ~8×但绕开个别链路上
+// 高速读大区域必死的兼容性问题(真机 2026-10-13:slot 读完后 DATA 区读
+// 连续 8/8 超时,重连亦复现;115200 走 esptool.py 同款停等路径)。
+const HIGH_BAUD = new URLSearchParams(location.search).get("baud") === String(ROM_BAUD)
+  ? ROM_BAUD : 921600;
+// ?noverify(e2e/诊断用):跳过恢复/安装的逐字节读回校验。Chrome WebSerial 在
+// macOS 上无法承受 esptool-js 的持续流式大读(esptool.py 同链路同波特
+// 233KB/s 零失败,问题在浏览器侧——真机 2026-10-13 定案);读回由 harness
+// 分块慢速路径代验。绝不在生产默认路径启用。
+const SKIP_READBACK_VERIFY = new URLSearchParams(location.search).has("noverify");
 const READFLASH_BLOCK = 4096;   // stub 栈缓冲硬上限:更大的块会被 stub 静默截断
 const READFLASH_WINDOW = 64;    // esptool.py read_flash 同款(停等模式,字节单位)。
                                 // 实测决策 2026-09-17:流水线(32768)在 921600 下失败率
@@ -762,7 +807,7 @@ async function wipeSlotResidue(slot, fromOffset, toOffset, onProgress) {
 }
 
 async function wipeRange(start, size, onProgress) {
-  const CHUNK = 0x10000;   // 64KB/块
+  const CHUNK = 0x10000;
   const ff = new Uint8Array(CHUNK).fill(0xff);
   let written = 0;
   while (written < size) {
@@ -830,6 +875,8 @@ const I18N = {
     msg_connected: "Connected to {chip}.",
     msg_warn_chip: "Warning: expected ESP32-C3, got {chip}. Flashing may fail.",
     msg_connect_failed: "Connect failed: {err}",
+    msg_reset_to_app: "Handshake aborted; the chip may be stuck in ROM download mode. Resetting it back to the app firmware…",
+    msg_reset_failed: "Automatic reset failed ({err}); unplug/replug USB or reset the device manually.",
     msg_read_file: "Read {name} ({size}).",
     msg_file_info: "{source}, app {size}",
     msg_validated: "Validated {name}: {source}, app image {size} bytes.",
@@ -860,14 +907,17 @@ const I18N = {
     msg_orphan_slot_warning: "Warning: slot geometry was committed but firmware write failed. The slot is allocated but empty — reinstall or delete it to avoid boot issues.",
     // 备份/恢复流程
     step_backup: "5. Backup child firmware (read slots → zip)",
-    backup_desc: "Backs up the selected slots to a verified zip file on this computer.",
+    backup_desc: "Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic layouts use a v2 raw storage snapshot with source-version metadata.",
     btn_backup: "Backup now",
     step_restore: "6. Restore from backup (zip → slot)",
-    restore_desc: "Restores a backup zip onto the device slots, with automatic space and integrity checks.",
-    restore_flow_hint: "Step 1: pick the backup zip. Step 2: target-slot pickers appear below (one per backed-up slot, defaulting to their original slots). Step 3: Restore.",
+    restore_desc: "USB restores historical v1 APP/NVS archives on fixed-slot devices and v2 raw storage snapshots. Archive hashes and layout are checked before writing; reboot and confirm successful startup afterward. Failures require reflashing the snapshot source MetaPass version.",
+    restore_flow_hint: "Select a historical v1 archive or a v2 storage snapshot. Interrupted restores are not rolled back; if the device does not boot after restore, reflash the source MetaPass version before retrying.",
     btn_restore: "Restore",
+    data_backup_unavailable: "Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic layouts use v2 raw storage snapshots with source-version metadata. ZIP files are unencrypted and may contain Wi-Fi credentials, device state and child-firmware data. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
+    msg_backup_single_group: "Backup supports one APP+DATA group per archive. Select exactly one APP slot.",
+    msg_backup_v2_required: "Transactional APP+DATA backup requires dynamic storage; legacy fixed-slot backup is not supported.",
     msg_backup_start: "Backing up slots…",
     msg_backup_reading: "Reading slot {slot} ({size} at {addr})… this can take a minute per slot.",
     msg_backup_slot_done: "Slot {slot}: {firmware}",
@@ -889,13 +939,12 @@ const I18N = {
     msg_backup_nvs_done: "NVS data ({size}) included in backup.",
     msg_backup_nvs_empty: "NVS partition is erased — nothing to back up.",
     msg_backup_nvs_failed: "NVS read failed ({err}) — backup continues without NVS.",
-    err_restore_nvs_missing: "Backup contains NVS data but this device has no NVS partition.",
-    msg_restore_nvs_write: "Restoring NVS data ({size} → {addr})…",
     msg_backup_done: "Backup saved: {name} ({size}).",
     msg_backup_failed: "Backup failed: {err}",
     msg_restore_pick_file: "Choose a backup zip first.",
     msg_restore_bad_zip: "Not a valid backup zip: {err}",
     msg_restore_manifest_missing: "Zip has no {name} — refusing an unverifiable backup.",
+    msg_restore_partial_archive: "This archive is incomplete (missing slots: {slots}); restore is blocked to avoid silently applying a partial backup.",
     msg_restore_loaded: "Loaded backup: {slots}. Choose target slots, then Restore.",
     msg_restore_slot_label: "Backup slot {from} → target slot",
     msg_restore_same_slot: "Slot {slot} (same)",
@@ -904,10 +953,14 @@ const I18N = {
     err_restore_no_space: "Slot {slot} has no room: {reason}",
     err_restore_target_invalid: "Invalid restore target slot: {slot}",
     err_restore_sha: "SHA-256 mismatch for {name}: expected {expected}, got {got}. Aborting.",
+    err_restore_nvs_missing: "The target device has no readable NVS partition.",
     err_restore_missing_file: "Zip is missing {name} listed in the manifest.",
     msg_restore_writing: "Writing {name} ({size}) to slot {slot} at {addr}…",
     msg_restore_raw_write: "Raw mirror: writing back from slot {slot} base address {addr} (no app/tail layout — size + SHA-256 verified only).",
     msg_restore_done: "Restore complete: {slots}. Power-cycle the device.",
+    msg_restore_nvs_write: "Restoring historical NVS image ({size}) at {addr}.",
+    msg_restore_nvs_preserved: "Destination NVS was not modified.",
+    msg_archive_nvs_verified: "Archived NVS was verified but not restored.",
     msg_restore_failed: "Restore failed: {err}",
     step_upgrade: "7. Upgrade launcher (keep NVS data & child firmware)",
     upgrade_desc: "Upgrades the launcher while keeping NVS-stored data (Wi-Fi config, per-app state) and all installed child firmware.",
@@ -1040,6 +1093,8 @@ const I18N = {
     msg_connected: "已连接到 {chip}。",
     msg_warn_chip: "警告:预期 ESP32-C3,实际为 {chip}。烧录可能失败。",
     msg_connect_failed: "连接失败:{err}",
+    msg_reset_to_app: "握手中断,芯片可能被留在 ROM 下载模式,正在复位回应用固件…",
+    msg_reset_failed: "自动复位失败（{err}）；请重新插拔 USB 或手动重启设备。",
     msg_read_file: "已读取 {name}({size})。",
     msg_file_info: "{source},应用 {size}",
     msg_validated: "已验证 {name}:{source},应用镜像 {size} 字节。",
@@ -1070,14 +1125,17 @@ const I18N = {
     msg_orphan_slot_warning: "警告:槽位几何已提交但固件写入失败。槽位已分配但为空——请重新安装或删除该槽位,以免设备启动异常。",
     // 备份/恢复流程
     step_backup: "5. 备份子固件(读取槽位 → zip)",
-    backup_desc: "将选中的槽位备份为一个带校验的 zip 文件,保存到本机。",
+    backup_desc: "固定槽设备保留历史 v1 APP/NVS 备份；动态布局使用带来源版本元数据的 v2 原始存储快照。",
     btn_backup: "开始备份",
     step_restore: "6. 从备份恢复(zip → 槽位)",
-    restore_desc: "将备份 zip 恢复到设备槽位,自动进行空间与完整性校验。",
-    restore_flow_hint: "第 1 步:选择备份 zip;第 2 步:下方出现目标槽位选择(每个备份槽位一行,默认恢复到原槽位);第 3 步:点击恢复。",
+    restore_desc: "USB 在固定槽设备上保留历史 v1 APP/NVS 还原，并支持 v2 原始存储快照顺序恢复。写入前会校验归档；恢复后需重启确认能正常启动。失败时需刷回快照来源 MetaPass 版本。",
+    restore_flow_hint: "选择历史 v1 归档或 v2 存储快照。恢复中断不会自动回滚；重试前请刷回归档来源 MetaPass 版本。",
     btn_restore: "开始恢复",
+    data_backup_unavailable: "USB 固定槽设备保留历史 v1 APP/NVS 归档兼容；动态布局使用 v2 原始存储快照。ZIP 未加密，可能包含 Wi-Fi 凭证、设备状态和玩法数据。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
+    msg_backup_single_group: "每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
+    msg_backup_v2_required: "事务化 APP+DATA 备份需要动态存储模式；不再支持旧版固定槽位备份。",
     msg_backup_start: "开始备份槽位…",
     msg_backup_reading: "读取槽位 {slot}({size} @ {addr})… 每个槽位可能需要一分钟。",
     msg_backup_slot_done: "槽位 {slot}:{firmware}",
@@ -1099,13 +1157,12 @@ const I18N = {
     msg_backup_nvs_done: "NVS 存储数据({size})已纳入备份。",
     msg_backup_nvs_empty: "NVS 分区为擦除态,无需备份。",
     msg_backup_nvs_failed: "NVS 读取失败({err})—— 备份继续,本次不含 NVS。",
-    err_restore_nvs_missing: "备份包含 NVS 数据,但设备分区表中没有 NVS 分区。",
-    msg_restore_nvs_write: "还原 NVS 存储数据({size} → {addr})…",
     msg_backup_done: "备份已保存:{name}({size})。",
     msg_backup_failed: "备份失败:{err}",
     msg_restore_pick_file: "请先选择备份 zip。",
     msg_restore_bad_zip: "无效的备份 zip:{err}",
     msg_restore_manifest_missing: "zip 内没有 {name} —— 拒绝无法校验的备份。",
+    msg_restore_partial_archive: "该备份不完整（缺失槽位：{slots}）；为避免静默恢复部分数据，已阻止恢复。",
     msg_restore_loaded: "备份已加载:{slots}。请选择目标槽位后开始恢复。",
     msg_restore_slot_label: "备份槽位 {from} → 目标槽位",
     msg_restore_same_slot: "槽位 {slot}(原位)",
@@ -1114,10 +1171,14 @@ const I18N = {
     err_restore_no_space: "槽位 {slot} 空间不足:{reason}",
     err_restore_target_invalid: "无效的恢复目标槽位:{slot}",
     err_restore_sha: "{name} 的 SHA-256 不匹配:期望 {expected},实际 {got}。已中止。",
+    err_restore_nvs_missing: "目标设备没有可读取的 NVS 分区。",
     err_restore_missing_file: "zip 缺少 manifest 中列出的 {name}。",
     msg_restore_writing: "写入 {name}({size})到槽位 {slot} @ {addr}…",
     msg_restore_raw_write: "镜像兜底:从槽位 {slot} 起始地址 {addr} 原样写回(无固件/尾扇区布局 —— 仅做空间与 SHA-256 校验)。",
     msg_restore_done: "恢复完成:{slots}。请重新上电设备。",
+    msg_restore_nvs_write: "正在将历史归档中的 NVS 镜像（{size}）写回地址 {addr}。",
+    msg_restore_nvs_preserved: "目标设备现有 NVS 保持不变。",
+    msg_archive_nvs_verified: "归档中的 NVS 已校验但未写入。",
     msg_restore_failed: "恢复失败:{err}",
     step_upgrade: "7. 升级 launcher(保留 NVS 数据与子固件)",
     upgrade_desc: "升级启动器,保留 NVS 存储数据(Wi-Fi 配置、应用内部状态)与已安装的全部子固件。",
@@ -1300,7 +1361,7 @@ let transport = null;
 let loader = null;
 let connecting = false; // 连接流程进行中:防止重入把串口搞成半开状态
 let busy = false;
-let linkBaud = ROM_BAUD;  // 当前会话实际波特率(恢复路径必须用它重开串口,见 resyncAfterReadError)
+let linkBaud = ROM_BAUD;  // 当前会话实际波特率；重建读取会话时沿用该值
 let activeTab = "local";
 let localImage = null;   // { data, length, source, name }
 let playDetail = null;   // 社区玩法详情
@@ -1308,6 +1369,10 @@ let playDetail = null;   // 社区玩法详情
 // mock 模式(?mock=1 / ?mock=fresh / ?mock=legacy / #mock):页面模拟设备。
 // 横幅自加载起常显 —— mock 会话绝不能被误当成真机会话(设计 §10)。
 const MOCK_PROFILE = mockProfileFromLocation(location);
+// Real-browser E2E mode: use exactly one previously-authorized real Web Serial port.
+// Production/default mode still uses requestPort() so the user controls port selection.
+const E2E_REAL = new URLSearchParams(location.search).get("e2e") === "real";
+if (E2E_REAL && MOCK_PROFILE) throw new Error("e2e=real cannot be combined with mock mode");
 if (MOCK_PROFILE) {
   const banner = $("mock-banner");
   banner.hidden = false;
@@ -1331,6 +1396,188 @@ function refreshInstallButton() {
   $("btn-backup").disabled = busy || !loader;
   $("btn-restore").disabled = busy || !loader;
   $("btn-upgrade").disabled = busy || !loader || !upgradeLoaded;
+}
+
+function dataSizingListing(carve) {
+  return {
+    slots: carve.slots.map((s, slot) => ({
+      slot, offset: s.offset, size: s.size,
+      limit: s.kind === SLOT_KIND.APP ? Math.max(0, s.size - 0x1000) : 0,
+      kind: s.kind === SLOT_KIND.APP ? "app" : "storage",
+      state: s.state === SLOT_STATE.EMPTY ? "empty" : "valid",
+    })),
+    data: carve.data.map((d) => ({ ...d, play_id: d.playId })),
+  };
+}
+
+// Capacity selector mirrors the phone installer: declared minimums and every
+// selected size are revalidated against the shared pool before any flash write.
+async function chooseUsbDataSizes(dataImages, carve) {
+  if (!dataImages.length) return [];
+  const dialog = $("data-size-dialog");
+  const rows = $("data-size-rows");
+  const error = $("data-size-error");
+  const zh = currentLang === "zh";
+  $("data-size-title").textContent = zh ? "数据分区容量" : "DATA partition sizes";
+  $("data-size-help").textContent = zh
+    ? "为每个 DATA 分区选择容量。范围受当前连续空闲空间约束，提交前会再次验证。"
+    : "Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.";
+  $("data-size-cancel").textContent = zh ? "取消" : "Cancel";
+  $("data-size-confirm").textContent = zh ? "确认容量" : "Confirm sizes";
+  const listing = dataSizingListing(carve);
+  const minimums = dataImages.map((d) => dataPartitionMinimum(d));
+  if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
+    throw new Error("DATA partition has an invalid declared minimum size");
+  }
+  for (let i = 0; i < dataImages.length; i++) {
+    for (let j = 0; j < carve.data.length; j++) {
+      const d = carve.data[j];
+      if (d.label === dataImages[i].label && d.subtype === dataImages[i].subtype) {
+        throw new Error(`DATA label/subtype already exists: ${dataImages[i].label} (remove or back up the existing owner first)`);
+      }
+    }
+    for (let j = 0; j < i; j++) {
+      if (dataImages[i].label === dataImages[j].label &&
+          dataImages[i].subtype === dataImages[j].subtype) {
+        throw new Error(`duplicate DATA label/subtype: ${dataImages[i].label}`);
+      }
+    }
+  }
+
+  const options = dataImages.map((d, i) => {
+    const bounds = dataSizeBounds(listing, null, minimums[i],
+      minimums.filter((_, j) => j !== i));
+    const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+    const min = minimums[i];
+    if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest contiguous gap ${fmtBytes(max)}, total free ${fmtBytes(bounds.available)}. Fixed partitions cannot be moved or crossed.`);
+    const declared = Number(d.required_size);
+    const optionSet = buildDataSizeOptions(min, max, declared, DATA_SIZE_STEP);
+    return { ...optionSet, available: bounds.available, selected: optionSet.defaultSize };
+  });
+
+  rows.replaceChildren();
+  options.forEach((o, i) => {
+    const label = document.createElement("label");
+    label.style.display = "block";
+    label.style.margin = "12px 0 4px";
+    label.textContent = zh
+      ? `${dataImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大连续 ${fmtBytes(o.max)} · 总空闲 ${fmtBytes(o.available)}`
+      : `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} max contiguous · ${fmtBytes(o.available)} total free`;
+    const select = document.createElement("select");
+    select.dataset.dataSize = String(i);
+    select.style.width = "100%";
+    select.style.padding = "8px";
+    for (const size of o.values) {
+      const option = document.createElement("option");
+      option.value = String(size);
+      option.textContent = `${(size / (1024 * 1024)).toFixed(size % (1024 * 1024) ? 3 : 0)} MiB`;
+      option.selected = size === o.selected;
+      select.appendChild(option);
+    }
+    rows.append(label, select);
+  });
+  error.textContent = "";
+  return await new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dialog.close();
+      resolve(value);
+    };
+    $("data-size-cancel").onclick = () => finish(null);
+    $("data-size-confirm").onclick = () => {
+      const sizes = [...rows.querySelectorAll("select[data-data-size]")].map((el) => Number(el.value));
+      let planned = carve;
+      for (let i = 0; i < dataImages.length; i++) {
+        const size = normalizeDataSize(sizes[i], { min: options[i].min, max: options[i].max });
+        if (size === null || size < minimums[i]) {
+          error.textContent = zh ? `DATA ${dataImages[i].label} 容量无效` : `Invalid size for DATA ${dataImages[i].label}`;
+          return;
+        }
+        const place = placeNewData(planned, size);
+        if (!place) {
+          error.textContent = zh ? "这些 DATA 容量组合无法放入当前分区布局，请调小部分容量。" : "These DATA sizes do not fit together in the current partition layout. Reduce one or more sizes.";
+          return;
+        }
+        planned = {
+          slots: planned.slots.slice(),
+          data: [...planned.data, {
+            playId: 0xfffffffe, offset: place.offset, size,
+            state: DATA_STATE.PRISTINE, subtype: dataImages[i].subtype,
+            type: 1, label: dataImages[i].label,
+          }],
+        };
+        if (!carveValid(planned)) {
+          error.textContent = zh ? `DATA ${dataImages[i].label} 分配无效` : `Invalid DATA allocation for ${dataImages[i].label}`;
+          return;
+        }
+      }
+      finish(sizes);
+    };
+    dialog.oncancel = (ev) => { ev.preventDefault(); finish(null); };
+    dialog.showModal();
+  });
+}
+
+async function verifyFlashReadback(address, expected, label, onProgress) {
+  const startedAt = Date.now();
+  const eventBase = { label, address, length: expected.length };
+  window.__flashReadProbe?.({ kind: "md5-verify-start", ...eventBase, at: startedAt });
+  try {
+    const result = await verifyFlashRangeByMd5({
+      address,
+      expected,
+      flashMd5sum: (offset, length) => loader.flashMd5sum(offset, length),
+      md5Bytes: (bytes) => {
+        const md5 = globalThis.__READFLASH_MD5__;
+        if (typeof md5 !== "function") throw new Error("local MD5 implementation is unavailable");
+        return md5(bytes);
+      },
+      onProgress,
+    });
+    window.__flashReadProbe?.({
+      kind: "md5-verify-done", ...eventBase,
+      expectedMd5: result.expectedMd5, actualMd5: result.actualMd5,
+      durationMs: Date.now() - startedAt, at: Date.now(),
+    });
+    log(`${label} read-back verified by device-side MD5 (${result.actualMd5})`, "ok");
+    return result;
+  } catch (error) {
+    window.__flashReadProbe?.({
+      kind: "md5-verify-error", ...eventBase,
+      error: error && error.message ? error.message : String(error),
+      durationMs: Date.now() - startedAt, at: Date.now(),
+    });
+    throw error;
+  }
+}
+
+async function writeDataPayload(image, record) {
+  const bytes = image.data;
+  if (!(bytes instanceof Uint8Array) || bytes.length > record.size) {
+    throw new Error(`DATA ${record.label} payload exceeds its allocated extent`);
+  }
+  // Clear the full target extent before writing, preserving the original write
+  // behavior; this change is specifically about bounded READ verification.
+  await wipeRange(record.offset, record.size);
+  for (let off = 0; off < bytes.length; off += 0x10000) {
+    const chunk = bytes.subarray(off, Math.min(bytes.length, off + 0x10000));
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(chunk), address: record.offset + off }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+    });
+  }
+  if (bytes.length === 0) {
+    const head = await loader.readFlash(record.offset, Math.min(4096, record.size));
+    if (head.some((b) => b !== 0xff)) throw new Error(`DATA ${record.label} erase verification failed`);
+    return;
+  }
+  if (!SKIP_READBACK_VERIFY) {
+    await verifyFlashReadback(record.offset, bytes, `DATA ${record.label}`);
+  } else {
+    log(`DATA ${record.label}: read-back skipped (?noverify — harness-side chunked verify)`, "warn");
+  }
 }
 
 // ===== 7. 升级 launcher(仅写 factory/分区表/bootloader/otadata;NVS 与子固件槽零接触)=====
@@ -1511,7 +1758,17 @@ $("btn-connect").addEventListener("click", async () => {
     log(t("msg_requesting_port"));
     $("chip-status").textContent = t("msg_connecting");   // 立即反馈,连接失败时状态行不过期
     $("chip-status").className = "";
-    const port = await navigator.serial.requestPort();
+    let port;
+    if (E2E_REAL) {
+      const ports = await navigator.serial.getPorts();
+      if (ports.length !== 1) {
+        throw new Error(`E2E real mode requires exactly one authorized Web Serial port; found ${ports.length}. Open the page normally once, click Connect, select the ESP32-C3, then rerun with ?e2e=real.`);
+      }
+      port = ports[0];
+      log("E2E real mode: using one previously-authorized Web Serial port.", "warn");
+    } else {
+      port = await navigator.serial.requestPort();
+    }
     newTransport = new Transport(port, false);
     // 连接期即监听系统级断开(拔线/休眠/设备重启):状态行同步刷新,按钮即时锁定。
     port.addEventListener("disconnect", () => { if (transport?.device === port) markDisconnected(); });
@@ -1574,9 +1831,28 @@ $("btn-connect").addEventListener("click", async () => {
       log(t("msg_slot_table_read_failed", { err: err.message }), "warn");
     }
   } catch (err) {
-    // 失败必须释放本轮已打开的串口:否则下次 open 同一端口会抛
-    // "The port is already open",设备从此连不上(只能重开页面)。
-    // 用户在 requestPort 取消选择时不碰已有连接。
+    // 连接握手(esptool-js sync)会先把芯片置进 ROM 下载模式再回 app;
+    // 链路中途失败(读超时/拔线)时芯片被留在 stub——app 不跑、WiFi 不起、
+    // 无串口输出,表象如"设备死机",esptool 硬复位才恢复(真机 2026-10-12
+    // 多回定案)。必须在 disconnect() 关闭 Web Serial 端口前发复位信号；
+    // 关闭后 setSignals 会失败，不能完成恢复。
+    // 仅在已拿到端口并尝试过同步(newTransport 存在)时执行;用户取消端口
+    // 选择器(newTransport 为空)绝不复位用户设备。
+    const failedPort = newTransport?.device;
+    if (failedPort) {
+      try {
+        // Match esptool-js's ESP32 reset pulse: hold EN, release with boot pin high.
+        await failedPort.setSignals({ dataTerminalReady: false, requestToSend: true });
+        await new Promise((r) => setTimeout(r, 120));
+        await failedPort.setSignals({ dataTerminalReady: true, requestToSend: false });
+        await new Promise((r) => setTimeout(r, 120));
+        await failedPort.setSignals({ dataTerminalReady: false, requestToSend: false });
+        log(t("msg_reset_to_app"), "warn");
+      } catch (resetError) {
+        log(t("msg_reset_failed", { err: resetError?.message || String(resetError) }), "warn");
+      }
+    }
+    // 复位尝试后再释放串口，否则下次 open 同一端口会抛 "The port is already open"。
     try { await newTransport?.disconnect(); } catch { /* 已断开则忽略 */ }
     if (transport === newTransport) { transport = null; loader = null; }  // 已提交过则整体回滚
     if (!transport) {   // 没有存活连接才把状态行置为失败,避免覆盖有效连接的显示
@@ -1592,10 +1868,13 @@ $("btn-connect").addEventListener("click", async () => {
 
 // 带超时的 Promise 竞速:防止设备端静默(不回错误)时连接流程无限挂死。
 function withTimeout(promise, ms, label) {
-  return Promise.race([
-    promise,
-    new Promise((_, rej) => setTimeout(() => rej(new Error(`${label} (${Math.round(ms / 1000)}s)`)), ms)),
-  ]);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} (${Math.round(ms / 1000)}s)`)), ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 // ===== 2. 槽位选择(动态行渲染 + 删除按钮事件委托)=====
@@ -1623,8 +1902,12 @@ $("file-input").addEventListener("change", async (ev) => {
     const buf = new Uint8Array(await file.arrayBuffer());
     log(t("msg_read_file", { name: file.name, size: fmtBytes(buf.length) }));
     const img = extractAppImage(buf);
-    localImage = { ...img, name: file.name };
-    $("file-info").textContent = t("msg_file_info", { source: img.source, size: fmtBytes(img.length) });
+    const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];
+    localImage = { ...img, dataImages, name: file.name };
+    const dataSummary = dataImages.length
+      ? ` · ${dataImages.length} DATA partition(s): ${dataImages.map((d) => d.label).join(", ")}`
+      : "";
+    $("file-info").textContent = t("msg_file_info", { source: img.source, size: fmtBytes(img.length) }) + dataSummary;
     $("file-info").className = "ok";
     log(t("msg_validated", { name: file.name, source: img.source, size: img.length }), "ok");
     // 预填显示名:文件名去扩展名,剔除非可打印 ASCII;剔完为空则留空不写 blob
@@ -1865,110 +2148,109 @@ $("btn-probe").addEventListener("click", async () => {
   }
 });
 
-// 分块读 flash:单次大请求一旦 USB 抖动/超时就整槽报废(实测 slot1 2MB 流读
-// 报 "No serial data received")。32KB/块 + 每块自动重试 5 次,偶发抖动自愈;
-// 数据流式拼入 slotBuf,进度按块推进。
-// 为什么是 32KB 而不是 64KB:每收一帧要发一个 4 字节裸 ACK(累计字节数,非 SLIP
-// 封帧)。64KB = 16 帧,第 12 个 ACK = 0x0000C000 —— 字节里含 0xC0,恰是 SLIP 帧定
-// 界符,会被 stub 帧解析器误判为帧边界 → 解析错位 → 严重时下一条 READ 命令被静默
-// 吞掉(实测:同一地址连续 5 次超时、sync 却每次都成功)。32KB = 8 帧,ACK 累计值
-// 4096j(j≤8)的字节 ∈ {0x10..0x80},可证永不出现 0xC0/0xDB —— 协议流里不再存在
-// 不安全字节;同时失败粒度与重试代价减半。
+// 分块读取 Flash：每块 32 KiB，避免单次大请求因 USB 抖动/超时导致整槽备份失败。
+// ACK 为 4 字节累计确认值（非 SLIP 封帧）。32 KiB 对应 8 个 4 KiB 帧，
+// 累计确认值不会包含 SLIP 特殊字节 0xC0/0xDB，避免确认数据被误判为帧边界。
+// 读取按 512 KiB 分段更新串口/loader 会话；单块失败或超时后，重建会话并从该块
+// 的原始 Flash 偏移重读。所有尝试均有界，失败后终止备份，不生成不完整 ZIP。
 const BACKUP_CHUNK = 0x8000;
-const BACKUP_RETRIES = 8;   // 单块失败率 p≈3-5%(设备侧偶发丢字节/命令竞态,不可根除)下,8 次重试使单块最终失败概率 p^8 ≈ 万分之一
-// 读失败后的传输层恢复。esptool-js readFlash 的流式协议:stub 每发 4KB 块等浏览器
-// 回 4 字节累计确认(max_in_flight=64 帧,实际受读取总长限制)。中断后若只清缓冲
-// 不补确认,stub 会停在"等确认 → 发剩余数据"循环里、不回命令循环,sync 的同步帧
-// 会被吞掉 → sync 必败。注意 ACK 是裸字节非 SLIP 封帧,其值必须避免 0xC0/0xDB
-// (SLIP 特殊字节,见 BACKUP_CHUNK 注释)—— 32KB 块的 ACK=0x00008000 安全。
-// 恢复顺序(每步硬超时,任何一步失败立即上抛 —— 恢复路径绝不允许挂死页面):
-//   a) 补发"整块已收满"确认帧 → stub 发完剩余字节后回命令循环(3s);
-//   b) 排空线路残留(300ms 静默视为发完,总上限 5s);
-//   c) sync 重新同步(8s);
-//   d) sync 失败 → L2:按**会话波特率**(linkBaud,不是写死值!)关闭并重开串口再 sync
-//      —— 曾因写死 115200 而设备已跑在 921600,重开后波特率失配,后续重试收到的全是
-//      乱码(Invalid head of packet),同一地址 5 连败整槽报废(实测 13:52 日志)。
-//   e) L2 也失败 → L3:整机 USB-JTAG 复位回 ROM bootloader + 重新上传 stub + 同步,
-//      全自动无需用户干预。stub 已死/会话彻底报废时的最后兜底。
-async function resyncAfterReadError(chunkSize, attempt = 2) {
-  const dbg = (m) => { if (debugMode()) log("[debug] " + m, "warn"); };
-  // ---- L1 软恢复:补 ACK → 排空 → sync(通常足以处理瞬时错位) ----
-  // ACK 值用 0xFFFFFFFF(发送方计数器可表示的最大值):stub 的恢复逻辑是
-  // num_acked >= num_sent 即退出本次读、发 digest、回命令循环。此前补 chunkSize
-  // (0x8000)时退出时机不确定——已发 <0x8000 会继续把剩余数据吐完(拖长交叠窗口,
-  // 排空经常接不住),已发 >0x8000 才放弃——这就是恢复后仍脏、连败的根源。
-  // 0xFFFFFFFF 恒大于 num_sent → stub 必然立即中止 → 发 digest → 回命令循环,
-  // 恢复成为确定性流程。digest 残余与线路脏字节由下一步排空统一清掉。
-  const ack = new Uint8Array([255, 255, 255, 255]);
-  try { await withTimeout(loader.transport.write(ack), 3000, "resync: ACK 写入超时"); }
-  catch (e) { dbg("ACK 补发: " + e.message); }
-  const t0 = Date.now();
-  for (;;) {
-    if (Date.now() - t0 > RESYNC_DRAIN_CAP_MS) break;   // 上限保护:stub 若持续乱吐,交 L2
-    const want = Math.max(1, loader.transport.inWaiting());
-    let chunk = null;
-    try { chunk = await loader.transport.newRead(want, RESYNC_DRAIN_SILENCE_MS); } catch { break; }
-    if (!chunk || chunk.length === 0) break;
+// 最多尝试 3 次：首次读取 + 最多 2 次恢复后重读，避免在故障链路上无限等待。
+const BACKUP_RETRIES = 3;
+const BACKUP_READ_TIMEOUT_MS = 15000; // 真机 32 KiB 块通常数秒；给慢链路留余量，卡死时及时重建会话。
+// Recovery is intentionally simple: after a failed/timed-out chunk, restart the
+// serial/loader session and retry that exact flash offset. The bounded-session
+// reader below still renews the session every 512 KiB on the normal path.
+
+function archiveSlotIdentity(slot, physicalSlot) {
+  const carveSlot = slotModel.carve?.slots?.find((candidate) => candidate.offset === physicalSlot.offset);
+  return {
+    slot,
+    play_id: Number.isSafeInteger(carveSlot?.playId) ? carveSlot.playId : 0,
+    name: typeof carveSlot?.name === "string" && carveSlot.name
+      ? carveSlot.name
+      : (typeof physicalSlot.name === "string" && physicalSlot.name ? physicalSlot.name : `slot-${slot}`),
+  };
+}
+// Chrome/macOS Web Serial 的大范围读取在多次 readFlash 调用后可能失去响应。
+// 真机验证的可行规避路径是将读取拆为 512 KiB 段，并在段间建立全新的
+// Transport/ESPLoader 会话。段大小只限制一次会话读取量，不改变 flash 地址规划。
+// 如果重建会话失败，直接终止备份；绝不生成不完整 ZIP。
+const BACKUP_SESSION_SEGMENT = 0x80000;
+
+async function restartBackupReadSession() {
+  const port = transport?.device;
+  if (!port || !ESPLoader || !Transport) {
+    throw new Error("Cannot restart backup read session: serial port or esptool is unavailable");
   }
-  dbg(`排空完成(耗时 ${Date.now() - t0}ms),开始 sync…`);
+  const oldLoader = loader;
+  const oldTransport = transport;
+  const before = {
+    seq: slotModel.seq,
+    slots: JSON.stringify(slotModel.carve?.slots || []),
+    data: JSON.stringify(slotModel.carve?.data || []),
+  };
+  log("DATA backup: opening a fresh serial/loader session at segment boundary", "warn");
+  try { await withTimeout(oldTransport.disconnect(), 5000, "backup session close timed out"); }
+  catch (err) { log("Previous backup session close: " + err.message, "warn"); }
+
+  const nextTransport = new Transport(port, false);
+  const nextLoader = new ESPLoader({
+    transport: nextTransport,
+    baudrate: linkBaud,
+    romBaudrate: ROM_BAUD,
+  });
   try {
-    await withTimeout(loader.sync(), RESYNC_SYNC_TIMEOUT_MS, "resync: sync 超时");
-    await new Promise((r) => setTimeout(r, 50));
-    return "L1";   // 软恢复成功:loader/stub 状态保持,继续用
-  } catch (e1) {
-    dbg("L1 sync 失败(" + e1.message + ")");
-  }
-  // ---- L2 重开串口:必须用会话波特率(stub 仍在设备上跑);残留缓冲必须清空,
-  //      否则脏字节会让 sync 的 SLIP 解析吃垃圾 ----
-  try {
-    log(t("msg_resync_l2", { baud: linkBaud }), "warn");
-    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: 关闭串口超时"); } catch { /* 半开由重开兑底 */ }
-    try { await withTimeout(loader.transport.connect(linkBaud), 5000, "resync: 重开串口超时"); }
-    catch (e2) { throw new Error("重开串口失败: " + e2.message); }
-    loader.transport.buffer = new Uint8Array(0);   // 清残留脏字节
-    // stub 若在重开期间被冲掉,sync 会报错 → 交由 L3 处理
-    await withTimeout(loader.sync(), 10000, "resync: L2 sync 超时");
-    await new Promise((r) => setTimeout(r, 50));
-    return "L2";
-  } catch (e2) {
-    dbg("L2 失败(" + e2.message + ")");
-  }
-  // ---- L3 整机复位 + 重传 stub:最后兜底 ----
-  // 顺序严格对齐 vendor 语义:connect 内部自己开端口(romBaudrate)+ 执行复位序列,
-  // 绝不能在它之前手动 transport.connect(否则 "port already open")。换波特率用
-  // 全新 loader 实例执行 changeBaud(命令在 115200 发出、设备切换、宿主重开),
-  // 避免在旧 loader 上留下"命令已发但宿主未跟上"的模糊状态。
-  if (attempt < 3) throw new Error("L1/L2 恢复失败,升级 L3 仅在 retry ≥ 3 时执行");
-  try {
-    log(t("msg_resync_l3"), "warn");
-    try { await withTimeout(loader.transport.disconnect(), 5000, "resync: L3 关闭串口超时"); } catch { /* ignore */ }
-    loader.IS_STUB = false;          // 重传 stub 的前置状态(显式清零,
-    loader.syncStubDetected = false; // 防 runStub 被误跳过)
-    // "usb_reset" 强制走 USB-JTAG 复位序列把设备打回 ROM bootloader
-    await loader.connect("usb_reset");   // 同步 ROM + 识别芯片(内部开端口+复位)
-    await loader.runStub();               // 重新上传 stub(ROM 波特率,与首次连接一致)
-    if (linkBaud !== ROM_BAUD) {
-      try {
-        const ld = new ESPLoader({ transport: loader.transport, baudrate: linkBaud, romBaudrate: ROM_BAUD });
-        await withTimeout(ld.changeBaud(), 10000, "resync: 恢复高速波特率超时");
-        await withTimeout(ld.sync(), 8000, "resync: 高波特率确认超时");
-        loader = ld;   // 会话 loader 整体替换:状态清晰(波特率/同步全部属于新实例)
-      } catch (eBaud) {
-        dbg("changeBaud 失败(" + eBaud.message + "),链路降级 115200 继续");
-        linkBaud = 115200;
-        loader.baudrate = 115200;
-        await withTimeout(loader.sync(), 8000, "resync: 降级 115200 确认超时");
-      }
-    } else {
-      await withTimeout(loader.sync(), 8000, "resync: L3 sync 超时");
+    const chip = await withTimeout(nextLoader.main(), 20000, "backup session sync timed out");
+    await withTimeout(nextLoader.readReg(nextLoader.CHIP_DETECT_MAGIC_REG_ADDR), 5000,
+      "backup session baud verification timed out");
+    globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
+    transport = nextTransport;
+    loader = nextLoader;
+    await loadSlotModel();
+    const after = {
+      seq: slotModel.seq,
+      slots: JSON.stringify(slotModel.carve?.slots || []),
+      data: JSON.stringify(slotModel.carve?.data || []),
+    };
+    if (before.seq !== after.seq || before.slots !== after.slots || before.data !== after.data) {
+      throw new Error("APP/DATA ownership metadata changed while restarting the backup session");
     }
-    await new Promise((r) => setTimeout(r, 50));
-    return "L3";
-  } catch (e3) {
-    throw new Error("L3 整机复位恢复失败: " + e3.message);
+    log("Fresh backup read session ready (" + chip + ")", "ok");
+  } catch (err) {
+    try { await nextTransport.disconnect(); } catch {}
+    loader = null;
+    transport = null;
+    deviceNvs = null;
+    $("chip-status").textContent = t("msg_device_gone");
+    $("chip-status").className = "error";
+    throw new Error("Cannot resume backup after session restart: " + err.message);
   }
 }
+
+// Public backup reader: read in bounded 512 KiB sessions. On a failed 32 KiB
+// chunk, the inner reader renews the session and retries the same flash offset.
 async function readFlashChunked(start, size, onProgress, onRetry) {
+  const out = new Uint8Array(size);
+  let offset = 0;
+  while (offset < size) {
+    const length = Math.min(BACKUP_SESSION_SEGMENT, size - offset);
+    const part = await readFlashChunkedSingleSession(
+      start + offset,
+      length,
+      (got) => onProgress?.(offset + got),
+      onRetry,
+    );
+    if (!(part instanceof Uint8Array) || part.length !== length) {
+      throw new Error(`Backup segment at 0x${(start + offset).toString(16)} returned an invalid byte length`);
+    }
+    out.set(part, offset);
+    offset += length;
+    if (offset < size) await restartBackupReadSession();
+  }
+  return out;
+}
+
+async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
   const buf = new Uint8Array(size);
   let got = 0;
   while (got < size) {
@@ -1979,15 +2261,21 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
       chunkT0 = Date.now();
       if (debugMode()) log(`[debug] → read 0x${(start + got).toString(16)} +${n}B #${attempt}`, "warn");
       if (attempt > 1) {
-        try { await resyncAfterReadError(n, attempt); }
-        catch (syncErr) {
+        try {
+          log(`备份块读取失败，重建会话后从 0x${(start + got).toString(16)} 续读（${attempt - 1}/${BACKUP_RETRIES - 1}）`, "warn");
+          await restartBackupReadSession();
+        } catch (syncErr) {
           lastErr = syncErr;
           log(t("msg_backup_resync_failed", { err: syncErr.message }), "warn");
-          break;   // re-sync 失败 = 传输层已死,放弃该槽
+          break;
         }
       }
       try {
-        chunk = await loader.readFlash(start + got, n);
+        chunk = await withTimeout(
+          loader.readFlash(start + got, n),
+          BACKUP_READ_TIMEOUT_MS,
+          `读取 0x${(start + got).toString(16)} 的 ${n} 字节超时`,
+        );
         // 短读/长读防护:readFlash 若返回长度不符的缓冲(历史毒帧/协议错位的可能
         // 症状),buf.set 会在无日志路径上抛 RangeError,被外层吞成"仍失败"。
         // 显式校验 + 报告,把这类失败拉回可观测区。
@@ -1997,8 +2285,7 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
       } catch (err) {
         chunk = null;
         lastErr = err;
-        // 每次失败都记录(含最后一次):此前仅 attempt<max 时打日志,最后一次错误被吞,
-        // 用户只见"重试 5 次仍失败"却不知道败因 —— 排障关键盲区。
+        // 每次失败都记录（包括最后一次），保留终止原因，便于定位传输层故障。
         const msg = `[read-error] 0x${(start + got).toString(16)} attempt ${attempt}/${BACKUP_RETRIES}: ${err && err.message ? err.message : String(err)}`;
         try { log(msg, "warn"); } catch { console.error(msg); }
       }
@@ -2012,8 +2299,143 @@ async function readFlashChunked(start, size, onProgress, onRetry) {
   return buf;
 }
 
+
+// H2: 每次 await 前校验 loader 未断开(commitCarve 与快照 inventory 读取等路径共用)
+function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected", { label: label ?? "操作" })); }
+
+async function readUsbStorageInventory() {
+  assertLoader("读取分区表以识别 MetaPass 宿主");
+  const table = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
+  const partitions = parsePartitionTable(table);
+  const candidates = partitions.filter(p => p.type === 0 && (p.subtype === 0 || (p.subtype >= 0x10 && p.subtype <= 0x1f)));
+  const hosts = [];
+  for (const part of candidates) {
+    if (part.size < 0x100) continue;
+    const head = await loader.readFlash(part.offset, 0x100);
+    if (!(head instanceof Uint8Array) || head.length !== 0x100 || head[0] !== 0xe9) continue;
+    const desc = head.subarray(0x20);
+    // ESP_APP_DESC_MAGIC_WORD (0xABCD5432, little-endian) is part of the
+    // descriptor contract; don't identify a host from project-name bytes alone.
+    if (desc[0] !== 0x32 || desc[1] !== 0x54 || desc[2] !== 0xcd || desc[3] !== 0xab) continue;
+    const decoder = new TextDecoder();
+    const project = decoder.decode(desc.subarray(48, 80)).split("\0", 1)[0];
+    if (project !== "FoloToy-AI-Passport") continue;
+    const version = decoder.decode(desc.subarray(16, 48)).split("\0", 1)[0].trim();
+    if (!/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+      throw new Error("MetaPass host image has no valid semantic version; snapshot operation refused");
+    }
+    hosts.push({ ...part, version });
+  }
+  if (hosts.length !== 1) {
+    throw new Error("USB could not uniquely identify the MetaPass host partition from its app descriptor; found " + hosts.length + ". No snapshot operation was started.");
+  }
+  // 2026-10-15 真机实证:launcher 运行态的物化表不含 child DATA 分区
+  // (meta_pt_from_carve_active 只给活动子固件物化),只按 0x8000 表解析会让
+  // 快照静默漏掉全部 child DATA。carve 记录是 DATA 分配的权威来源:把未物化的
+  // DATA 记录并入 inventory(完整 label/type/subtype/offset/size),与固件
+  // /api/install/storage/info 的口径一致;已物化(子固件在跑)时跳过避免重复。
+  const carveData = (slotModel.carve && Array.isArray(slotModel.carve.data)) ? slotModel.carve.data : [];
+  for (const d of carveData) {
+    if (!d || !d.size) continue;
+    const dup = partitions.some(p => p.label === d.label && p.type === d.type &&
+      p.subtype === d.subtype && p.offset === d.offset && p.size === d.size);
+    if (!dup) {
+      partitions.push({ label: d.label, type: d.type, subtype: d.subtype, offset: d.offset, size: d.size });
+    }
+  }
+  return {
+    meta_pass_version: hosts[0].version,
+    running_host: { label: hosts[0].label, type: hosts[0].type, subtype: hosts[0].subtype, offset: hosts[0].offset, size: hosts[0].size },
+    partitions,
+  };
+}
+
+function usbSnapshotDevice(inventory) {
+  const resolve = identity => {
+    const p = inventory.partitions.find(x => x.label === identity.label && x.type === identity.type &&
+      x.subtype === identity.subtype && x.offset === identity.offset && x.size === identity.size);
+    if (!p) throw new Error("Live partition identity changed: " + identity.label);
+    return p;
+  };
+  return {
+    async storageInfo() { return { ok: true, ...inventory }; },
+    async storageRead(partition, offset, length) {
+      const p = resolve(partition);
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset + length > p.size) return { ok: false, text: "partition-relative read out of bounds" };
+      const bytes = await loader.readFlash(p.offset + offset, length);
+      return { ok: true, bytes };
+    },
+    async storageReadPartition(partition, onProgress) {
+      const p = resolve(partition);
+      return readFlashChunked(p.offset, p.size, onProgress);
+    },
+    async storageErase(partition) {
+      const p = resolve(partition);
+      await wipeRange(p.offset, p.size);
+      return { ok: true };
+    },
+    async storageWrite(partition, offset, bytes) {
+      const p = resolve(partition);
+      if (offset < 0 || offset + bytes.length > p.size) return { ok: false, text: "partition-relative write out of bounds" };
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(bytes), address: p.offset + offset }],
+        flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      });
+      return { ok: true };
+    },
+  };
+}
+
+async function createUsbStorageSnapshot(onProgress = () => {}) {
+  const inventory = await readUsbStorageInventory();
+  const device = usbSnapshotDevice(inventory);
+  let reportedProgress = 0;
+  const snapshot = await captureStorageSnapshot(device, {
+    sha256Hex,
+    onProgress: event => {
+      const ratio = event.totalBytes ? event.bytesRead / event.totalBytes : 0;
+      reportedProgress = Math.max(reportedProgress, ratio);
+      onProgress(reportedProgress);
+    },
+  });
+  const zip = await buildStorageSnapshotZip(snapshot, sha256Hex);
+  return { zip, manifest: snapshot.manifest, inventory };
+}
+
+function downloadStorageSnapshot(zip, version) {
+  const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const name = "metapass-storage-snapshot-v2_" + version + "_" + ts + ".zip";
+  const url = URL.createObjectURL(new Blob([zip], { type: "application/zip" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+  return name;
+}
+
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
+  if (isDynMode(slotModel.mode)) {
+    busy = true;
+    refreshInstallButton();
+    try {
+      $("backup-status").textContent = "正在读取设备存储快照…";
+      const snapshot = await createUsbStorageSnapshot(pct => setBackupProgress(pct * 100));
+      const name = downloadStorageSnapshot(snapshot.zip, snapshot.manifest.meta_pass.system_version);
+      $("backup-status").textContent = "快照备份完成：" + name;
+      $("backup-status").className = "ok";
+      log("v2 storage snapshot created for MetaPass " + snapshot.manifest.meta_pass.system_version, "ok");
+      setBackupProgress(100);
+    } catch (err) {
+      $("backup-status").textContent = "快照备份失败：" + err.message;
+      $("backup-status").className = "error";
+      log("USB snapshot backup failed: " + err.message, "error");
+      setBackupProgress(0);
+    } finally {
+      busy = false;
+      refreshInstallButton();
+    }
+    return;
+  }
   const slots = deviceSlots.map((_, i) => i).filter((i) => $(`bk-slot${i}`)?.checked);
   if (slots.length === 0) {
     $("backup-status").textContent = t("msg_backup_pick_slot");
@@ -2061,7 +2483,7 @@ $("btn-backup").addEventListener("click", async () => {
         }
         entries.push({ name: rawMirrorFileName(slot), data: raw });
         manifestEntries.push({
-          slot,
+          ...archiveSlotIdentity(slot, s),
           files: [{ name: rawMirrorFileName(slot), sha256: await sha256Hex(raw), bytes: raw.length, type: "raw" }],
         });
         backedUp.push(slot);
@@ -2082,7 +2504,7 @@ $("btn-backup").addEventListener("click", async () => {
         entries.push({ name, data: part });
         slotFiles.push({ name, sha256: await sha256Hex(part), bytes: part.length });
       }
-      manifestEntries.push({ slot, files: slotFiles });
+      manifestEntries.push({ ...archiveSlotIdentity(slot, s), files: slotFiles });
       backedUp.push(slot);
       log(t("msg_backup_slot_done", {
         slot,
@@ -2113,19 +2535,24 @@ $("btn-backup").addEventListener("click", async () => {
     } catch (err) {
       log(t("msg_backup_nvs_failed", { err: err.message }), "warn");
     }
-    // manifest:所有 slot 合并为一份(按 slot 分组),sha256 是唯一事实来源,恢复时据此校验
-    // nvs(source_offset 仅为溯源信息):还原时以设备分区表定位,不沿用源偏移
+    // Fixed-slot devices keep the historical v1 APP/NVS archive format.
+    // Dynamic v2 snapshot backup is gated above until running-host identity can
+    // be obtained reliably over this USB transport.
+    const missingSlots = slots.filter((slot) => !backedUp.includes(slot));
     const manifestObj = {
-      manifest_version: 1,
-      kind: "meta-pass-slot-backup",
-      created_utc: new Date().toISOString(),
-      slots: manifestEntries,
+      manifest_version: 1, kind: "meta-pass-slot-backup", created_utc: new Date().toISOString(),
+      complete: missingSlots.length === 0,
+      ...(missingSlots.length ? { missing_slots: missingSlots } : {}),
+      slots: manifestEntries.map(({ slot, files }) => ({ slot, files })),
       ...(nvsEntry ? { nvs: nvsEntry } : {}),
     };
     entries.push({
       name: MANIFEST_NAME,
       data: new TextEncoder().encode(JSON.stringify(manifestObj, null, 2)),
     });
+    if (missingSlots.length) {
+      log(`INCOMPLETE BACKUP: slot(s) ${missingSlots.join(", ")} could not be read; archive contains only the successfully verified subset.`, "warn");
+    }
     const zipEntries = entries;
     log(t("msg_backup_zipping"));
     const zip = buildZip(zipEntries);
@@ -2202,64 +2629,191 @@ $("restore-input").addEventListener("change", async (ev) => {
   const file = ev.target.files[0];
   if (!file) return;
   try {
-    const entries = readZipEntries(new Uint8Array(await file.arrayBuffer()));
+    const archiveBytes = new Uint8Array(await file.arrayBuffer());
+    const entries = readDataArchiveZip(archiveBytes);
     const manifestBytes = entries.get(MANIFEST_NAME);
     if (!manifestBytes) throw new Error(t("msg_restore_manifest_missing", { name: MANIFEST_NAME }));
-    const manifest = parseManifest(new TextDecoder().decode(manifestBytes));
-    const filesBySlot = new Map();
-    for (const s of manifest.slots) {
-      const m = new Map();
-      for (const f of s.files) {
-        const data = entries.get(f.name);
-        if (!data) throw new Error(t("err_restore_missing_file", { name: f.name }));
-        if (data.length !== f.bytes) {
-          throw new Error(t("msg_restore_bad_zip", { err: `${f.name} is ${data.length} bytes, manifest says ${f.bytes}` }));
+    const manifestText = new TextDecoder().decode(manifestBytes);
+    let rawManifest;
+    try { rawManifest = JSON.parse(manifestText); } catch { throw new Error("manifest.json is not valid JSON"); }
+    if (rawManifest?.complete === false) {
+      const missing = Array.isArray(rawManifest.missing_slots) ? rawManifest.missing_slots.join(", ") : "unknown";
+      throw new Error(t("msg_restore_partial_archive", { slots: missing }));
+    }
+    if (rawManifest?.kind === "meta-pass-storage-snapshot") {
+      const archive = await readStorageSnapshotZip(archiveBytes, sha256Hex);
+      const inventory = await readUsbStorageInventory();
+      assertSnapshotVersionCompatible(archive.manifest, inventory.meta_pass_version);
+      const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
+        targetPartitions: inventory.partitions, runningHostPartition: inventory.running_host, protectedRanges: [],
+      });
+      restoreZip = { kind: "snapshot", bytes: archiveBytes, manifest: archive.manifest, restorePlan };
+      $("restore-info").textContent = "v2 快照预检通过：" + restorePlan.partitionCount +
+        " 个分区；来源 MetaPass " + archive.manifest.meta_pass.system_version;
+      $("restore-info").className = "ok";
+      $("btn-restore").disabled = busy || !loader;
+      log("v2 storage snapshot validated against live USB partition table", "ok");
+      return;
+    }
+    if (rawManifest?.manifest_version === 2) {
+      throw new Error("不再接受旧 APP+DATA v2 逻辑归档；v2 归档必须使用 meta-pass-storage-snapshot 格式。");
+    }
+    if (rawManifest?.manifest_version === 1) {
+      if (isDynMode(slotModel.mode)) {
+        throw new Error("This historical v1 APP/NVS archive requires a fixed-slot device; v2 snapshot restore is not yet available over USB.");
+      }
+      const manifest = parseManifest(manifestText);
+      const filesBySlot = new Map();
+      for (const slotEntry of manifest.slots) {
+        const files = new Map();
+        for (const file of slotEntry.files) {
+          const bytes = entries.get(file.name);
+          if (!bytes) throw new Error(t("err_restore_missing_file", { name: file.name }));
+          if (bytes.length !== file.bytes) {
+            throw new Error(t("msg_restore_bad_zip", { err: `${file.name} is ${bytes.length} bytes, manifest says ${file.bytes}` }));
+          }
+          const digest = await sha256Hex(bytes);
+          if (digest !== file.sha256) {
+            throw new Error(t("err_restore_sha", { name: file.name, expected: file.sha256, got: digest }));
+          }
+          files.set(file.name, bytes);
         }
-        m.set(f.name, data);
+        filesBySlot.set(slotEntry.slot, files);
       }
-      filesBySlot.set(s.slot, m);
-    }
-    // NVS(manifest.nvs,可选):与槽位文件同规则校验(存在性 + 字节数)后载入
-    let nvsData = null;
-    if (manifest.nvs) {
-      const d = entries.get(manifest.nvs.file);
-      if (!d) throw new Error(t("err_restore_missing_file", { name: manifest.nvs.file }));
-      if (d.length !== manifest.nvs.bytes) {
-        throw new Error(t("msg_restore_bad_zip", { err: `${manifest.nvs.file} is ${d.length} bytes, manifest says ${manifest.nvs.bytes}` }));
+      let nvsData = null;
+      if (manifest.nvs) {
+        nvsData = entries.get(manifest.nvs.file);
+        if (!nvsData || nvsData.length !== manifest.nvs.bytes) {
+          throw new Error(t("err_restore_missing_file", { name: manifest.nvs.file }));
+        }
+        const digest = await sha256Hex(nvsData);
+        if (digest !== manifest.nvs.sha256) {
+          throw new Error(t("err_restore_sha", { name: manifest.nvs.file, expected: manifest.nvs.sha256, got: digest }));
+        }
       }
-      nvsData = d;
-    }
-    restoreZip = { manifest, filesBySlot, nvsData };
-    const slotList = manifest.slots.map((s) => s.slot);
-    $("restore-info").textContent = t("msg_restore_loaded", { slots: slotList.join(", ") });
-    $("restore-info").className = "ok";
-    log(t("msg_restore_loaded", { slots: slotList.join(", ") }), "ok");
-    // 每个备份槽位一行:选择目标槽位(默认原位)
-    const wrap = $("restore-slots");
-    for (const from of slotList) {
-      const row = document.createElement("p");
-      const label = document.createElement("label");
-      label.textContent = t("msg_restore_slot_label", { from });
-      label.htmlFor = `restore-target-${from}`;
-      const sel = document.createElement("select");
-      sel.id = `restore-target-${from}`;
-      for (let s = 0; s < deviceSlots.length; s++) {
-        const opt = document.createElement("option");
-        opt.value = String(s);
-        opt.textContent = s === from ? t("msg_restore_same_slot", { slot: s }) : `Slot ${s}`;   // 动态行:行号即槽位号,不再依赖 slot_N 字典
-        if (s === from) opt.selected = true;
-        sel.appendChild(opt);
+      restoreZip = { manifest, filesBySlot, nvsData };
+      const wrap = $("restore-slots");
+      for (const entry of manifest.slots) {
+        const row = document.createElement("p");
+        const label = document.createElement("label");
+        label.textContent = t("msg_restore_slot_label", { from: entry.slot });
+        label.htmlFor = `restore-target-${entry.slot}`;
+        const sel = document.createElement("select");
+        sel.id = `restore-target-${entry.slot}`;
+        for (let target = 0; target < deviceSlots.length; target++) {
+          const opt = document.createElement("option");
+          opt.value = String(target);
+          opt.textContent = target === entry.slot ? t("msg_restore_same_slot", { slot: target }) : `Slot ${target}`;
+          if (target === entry.slot) opt.selected = true;
+          sel.appendChild(opt);
+        }
+        row.append(label, sel);
+        wrap.appendChild(row);
       }
-      row.append(label, sel);
-      wrap.appendChild(row);
+      $("restore-info").textContent = t("msg_restore_loaded", { slots: manifest.slots.map((s) => s.slot).join(", ") });
+      $("restore-info").className = "ok";
+      $("btn-restore").disabled = busy || !loader;
+      log("Legacy v1 APP/NVS archive validated for the detected fixed-slot device.", "ok");
+      return;
     }
-    $("btn-restore").disabled = busy || !loader;
+    if (rawManifest?.manifest_version !== 1) {
+      throw new Error("Unsupported archive version: " + String(rawManifest?.manifest_version));
+    }
   } catch (err) {
-    $("restore-info").textContent = t("msg_restore_bad_zip", { err: err.message });
+    $("restore-info").textContent = t("msg_restore_bad_zip", { err: err.message }) + "（预检失败，未写入 Flash）";
     $("restore-info").className = "error";
     log(t("msg_restore_bad_zip", { err: err.message }), "error");
   }
 });
+
+async function restoreLegacyV1ArchiveUsb() {
+  const { manifest, filesBySlot, nvsData } = restoreZip || {};
+  if (!manifest || manifest.manifest_version !== 1 || !(filesBySlot instanceof Map)) {
+    throw new Error("No validated legacy v1 archive is loaded");
+  }
+  if (isDynMode(slotModel.mode)) {
+    throw new Error("Legacy v1 restore requires a detected fixed-slot device");
+  }
+  const jobs = manifest.slots.map((entry) => ({
+    from: entry.slot,
+    to: Number($(`restore-target-${entry.slot}`).value),
+  }));
+  if (!jobs.length) throw new Error(t("msg_restore_pick_target"));
+  for (const job of jobs) {
+    if (!Number.isInteger(job.to) || job.to < 0 || job.to >= deviceSlots.length) {
+      throw new Error(t("err_restore_target_invalid", { slot: job.to }));
+    }
+  }
+  let done = 0;
+  const restoredSlots = [];
+  for (const job of jobs) {
+    const target = deviceSlots[job.to];
+    const files = manifestFilesForSlot(manifest, job.from);
+    const fileMap = filesBySlot.get(job.from);
+    const fit = checkRestoreFit(files, target.size);
+    if (!fit.ok) throw new Error(t("err_restore_no_space", { slot: job.to, reason: fit.reason }));
+    for (const file of restoreOrder(files)) {
+      const bytes = fileMap.get(file.name);
+      const digest = await sha256Hex(bytes);
+      if (digest !== file.sha256) {
+        throw new Error(t("err_restore_sha", { name: file.name, expected: file.sha256, got: digest }));
+      }
+    }
+    const wiped = await wipeSlotResidue(target, target.offset, target.offset + target.size,
+      (p) => setRestoreProgress(((done + p * 0.2) / jobs.length) * 100));
+    if (wiped) log(t("msg_residue_wiped", { slot: job.to, addr: hex(target.offset), size: fmtBytes(target.size) }));
+    const ordered = restoreOrder(files);
+    for (let i = 0; i < ordered.length; i++) {
+      const file = ordered[i];
+      const bytes = fileMap.get(file.name);
+      let addr;
+      if (file.type === "raw" || file.name.endsWith("_raw.bin") || file.name.endsWith("_firmware.bin")) {
+        addr = target.offset;
+      } else if (file.name.endsWith("_tail.bin")) {
+        addr = target.offset + Math.ceil(fileMap.get(firmwareFileName(job.from)).length / 4096) * 4096;
+      } else {
+        addr = target.offset + Math.ceil(fileMap.get(firmwareFileName(job.from)).length / 4096) * 4096 + 4096;
+      }
+      log(t("msg_restore_writing", { name: file.name, size: fmtBytes(bytes.length), slot: job.to, addr: hex(addr) }));
+      await loader.writeFlash({
+        fileArray: [{ data: u8ToBinaryString(bytes), address: addr }],
+        flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+        reportProgress: (_i, written, total) =>
+          setRestoreProgress(((done + 0.2 + (0.8 * (i + written / total)) / ordered.length) / jobs.length) * 100),
+      });
+    }
+    restoredSlots.push(`${job.from}→${job.to}`);
+    done++;
+  }
+  // Historical v1.1 archives include a raw NVS image and the old restore
+  // contract writes it back to the target NVS partition. Keep that behavior
+  // only on this fixed-slot v1 path. New v2 snapshots are handled separately
+  // and must never fall through to this APP/NVS restore implementation.
+  if (nvsData) {
+    const nv = await ensureDeviceNvs();
+    if (!nv) throw new Error(t("err_restore_nvs_missing"));
+    const digest = await sha256Hex(nvsData);
+    if (digest !== manifest.nvs.sha256) {
+      throw new Error(t("err_restore_sha", {
+        name: manifest.nvs.file, expected: manifest.nvs.sha256, got: digest,
+      }));
+    }
+    if (nvsData.length !== manifest.nvs.bytes) {
+      throw new Error("Historical v1 NVS payload length does not match its manifest");
+    }
+    log(t("msg_restore_nvs_write", { size: fmtBytes(nvsData.length), addr: hex(nv.offset) }));
+    await loader.writeFlash({
+      fileArray: [{ data: u8ToBinaryString(nvsData), address: nv.offset }],
+      flashSize: "keep", flashMode: "keep", flashFreq: "keep", compress: true,
+      reportProgress: (_i, written, total) => setRestoreProgress(Math.min(99, 95 + (written / total) * 4)),
+    });
+  }
+  setRestoreProgress(100);
+  $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") });
+  $("restore-status").className = "ok";
+  log($("restore-status").textContent, "ok");
+  restoreZip = null;
+}
 
 $("btn-restore").addEventListener("click", async () => {
   if (busy || !loader || !restoreZip) return;
@@ -2268,103 +2822,40 @@ $("btn-restore").addEventListener("click", async () => {
   $("restore-status").textContent = "";
   setRestoreProgress(0);
   try {
-    const jobs = restoreZip.manifest.slots.map((s) => ({
-      from: s.slot,
-      to: Number($(`restore-target-${s.slot}`).value),
-    }));
-    if (jobs.length === 0) throw new Error(t("msg_restore_pick_target"));
-    // N4: 校验 job.to 在 deviceSlots 范围内,防 DOM 篡改或槽数变化导致越界
-    for (const job of jobs) {
-      if (!Number.isInteger(job.to) || job.to < 0 || job.to >= deviceSlots.length) {
-        throw new Error(t("err_restore_target_invalid", { slot: job.to }));
-      }
-    }
-    let done = 0;
-    const restoredSlots = [];
-    for (const job of jobs) {
-      const s = deviceSlots[job.to];
-      const files = manifestFilesForSlot(restoreZip.manifest, job.from);
-      const dataMap = restoreZip.filesBySlot.get(job.from);
-      log(t("msg_restore_checking", { slot: job.to }));
-      // 1) 空间自检(自适应核心:按 manifest 字节数,与源分区大小无关)
-      const fit = checkRestoreFit(files, s.size);
-      if (!fit.ok) throw new Error(t("err_restore_no_space", { slot: job.to, reason: fit.reason }));
-      // 2) 一致性校验:实际字节 sha256 必须等于 manifest 声明
-      for (const f of restoreOrder(files)) {
-        const data = dataMap.get(f.name);
-        const digest = await sha256Hex(data);
-        if (digest !== f.sha256) {
-          throw new Error(t("err_restore_sha", { name: f.name, expected: f.sha256, got: digest }));
-        }
-      }
-      // 3) 槽位级残留清理(装到哪个槽只清哪个槽;先于任何写入,避免恢复后的
-      //    extra 数据被后续写入的擦除影响,也把槽拉回与 manifest 一致的干净态)
-      const wiped = await wipeSlotResidue(
-        s, s.offset, s.offset + s.size,
-        (p) => setRestoreProgress(((done + p * 0.2) / jobs.length) * 100),
+    if (restoreZip.kind === "snapshot") {
+      const sourceVersion = restoreZip.manifest.meta_pass.system_version;
+      const accepted = confirm(
+        "即将按快照覆盖 " + restoreZip.restorePlan.partitionCount + " 个已分配分区。\n\n" +
+        "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
+        "写入中断或重启后无法正常启动时不会自动回滚；请刷回该版本后重试。\n\n继续恢复？"
       );
-      if (wiped) log(t("msg_residue_wiped", { slot: job.to, addr: hex(s.offset), size: fmtBytes(s.size) }));
-      // 4) 按序写入:firmware → extra → tail(tail 最后,防扇区重擦)
-      const ordered = restoreOrder(files);
-      for (let i = 0; i < ordered.length; i++) {
-        const f = ordered[i];
-        const data = dataMap.get(f.name);
-        // 地址按"槽内布局"重建,而非沿用源设备偏移:app@0,tail/extra 在 app 之后依次排列。
-        // 固件 → 从槽位起点写;extra → 紧跟 tail sector 之后(与备份时布局一致);
-        // tail → app 之后的 4K 对齐扇区。
-        let addr;
-        if (f.type === "raw" || f.name.endsWith("_raw.bin")) {
-          addr = s.offset;   // dd 兜底:整槽镜像从槽位起点原样写回(无 app/tail 结构)
-          log(t("msg_restore_raw_write", { slot: job.to, addr: hex(addr) }));
-        } else if (f.name.endsWith("_firmware.bin")) {
-          addr = s.offset;
-        } else if (f.name.endsWith("_tail.bin")) {
-          addr = s.offset + Math.ceil(dataMap.get(firmwareFileName(job.from)).length / 4096) * 4096;
-        } else {
-          addr = s.offset + Math.ceil(dataMap.get(firmwareFileName(job.from)).length / 4096) * 4096 + 4096;
-        }
-        log(t("msg_restore_writing", { name: f.name, size: fmtBytes(data.length), slot: job.to, addr: hex(addr) }));
-        await loader.writeFlash({
-          fileArray: [{ data: u8ToBinaryString(data), address: addr }],
-          flashSize: "keep",
-          flashMode: "keep",
-          flashFreq: "keep",
-          compress: true,
-          reportProgress: (_i, written, total) =>
-            setRestoreProgress(((done + 0.2 + (0.8 * (i + written / total)) / ordered.length) / jobs.length) * 100),
-        });
-      }
-      restoredSlots.push(`${job.from}→${job.to}`);
-      done++;
-    }
-    // NVS 自动还原(与备份对称):sha256 校验后写回设备分区表定位的 NVS 分区。
-    // 用户决策 2026-09-18:自动执行,无 UI 选项。
-    if (restoreZip.nvsData) {
-      const nv = await ensureDeviceNvs();
-      if (!nv) throw new Error(t("err_restore_nvs_missing"));
-      const digest = await sha256Hex(restoreZip.nvsData);
-      if (digest !== restoreZip.manifest.nvs.sha256) {
-        throw new Error(t("err_restore_sha", { name: restoreZip.manifest.nvs.file, expected: restoreZip.manifest.nvs.sha256, got: digest }));
-      }
-      log(t("msg_restore_nvs_write", { size: fmtBytes(restoreZip.nvsData.length), addr: hex(nv.offset) }));
-      await loader.writeFlash({
-        fileArray: [{ data: u8ToBinaryString(restoreZip.nvsData), address: nv.offset }],
-        flashSize: "keep",
-        flashMode: "keep",
-        flashFreq: "keep",
-        compress: true,
-        reportProgress: (_i, written, total) => setRestoreProgress(Math.min(99, 95 + (written / total) * 4)),
+      if (!accepted) throw new Error("已取消快照恢复；未写入 Flash。");
+      const inventory = await readUsbStorageInventory();
+      const device = usbSnapshotDevice(inventory);
+      const result = await restoreStorageSnapshotArchive(device, restoreZip.bytes, {
+        sha256Hex,
+        onProgress: event => {
+          if (Number.isFinite(event.completedBytes) && event.totalBytes > 0) setRestoreProgress(event.completedBytes / event.totalBytes * 100);
+          const offset = Number.isInteger(event.relativeOffset) ? " · 相对偏移 0x" + event.relativeOffset.toString(16) : "";
+          $("restore-status").textContent = "快照恢复：" + event.phase + (event.partition ? " · " + event.partition : "") + offset;
+        },
       });
+      $("restore-status").textContent = result.dataWritten
+        ? "快照数据已写入。请退出下载模式并重启设备，确认 MetaPass 能正常启动并重新连接。"
+        : "快照恢复尚未完成。";
+      $("restore-status").className = result.bootValidated ? "ok" : "warn";
+      setRestoreProgress(100);
+      log("Snapshot write completed. Boot/reconnect remains a separate manual check.", result.bootValidated ? "ok" : "warn");
+    } else if (restoreZip.manifest.manifest_version === 1) {
+      await restoreLegacyV1ArchiveUsb();
+    } else {
+      throw new Error("Unsupported restore archive kind");
     }
-    setRestoreProgress(100);
-    $("restore-status").textContent = t("msg_restore_done", { slots: restoredSlots.join(", ") });
-    $("restore-status").className = "ok";
-    log(t("msg_restore_done", { slots: restoredSlots.join(", ") }), "ok");
   } catch (err) {
     $("restore-status").textContent = t("msg_restore_failed", { err: err.message });
     $("restore-status").className = "error";
     log(t("msg_restore_failed", { err: err.message }), "error");
-    setRestoreProgress(0);   // N16: 失败时重置进度条
+    if (restoreZip?.kind !== "snapshot") setRestoreProgress(0); // Snapshot failures may follow Flash mutations; keep partial progress visible.
   } finally {
     busy = false;
     deviceNvs = null;   // 设备分区表缓存随连接会话失效
@@ -2403,10 +2894,12 @@ async function prepareCommunityImage() {
     throw new Error(t("err_sha256_mismatch", { expected, got: digest }));
   }
   log(t("msg_sha256_verified"), "ok");
-  // 社区固件为 Full Flash 合并镜像,走同一解包/校验入口
+  // 社区固件为 Full Flash 合并镜像；APP 与 DATA 声明走同一解析入口。
   const img = extractAppImage(buf);
+  const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];
   log(t("msg_extracted", { size: img.length, source: img.source }));
-  return img;
+  if (dataImages.length) log(`Firmware declares ${dataImages.length} DATA partition(s): ${dataImages.map((d) => d.label).join(", ")}`);
+  return { ...img, dataImages };
 }
 
 $("btn-install").addEventListener("click", async () => {
@@ -2415,6 +2908,12 @@ $("btn-install").addEventListener("click", async () => {
   refreshInstallButton();
   $("install-status").textContent = "";
   setProgress(0);
+  let plan = null;
+  let deferredDataInstall = false;
+  let geometryCommitted = false;
+  let dataCommitStarted = false;
+  let dataCommitComplete = false;
+  let plannedData = [];
   try {
     // 1) 镜像先取(社区下载可能耗时),再解析目标与几何 —— 设计 §6。
     let image;
@@ -2428,10 +2927,12 @@ $("btn-install").addEventListener("click", async () => {
     if (!target) throw new Error(t("err_pick_slot_first"));
 
     const dynMode = isDynMode(slotModel.mode);
-    let plan = null;
+    const dataImages = Array.isArray(image.dataImages) ? image.dataImages : [];
     let s;
     let slot;
     let slotLimit;
+    let carveForInstall = null;
+    let dataPlayId = 0;
     if (dynMode) {
       await loadSlotModel();   // 记录可能已过期:重读后再规划(设计 §6 step 1)
       plan = planInstall(slotModel.carve, image.length, target);
@@ -2439,7 +2940,13 @@ $("btn-install").addEventListener("click", async () => {
       s = { offset: plan.offset, size: plan.size };
       slot = plan.index;
       slotLimit = plan.limit;
+      carveForInstall = plan.action === PLAN.CREATE
+        ? insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size })
+        : slotModel.carve;
     } else {
+      if (dataImages.length) {
+        throw new Error("This firmware declares DATA partitions, but the device does not expose the dynamic DATA allocation contract. No flash was written.");
+      }
       if (target.target !== "slot") throw new Error(t("err_pick_slot_first"));
       slot = target.index;
       s = deviceSlots[slot];
@@ -2452,8 +2959,30 @@ $("btn-install").addEventListener("click", async () => {
       }));
     }
 
-    // 覆盖已安装子固件(VALID 槽)必须显式确认:占用槽绝不被默认选中
-    // (见 renderSlotView),但用户可主动选中 —— 与删除同一「解释再动手」原则(§6)。
+    // Existing APP DATA cannot be overwritten in place: the old bytes are a
+    // rollback source until the replacement has been fully written and committed.
+    // Refuse this ambiguous case rather than creating duplicate labels or orphaning
+    // the old instance's DATA.
+    if (dataImages.length) {
+      if (!dynMode || !carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
+      const oldTarget = slotModel.carve.slots[plan.index];
+      if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY) {
+        throw new Error("For a recoverable APP+DATA install, choose an empty slot or Auto. Remove the existing APP first rather than overwriting a live installation.");
+      }
+      const sizes = await chooseUsbDataSizes(dataImages, carveForInstall);
+      if (!sizes) { log(t("msg_install_cancelled"), "warn"); return; }
+      dataPlayId = nextDataPlayId(carveForInstall);
+      if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
+      const dataPlan = planDataReservations(carveForInstall, dataImages, sizes, dataPlayId);
+      if (!dataPlan.ok) {
+        throw new Error(`DATA allocation failed (${dataPlan.reason})${dataPlan.index == null ? "" : ` at partition ${dataPlan.index + 1}`}`);
+      }
+      plannedData = dataPlan.records;
+      carveForInstall = dataPlan.carve;
+      deferredDataInstall = true;
+    }
+
+    // 覆盖已安装子固件(VALID 槽)必须显式确认。
     if (plan && plan.action === PLAN.REUSE) {
       const cur = slotModel.carve.slots[plan.index];
       if (cur && cur.state === SLOT_STATE.VALID) {
@@ -2465,17 +2994,28 @@ $("btn-install").addEventListener("click", async () => {
       }
     }
 
-    // 2) 几何步(仅新建槽):记录先写 + 表物化,均读回校验(设计 §6 / E3)。
-    if (plan && plan.action === PLAN.CREATE) {
-      const nextCarve = insertSlot(slotModel.carve, plan.index, {
-        offset: plan.offset, size: plan.size,
-      });
-      const info = await commitCarve(nextCarve, { materialize: true });
+    // DATA-bearing install commits the APP + DATA carve together after every
+    // payload has been written and verified. APP-only installs keep the existing
+    // geometry-first flow.
+    if (plan && plan.action === PLAN.CREATE && !deferredDataInstall) {
+      const info = await commitCarve(carveForInstall, { materialize: true });
+      geometryCommitted = true;
       log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
       log(t("msg_table_materialized"), "ok");
     }
 
-    // 3) payload(既有路径不变:清残留 → 写镜像 → 尾扇区 MSIG/MAEG/MNAM)。
+    // 3) DATA payloads first. Their extents are still unreferenced until the
+    // final APP+DATA record/table commit; each extent is erased and read back.
+    if (deferredDataInstall) {
+      for (let i = 0; i < plannedData.length; i++) {
+        const dataImage = plannedData[i];
+        log(`Writing DATA ${dataImage.label} · ${fmtBytes(dataImage.size)} at ${hex(dataImage.offset)}`);
+        await writeDataPayload(dataImage, dataImage);
+        log(`DATA ${dataImage.label} read-back verified`, "ok");
+      }
+    }
+
+    // 4) APP payload (clear residue → write image → tail sector MSIG/MAEG/MNAM).
     const address = s.offset;
     const tailOffset = Math.ceil(image.length / 4096) * 4096 + 4096;
     if (tailOffset < s.size) {
@@ -2522,20 +3062,27 @@ $("btn-install").addEventListener("click", async () => {
       if (dispName) log(t("msg_blob_written", { name: dispName }), "ok");
     }
 
-    // 4) 元数据提交(仅 dynslot;几何未变 → 不写表 = meta_carve_flash_set_valid
-    //    镜像;play_id 原样保留,USB 安装恒为 0)。
+    // 5) Commit APP + DATA together only after all DATA payloads pass read-back.
     if (plan) {
       const sha = new Uint8Array(await crypto.subtle.digest("SHA-256", image.data));
-      const slots = slotModel.carve.slots.slice();
+      const slots = carveForInstall.slots.slice();
       slots[plan.index] = {
         ...slots[plan.index],
         state: SLOT_STATE.VALID,
         imageLen: image.length,
         sha,
         name: dispName,
+        playId: deferredDataInstall ? dataPlayId : slots[plan.index].playId,
       };
-      const info = await commitCarve({ slots, data: slotModel.carve.data }, { materialize: false });
+      const nextCarve = {
+        slots,
+        data: deferredDataInstall ? carveForInstall.data : slotModel.carve.data,
+      };
+      if (deferredDataInstall) dataCommitStarted = true;
+      const info = await commitCarve(nextCarve, { materialize: deferredDataInstall });
+      if (deferredDataInstall) dataCommitComplete = true;
       log(t("msg_record_written", { from: info.from, to: info.to, sector: info.sector === 0 ? "A" : "B" }), "ok");
+      if (deferredDataInstall) log(t("msg_table_materialized"), "ok");
     }
 
     setProgress(100);
@@ -2550,8 +3097,20 @@ $("btn-install").addEventListener("click", async () => {
     $("install-status").textContent = err.message;
     $("install-status").className = "error";
     log(t("msg_install_failed", { err: err.message }), "error");
-    // N3: install CREATE — commitCarve 成功但 payload 写失败 → 槽位已分配但无镜像
-    if (plan && plan.action === PLAN.CREATE) {
+    if (deferredDataInstall && !dataCommitStarted && plannedData.length) {
+      // Payload failed before metadata commit: best-effort erase every staged
+      // DATA extent. Once commitCarve starts, its result can be ambiguous after
+      // a torn write, so preserve staged bytes for the boot-time recovery path.
+      for (const d of plannedData) {
+        try { await wipeRange(d.offset, d.size); }
+        catch (cleanupErr) {
+          log(`Staged DATA cleanup failed at ${hex(d.offset)}: ${cleanupErr.message}`, "warn");
+        }
+      }
+    } else if (deferredDataInstall && dataCommitStarted && !dataCommitComplete) {
+      log("DATA commit status is uncertain; staged DATA bytes were preserved for recovery.", "warn");
+    }
+    if (geometryCommitted) {
       log(t("msg_orphan_slot_warning"), "warn");
     }
   } finally {
@@ -2566,7 +3125,7 @@ log(t("msg_ready"));
 //   直接以 file:// 打开(无替换)→ 显示原始占位符 __PAGE_VERSION__,
 //   本身即"未经部署管线"的标识。
 // 由 tools/validate.sh --static 守护:占位符被源码中误写死版本号即失败。
-log(`[page] __PAGE_VERSION__ · chunk=32KB stop-and-wait baud=921600(fallback 115200) · NVS 自动备份/还原已启用(无 UI 选项,见备份/还原日志)`, "warn");
+log(`[page] __PAGE_VERSION__ · chunk=32KB / session-segment=512KB · stop-and-wait baud=921600(fallback 115200) · NVS 自动备份/还原已启用(无 UI 选项,见备份/还原日志)`, "warn");
 
 // 调试桥:把模块内部关键句柄暴露给 window,供远程排障读取与驱动探针
 // (仅读写内存数据,无副作用;正式部署无害)。

@@ -19,3 +19,6 @@ idf_component_register(SRCS
 # 策略纯逻辑与宿主测试共享同一份头文件(单一事实源):main/meta_boot_policy.h
 # 相对本组件目录是 ../../main。
 target_include_directories(${COMPONENT_LIB} PRIVATE "${MP_MAIN_DIR}")
+# The ESP32-C3 second-stage bootloader has an on-chip MD5 implementation;
+# use it to keep the bootloader within its tight DRAM/rodata budget.
+target_compile_definitions(${COMPONENT_LIB} PRIVATE META_MD5_USE_ROM=1)

@@ -25,8 +25,143 @@ import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
+assert.equal(phone.assertPhoneArchiveVersion({
+  manifest_version: 2, kind: "meta-pass-storage-snapshot",
+}).kind, "meta-pass-storage-snapshot");
+assert.throws(() => phone.assertPhoneArchiveVersion({
+  manifest_version: 2, kind: "meta-pass-slot-backup",
+}), /旧 APP\+DATA 逻辑归档/);
+assert.throws(() => phone.assertPhoneArchiveVersion({ manifest_version: 1 }), /v2 设备存储快照/);
+assert.throws(() => phone.assertPhoneArchiveVersion(null), /v2 设备存储快照/);
+console.log("PASS archive version gate: phone page accepts v2 storage snapshots and rejects legacy logical archives");
+
+{
+  const seen = [];
+  globalThis.fetch = async (url, options = {}) => {
+    seen.push({ url: String(url), headers: options.headers || {}, method: options.method || "GET", body: options.body });
+    if (String(url).endsWith("/api/install/storage/info")) {
+      return new Response(JSON.stringify({ meta_pass_version: "2.1.0", running_host: { label: "ota_0" }, partitions: [] }), { status: 200 });
+    }
+    if (String(url).endsWith("/api/install/storage/read")) {
+      return new Response(new Uint8Array([0, 255, 1, 128]), { status: 200 });
+    }
+    if (String(url).endsWith("/api/install/storage/erase") ||
+        String(url).endsWith("/api/install/storage/write")) {
+      return new Response("ok", { status: 200 });
+    }
+    return new Response("not found", { status: 404 });
+  };
+  const bridge = phone.createBridge("http://device", "a".repeat(32));
+  const info = await bridge.storageInfo();
+  assert.equal(info.ok, true);
+  const part = { label: "store", type: 1, subtype: 0x41, offset: 0x1a0000, size: 0x10000 };
+  const read = await bridge.storageRead(part, 0, 4);
+  assert.equal(read.ok, true);
+  assert.deepEqual([...read.bytes], [0, 255, 1, 128]);
+  const req = seen.find((x) => x.url.endsWith("/api/install/storage/read"));
+  assert.equal(req.headers["X-Meta-Partition-Label"], "store");
+  assert.equal(req.headers["X-Meta-Partition-Offset"], String(part.offset));
+  assert.equal(req.headers["X-Meta-Offset"], "0");
+  assert.equal(req.headers["X-Meta-Length"], "4");
+  const erased = await bridge.storageErase(part);
+  assert.equal(erased.ok, true);
+  const eraseReq = seen.find(x => x.url.endsWith("/api/install/storage/erase"));
+  assert.equal(eraseReq.method, "POST");
+  assert.equal(eraseReq.headers["X-Meta-Partition-Label"], "store");
+  const payload = new Uint8Array([1, 2, 3, 4]);
+  const written = await bridge.storageWrite(part, 4, payload);
+  assert.equal(written.ok, true);
+  const writeReq = seen.find(x => x.url.endsWith("/api/install/storage/write"));
+  assert.equal(writeReq.method, "POST");
+  assert.equal(writeReq.headers["X-Meta-Offset"], "4");
+  assert.equal(writeReq.headers["X-Meta-Length"], "4");
+  assert.deepEqual([...writeReq.body], [1, 2, 3, 4]);
+  const count = seen.length;
+  const invalid = await bridge.storageRead(part, part.size - 1, 2);
+  assert.equal(invalid.ok, false);
+  assert.equal(seen.length, count, "invalid relative ranges must be rejected before any device request");
+  console.log("PASS guarded storage snapshot bridge: exact partition identity, binary reads, and range bounds");
+}
+
+{
+  const host = { label: "ota_0", type: 0, subtype: 0x10, offset: 0x10000, size: 0x10000 };
+  const partitions = [
+    { ...host, running_host: true },
+    { label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x1000, running_host: false },
+    { label: "cardid", type: 1, subtype: 0x40, offset: 0xa000, size: 0x1000, running_host: false },
+    { label: "store", type: 1, subtype: 0x41, offset: 0x20000, size: 0x2000, running_host: false },
+  ];
+  const reads = [];
+  const bridge = {
+    storageInfo: async () => ({ ok: true, text: JSON.stringify({ meta_pass_version: "2.1.0", running_host: host, partitions }) }),
+    storageRead: async (part, offset, length) => {
+      reads.push({ label: part.label, offset, length });
+      const bytes = new Uint8Array(length).fill(0xff);
+      if (part.label === "store" && offset === 0) { bytes[0] = 1; bytes[1] = 2; }
+      return { ok: true, bytes };
+    },
+  };
+  const snapshot = await phone.readStorageSnapshot(bridge);
+  assert.equal(snapshot.manifest.kind, "meta-pass-storage-snapshot");
+  assert.equal(snapshot.manifest.partitions.length, 2);
+  assert.deepEqual(snapshot.manifest.partitions.map((p) => [p.label, p.extents.length]), [["nvs", 0], ["store", 1]]);
+  assert.equal(snapshot.manifest.partitions[1].extents[0].offset, 0);
+  assert.equal(snapshot.manifest.partitions[1].extents[0].bytes, 4096);
+  assert.deepEqual(Array.from([...snapshot.payloads.values()][0].slice(0, 2)), [1, 2]);
+  assert.equal(reads.some((r) => r.label === "ota_0" || r.label === "cardid"), false,
+    "snapshot reads must skip running host and cardid");
+  assert.equal(snapshot.bytesRead, 0x3000);
+  const archive = await phone.createStorageSnapshotArchive(bridge);
+  assert.ok(archive.zip instanceof Uint8Array);
+  const preflight = await phone.validateStorageSnapshotArchiveForDevice(bridge, archive.zip);
+  assert.equal(preflight.manifest.kind, "meta-pass-storage-snapshot");
+  assert.equal(preflight.restorePlan.partitionCount, 2);
+  const incompatibleBridge = {
+    storageInfo: async () => ({ ok: true, text: JSON.stringify({
+      meta_pass_version: "2.1.0",
+      running_host: host,
+      partitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
+    }) }),
+  };
+  await assert.rejects(
+    () => phone.validateStorageSnapshotArchiveForDevice(incompatibleBridge, archive.zip),
+    /incompatible/,
+  );
+  console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
+}
+const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");
+const workerSource = readFileSync(path.join(ROOT, "install-slot", "_worker.js"), "utf8");
+assert.match(workerSource, /path === "\/storage-snapshot\.js"/, "snapshot module must be served with no-store dependency policy");
+assert.match(workerSource, /path === "\/storage-snapshot-restore\.js"/, "restore coordinator must be served with no-store dependency policy");
+const legacyRestoreStart = usbPage.indexOf("async function restoreLegacyV1ArchiveUsb()");
+const restoreClickStart = usbPage.indexOf('$("btn-restore").addEventListener("click"', legacyRestoreStart);
+assert.ok(legacyRestoreStart >= 0 && restoreClickStart > legacyRestoreStart,
+  "USB historical v1 restore handler must remain identifiable");
+assert.match(usbPage, /restoreStorageSnapshotArchive\(device, restoreZip\.bytes/, "USB must use the sequential snapshot restore coordinator");
+assert.match(usbPage, /async function createUsbStorageSnapshot/, "USB dynamic mode must create raw v2 snapshots");
+assert.match(usbPage, /project !== "FoloToy-AI-Passport"/, "USB host partition must be identified from the app descriptor, not a fixed address");
+const legacyRestoreSource = usbPage.slice(legacyRestoreStart, restoreClickStart);
+assert.match(legacyRestoreSource, /msg_restore_nvs_write/);
+assert.match(legacyRestoreSource, /ensureDeviceNvs\(\)/);
+assert.match(legacyRestoreSource, /address:\s*nv\.offset/);
+assert.match(legacyRestoreSource, /Historical v1 NVS payload length does not match its manifest/);
+assert.match(legacyRestoreSource, /if \(isDynMode\(slotModel\.mode\)\)/,
+  "historical v1 restore must be blocked on dynamic v2 devices");
+assert.match(legacyRestoreSource, /Legacy v1 restore requires a detected fixed-slot device/);
+const restoreDispatchSource = usbPage.slice(restoreClickStart, usbPage.indexOf("// ===== 4. 安装 =====", restoreClickStart));
+assert.match(restoreDispatchSource, /restoreZip\.manifest\.manifest_version === 1/,
+  "USB restore dispatch must route only v1 archives to the legacy handler");
+assert.match(restoreDispatchSource, /restoreStorageSnapshotArchive\(device, restoreZip\.bytes/,
+  "USB v2 snapshot restore must use the sequential coordinator");
+assert.match(usbPage, /不再接受旧 APP\+DATA v2 逻辑归档/,
+  "USB must reject retired APP+DATA v2 archives");
+console.log("PASS USB historical v1.1 restore is fixed-slot-only and v2 snapshot restore uses sequential verification");
 const { SLOT_GEOMETRY } = await import(path.join(ROOT, "install-slot", "store-analyze.js"));
 const dyn = await import(path.join(ROOT, "install-slot", "dynslot-pool.js"));
+
+// Test-only DATA resizing must require an explicit profile; ordinary installs stay unchanged.
+assert.equal(phone.requestedDataSizeProfile(), null);
+assert.equal(phone.requestedDataSizeProfile({ dataSizeProfile: "play28-recordings-4m" }), "play28-recordings-4m");
 
 // ── 夹具:最小合法 ESP 镜像(同 test-extract.mjs 构造法) ────────────────
 function buildAppImage(seg0len = 100, seg1len = 64) {
@@ -239,7 +374,8 @@ function installMockFetch({ plays = [PLAY], analyze = analyzeJson(), firmware = 
 function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
                       failChunkAt = -1, failTimes = 1, finalOk = true,
                       autoConfirm = true, resumeOffset = 0, neverDone = false,
-                      carve = defaultCarve(), rebootPolls = 2 } = {}) {
+                      carve = defaultCarve(), rebootPolls = 2, dataImages = [],
+                      dataResumeOffsets = [], dataDone = [] } = {}) {
   const calls = [];
   const d = {
     protocol: 1, state: "pairing", message: "",
@@ -249,6 +385,15 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
     carve: carve.map((s) => ({ ...s })),  // 规范 carve 快照(dynslot §4.5)
     rebootLeft: 0,                        // 删除提交后复位窗口内剩余不可达轮数
     polls: 0,   // status 轮询计数:模拟"用户在设备上按 OK"的时序
+    data: dataImages.map((img, index) => {
+      const expected = img.initial_image_size ?? img.initialImageSize ?? img.data?.length ?? 0;
+      const offset = Number(dataResumeOffsets[index] ?? 0);
+      const done = Boolean(dataDone[index]) || offset >= expected;
+      return {
+        index, offset: Math.min(offset, expected), expected,
+        done, bytes: Array.from(img.data?.slice(0, Math.min(offset, expected)) ?? []),
+      };
+    }),
   };
   d.handlers = async (input, init) => {
     const url = urlOf(input);
@@ -302,8 +447,12 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
       const body = JSON.parse(init.body);
       assert.equal(body.slot, d.slot);   // session 槽位必须 = 已确认槽位(设备值)
       d.session = true; d.state = "uploading"; d.offset = resumeOffset;
-      return new Response(JSON.stringify({ state: "ready", offset: resumeOffset, maxChunk }),
-        { status: 200 });
+      return new Response(JSON.stringify({
+        state: "ready", offset: resumeOffset, maxChunk,
+        data: d.data.map((x) => ({
+          index: x.index, offset: x.offset, expected: x.expected, done: x.done,
+        })),
+      }), { status: 200 });
     }
     if (pathn === "/api/install/chunk" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
@@ -318,9 +467,31 @@ function makeDevice({ imageLen = APP.length, sha256 = APP_SHA, maxChunk = 65536,
       d.offset = off + len;
       return new Response("ok", { status: 200 });
     }
+    if (pathn === "/api/install/data" && method === "POST") {
+      let r = need(); if (r) return new Response(r.text, { status: r.status });
+      const index = Number(init.headers["X-Meta-Data-Index"]);
+      const off = Number(init.headers["X-Meta-Offset"]);
+      const x = d.data[index];
+      if (!x || !Number.isInteger(index) || !Number.isInteger(off) ||
+          off !== x.offset || init.body.length > maxChunk) {
+        return new Response("data chunk rejected", { status: 400 });
+      }
+      const bytes = new Uint8Array(init.body);
+      x.bytes.push(...bytes);
+      x.offset += bytes.length;
+      if (x.offset === x.expected) x.done = true;
+      return new Response("ok", { status: 200 });
+    }
     if (pathn === "/api/install/finalize" && method === "POST") {
       let r = need(); if (r) return new Response(r.text, { status: r.status });
-      if (d.offset !== imageLen) return new Response("finalize failed", { status: 500 });
+      if (d.offset !== imageLen) {
+        d.message = "finalize app incomplete";
+        return new Response("finalize app incomplete", { status: 500 });
+      }
+      if (d.data.some((x) => !x.done)) {
+        d.message = "finalize data incomplete";
+        return new Response("finalize data incomplete", { status: 500 });
+      }
       // neverDone(审计 M1 回归):finalize 接受但状态永远不到 done —— 手机侧
       // 必须报失败,而不是静默成功。
       if (neverDone) return new Response("ok", { status: 200 });
@@ -384,6 +555,23 @@ function dispatchFetch(mp, device) {
 
 const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
 
+// NVS reads are client-bounded too; invalid ranges must fail without issuing a request.
+{
+  const originalFetch = globalThis.fetch;
+  let requested = false;
+  globalThis.fetch = async (...args) => { requested = true; return originalFetch(...args); };
+  try {
+    const invalid = await bridge.nvsRead(0, 4097);
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.status, 400);
+    assert.equal(requested, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  console.log("PASS NVS bridge rejects oversized read without network access");
+}
+
+
 // ── 3. preflight:正常路径 + 三道拒绝门 ──────────────────────────────────
 {
   globalThis.fetch = installMockFetch();
@@ -402,6 +590,7 @@ const bridge = phone.createBridge("http://192.168.1.23", "a".repeat(32));
     suggestedSlot: 0,
     slot: -1,               // 兼容入口不选槽 → 设备物理确认旧流程
     slots: SLOT_LIMITS,
+    data: [],
     reason: "ok",
   });
   console.log("PASS 3: preflight happy path — offer matches §6.4 shape, slots from SLOT_GEOMETRY");
@@ -926,10 +1115,10 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
     phone.parseSlots('{"count":0,"free":10,"slots":[]}').data, []);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":1572864,"size":131072,"state":1}]}').data,
-    [{ offset: 0x180000, size: 0x20000, state: 1, play_id: 0, label: "" }]);
+    [{ offset: 0x180000, size: 0x20000, state: 1, play_id: 0, type: 1, subtype: 0, label: "" }]);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"play_id":42,"offset":1572864,"size":131072,"state":2,"label":"rec"}]}').data,
-    [{ offset: 0x180000, size: 0x20000, state: 2, play_id: 42, label: "rec" }]);
+    [{ offset: 0x180000, size: 0x20000, state: 2, play_id: 42, type: 1, subtype: 0, label: "rec" }]);
   assert.deepEqual(
     phone.parseSlots('{"count":0,"free":10,"slots":[],"data":[{"offset":"x","size":1},{"offset":10,"size":0}]}').data,
     [], "malformed data records dropped");
@@ -951,13 +1140,14 @@ const HUGE_MERGED_SHA = createHash("sha256").update(HUGE_MERGED).digest("hex");
   assert.equal(meta.ok, true, JSON.stringify(meta));
   const info = phone.parseSlots(JSON.stringify({ count: 3, free: 1000000, slots: [
     { slot: 0, state: "valid", name: "a", size: 0x1d6000, len: 100,
-      limit: 0x1d5000, offset: 0x180000, kind: "app" },
+      limit: 0x1d5000, offset: 0x180000, kind: "app", play_id: 123 },
     { slot: 1, state: "empty", name: "", size: 0x200000, len: 0,
       limit: 0x1ff000, offset: 0x360000, kind: "app" },
     { slot: 2, state: "empty", name: "", size: 0x29e000, len: 0,
       limit: 0x29d000, offset: 0x560000, kind: "app" },
   ] }));
   assert.ok(info);
+  assert.equal(info.slots[0].play_id, 123, "mobile slot listing must preserve stable APP ownership");
   const geom = dyn.geomFromListing(info, APP.length);
   assert.equal(geom.proposal, null);            // legacy 全占,无处新建
   assert.equal(geom.suggestedSlot, 1);          // 建议 = 首个 empty(占用槽不再可装)
@@ -1083,6 +1273,72 @@ const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal(r.slot, 7);
   console.log("PASS 10d: 8-slot bound — device-confirmed slot 7 accepted end-to-end");
+}
+
+// ── DATA 初始镜像上传:session 返回 per-entry offset/done,新建 DATA 逐块写入 ──
+{
+  const data = new Uint8Array([1, 2, 3, 4, 5]);
+  const dataImages = [{ initial_image_size: data.length, data }];
+  const dev = makeDevice({ dataImages });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const offer = {
+    protocol: 1, playId: 563, revisionId: 1499, name: "data-test",
+    storeSha256: MERGED_SHA, imageLen: APP.length, sha256: APP_SHA,
+    suggestedSlot: 0, slot: 0, slots: SLOT_LIMITS,
+    data: [{ playId: 563, size: 0x10000, label: "storage", subtype: 0x82,
+             initialImageSize: data.length }],
+    reason: "ok",
+  };
+  const r = await phone.runInstall(bridge, offer, APP, { dataImages });
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
+  assert.deepEqual(dev.data[0].bytes, [...data]);
+  assert.equal(dev.data[0].done, true);
+  assert.ok(dev.calls.includes("POST /api/install/data"));
+  console.log("PASS DATA upload: initial Child DATA payload follows session offsets and reaches finalize");
+}
+
+// DATA resume: device-reported per-entry offset is authoritative; only the suffix is sent.
+{
+  const data = new Uint8Array([1, 2, 3, 4, 5]);
+  const dataImages = [{ initial_image_size: data.length, data }];
+  const dev = makeDevice({ dataImages, dataResumeOffsets: [2] });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const offer = {
+    protocol: 1, playId: 564, revisionId: 1500, name: "data-resume-test",
+    storeSha256: MERGED_SHA, imageLen: APP.length, sha256: APP_SHA,
+    suggestedSlot: 0, slot: 0, slots: SLOT_LIMITS,
+    data: [{ playId: 564, size: 0x10000, label: "storage", subtype: 0x82,
+             initialImageSize: data.length }],
+    reason: "ok",
+  };
+  const r = await phone.runInstall(bridge, offer, APP, { dataImages });
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
+  assert.deepEqual(dev.data[0].bytes, [...data]);
+  assert.equal(dev.data[0].done, true);
+  assert.ok(dev.calls.includes("POST /api/install/data"));
+  console.log("PASS DATA resume: device offset=2 skips the prefix and uploads only the remaining suffix");
+}
+
+// Existing DATA is reported done and must not be overwritten by the install image.
+{
+  const data = new Uint8Array([9, 8, 7]);
+  const dataImages = [{ initial_image_size: data.length, data }];
+  const dev = makeDevice({ dataImages, dataDone: [true] });
+  globalThis.fetch = dispatchFetch(installMockFetch(), dev);
+  const offer = {
+    protocol: 1, playId: 565, revisionId: 1501, name: "data-done-test",
+    storeSha256: MERGED_SHA, imageLen: APP.length, sha256: APP_SHA,
+    suggestedSlot: 0, slot: 0, slots: SLOT_LIMITS,
+    data: [{ playId: 565, size: 0x10000, label: "storage", subtype: 0x82,
+             initialImageSize: data.length }],
+    reason: "ok",
+  };
+  const r = await phone.runInstall(bridge, offer, APP, { dataImages });
+  assert.equal(r.ok, true, JSON.stringify({ r, data: dev.data, calls: dev.calls }));
+  assert.deepEqual(dev.data[0].bytes, []);
+  assert.equal(dev.data[0].done, true);
+  assert.equal(dev.calls.filter((c) => c === "POST /api/install/data").length, 0);
+  console.log("PASS DATA done: completed device entry is skipped without rewriting existing bytes");
 }
 
 console.log("ALL phone-install TESTS PASSED");

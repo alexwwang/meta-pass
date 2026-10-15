@@ -121,4 +121,24 @@ static inline bool meta_boot_policy_entry_must_resume(const meta_otadata_entry_t
            e->ota_seq != META_OTADATA_SEQ_EMPTY;
 }
 
+/* ── 冷启动引导请求判定:该副本是否是"应用刚请求的下次引导目标" ─────
+ * 规则:ota_state == NEW 且 ota_seq 非空。
+ *
+ * 背景(2026-10-12 真机定案):启动器 meta_store_boot_slot 用
+ * esp_ota_set_boot_partition 写 otadata(rollback 开启时状态为 NEW)+
+ * 物化子固件视图表 + esp_restart。冷启动的 carve 门必须认出这个请求,
+ * 把该槽视作 active_slot —— 否则 live 的子固件视图会被回写成启动器
+ * 视图且 otadata 被清,子固件永远无法引导(hook 此前只认深睡唤醒的
+ * PENDING,而本分支根本没有深睡引导路径)。
+ * 只认 NEW 而不认 PENDING:子固件运行后 otadata 为 PENDING,此时冷启动
+ * 应回到启动器(单次会话模型),PENDING 继续留给 must_resume 的深睡路径。 */
+static inline bool meta_boot_policy_entry_is_boot_request(const meta_otadata_entry_t *e)
+{
+    if (e == NULL) {
+        return false;
+    }
+    return e->ota_state == META_OTA_IMG_NEW &&
+           e->ota_seq != META_OTADATA_SEQ_EMPTY;
+}
+
 #endif /* META_BOOT_POLICY_H */

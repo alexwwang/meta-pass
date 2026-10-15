@@ -3,7 +3,14 @@ import { readFileSync } from "fs";
 import { createHash } from "crypto";
 import { extractAppImage } from "./extract-app-image.js";
 
-const signed = readFileSync("/Users/alex/ai-passport/pass-radar/build/pass-radar_v0.1-2-g8fcce59-signed.bin");
+// 签名镜像路径不硬编码:由 META_PASS_SIGNED_BIN 注入,或从第一个 CLI 参数传入。
+// 该路径指向 sibling 仓库 pass-radar 的构建产物,与本机布局耦合,不能钉死。
+const SIGNED_ARG = process.argv[2] ?? process.env.META_PASS_SIGNED_BIN;
+if (!SIGNED_ARG) {
+  console.error("错误:未指定签名镜像路径。传 META_PASS_SIGNED_BIN=<path> 或作为第一个参数。");
+  process.exit(2);
+}
+const signed = readFileSync(SIGNED_ARG);
 console.log(`signed.bin: ${signed.length} bytes`);
 
 // === 步骤1: 用实际安装器解析 ===

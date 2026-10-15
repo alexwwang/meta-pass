@@ -113,12 +113,32 @@ int main(void)
         const uint32_t states[] = { META_OTA_IMG_NEW, META_OTA_IMG_PENDING_VERIFY,
                                     META_OTA_IMG_VALID, META_OTA_IMG_INVALID,
                                     META_OTA_IMG_ABORTED, META_OTA_IMG_UNDEFINED };
-        for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); ++i) {
+        for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++) {
             meta_otadata_entry_t e = make_entry(1, states[i]);
             assert(!(meta_boot_policy_entry_must_erase(&e) &&
                      meta_boot_policy_entry_must_resume(&e)));
         }
     }
+
+    /* ── 冷启动引导请求判定(2026-10-12 真机:esp_restart 冷启动子固件) ──
+     * 唯一应认的请求形态:NEW 且 seq 有效(启动器 esp_ota_set_boot_partition
+     * 在 rollback 开启时写入的状态)。PENDING 不认 —— 子固件运行后的冷启动
+     * 必须回到启动器(单次会话模型),与 must_resume 的深睡语义划清边界。 */
+    assert(meta_boot_policy_entry_is_boot_request(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_NEW }));
+    assert(meta_boot_policy_entry_is_boot_request(
+        &(meta_otadata_entry_t){ .ota_seq = 3, .ota_state = META_OTA_IMG_NEW }));
+    assert(!meta_boot_policy_entry_is_boot_request(
+        &(meta_otadata_entry_t){ .ota_seq = META_OTADATA_SEQ_EMPTY,
+                                 .ota_state = META_OTA_IMG_NEW }));
+    assert(!meta_boot_policy_entry_is_boot_request(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_PENDING_VERIFY }));
+    assert(!meta_boot_policy_entry_is_boot_request(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_VALID }));
+    assert(!meta_boot_policy_entry_is_boot_request(
+        &(meta_otadata_entry_t){ .ota_seq = 1, .ota_state = META_OTA_IMG_UNDEFINED }));
+    assert(!meta_boot_policy_entry_is_boot_request(&blank));
+    assert(!meta_boot_policy_entry_is_boot_request(NULL));
 
     /* ── 副本扇区映射 ── */
     assert(meta_boot_policy_copy_sector(0) == 0);

@@ -27,6 +27,8 @@ console.log("PASS 1: worker exposes analyze/extracted + legacy proxy endpoints")
 //    而不是内联第二份解包实现。
 assert.ok(workerSrc.includes('from "./store-analyze.js"'), "worker must import ./store-analyze.js");
 assert.ok(workerSrc.includes("createStoreAnalyzer"), "worker must use createStoreAnalyzer");
+assert.ok(workerSrc.includes("dataProfile") && workerSrc.includes("PLAY28_RECORDINGS_4M_PROFILE"),
+  "worker must expose only the explicitly named Play 28 test DATA profile");
 console.log("PASS 2: worker analyze path uses the shared store-analyze module");
 
 // 3. id 校验口径与设备/本地 dev 一致(1~7 位数字;8 位拒绝)。
@@ -57,6 +59,8 @@ console.log("PASS 6: method guard + ASSETS fallthrough present");
 {
   const serverSrc = readFileSync(path.join(ROOT, "tools", "install-slot", "server.mjs"), "utf8");
   assert.ok(serverSrc.includes("\\d{1,7}"), "server.mjs id validation must match");
+  assert.ok(serverSrc.includes('["/data-size-profile.js"'), "local dev must serve the shared DATA profile module");
+  assert.ok(serverSrc.includes('process.env.ENABLE_TEST_DATA_PROFILES !== "1"'), "local dev must keep test profiles disabled by default");
   console.log("PASS 7: server.mjs (local dev) matches the same id contract");
 }
 

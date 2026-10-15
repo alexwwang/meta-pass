@@ -520,6 +520,40 @@ export function placeNewSlot(carve, need) {
   return { index, offset: found, size: need };
 }
 
+/**
+ * DATA first-fit placement (= meta_carve_place_data / scan_fit). Unlike APP
+ * slots, DATA may be as small as one 4 KiB sector and does not consume a slot
+ * index; the shared occupancy scan still treats every APP and DATA extent as
+ * a hard obstacle.
+ */
+export function placeNewData(carve, size) {
+  if (!carve || !carveValid(carve)) return null;
+  if (!Number.isInteger(size) || size < MIN_DATA || size % SIZE_GRANULE !== 0) return null;
+  if (carve.data.length >= DATA_MAX) return null;
+  const occ = occupancyOf(carve);
+  let found = -1;
+  let si = 0;
+  for (let seg = 0; seg < POOL.seg.length && found < 0; seg++) {
+    const segStart = POOL.seg[seg].start;
+    const segEnd = POOL.seg[seg].end;
+    let cursor = segStart;
+    while (si < occ.length && occ[si].offset + occ[si].size <= segStart) si++;
+    for (;;) {
+      let gapEnd = segEnd;
+      if (si < occ.length && occ[si].offset < segEnd) gapEnd = occ[si].offset;
+      const candidate = alignUp(cursor, OFFSET_ALIGN);
+      if (candidate + size <= gapEnd) { found = candidate; break; }
+      if (si < occ.length && occ[si].offset < segEnd) {
+        cursor = occ[si].offset + occ[si].size;
+        si++;
+      } else {
+        break;
+      }
+    }
+  }
+  return found < 0 ? null : { offset: found, size };
+}
+
 /** 空 APP 槽复用判定(= meta_carve_find_fit 但仅 EMPTY:装着玩法的槽不作推荐)。 */
 export function findEmptyFit(carve, imageLen) {
   if (!carve || !Number.isInteger(imageLen) || imageLen <= 0) return -1;
@@ -533,11 +567,17 @@ export function findEmptyFit(carve, imageLen) {
 
 /** 移除槽位(数组压缩;字节擦除由调用方负责,= meta_carve_remove)。 */
 export function removeSlot(carve, index) {
-  if (!carve || !Number.isInteger(index) || index < 0 || index >= carve.slots.length) return null;
-  return {
-    slots: carve.slots.slice(0, index).concat(carve.slots.slice(index + 1)),
-    data: carve.data.slice(),
-  };
+  if (!carve || !Array.isArray(carve.slots) || !Array.isArray(carve.data) ||
+      !Number.isInteger(index) || index < 0 || index >= carve.slots.length) return null;
+  const removed = carve.slots[index];
+  const slots = carve.slots.slice(0, index).concat(carve.slots.slice(index + 1));
+  // DATA belongs to an APP installation instance, not merely to its visible
+  // slot index. Removing an APP must not leave orphan records. A zero playId
+  // denotes an empty/unassigned slot and must never claim DATA ownership.
+  const data = removed.playId
+    ? carve.data.filter((record) => record.playId !== removed.playId)
+    : carve.data.slice();
+  return { slots, data };
 }
 
 /** 在插入下标处放入新槽(= meta_carve_place 的插入语义)。 */

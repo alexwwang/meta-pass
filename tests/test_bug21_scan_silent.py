@@ -22,7 +22,11 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-IDF = os.environ.get("ESP_IDF_PATH", "/Users/alex/esp/esp-idf-v5.5.3")
+# IDF 路径由 IDF_PATH 注入(全仓统一约定,与 build-firmware.sh / smoke.py 对齐);
+# 不再探测本机路径。缺失时置 None —— 本文件的 IDF 事实检查有降级路径(第 1 项
+# "live checkout" 检查跳过,走第 49 行的 CI 模式);不要在这里 raise SystemExit,
+# 否则本地/CI 未装 IDF 时 static gate 会整段挂掉。ESP_IDF_PATH 兼容旧调用方。
+IDF = os.environ.get("IDF_PATH") or os.environ.get("ESP_IDF_PATH") or None
 
 fails = []
 
@@ -34,8 +38,9 @@ def check(cond, why):
         print("FAIL bug21-scan-silent: %s" % why)
 
 # --- 1. the IDF facts, from the horse's mouth ---
-idf_src = os.path.join(IDF, "components/bootloader_support/src/esp_image_format.c")
-if os.path.exists(idf_src):
+idf_src = (os.path.join(IDF, "components/bootloader_support/src/esp_image_format.c")
+           if IDF else None)
+if idf_src and os.path.exists(idf_src):
     src = open(idf_src, encoding="utf-8", errors="replace").read()
     check('ESP_LOGE(TAG, "invalid segment length 0x%"PRIx32, segment->data_len);' in src,
           "IDF (live checkout %s): non-silent verify logs the segment-length error" % IDF)

@@ -28,7 +28,12 @@ NODE_BIN="${NODE_BIN:-/usr/local/bin/node}"
 NODE_MAJOR="$($NODE_BIN -p 'process.versions.node.split(".")[0]')"
 [ "$NODE_MAJOR" -ge 20 ] || fail "需要 node >= 20(当前 $($NODE_BIN --version))"
 
-IMAGE="${1:-$REPO_ROOT/build/meta-pass_v0.2.2-35-gaa25c52.bin}"
+if [ "$#" -ge 1 ]; then
+  IMAGE="$1"
+else
+  IMAGE="$(find "$REPO_ROOT/build" -maxdepth 1 -type f -name 'meta-pass_v*.bin' -print | sort | tail -n 1)"
+  [ -n "$IMAGE" ] || fail "build/ 下没有 meta-pass_v*.bin (先跑 tools/validate.sh --firmware)"
+fi
 
 echo "=========================================="
 echo " meta-pass 模拟器端到端测试"

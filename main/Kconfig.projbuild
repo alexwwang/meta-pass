@@ -13,4 +13,12 @@ menu "meta-pass launcher"
             "OK = 保留会话 / OK LONG = 退出";上传(Preparing/Uploading)
             进行中每拍自动延续。
 
+    config META_E2E_TEST_CONTROL
+        bool "Enable USB test-only E2E control channel"
+        default n
+        help
+            Enables a narrow USB Serial/JTAG control protocol for hardware E2E only.
+            It can inspect the current slot/data registry and boot a validated slot.
+            Keep disabled in production builds; it does not expose arbitrary flash I/O.
+
 endmenu

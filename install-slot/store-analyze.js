@@ -13,8 +13,9 @@
 // 且 analyze/extracted 复用同一份缓存:按 play id 缓存 {merged, ext, storeFw, play},
 // revisionId 变化时缓存失效回源重取(方案 §1.2 缓存策略)。
 
-import { isFullImage, extractAppImage, parseDataPartitions } from "./extract-app-image.js";
+import { isFullImage, extractAppImage, parseDataPartitions, parseFirmwareManifest } from "./extract-app-image.js";
 import { unpackNameBlobTail } from "./name-blob.js";
+import { applyDataSizeProfile, firmwareDataRequiredSize } from "./data-size-profile.js";
 
 // 目标分区布局(main/partitions.csv, 8MB flash):
 //   pool_0 0x1D6000 | cardid 0x4000 | pool_1 0x49E000(含 store @0x35A000)
@@ -37,30 +38,13 @@ import { unpackNameBlobTail } from "./name-blob.js";
 import { POOL_TOTAL } from "./dynslot-pool.js";
 const UNPACK_MAX = POOL_TOTAL - TAIL_SECTOR;
 
-// 合并镜像分区表检查(r9 政策:白名单外数据分区一律警告放行):
-//   白名单(标准存储:nvs/phy_init/otadata/cardid/store/coredump)→ 静默通过。
-//   其余 type=1 数据分区(0x40 自定义区如 play 675 的 rec;标准文件系统如
-//   play 563 的 easter 0x82 SPIFFS、play 200 的 voicefs 0x81 FAT、play 2 的
-//   legacy_cardid 0x02 NVS)→ supported=true 照常可装,reason='custom-partitions'
-//   + detail=<label> 警告透传:解包只取 factory 应用,该分区内容不会随镜像
-//   进入设备;若子固件运行时真读写它,会缺存储而部分功能降级(设备 NOTE 行
-//   显示分区名,用户自决)。硬拒会让市场上带资源分区的玩法全部不可装 ——
-//   2026-09-27 实测 563(easter)因市场方新增彩蛋分区被拒,政策据此修正。
-// 应用类型分区(type=0,含 factory/ota_*/recovery 等)一律不检查:解包只取
-// factory 应用镜像写入槽位,其余应用分区内容在目标布局中完全惰性(563 的
-// recovery 即此类)。
-export const ALLOWED_PARTITION_LABELS = new Set([
-  "nvs", "phy_init", "otadata", "cardid", "store", "coredump",
-]);
-// subtype 0x40:ESP-IDF 预留给“任意自定义数据用途”的数据分区 subtype。
-const CUSTOM_DATA_SUBTYPE = 0x40;
-
+// DATA admission is owned by parseFirmwareManifest(): only global NVS/PHY and
+// supported child filesystem DATA are accepted; unsupported DATA is a hard reject.
 const REASON_NOT_FOUND = "not-found";
 const REASON_UNAVAILABLE = "unavailable";
 const REASON_FORMAT = "format";
 const REASON_NO_FACTORY = "no-factory";
 const REASON_WRONG_CHIP = "wrong-chip";
-const REASON_CUSTOM_PARTITIONS = "custom-partitions";
 const REASON_TOO_LARGE = "too-large";
 
 
@@ -162,7 +146,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
   // 缓存条目 {merged, ext, storeFw, play, revisionId}:analyze 首次构建后,
   // extracted 直接复用 ext.data(不再重拉 3MB、不再重新解包);merged/extData 均不
   // 长期驻留的淘汰交给注入的 cache(生产按方案为 LRU/R2,容量策略在部署侧)。
-  async function analyzed(id) {
+  async function analyzed(id, dataProfile = null) {
     if (!Number.isInteger(id) || id <= 0) return { error: REASON_NOT_FOUND };
 
     const meta = await fetchJson(`/api/plays/id/${id}`);
@@ -170,7 +154,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     const play = meta.json && meta.json.play;
     if (!play || typeof play !== "object") return { error: REASON_NOT_FOUND };
 
-    const cacheKey = `analyzed:${id}`;
+    const cacheKey = `analyzed:${id}:${dataProfile || "default"}`;
     const cached = doCache.get(cacheKey);
     // 命中仍需回源确认 revisionId 未变(方案 §1.2:命中也需回源确认 revisionId)。
     // revisionId 缺失视为"未知版本":只在本地缓存过时才复用(首请求),避免每次回源。
@@ -194,25 +178,24 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
 
     if (!isFullImage(got.buf)) return { error: REASON_FORMAT };
     const parts = listPartitions(got.buf);
-    let partitionWarning = null;
-    if (parts) {
-      for (const p of parts) {
-        if (p.type !== 0x01) continue; // 应用分区惰性,见 ALLOWED_PARTITION_LABELS 注释
-        if (ALLOWED_PARTITION_LABELS.has(p.label)) continue;
-        // r9:白名单外数据分区一律警告放行(0x40 自定义区与标准文件系统 subtype
-        // 同性质 —— 内容不进设备,装了最坏功能降级)。首个分区名作 detail 透传。
-        if (!partitionWarning) partitionWarning = p.label;
-      }
-    }
-
     let ext;
     let dataPartitions = []; // M5: 数据分区声明
+    let firmwareManifest = null;
     try {
       ext = extractAppImage(got.buf, UNPACK_MAX);
-      // M5: 解析数据分区(可选,失败不影响主流程)
-      try { dataPartitions = parseDataPartitions(got.buf); } catch (e) { dataPartitions = []; }
+      // DATA is part of the allocation contract, not an optional annotation.
+      // A manifest parse failure or an unsupported child DATA subtype must stop
+      // admission before the device is asked to carve or erase anything.
+      firmwareManifest = parseFirmwareManifest(got.buf);
+      dataPartitions = firmwareManifest.data;
+      if (dataProfile) {
+        dataPartitions = applyDataSizeProfile(dataPartitions, id, dataProfile);
+        firmwareManifest.data = dataPartitions;
+        firmwareManifest.required_size = firmwareDataRequiredSize(firmwareManifest);
+      }
     } catch (err) {
-      return { error: mapExtractError(err) };
+      return { error: err?.message === "unsupported-partition"
+        ? "unsupported-partition" : mapExtractError(err) };
     }
 
     // 显示名优先取固件自带 MNAM(可打印 ASCII),否则退回商店 slug(服务端保证 ASCII)。
@@ -224,7 +207,9 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     // "镜像能不能放进池?"——真正落点由 /api/install/slots 的设备 carve
     // 状态 + phone-install.js 的 geomFromListing 决定。
     const poolLimit = POOL_TOTAL - TAIL_SECTOR;
-    const poolFit = ext.length <= poolLimit;
+    const storageSupported = firmwareManifest.supported === true;
+    const requiredSize = firmwareManifest.required_size;
+    const poolFit = storageSupported && Number.isInteger(requiredSize) && requiredSize <= poolLimit;
     const slots = poolFit
       ? [{ slot: 0, limit: poolLimit, fit: true }]
       : [];
@@ -241,12 +226,14 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       slots,
       suggestedSlot: supported ? 0 : -1,
       supported,
-      // 警告可继续:subtype 0x40 自定义数据分区不阻断安装,reason 透传分区名,
-      // 设备端详情页显示警告后由用户决定;reason='ok' 表示无任何警告。
-      reason: supported ? (partitionWarning ? REASON_CUSTOM_PARTITIONS : "ok") : REASON_TOO_LARGE,
-      ...(partitionWarning ? { detail: partitionWarning } : {}),
+      // Unsupported child DATA is an admission failure, not a warning: the device
+      // must never be asked to carve or mutate storage for an image it cannot map.
+      reason: !storageSupported
+        ? (firmwareManifest.reason || "unsupported-partition")
+        : (supported ? "ok" : REASON_TOO_LARGE),
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
       dataPartitions, // M5: 数据分区声明
+      manifest: firmwareManifest, // storage MVP: APP+DATA capacity model
     };
     doCache.set(cacheKey, entry);
     return { entry };
@@ -261,7 +248,18 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       store: { size: entry.storeFw.size, sha256: entry.storeFw.sha256.toLowerCase() },
       extracted: { imageLen: entry.ext.length, sha256: entry.extractedSha256 },
       // M5: 数据分区声明(升级迁移用)
-      data: entry.dataPartitions?.map(d => ({ size: d.size, label: d.label })) ?? [],
+      data: entry.dataPartitions?.map(d => ({
+        size: d.size,
+        requiredSize: d.required_size,
+        initialImageSize: d.initial_image_size,
+        label: d.label,
+        subtype: d.subtype,
+      })) ?? [],
+      storage: entry.manifest ? {
+        requiredSize: entry.manifest.required_size,
+        supported: entry.manifest.supported,
+        reason: entry.manifest.reason,
+      } : null,
       slots: entry.slots,
       suggestedSlot: entry.suggestedSlot,
       supported: entry.supported,
@@ -271,8 +269,8 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
   }
 
   // 对外:分析接口。返回完整 JSON 对象(含 extracted.sha256)。
-  async function analyze(id) {
-    const got = await analyzed(id);
+  async function analyze(id, dataProfile = null) {
+    const got = await analyzed(id, dataProfile);
     if (got.error) {
       // 规范为完整契约(设备端 parse_analysis 依赖固定字段形态)。
       return {

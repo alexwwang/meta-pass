@@ -50,6 +50,11 @@
 #include "meta_carve_flash.h"
 
 static const char *TAG = "install_local";
+/* Fast-path latch: after boot, inspect durable uninstall intent once; avoid NVS I/O on every 4 KiB archive read. */
+static volatile bool s_remove_recovery_needed = true;
+
+static esp_err_t remove_recover_pending(bool *did_recover);
+static esp_err_t remove_recovery_gate(bool *did_recover);
 
 // ---- 常量 ----
 
@@ -72,6 +77,13 @@ typedef struct {
 } session_token_t;
 
 typedef struct {
+    uint32_t old_offset;
+    uint32_t old_size;
+    uint32_t new_offset;
+    uint32_t new_size;
+} data_move_t;
+
+typedef struct {
     // ---- 快照字段(状态机唯一事实源;poll/status JSON 由此组装) ----
     bool     active;             // 店内 token 会话存活
     bool     offer_ready;        // 手机已 prepare,等待设备物理确认
@@ -79,6 +91,9 @@ typedef struct {
     bool     session_opened;     // 手机已开上传 session
     int8_t   confirmed_slot;     // 物理确认的槽位(-1 = 无)
     uint32_t session_offset;     // 设备已写偏移(断点续传基准)
+    uint32_t data_offset[META_DATA_MAX]; // per-child-data initial payload progress
+    uint32_t data_done_mask;       // bit i = data i is complete/skipped
+    uint32_t data_erased_mask;     // bit i = data i allocation has been erased
     char     name[META_NAME_LEN + 1];
     const char *state;           // pairing/offer/confirmed/uploading/done/failed/cancelled
     const char *message;
@@ -107,6 +122,11 @@ typedef struct {
     int8_t   carved_new_slot;
     bool     table_changed;
     uint32_t data_dirty_mask;
+    data_move_t data_moves[META_DATA_MAX];
+    uint8_t data_move_count;
+    meta_carve_t carve_before;
+    bool carve_committed;
+    bool carve_snapshot_valid;
 } install_session_t;
 
 static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init 登记)
@@ -222,6 +242,247 @@ static const esp_partition_t *slot_partition_any(int8_t slot)
 // 统一执行:手机会话从"装完"一直活到用户退出商店页。挂起标志在 carve
 // 层(meta_carve_flash_reboot_pending),物化的唯一漏斗是 commit(materialize)。
 
+// 清理本次 prepare 新建的 DATA 记录。既有记录属于升级保留数据,
+// 绝不能因 APP 上传失败而擦掉;新建记录则必须连同其字节一起移除,
+// 否则下一次 prepare 会把它误判成既有用户数据而永久占坑。
+static void cleanup_new_data_locked(void)
+{
+    if (!s_session.manifest_valid) return;
+    for (uint8_t i = 0; i < s_session.manifest.data_count &&
+                        i < META_DATA_MAX; i++) {
+        if (s_session.manifest.data[i].play_id == 0) continue;
+        if (s_session.data_dirty_mask & (1u << i)) continue;
+        (void)meta_carve_flash_erase_data(s_session.manifest.data[i].play_id,
+                                           s_session.manifest.data[i].label);
+    }
+}
+
+static bool data_ranges_overlap(uint32_t a_off, uint32_t a_size,
+                                 uint32_t b_off, uint32_t b_size)
+{
+    const uint64_t a_end = (uint64_t)a_off + a_size;
+    const uint64_t b_end = (uint64_t)b_off + b_size;
+    return (uint64_t)a_off < b_end && (uint64_t)b_off < a_end;
+}
+
+static esp_err_t prepare_data_moves_locked(const meta_carve_t *before,
+                                           const meta_carve_t *after,
+                                           data_move_t moves[META_DATA_MAX],
+                                           uint8_t *out_n)
+{
+    uint8_t n = 0;
+    uint8_t grow_n = 0;
+    uint32_t grow_offset[META_DATA_MAX];
+    uint32_t grow_size[META_DATA_MAX];
+    if (out_n) *out_n = 0;
+    if (!before || !after || !moves || !s_session.manifest_valid) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    /*
+     * Preflight every move before erasing anything. The old carve remains the
+     * durable source of truth until commit, so no destination may overlap any
+     * old DATA extent (including a different APP's DATA). Otherwise an early
+     * erase could destroy a source needed by this or a later move.
+     */
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const uint32_t pid = s_session.manifest.data[i].play_id;
+        if (pid == 0) continue;
+        const int old_idx = meta_carve_find_data(before, pid,
+                                                  s_session.manifest.data[i].label);
+        const int new_idx = meta_carve_find_data(after, pid,
+                                                  s_session.manifest.data[i].label);
+        if (old_idx < 0 || new_idx < 0) continue;
+
+        const meta_carve_data_t *old = &before->data[old_idx];
+        const meta_carve_data_t *now = &after->data[new_idx];
+        if (now->size < old->size) return ESP_ERR_INVALID_STATE;
+
+        if (old->offset == now->offset) {
+            /* In-place growth preserves the old filesystem bytes. Erase only
+             * the newly acquired tail, and prove that tail was not owned by
+             * any old DATA extent before touching flash. */
+            if (now->size > old->size) {
+                const uint64_t tail_start64 = (uint64_t)old->offset + old->size;
+                if (tail_start64 > UINT32_MAX) return ESP_ERR_INVALID_STATE;
+                const uint32_t tail_offset = (uint32_t)tail_start64;
+                const uint32_t tail_size = now->size - old->size;
+                for (uint8_t j = 0; j < before->data_count; j++) {
+                    const meta_carve_data_t *source = &before->data[j];
+                    if (data_ranges_overlap(tail_offset, tail_size,
+                                            source->offset, source->size)) {
+                        ESP_LOGE(TAG, "in-place DATA growth tail overlaps existing DATA source");
+                        return ESP_ERR_INVALID_STATE;
+                    }
+                }
+                if (grow_n >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+                grow_offset[grow_n] = tail_offset;
+                grow_size[grow_n] = tail_size;
+                grow_n++;
+            }
+            continue;
+        }
+        if (n >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+
+        for (uint8_t j = 0; j < before->data_count; j++) {
+            const meta_carve_data_t *source = &before->data[j];
+            if (data_ranges_overlap(now->offset, now->size,
+                                    source->offset, source->size)) {
+                ESP_LOGE(TAG, "data migration target overlaps existing DATA source");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+        for (uint8_t j = 0; j < n; j++) {
+            if (data_ranges_overlap(now->offset, now->size,
+                                    moves[j].new_offset, moves[j].new_size)) {
+                ESP_LOGE(TAG, "data migration targets overlap");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+
+        moves[n].old_offset = old->offset;
+        moves[n].old_size = old->size;
+        moves[n].new_offset = now->offset;
+        moves[n].new_size = now->size;
+        n++;
+    }
+
+    /* The carve builder should allocate disjoint DATA extents, but this
+     * migration helper is a destructive boundary: independently prove that
+     * the newly erased in-place tails and moved destinations do not overlap
+     * each other, even if a malformed after-carve reaches this point. */
+    for (uint8_t i = 0; i < grow_n; i++) {
+        for (uint8_t j = 0; j < i; j++) {
+            if (data_ranges_overlap(grow_offset[i], grow_size[i],
+                                    grow_offset[j], grow_size[j])) {
+                ESP_LOGE(TAG, "in-place DATA growth tails overlap");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+        for (uint8_t j = 0; j < n; j++) {
+            if (data_ranges_overlap(grow_offset[i], grow_size[i],
+                                    moves[j].new_offset, moves[j].new_size)) {
+                ESP_LOGE(TAG, "in-place DATA growth tail overlaps migration target");
+                return ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
+
+    /* All destructive operations start only after the full preflight passes.
+     * In-place growth tails are unowned by the old carve; erasing them cannot
+     * damage the rollback source if a later moved-DATA copy fails. */
+    for (uint8_t i = 0; i < grow_n; i++) {
+        esp_err_t e = esp_flash_erase_region(NULL, grow_offset[i], grow_size[i]);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "in-place DATA growth tail erase failed @0x%08lx: %s",
+                     (unsigned long)grow_offset[i], esp_err_to_name(e));
+            return e;
+        }
+    }
+    for (uint8_t i = 0; i < n; i++) {
+        esp_err_t e = esp_flash_erase_region(NULL, moves[i].new_offset,
+                                             moves[i].new_size);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "data migration erase failed @0x%08lx: %s",
+                     (unsigned long)moves[i].new_offset, esp_err_to_name(e));
+            goto rollback;
+        }
+        e = meta_carve_flash_data_copy(moves[i].old_offset, moves[i].old_size,
+                                       moves[i].new_offset);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "data migration copy failed old=0x%08lx new=0x%08lx: %s",
+                     (unsigned long)moves[i].old_offset,
+                     (unsigned long)moves[i].new_offset, esp_err_to_name(e));
+            goto rollback;
+        }
+    }
+
+    if (out_n) *out_n = n;
+    return ESP_OK;
+
+rollback:
+    /* Preflight guarantees these extents are disjoint from every old source. */
+    for (uint8_t i = 0; i < n; i++) {
+        (void)esp_flash_erase_region(NULL, moves[i].new_offset, moves[i].new_size);
+    }
+    if (out_n) *out_n = 0;
+    return ESP_FAIL;
+}
+
+static void cleanup_migrated_sources(const data_move_t moves[META_DATA_MAX],
+                                     uint8_t n)
+{
+    for (uint8_t i = 0; i < n; i++) {
+        const esp_err_t e = esp_flash_erase_region(NULL, moves[i].old_offset,
+                                                   moves[i].old_size);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "old data extent remains after migration @0x%08lx: %s",
+                     (unsigned long)moves[i].old_offset, esp_err_to_name(e));
+        }
+    }
+}
+
+static void cleanup_reclaimed_sources(const meta_carve_t *before,
+                                      const meta_carve_t *after)
+{
+    if (!before || !after) return;
+    for (uint8_t i = 0; i < before->data_count; i++) {
+        const meta_carve_data_t *old = &before->data[i];
+        const int idx = meta_carve_find_data(after, old->play_id, old->label);
+        if (idx >= 0 && after->data[idx].offset == old->offset) continue;
+        const esp_err_t e = esp_flash_erase_region(NULL, old->offset, old->size);
+        if (e != ESP_OK) {
+            ESP_LOGW(TAG, "reclaimed data extent remains @0x%08lx: %s",
+                     (unsigned long)old->offset, esp_err_to_name(e));
+        }
+    }
+}
+
+typedef struct {
+    uint32_t offset;
+    uint32_t size;
+} data_new_extent_t;
+
+static esp_err_t prepare_new_data_extents_locked(
+    const meta_carve_t *before, const meta_carve_t *after,
+    data_new_extent_t extents[META_DATA_MAX], uint8_t *out_n)
+{
+    uint8_t n = 0;
+    if (out_n) *out_n = 0;
+    if (!before || !after || !s_session.manifest_valid) return ESP_ERR_INVALID_ARG;
+
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const uint32_t pid = s_session.manifest.data[i].play_id;
+        if (pid == 0) continue;
+        const int old_idx = meta_carve_find_data(before, pid,
+                                                  s_session.manifest.data[i].label);
+        const int new_idx = meta_carve_find_data(after, pid,
+                                                  s_session.manifest.data[i].label);
+        if (old_idx >= 0 || new_idx < 0) continue;
+
+        if (n >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+        extents[n].offset = after->data[new_idx].offset;
+        extents[n].size = after->data[new_idx].size;
+        if (esp_flash_erase_region(NULL, extents[n].offset, extents[n].size) != ESP_OK) {
+            for (uint8_t j = 0; j < n; j++) {
+                (void)esp_flash_erase_region(NULL, extents[j].offset, extents[j].size);
+            }
+            return ESP_FAIL;
+        }
+        n++;
+    }
+    if (out_n) *out_n = n;
+    return ESP_OK;
+}
+
+static void cleanup_new_data_extents(const data_new_extent_t extents[META_DATA_MAX],
+                                     uint8_t n)
+{
+    for (uint8_t i = 0; i < n; i++) {
+        (void)esp_flash_erase_region(NULL, extents[i].offset, extents[i].size);
+    }
+}
+
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
 {
@@ -240,10 +501,17 @@ static void offer_and_upload_clear(void)
     s_session.confirmed_slot = -1;
     s_session.session_opened = false;
     s_session.session_offset = 0;
+    memset(s_session.data_offset, 0, sizeof(s_session.data_offset));
+    s_session.data_done_mask = 0;
+    s_session.data_erased_mask = 0;
     s_session.flash_touched = false;
     s_session.carved_new_slot = -1;
     s_session.table_changed = false;
     s_session.data_dirty_mask = 0;
+    s_session.data_move_count = 0;
+    s_session.carve_committed = false;
+    s_session.carve_snapshot_valid = false;
+    memset(&s_session.carve_before, 0, sizeof(s_session.carve_before));
 }
 
 // 终态失败(文档 §6.5):中止 OTA;flash 被动过即槽位 INVALID;清 offer 手机侧重来。
@@ -251,11 +519,45 @@ static void fail_locked(const char *msg)
 {
     const int8_t slot = s_session.confirmed_slot;
     const bool touched = s_session.flash_touched;
-    offer_and_upload_clear();
+    const int8_t carved = s_session.carved_new_slot;
+    const bool have_carved_new = s_session.manifest_valid && carved >= 0;
+
+    cleanup_new_data_locked();
+
+    /* A newly allocated APP+DATA group is only a reservation until finalize.
+     * If prepare already committed a replacement carve, rollback restores the
+     * exact pre-prepare allocation after discarding any copied DATA extents. */
     if (touched && slot >= 0 && s_slots) {
         meta_slot_mark_invalid(&s_slots[slot]);
         ESP_LOGW(TAG, "install failed; slot %d marked INVALID", slot);
     }
+
+    if (s_session.carve_committed) {
+        for (uint8_t i = 0; i < s_session.data_move_count; i++) {
+            (void)esp_flash_erase_region(NULL,
+                                         s_session.data_moves[i].new_offset,
+                                         s_session.data_moves[i].new_size);
+        }
+        const esp_err_t rr = meta_carve_flash_commit(&s_session.carve_before, true);
+        if (rr != ESP_OK) {
+            ESP_LOGE(TAG, "install failed; carve rollback failed: %s",
+                     esp_err_to_name(rr));
+        }
+    } else if (s_session.carve_snapshot_valid) {
+        // ARC may have committed metadata before the install itself was carved.
+        // Its physical bytes are intentionally still intact, so restore the exact
+        // pre-prepare carve on every deterministic failure path.
+        const esp_err_t rr = meta_carve_flash_commit(&s_session.carve_before, true);
+        if (rr != ESP_OK) {
+            ESP_LOGE(TAG, "install failed; pre-prepare carve rollback failed: %s",
+                     esp_err_to_name(rr));
+        }
+    } else if (have_carved_new) {
+        (void)meta_carve_flash_remove((int)carved);
+        ESP_LOGW(TAG, "install failed; reclaimed new carved slot %d", carved);
+    }
+
+    offer_and_upload_clear();
     status_set("failed", msg);
 }
 
@@ -564,6 +866,7 @@ esp_err_t meta_install_offer_reject(void)
         // P0-5:拒绝同取消 —— 新建槽回收(守卫同 cancel)。
         const int8_t carved = s_session.carved_new_slot;
         const bool have_carve = s_session.manifest_valid && carved >= 0;
+        cleanup_new_data_locked();
         offer_and_upload_clear();
         if (have_carve) meta_carve_flash_remove((int)carved);
         s_session.name[0] = '\0';
@@ -605,6 +908,18 @@ esp_err_t meta_install_session_open(const meta_install_session_req_t *req)
             s_session.session_offset = 0;
             s_session.ota_open = false;
             s_session.flash_touched = false;
+            s_session.data_done_mask = 0;
+            s_session.data_erased_mask = 0;
+            memset(s_session.data_offset, 0, sizeof(s_session.data_offset));
+            for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+                /* Existing DATA is user state: preserve it. Empty initial images
+                 * need no transfer either. */
+                if (s_session.manifest.data[i].play_id == 0 ||
+                    s_session.manifest.data[i].initial_image_size == 0 ||
+                    (s_session.data_dirty_mask & (1u << i))) {
+                    s_session.data_done_mask |= (1u << i);
+                }
+            }
             mbedtls_sha256_init(&s_session.sha);
             mbedtls_sha256_starts(&s_session.sha, 0);
             s_session.sha_started = true;
@@ -688,6 +1003,140 @@ out:
     return rc;
 }
 
+static const meta_carve_data_t *manifest_data_record(uint8_t idx)
+{
+    if (idx >= s_session.manifest.data_count || idx >= META_DATA_MAX) return NULL;
+    const uint32_t pid = s_session.manifest.data[idx].play_id;
+    if (pid == 0) return NULL;
+    const int rec = meta_carve_find_data(meta_carve_flash_carve(), pid,
+                                         s_session.manifest.data[idx].label);
+    if (rec < 0) return NULL;
+    return &meta_carve_flash_carve()->data[rec];
+}
+
+esp_err_t meta_install_data_write(uint8_t data_index, uint32_t offset,
+                                   const void *data, uint32_t length,
+                                   bool *duplicate)
+{
+    if (duplicate) *duplicate = false;
+    if (!data || length == 0 || length > META_INSTALL_MAX_CHUNK) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    session_lock();
+    esp_err_t rc = ESP_OK;
+    if (!s_session.session_opened || !s_session.manifest_valid ||
+        data_index >= s_session.manifest.data_count ||
+        data_index >= META_DATA_MAX) {
+        rc = ESP_ERR_INVALID_STATE;
+        goto out;
+    }
+
+    const uint32_t expected = s_session.manifest.data[data_index].initial_image_size;
+    if (expected == 0 || s_session.manifest.data[data_index].play_id == 0) {
+        /* Nothing to upload for this entry. */
+        if (duplicate) *duplicate = true;
+        goto out;
+    }
+    if (s_session.data_dirty_mask & (1u << data_index)) {
+        /* Existing child DATA is deliberately preserved across upgrade. */
+        if (duplicate) *duplicate = true;
+        goto out;
+    }
+
+    const meta_chunk_verdict_t v = meta_install_model_chunk(
+        true, s_session.data_offset[data_index], expected,
+        offset, length, META_INSTALL_MAX_CHUNK);
+    if (v == META_CHUNK_DUP) {
+        if (duplicate) *duplicate = true;
+        goto out;
+    }
+    if (v != META_CHUNK_OK) {
+        rc = ESP_ERR_INVALID_ARG;
+        goto out;
+    }
+
+    const meta_carve_data_t *rec = manifest_data_record(data_index);
+    if (!rec || rec->size < s_session.manifest.data[data_index].size) {
+        rc = ESP_ERR_INVALID_STATE;
+        goto out;
+    }
+
+    /* First DATA byte destroys the old allocation contents. Mark the whole
+     * install touched before erase, exactly like APP/esp_ota_begin. */
+    if (!(s_session.data_erased_mask & (1u << data_index))) {
+        s_session.flash_touched = true;
+        rc = esp_flash_erase_region(NULL, rec->offset, rec->size);
+        if (rc != ESP_OK) {
+            fail_locked("data erase failed");
+            goto out;
+        }
+        s_session.data_erased_mask |= (1u << data_index);
+    }
+
+    rc = esp_flash_write(NULL, (const uint8_t *)data,
+                         rec->offset + offset, length);
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "data write failed index=%u offset=%u: %s",
+                 (unsigned)data_index, (unsigned)offset, esp_err_to_name(rc));
+        fail_locked("data write failed");
+        goto out;
+    }
+
+    s_session.data_offset[data_index] += length;
+    if (s_session.data_offset[data_index] == expected) {
+        s_session.data_done_mask |= (1u << data_index);
+    }
+    s_session.last_activity_ms = now_ms();
+out:
+    session_unlock();
+    return rc;
+}
+
+static bool data_upload_ready_locked(void)
+{
+    if (s_session.manifest.data_count == 0) return true;
+    const uint32_t all = (1u << s_session.manifest.data_count) - 1u;
+    return (s_session.data_done_mask & all) == all;
+}
+
+/* Verify only newly-created DATA initial payloads. Existing DATA belongs to
+ * the user and must never be compared with the factory image on upgrade. */
+static esp_err_t verify_new_data_locked(void)
+{
+    uint8_t buf[INSTALL_IO_BUF];
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        if (s_session.data_dirty_mask & (1u << i)) continue;
+        const uint32_t len = s_session.manifest.data[i].initial_image_size;
+        if (len == 0) continue;
+        const meta_carve_data_t *rec = manifest_data_record(i);
+        if (!rec || rec->size < s_session.manifest.data[i].size) return ESP_ERR_INVALID_STATE;
+
+        mbedtls_sha256_context ctx;
+        uint8_t digest[32];
+        mbedtls_sha256_init(&ctx);
+        mbedtls_sha256_starts(&ctx, 0);
+        uint32_t off = 0;
+        while (off < len) {
+            const uint32_t n = (len - off > sizeof(buf)) ? sizeof(buf) : (len - off);
+            if (esp_flash_read(NULL, buf, rec->offset + off, n) != ESP_OK) {
+                mbedtls_sha256_free(&ctx);
+                return ESP_FAIL;
+            }
+            mbedtls_sha256_update(&ctx, buf, n);
+            off += n;
+        }
+        mbedtls_sha256_finish(&ctx, digest);
+        mbedtls_sha256_free(&ctx);
+        if (memcmp(digest, s_session.manifest.data[i].sha256, 32) != 0) {
+            ESP_LOGE(TAG, "data sha256 mismatch index=%u label=%s",
+                     (unsigned)i, s_session.manifest.data[i].label);
+            return ESP_ERR_INVALID_CRC;
+        }
+    }
+    return ESP_OK;
+}
+
 esp_err_t meta_install_finalize(void)
 {
     // 执行态锁(审计 B4):sha finish/free 与 ota_end 不得与取消/离店并发。
@@ -700,6 +1149,17 @@ esp_err_t meta_install_finalize(void)
 static esp_err_t finalize_locked(void)
 {
     if (!s_session.session_opened) return ESP_ERR_INVALID_STATE;
+
+    if (!data_upload_ready_locked()) {
+        ESP_LOGE(TAG, "finalize: child data upload incomplete");
+        fail_locked("data upload incomplete");
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const esp_err_t data_verify = verify_new_data_locked();
+    if (data_verify != ESP_OK) {
+        fail_locked("data verify failed");
+        return data_verify;
+    }
 
     const uint32_t expected = s_session.manifest_valid ? s_session.manifest.image_len : 0;
     if (!meta_install_model_finalize_ready(s_session.session_offset, expected)) {
@@ -756,6 +1216,9 @@ static esp_err_t finalize_locked(void)
         return ESP_ERR_INVALID_SIZE;
     }
 
+
+
+
     // 展示名 + 注册表(先算好全部入参,避免终态后读已清字段)。
     char sha_hex[META_SHA256_HEX_LEN + 1];
     {
@@ -773,25 +1236,6 @@ static esp_err_t finalize_locked(void)
     if (esp_ota_get_partition_description(part, &desc) == ESP_OK) {
         memcpy(ver, desc.version, sizeof(ver) - 1);
         ver[sizeof(ver) - 1] = '\0';
-    }
-
-    if (!meta_slot_set_valid(&s_slots[slot], name, ver, meta.image_len, sha_hex)) {
-        fail_locked("registry write failed");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    // carve 记录同步晋升 VALID(见 meta_carve_flash_set_valid):清单以记录
-    // 为事实源,占位 EMPTY 会让同会话的第二次安装把第一个应用当空槽覆盖。
-    // 失败按安装失败处理(镜像已写,重装备份覆盖同几何,安全)。
-    {
-        const esp_err_t cv = meta_carve_flash_set_valid(slot, name,
-                                                        meta.image_len, digest);
-        if (cv != ESP_OK) {
-            ESP_LOGE(TAG, "finalize: carve set_valid failed: %s",
-                     esp_err_to_name(cv));
-            fail_locked("carve state update failed");
-            return ESP_ERR_INVALID_STATE;
-        }
     }
 
     // MNAM 显示名写入尾部 sector(与既有安装路径同一手法)。写失败必须让
@@ -820,14 +1264,42 @@ static esp_err_t finalize_locked(void)
         }
     }
 
+    /*
+     * Promote the durable carve first.  Registry metadata remains the old
+     * authority until this succeeds, so a carve-write failure can roll back
+     * without invalidating an otherwise valid previous registry entry.
+     */
+    {
+        const esp_err_t cv = meta_carve_flash_set_valid(slot, name,
+                                                        meta.image_len, digest);
+        if (cv != ESP_OK) {
+            ESP_LOGE(TAG, "finalize: carve set_valid failed: %s",
+                     esp_err_to_name(cv));
+            fail_locked("carve state update failed");
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+
+    if (!meta_slot_set_valid(&s_slots[slot], name, ver, meta.image_len, sha_hex)) {
+        fail_locked("registry write failed");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /*
+     * Only now is the new APP+DATA group bootable/valid. Retire migrated
+     * source DATA after both registry and carve validity have committed.
+     * Until this point the old extent remains the rollback source.
+     */
+    cleanup_migrated_sources(s_session.data_moves, s_session.data_move_count);
+    cleanup_reclaimed_sources(s_session.carve_snapshot_valid ? &s_session.carve_before : NULL,
+                              meta_carve_flash_carve());
+    s_session.data_move_count = 0;
+
     // 成功:清 offer 与上传态,保留 name/slot 供完成页展示;token 留到离店作废。
 
-    // P0-5 仲裁①:升级数据迁移块退役。原实现把数据字节拷进
-    // manifest.carve_offset(= 应用槽位起点,finalize 时已写入镜像)——
-    // 几何上必然互相覆盖;且 P0-5 下数据记录由分配器放在独立偏移、与槽位
-    // 永不重叠(place_offer 保留既有 (play_id,label) 记录),升级无需搬家,
-    // 迁移需求是空集。data_copy 工具保留(test_data_copy 钉死 NOR 语义;
-    // v2 压缩若需数据搬迁再启用)。
+    // M5: existing-DATA resize migration is journaled in s_session.data_moves.
+    // Source extents are deliberately retained until registry + carve validity
+    // commit above; failed sessions therefore keep the previous DATA intact.
 
     // M5 F4(仲裁②):只对"升级保留"的既有记录标 DIRTY;本会话新建记录
     // 保持 PRISTINE —— 新建区域刚擦除无用户数据,且全标 DIRTY 会让
@@ -844,9 +1316,11 @@ static esp_err_t finalize_locked(void)
             keys[n_keys].label[META_DATA_LABEL_MAX] = '\0';
             n_keys++;
         }
-        const esp_err_t de = meta_carve_flash_mark_dirty_selected(keys, n_keys);
-        if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "mark_dirty_selected failed: %s", esp_err_to_name(de));
+        if (n_keys > 0) {
+            const esp_err_t de = meta_carve_flash_mark_dirty_selected(keys, n_keys);
+            if (de != ESP_OK && de != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "mark_dirty_selected failed: %s", esp_err_to_name(de));
+            }
         }
     }
 
@@ -878,6 +1352,7 @@ esp_err_t meta_install_cancel(void)
     // 下 carved_new_slot=0(静态零初始化)误删槽 0。
     const int8_t carved = s_session.carved_new_slot;
     const bool have_carve = s_session.manifest_valid && carved >= 0;
+    cleanup_new_data_locked();
     offer_and_upload_clear();
     if (have_carve) {
         meta_carve_flash_remove((int)carved);
@@ -1009,6 +1484,10 @@ static const char SHELL_HTML[] =
 "opt.body=JSON.stringify(opt.json);}"
 "return fetch(path,opt).then(function(r){return r.text().then(function(t){"
 "return {ok:r.ok,status:r.status,text:t};});});}"
+"function bridgeBytes(path,opt){opt=opt||{};var h={};var oh=opt.headers||{};"
+"Object.keys(oh).forEach(function(k){h[k]=oh[k];});if(T)h['X-Meta-Session']=T;"
+"return fetch(path,{method:opt.method||'GET',headers:h}).then(function(r){"
+"return r.arrayBuffer().then(function(buf){return {ok:r.ok,status:r.status,bytes:new Uint8Array(buf)};});});}"
 "window.DeviceBridge={"
 "token:function(){return T;},"
 "status:function(){return bridge('/api/install/status');},"
@@ -1018,6 +1497,12 @@ static const char SHELL_HTML[] =
 "headers:{'X-Meta-Offset':String(off),'Content-Type':'application/octet-stream'},"
 "body:buf});},"
 "finalize:function(){return bridge('/api/install/finalize',{method:'POST'});},"
+"data:function(i,off,buf){return bridge('/api/install/data',{method:'POST',"
+"headers:{'X-Meta-Data-Index':String(i),'X-Meta-Offset':String(off),"
+"'Content-Type':'application/octet-stream'},body:buf});},"
+"dataRead:function(playId,label,offset,length){return bridgeBytes('/api/install/data/read',{headers:{'X-Meta-Play-Id':String(playId),'X-Meta-Data-Label':label,'X-Meta-Offset':String(offset),'X-Meta-Length':String(length)}});},"
+"nvsInfo:function(){return bridge('/api/install/nvs/info');},"
+"nvsRead:function(offset,length){return bridgeBytes('/api/install/nvs/read',{headers:{'X-Meta-Offset':String(offset),'X-Meta-Length':String(length)}});},"
 "cancel:function(){return bridge('/api/install/cancel',{method:'POST'});}};"
 "function doPair(){ps.textContent='...';"
 "fetch('/api/install/pair',{method:'POST',headers:{'Content-Type':'application/json'},"
@@ -1076,6 +1561,15 @@ static esp_err_t h_install_pair(httpd_req_t *req)
     return httpd_resp_sendstr(req, out);
 }
 
+// GET /favicon.ico —— 浏览器自动请求;真机 E2E 的 console 噪声检查把 404
+// 记为错误,204 空响应消掉噪声(无任何状态/副作用)。
+static esp_err_t h_favicon(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_set_hdr(req, "Cache-Control", "max-age=86400");
+    return httpd_resp_send(req, NULL, 0);
+}
+
 // GET /api/install/status —— loader 兼容性握手(protocol)与轮询快照。
 static esp_err_t h_install_status(httpd_req_t *req)
 {
@@ -1089,13 +1583,12 @@ static esp_err_t h_install_status(httpd_req_t *req)
                          ? app_desc->version : "0.0.0-placeholder";
     char fw_esc[META_BACKUP_VERSION_MAX * 2 + 1];
     json_escape(fw_ver, fw_esc, sizeof(fw_esc));
-    char body[448];
-    const int n = snprintf(
-        body, sizeof(body),
+    static char body[1024];
+    int off = snprintf(body, sizeof(body),
         "{\"protocol\":%d,\"state\":\"%s\",\"message\":\"%s\","
         "\"active\":%s,\"offer\":%s,\"confirmed\":%s,\"session\":%s,"
-        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ",\"name\":\"%s\","
-        "\"firmware_version\":\"%s\"}",
+        "\"slot\":%d,\"offset\":%" PRIu32 ",\"expected\":%" PRIu32 ","
+        "\"name\":\"%s\",\"firmware_version\":\"%s\",\"data\":[",
         META_INSTALL_PROTOCOL_V1,
         s_session.state ? s_session.state : "idle",
         s_session.message ? s_session.message : "",
@@ -1107,9 +1600,21 @@ static esp_err_t h_install_status(httpd_req_t *req)
         s_session.session_offset,
         s_session.manifest_valid ? s_session.manifest.image_len : 0u,
         name_esc, fw_esc);
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const bool done = (s_session.data_done_mask & (1u << i)) != 0;
+        off += snprintf(body + off, sizeof(body) - (size_t)off,
+                        "%s{\"index\":%u,\"offset\":%" PRIu32
+                        ",\"expected\":%" PRIu32 ",\"done\":%s}",
+                        i ? "," : "", (unsigned)i, s_session.data_offset[i],
+                        s_session.manifest.data[i].initial_image_size,
+                        done ? "true" : "false");
+    }
+    snprintf(body + off, sizeof(body) - (size_t)off, "]}");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, body, (size_t)n);
+    // sendstr(strlen) — off 未计入 "]}" 尾巴(与 h_install_session 同款);
+    // 用 send(req, body, off) 会丢最后 2 字节,JSON 在 data[] 收尾处截断。
+    return httpd_resp_sendstr(req, body);
 }
 
 // POST /api/install/prepare —— 手机提交 offer(§6.4);物理确认前可被新 offer 覆盖。
@@ -1117,6 +1622,14 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    bool recovered_remove = false;
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
+    if (remove_recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    }
+    if (recovered_remove) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
     if (s_session.confirmed || s_session.session_opened) {
         return reply(req, "409 Conflict", "already confirmed");
     }
@@ -1134,12 +1647,16 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
         ESP_LOGW(TAG, "prepare: manifest shape/bounds rejected");
         return reply(req, "400 Bad Request", "manifest rejected");
     }
+    // 每次新安装都必须从动态回收池创建新的 APP carve；不再允许旧式
+    // 固定/既有槽位原位安装。删除只释放 carve，后续安装由分配器重新选址。
+    if (!m.has_carve) {
+        ESP_LOGW(TAG, "prepare: fresh APP carve required");
+        return reply(req, "400 Bad Request", "fresh APP carve required");
+    }
     meta_install_geom_t g;
     geom_refresh(&g);
-    // P0-5 修正:carve 提案的 fit 权威是下方 place_offer —— 新槽尚未物化,
-    // 不在 geom/分区缓存中,offer_ok 的"手机 fit 声称必须本地也 fit"会把
-    // 真提案当错报拒掉(fresh 设备首装 400,真机冒烟 S2 暴露)。无提案路径
-    // 保持 offer_ok 裁决。offer_ok 的其余形状校验 parse 已做,无损失。
+    // 新安装在上方已强制要求 carve 提案；新槽尚未物化，因此提案的
+    // 几何裁决权属于 place_offer，不能用当前 live partition table 的 fit 覆盖。
     if (!m.has_carve && !meta_install_model_offer_ok(&m, &g)) {
         ESP_LOGW(TAG, "prepare: local geometry re-check rejected");
         return reply(req, "400 Bad Request", "manifest rejected");
@@ -1161,8 +1678,24 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     char place_label[META_DATA_LABEL_MAX + 1];
     meta_install_no_fit_t nf;
     meta_install_place_verdict_t verdict = META_PLACE_OK;
+    int8_t new_group_slot = -1;
+    data_new_extent_t new_data_extents[META_DATA_MAX];
+    uint8_t new_data_extent_count = 0;
     if (m.has_carve) {
         const meta_carve_t *cur0 = meta_carve_flash_carve();
+        /*
+         * Snapshot the exact durable allocation before ANY tier-3 reclaim or
+         * DATA migration.  fail_locked()/no-fit rollback relies on this copy;
+         * without it, an ARC commit made during prepare becomes irreversible
+         * when a later placement, migration, or carve commit fails.
+         */
+        if (cur0) {
+            s_session.carve_before = *cur0;
+            s_session.carve_snapshot_valid = true;
+        } else {
+            s_session.carve_snapshot_valid = false;
+            memset(&s_session.carve_before, 0, sizeof(s_session.carve_before));
+        }
         verdict = meta_install_model_place_offer(&m, cur0, &placed, &place_idx,
                                                  &place_changed, place_label, &nf);
         // F4 掩码须在放置前对"既有记录"快照(prepare 重发幂等时 carve 已含
@@ -1183,17 +1716,35 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
             const uint32_t free_b = cur0 ? meta_carve_free(cur0) : 0;
             const uint32_t want = nf.needed > free_b ? nf.needed - free_b : nf.needed;
             ESP_LOGI(TAG, "prepare: ARC reclaim %u bytes before retry", (unsigned)want);
-            (void)meta_carve_flash_arc(want);
+            (void)meta_carve_flash_arc_prepare(want);
             verdict = meta_install_model_place_offer(&m, meta_carve_flash_carve(),
                                                      &placed, &place_idx,
                                                      &place_changed, place_label, &nf);
         }
         if (verdict == META_PLACE_REJECTED) {
+            if (s_session.carve_snapshot_valid) {
+                (void)meta_carve_flash_commit(&s_session.carve_before, true);
+            }
             session_unlock();
             ESP_LOGW(TAG, "prepare: carve proposal rejected (label=%s)", place_label);
             return reply(req, "400 Bad Request", "carve proposal rejected");
         }
+        if (verdict == META_PLACE_OK && place_changed && place_idx >= 0 && cur0) {
+            const meta_carve_slot_t *ps = &placed.slot[place_idx];
+            for (uint8_t i = 0; i < cur0->count; i++) {
+                if (cur0->slot[i].offset == ps->offset &&
+                    cur0->slot[i].size == ps->size) {
+                    new_group_slot = -1;
+                    goto new_group_checked;
+                }
+            }
+            new_group_slot = (int8_t)place_idx;
+        }
+new_group_checked:
         if (verdict == META_PLACE_NO_FIT_SLOT || verdict == META_PLACE_NO_FIT_DATA) {
+            if (s_session.carve_snapshot_valid) {
+                (void)meta_carve_flash_commit(&s_session.carve_before, true);
+            }
             session_unlock();
             ESP_LOGW(TAG, "prepare: no-fit (%s) needed=%u gap=%u arch=%u pri=%u",
                      verdict == META_PLACE_NO_FIT_SLOT ? "slot" : "data",
@@ -1232,29 +1783,74 @@ static esp_err_t h_install_prepare(httpd_req_t *req)
     }
     // 覆盖旧 offer:上一 offer 若物化过新建槽且从未上传,先回收(幂等:
     // 槽里无镜像,remove 即回到 prepare 前状态)。
-    if (s_session.manifest_valid && s_session.carved_new_slot >= 0) {
-        meta_carve_flash_remove((int)s_session.carved_new_slot);
+    if (s_session.manifest_valid) {
+        cleanup_new_data_locked();
+        if (s_session.carved_new_slot >= 0) {
+            meta_carve_flash_remove((int)s_session.carved_new_slot);
+        }
     }
     offer_and_upload_clear();          // 覆盖旧 offer 时清残留(未确认路径)
     s_session.manifest = m;
     s_session.manifest_valid = true;
     s_session.offer_ready = true;
+
+    /*
+     * DATA resize is a real migration, not a metadata-only resize.  Keep the
+     * old carve authoritative until all old bytes have been copied to the
+     * new extent; only then commit the new carve record.
+     */
+    if (m.has_carve && place_changed) {
+        const meta_carve_t *before = meta_carve_flash_carve();
+        if (before) {
+                s_session.carve_committed = false;
+            const esp_err_t ne = prepare_new_data_extents_locked(
+                before, &placed, new_data_extents, &new_data_extent_count);
+            const esp_err_t me = (ne == ESP_OK)
+                ? prepare_data_moves_locked(before, &placed,
+                                            s_session.data_moves,
+                                            &s_session.data_move_count)
+                : ne;
+            if (me != ESP_OK) {
+                cleanup_new_data_extents(new_data_extents, new_data_extent_count);
+                for (uint8_t i = 0; i < s_session.data_move_count; i++) {
+                    (void)esp_flash_erase_region(NULL, s_session.data_moves[i].new_offset,
+                                                 s_session.data_moves[i].new_size);
+                }
+                s_session.data_move_count = 0;
+                offer_and_upload_clear();
+                session_unlock();
+                ESP_LOGE(TAG, "prepare: data migration failed: %s",
+                         esp_err_to_name(me));
+                return reply(req, "500 Internal Server Error", "data migration failed");
+            }
+        }
+    }
+
     // P0-5:carve 提交(记录+表一次事务)。失败 → 400(副本未入 carve,
     // 设备状态未被污染)。
     if (m.has_carve && place_changed) {
         const esp_err_t ce = meta_carve_flash_commit(&placed, true);
         if (ce != ESP_OK) {
+            /*
+             * commit() writes the durable carve before the runtime table.
+             * If it reports an error, the record may already have advanced.
+             * Do NOT erase any newly prepared extent here: doing so could turn
+             * a partially committed record into a durable pointer to erased
+             * DATA. An unreferenced extent is reclaimable; a referenced one
+             * must remain intact for recovery.
+             */
             s_session.manifest_valid = false;
             s_session.offer_ready = false;
             s_session.data_dirty_mask = 0;
             session_unlock();
-            ESP_LOGE(TAG, "prepare: carve commit failed: %s", esp_err_to_name(ce));
+            ESP_LOGE(TAG, "prepare: carve commit failed: %s; leaving prepared extents for recovery",
+                     esp_err_to_name(ce));
             return reply(req, "500 Internal Server Error", "carve commit failed");
         }
+        s_session.carve_committed = true;
     }
     s_session.table_changed = m.has_carve && place_changed;
-    s_session.carved_new_slot =
-        (m.has_carve && place_changed && place_idx >= 0) ? (int8_t)place_idx : -1;
+    s_session.carved_new_slot = new_group_slot;
     memcpy(s_session.name, m.name, sizeof(s_session.name));
     if (m.has_carve) {
         // carve 路径:槽位下标以设备分配器为准(phone_slot 已在 place_offer 核对)。
@@ -1300,10 +1896,20 @@ static esp_err_t h_install_session(httpd_req_t *req)
         return reply(req, "400 Bad Request", "session rejected");
     }
 
-    char resp[96];
-    snprintf(resp, sizeof(resp),
-             "{\"state\":\"ready\",\"offset\":%" PRIu32 ",\"maxChunk\":%u}",
+    static char resp[768];
+    int roff = snprintf(resp, sizeof(resp),
+             "{\"state\":\"ready\",\"offset\":%" PRIu32 ",\"maxChunk\":%u,\"data\":[",
              s_session.session_offset, META_INSTALL_MAX_CHUNK);
+    for (uint8_t i = 0; i < s_session.manifest.data_count && i < META_DATA_MAX; i++) {
+        const bool done = (s_session.data_done_mask & (1u << i)) != 0;
+        roff += snprintf(resp + roff, sizeof(resp) - (size_t)roff,
+                         "%s{\"index\":%u,\"offset\":%" PRIu32
+                         ",\"expected\":%" PRIu32 ",\"done\":%s}",
+                         i ? "," : "", (unsigned)i, s_session.data_offset[i],
+                         s_session.manifest.data[i].initial_image_size,
+                         done ? "true" : "false");
+    }
+    snprintf(resp + roff, sizeof(resp) - (size_t)roff, "]}");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, resp);
 }
@@ -1368,6 +1974,576 @@ static esp_err_t h_install_chunk(httpd_req_t *req)
     return reply(req, "200 OK", "ok");
 }
 
+// POST /api/install/data —— Child DATA 初始镜像流。
+static esp_err_t h_install_data(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!s_session.confirmed || !s_session.session_opened) {
+        return reply(req, "409 Conflict", "not confirmed");
+    }
+
+    char idx_str[8], off_str[16];
+    uint32_t offset = 0;
+    uint32_t index = 0;
+    if (httpd_req_get_hdr_value_str(req, META_INSTALL_DATA_INDEX_HDR,
+                                    idx_str, sizeof(idx_str)) != ESP_OK ||
+        !parse_u32(idx_str, &index) || index >= META_DATA_MAX ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR,
+                                    off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset)) {
+        return reply(req, "400 Bad Request", "missing/bad data headers");
+    }
+
+    const uint32_t length = (uint32_t)req->content_len;
+    if (length == 0 || length > META_INSTALL_MAX_CHUNK) {
+        return reply(req, "400 Bad Request", "data chunk length out of range");
+    }
+
+    static uint8_t io_buf[INSTALL_IO_BUF];
+    uint32_t got_total = 0;
+    while (got_total < length) {
+        const uint32_t want = (length - got_total > INSTALL_IO_BUF)
+                                  ? INSTALL_IO_BUF : (length - got_total);
+        const int got = httpd_req_recv(req, (char *)io_buf, want);
+        if (got <= 0) return reply(req, "400 Bad Request", "data chunk read error");
+        bool dup = false;
+        const esp_err_t e = meta_install_data_write((uint8_t)index,
+                                                     offset + got_total,
+                                                     io_buf, (uint32_t)got, &dup);
+        if (e != ESP_OK) {
+            return reply(req, "500 Internal Server Error", "data write failed");
+        }
+        got_total += (uint32_t)got;
+    }
+    return reply(req, "200 OK", "ok");
+}
+
+// GET /api/install/data/read: authenticated, bounded reads of registered DATA bytes.
+// The caller identifies a carve record by (play_id, label), never by raw Flash address.
+// At most 4 KiB per request; clients can stream larger archives in verified chunks.
+static esp_err_t h_install_data_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    bool recovered_remove = false;
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
+    if (remove_recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    }
+    if (recovered_remove) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
+
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "APP/DATA read unavailable during installation");
+
+    char pid_str[16], label[META_DATA_LABEL_MAX + 1] = {0};
+    char off_str[16], len_str[16];
+    uint32_t play_id = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Play-Id",
+                                    pid_str, sizeof(pid_str)) != ESP_OK ||
+        !parse_u32(pid_str, &play_id) || play_id == 0 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Data-Label",
+                                    label, sizeof(label)) != ESP_OK ||
+        label[0] == '\0' ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR,
+                                    off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length",
+                                    len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad DATA read headers");
+    }
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+    const meta_carve_data_t *match = NULL;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *d = &carve->data[i];
+        if (d->play_id == play_id && strcmp(d->label, label) == 0) {
+            if (match) return reply(req, "409 Conflict", "ambiguous DATA identity");
+            match = d;
+        }
+    }
+    if (!match) return reply(req, "404 Not Found", "DATA record not found");
+    if (offset > match->size || length > match->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "DATA read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const uint32_t address = match->offset + offset;
+    const esp_err_t e = esp_flash_read(NULL, read_buf, address, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "DATA read failed play_id=%" PRIu32 " label=%s off=%" PRIu32 ": %s",
+                 play_id, label, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "DATA flash read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
+
+// GET /api/install/slot/read: authenticated, bounded reads of an APP slot owned by play_id.
+// This is read-only and relative to the registered APP slot; callers cannot provide Flash addresses.
+static esp_err_t h_install_slot_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+
+    bool recovered_remove = false;
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
+    if (remove_recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    }
+    if (recovered_remove) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
+
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "APP/DATA read unavailable during installation");
+
+    char pid_str[16], off_str[16], len_str[16];
+    uint32_t play_id = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Play-Id", pid_str, sizeof(pid_str)) != ESP_OK ||
+        !parse_u32(pid_str, &play_id) || play_id == 0 ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad APP read headers");
+    }
+
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
+    const meta_carve_slot_t *match = NULL;
+    for (uint8_t i = 0; i < carve->count; i++) {
+        const meta_carve_slot_t *slot = &carve->slot[i];
+        if (slot->play_id == play_id && slot->kind == META_CARVE_KIND_APP &&
+            slot->state != META_SLOT_EMPTY) {
+            if (match) return reply(req, "409 Conflict", "ambiguous APP identity");
+            match = slot;
+        }
+    }
+    if (!match) return reply(req, "404 Not Found", "APP slot not found");
+    if (offset > match->size || length > match->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "APP read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const uint32_t address = match->offset + offset;
+    const esp_err_t e = esp_flash_read(NULL, read_buf, address, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "APP read failed play_id=%" PRIu32 " off=%" PRIu32 ": %s",
+                 play_id, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "APP flash read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
+// GET /api/install/nvs/info: expose only the fixed system NVS partition, never arbitrary labels/addresses.
+static const esp_partition_t *install_nvs_partition(void)
+{
+    return esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                    ESP_PARTITION_SUBTYPE_DATA_NVS, "nvs");
+}
+
+static esp_err_t h_install_nvs_info(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "NVS read unavailable during installation");
+    const esp_partition_t *part = install_nvs_partition();
+    if (!part || part->size == 0) return reply(req, "404 Not Found", "system NVS partition not found");
+    char body[64];
+    snprintf(body, sizeof(body), "{\"size\":%" PRIu32 "}", (uint32_t)part->size);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, body);
+}
+
+// GET /api/install/nvs/read: authenticated, fixed-partition read, bounded to 4 KiB and partition geometry.
+static esp_err_t h_install_nvs_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "NVS read unavailable during installation");
+    char off_str[16], len_str[16];
+    uint32_t offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad NVS read headers");
+    }
+    const esp_partition_t *part = install_nvs_partition();
+    if (!part || part->size == 0) return reply(req, "404 Not Found", "system NVS partition not found");
+    if (offset > part->size || length > part->size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "NVS read range out of bounds");
+    }
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const esp_err_t e = esp_partition_read(part, offset, read_buf, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "NVS read failed off=%" PRIu32 ": %s", offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "NVS partition read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
+
+// GET /api/install/storage/info: read-only live partition inventory for storage snapshots.
+// The browser receives partition identities, never arbitrary Flash addresses to write.
+static const meta_carve_data_t *install_carve_data_match(const char *label, uint32_t type,
+                                                         uint32_t subtype, uint32_t offset,
+                                                         uint32_t size);
+static bool install_partition_same(const esp_partition_t *a, const esp_partition_t *b)
+{
+    return a && b && a->type == b->type && a->subtype == b->subtype &&
+           a->address == b->address && a->size == b->size &&
+           strcmp(a->label, b->label) == 0;
+}
+
+static esp_err_t h_install_storage_info(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage snapshot unavailable during installation");
+
+    bool recovered_remove = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered_remove);
+    if (recovery != ESP_OK) return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    if (recovered_remove) return reply(req, "409 Conflict", "previous uninstall recovered; refresh partition list");
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    const char *version = (app_desc && app_desc->version[0] != '\0')
+                          ? app_desc->version : "unknown";
+    char version_escaped[96];
+    json_escape(version, version_escaped, sizeof(version_escaped));
+    char prefix[160];
+    snprintf(prefix, sizeof(prefix), "{\"meta_pass_version\":\"%s\",\"running_host\":", version_escaped);
+    esp_err_t e = httpd_resp_sendstr_chunk(req, prefix);
+    if (e != ESP_OK) return e;
+    char label[40], item[256];
+    json_escape(running->label, label, sizeof(label));
+    snprintf(item, sizeof(item),
+             "{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 "},\"partitions\":[",
+             label, (unsigned)running->type, (unsigned)running->subtype,
+             (uint32_t)running->address, (uint32_t)running->size);
+    e = httpd_resp_sendstr_chunk(req, item);
+    if (e != ESP_OK) return e;
+
+    esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
+                                                      ESP_PARTITION_SUBTYPE_ANY, NULL);
+    bool first = true;
+    char escaped[40];
+    while (it) {
+        const esp_partition_t *part = esp_partition_get(it);
+        if (!part) {
+            esp_partition_iterator_release(it);
+            return reply(req, "500 Internal Server Error", "partition iterator returned an empty entry");
+        }
+        json_escape(part->label, escaped, sizeof(escaped));
+        snprintf(item, sizeof(item),
+                 "%s{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"running_host\":%s}",
+                 first ? "" : ",", escaped, (unsigned)part->type, (unsigned)part->subtype,
+                 (uint32_t)part->address, (uint32_t)part->size,
+                 install_partition_same(part, running) ? "true" : "false");
+        e = httpd_resp_sendstr_chunk(req, item);
+        if (e != ESP_OK) {
+            esp_partition_iterator_release(it);
+            return e;
+        }
+        first = false;
+        it = esp_partition_next(it);
+    }
+    // 2026-10-15 真机实证:launcher 运行态的物化表不含 child DATA 分区
+    // (meta_pt_from_carve_active 只给活动子固件物化),只按 esp_partition 枚举
+    // 会让快照静默漏掉全部 DATA。carve 记录是 DATA 分配的权威来源:把未物化
+    // 的 DATA 记录并入 inventory(完整 label/type/subtype/offset/size),capture
+    // 与 restore 两端读到同一份 eligible 集合。已物化(子固件在跑)时表内已有
+    // 同身份条目,跳过避免重复。
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (carve) {
+        for (uint8_t i = 0; i < carve->data_count; i++) {
+            const meta_carve_data_t *d = &carve->data[i];
+            if (d->size == 0) continue;
+            const esp_partition_t *materialized =
+                esp_partition_find_first(d->type, (esp_partition_subtype_t)d->subtype, d->label);
+            if (materialized && materialized->address == d->offset && materialized->size == d->size) {
+                continue;
+            }
+            json_escape(d->label, escaped, sizeof(escaped));
+            snprintf(item, sizeof(item),
+                     ",{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"running_host\":false}",
+                     escaped, (unsigned)d->type, (unsigned)d->subtype, d->offset, d->size);
+            e = httpd_resp_sendstr_chunk(req, item);
+            if (e != ESP_OK) return e;
+        }
+        e = httpd_resp_sendstr_chunk(req, "]}");
+        if (e != ESP_OK) return e;
+    }
+    return httpd_resp_sendstr_chunk(req, NULL);
+}
+
+// GET /api/install/storage/read: bounded read of one exact live partition identity.
+// cardid and the currently running MetaPass host partition are never readable here.
+static esp_err_t h_install_storage_read(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage snapshot unavailable during installation");
+
+    bool recovered_remove = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered_remove);
+    if (recovery != ESP_OK) return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    if (recovered_remove) return reply(req, "409 Conflict", "previous uninstall recovered; refresh partition list");
+
+    char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
+    char off_str[16], len_str[16];
+    uint32_t type = 0, subtype = 0, part_offset = 0, part_size = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Label", label, sizeof(label)) != ESP_OK ||
+        label[0] == '\0' ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Type", type_str, sizeof(type_str)) != ESP_OK ||
+        !parse_u32(type_str, &type) || type > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Subtype", subtype_str, sizeof(subtype_str)) != ESP_OK ||
+        !parse_u32(subtype_str, &subtype) || subtype > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Offset", part_off_str, sizeof(part_off_str)) != ESP_OK ||
+        !parse_u32(part_off_str, &part_offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Size", part_size_str, sizeof(part_size_str)) != ESP_OK ||
+        !parse_u32(part_size_str, &part_size) || part_size == 0 ||
+        httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, off_str, sizeof(off_str)) != ESP_OK ||
+        !parse_u32(off_str, &offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Length", len_str, sizeof(len_str)) != ESP_OK ||
+        !parse_u32(len_str, &length) || length == 0 || length > INSTALL_IO_BUF) {
+        return reply(req, "400 Bad Request", "missing/bad storage partition read headers");
+    }
+
+    const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
+    const meta_carve_data_t *carve_data = NULL;
+    if (part) {
+        if (part->address != part_offset || part->size != part_size) {
+            return reply(req, "409 Conflict", "partition identity does not match live partition table");
+        }
+    } else {
+        // launcher 运行态未物化的 DATA 分区:按 carve 记录完整身份校验后读。
+        carve_data = install_carve_data_match(label, type, subtype, part_offset, part_size);
+        if (!carve_data) {
+            return reply(req, "409 Conflict", "partition identity does not match live partition table");
+        }
+    }
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+    if (strcmp(label, "cardid") == 0 || (part && install_partition_same(part, running))) {
+        return reply(req, "403 Forbidden", "protected partition cannot be read by storage snapshot API");
+    }
+    if (offset > part_size || length > part_size - offset) {
+        return reply(req, "416 Range Not Satisfiable", "storage partition read range out of bounds");
+    }
+
+    static uint8_t read_buf[INSTALL_IO_BUF];
+    const esp_err_t e = part
+        ? esp_partition_read(part, offset, read_buf, length)
+        : esp_flash_read(NULL, read_buf, part_offset + offset, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "storage partition read failed label=%s off=%" PRIu32 ": %s",
+                 label, offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "storage partition read failed");
+    }
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)read_buf, (int)length);
+}
+
+// Resolve a snapshot target only through an exact identity in the current live partition table.
+// The caller never supplies an absolute Flash address as a write target.
+//
+// 2026-10-15 真机实证:launcher 运行态的物化表只给活动子固件物化 DATA 分区
+// (meta_pt_from_carve_active 设计),普通备份场景(页面在 launcher 在线时操作)
+// 下快照会静默漏掉全部 child DATA。carve 记录才是 DATA 分配的权威来源,因此
+// 身份解析在表内分区之外,同时接受 carve DATA 记录(完整 label/type/subtype/
+// offset/size 匹配),读写经 esp_flash_* 按记录偏移执行,仍不接受绝对地址。
+typedef struct {
+    const esp_partition_t  *part;   // 表内分区命中(优先);carve 命中时为 NULL
+    const meta_carve_data_t *data;  // carve DATA 记录命中;表内命中时为 NULL
+    uint32_t abs_offset;            // 分区/记录的起始 Flash 地址
+    uint32_t size;                  // 几何大小(字节)
+    uint32_t rel_offset;            // need_range 时的分区相对偏移
+    uint32_t length;                // need_range 时的长度
+} install_snapshot_target_t;
+
+static const meta_carve_data_t *install_carve_data_match(const char *label, uint32_t type,
+                                                         uint32_t subtype, uint32_t offset,
+                                                         uint32_t size)
+{
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return NULL;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *d = &carve->data[i];
+        if (d->size > 0 && (uint32_t)d->type == type && (uint32_t)d->subtype == subtype &&
+            d->offset == offset && d->size == size && strcmp(d->label, label) == 0) {
+            return d;
+        }
+    }
+    return NULL;
+}
+
+static esp_err_t install_snapshot_target(httpd_req_t *req, install_snapshot_target_t *out,
+                                         bool need_range)
+{
+    char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
+    uint32_t type = 0, subtype = 0, part_offset = 0, part_size = 0, offset = 0, length = 0;
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Label", label, sizeof(label)) != ESP_OK ||
+        label[0] == '\0' ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Type", type_str, sizeof(type_str)) != ESP_OK ||
+        !parse_u32(type_str, &type) || type > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Subtype", subtype_str, sizeof(subtype_str)) != ESP_OK ||
+        !parse_u32(subtype_str, &subtype) || subtype > 255 ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Offset", part_off_str, sizeof(part_off_str)) != ESP_OK ||
+        !parse_u32(part_off_str, &part_offset) ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Partition-Size", part_size_str, sizeof(part_size_str)) != ESP_OK ||
+        !parse_u32(part_size_str, &part_size) || part_size == 0) {
+        return reply(req, "400 Bad Request", "missing/bad snapshot partition identity");
+    }
+    if (need_range &&
+        (httpd_req_get_hdr_value_str(req, META_INSTALL_OFFSET_HDR, part_off_str, sizeof(part_off_str)) != ESP_OK ||
+         !parse_u32(part_off_str, &offset) ||
+         httpd_req_get_hdr_value_str(req, "X-Meta-Length", part_size_str, sizeof(part_size_str)) != ESP_OK ||
+         !parse_u32(part_size_str, &length) || length == 0 || length > INSTALL_IO_BUF ||
+         (offset & 3U) != 0 || (length & 3U) != 0)) {
+        return reply(req, "400 Bad Request", "snapshot write range must be non-empty, bounded, and 4-byte aligned");
+    }
+
+    const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
+    const meta_carve_data_t *data = NULL;
+    if (part) {
+        if (part->address != part_offset || part->size != part_size) {
+            return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+        }
+    } else {
+        // 表内未物化(launcher 运行态的 DATA 分区):按 carve 记录做完整身份校验。
+        data = install_carve_data_match(label, type, subtype, part_offset, part_size);
+        if (!data) {
+            return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+        }
+    }
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+    if (strcmp(label, "cardid") == 0 || (part && install_partition_same(part, running))) {
+        return reply(req, "403 Forbidden", "snapshot target is protected");
+    }
+    if (part && (part->readonly || part->erase_size == 0)) {
+        return reply(req, "403 Forbidden", "snapshot target is protected or read-only");
+    }
+    if (need_range && (offset > part_size || length > part_size - offset)) {
+        return reply(req, "416 Range Not Satisfiable", "snapshot write range out of bounds");
+    }
+    out->part = part;
+    out->data = data;
+    out->abs_offset = part ? (uint32_t)part->address : data->offset;
+    out->size = part_size;
+    out->rel_offset = offset;
+    out->length = length;
+    return ESP_OK;
+}
+
+static const char *label_of_target(const install_snapshot_target_t *t)
+{
+    if (!t) return "?";
+    if (t->part) return t->part->label;
+    if (t->data) return t->data->label;
+    return "?";
+}
+
+// POST /api/install/storage/erase: erase one exact eligible partition, including NVS.
+// This is intentionally a simple sequential restore primitive, not an atomic transaction:
+// if a later write fails, the host must report an incomplete restore and must not claim rollback.
+static esp_err_t h_install_storage_erase(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage restore unavailable during installation");
+
+    install_snapshot_target_t target = {0};
+    esp_err_t e = install_snapshot_target(req, &target, false);
+    if (e != ESP_OK) return e;
+    const uint32_t erase_sector = target.part ? target.part->erase_size : 4096u;
+    if ((target.abs_offset % erase_sector) != 0 || (target.size % erase_sector) != 0) {
+        return reply(req, "409 Conflict", "partition geometry is not erase-sector aligned");
+    }
+    e = target.part
+        ? esp_partition_erase_range(target.part, 0, target.size)
+        : esp_flash_erase_region(NULL, target.abs_offset, target.size);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "snapshot erase failed label=%s: %s", label_of_target(&target), esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "snapshot partition erase failed");
+    }
+    return reply(req, "200 OK", "erased");
+}
+
+// POST /api/install/storage/write: bounded raw bytes within an exact eligible partition.
+// This API accepts no absolute target address and rejects cardid/the running host partition.
+static esp_err_t h_install_storage_write(httpd_req_t *req)
+{
+    if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "storage restore unavailable during installation");
+
+    install_snapshot_target_t target = {0};
+    esp_err_t e = install_snapshot_target(req, &target, true);
+    if (e != ESP_OK) return e;
+    const uint32_t offset = target.rel_offset;
+    const uint32_t length = target.length;
+    if (req->content_len != (size_t)length) {
+        return reply(req, "400 Bad Request", "snapshot body length does not match X-Meta-Length");
+    }
+    static uint8_t write_buf[INSTALL_IO_BUF];
+    size_t received = 0;
+    while (received < length) {
+        int n = httpd_req_recv(req, (char *)write_buf + received, (size_t)length - received);
+        if (n <= 0) return reply(req, "408 Request Timeout", "snapshot write body incomplete");
+        received += (size_t)n;
+    }
+    e = target.part
+        ? esp_partition_write(target.part, offset, write_buf, length)
+        : esp_flash_write(NULL, write_buf, target.abs_offset + offset, length);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "snapshot write failed label=%s off=%" PRIu32 ": %s",
+                 label_of_target(&target), offset, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "snapshot partition write failed");
+    }
+    return reply(req, "200 OK", "written");
+}
+
 // POST /api/install/finalize —— 长度/哈希/OTA/镜像/名称/注册表六连检(§6.5)。
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
@@ -1399,6 +2575,14 @@ static esp_err_t h_install_slots(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    bool recovered_remove = false;
+    const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
+    if (remove_recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "pending uninstall cleanup failed; retry");
+    }
+    if (recovered_remove) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
 
     const meta_carve_t *carve = meta_carve_flash_carve();
     if (!carve) return reply(req, "500 Internal Server Error", "carve unavailable");
@@ -1452,10 +2636,11 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         off += snprintf(resp + off, sizeof(resp) - off,
             "{\"slot\":%d,\"state\":\"%s\",\"name\":\"%s\","
             "\"size\":%" PRIu32 ",\"len\":%" PRIu32 ",\"limit\":%" PRIu32
-            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32 "}",
+            ",\"offset\":%" PRIu32 ",\"kind\":\"%s\",\"arc\":%" PRIu32
+            ",\"play_id\":%" PRIu32 "}",
             j, state_str, s->name,
             s->size, s->image_len, s->size - 0x1000,
-            s->offset, kind_str, arc_records);
+            s->offset, kind_str, arc_records, s->play_id);
     }
 
     // dynslot P1-4:数据 carve 记录也占池空间,必须暴露给手机侧分配器 ——
@@ -1473,8 +2658,9 @@ static esp_err_t h_install_slots(httpd_req_t *req)
         if (j) off += snprintf(resp + off, sizeof(resp) - off, ",");
         off += snprintf(resp + off, sizeof(resp) - off,
             "{\"play_id\":%" PRIu32 ",\"offset\":%" PRIu32
-            ",\"size\":%" PRIu32 ",\"state\":%u,\"label\":\"%s\"}",
-            d->play_id, d->offset, d->size, (unsigned)d->state, label_esc);
+            ",\"size\":%" PRIu32 ",\"state\":%u,\"type\":%u,\"subtype\":%u,\"label\":\"%s\"}",
+            d->play_id, d->offset, d->size, (unsigned)d->state,
+            (unsigned)d->type, (unsigned)d->subtype, label_esc);
     }
     off += snprintf(resp + off, sizeof(resp) - off, "]}");
     httpd_resp_set_type(req, "application/json");
@@ -1485,85 +2671,302 @@ static esp_err_t h_install_slots(httpd_req_t *req)
 
 static esp_err_t h_install_remove(httpd_req_t *req);
 static esp_err_t h_backup_import(httpd_req_t *req);
+static esp_err_t remove_recover_pending(bool *did_recover);
 
-// POST /api/install/remove —— dynslot 显式删除(§M5: 先归档数据,再删槽位)
+/* Durable uninstall intent lives in NVS and is committed before any erase.
+ * The full APP identity is re-found after reboot; stale intent cleanup must never
+ * delete another APP that shifted into the previous array index. */
+static bool remove_nvs_key_missing(esp_err_t err)
+{
+    if (err == ESP_ERR_NOT_FOUND) return true;
+#ifdef ESP_ERR_NVS_NOT_FOUND
+    if (err == ESP_ERR_NVS_NOT_FOUND) return true;
+#endif
+    return false;
+}
+
+#define REMOVE_NVS_NS "meta_rm"
+static esp_err_t remove_nvs_set_u32(nvs_handle_t nvs, const char *prefix, uint32_t value)
+{
+    char key[8];
+    for (unsigned i = 0; i < 4; i++) {
+        snprintf(key, sizeof(key), "%s%u", prefix, i);
+        const esp_err_t e = nvs_set_u8(nvs, key, (uint8_t)(value >> (i * 8)));
+        if (e != ESP_OK) return e;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t remove_nvs_get_u32(nvs_handle_t nvs, const char *prefix, uint32_t *value)
+{
+    if (!value) return ESP_ERR_INVALID_ARG;
+    char key[8];
+    uint32_t v = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        uint8_t b = 0;
+        snprintf(key, sizeof(key), "%s%u", prefix, i);
+        const esp_err_t e = nvs_get_u8(nvs, key, &b);
+        if (e != ESP_OK) return e;
+        v |= ((uint32_t)b) << (i * 8);
+    }
+    *value = v;
+    return ESP_OK;
+}
+
+static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
+{
+    if (!target) return ESP_ERR_INVALID_ARG;
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve || slot < 0 || slot >= (int)carve->count ||
+        carve->slot[slot].play_id != target->play_id ||
+        carve->slot[slot].offset != target->offset ||
+        carve->slot[slot].size != target->size) return ESP_ERR_INVALID_STATE;
+    uint32_t data_offsets[META_DATA_MAX];
+    uint32_t data_sizes[META_DATA_MAX];
+    uint8_t data_count = 0;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *d = &carve->data[i];
+        if (target->play_id == 0 || d->play_id != target->play_id) continue;
+        if (data_count >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+        data_offsets[data_count] = d->offset;
+        data_sizes[data_count] = d->size;
+        data_count++;
+    }
+    if (target->play_id == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
+
+    nvs_handle_t nvs;
+    esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
+    if (e != ESP_OK) return e;
+    /* Disable any stale intent before replacing its payload. */
+    e = nvs_set_u8(nvs, "active", 0);
+    if (e == ESP_OK) e = nvs_commit(nvs);
+    if (e == ESP_OK) e = nvs_set_u8(nvs, "slot", (uint8_t)slot);
+    if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "p", target->play_id);
+    if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "o", target->offset);
+    if (e == ESP_OK) e = remove_nvs_set_u32(nvs, "z", target->size);
+    if (e == ESP_OK) e = nvs_set_u8(nvs, "dc", data_count);
+    for (uint8_t i = 0; e == ESP_OK && i < data_count; i++) {
+        char op[8], sp[8];
+        snprintf(op, sizeof(op), "do%u", (unsigned)i);
+        snprintf(sp, sizeof(sp), "ds%u", (unsigned)i);
+        e = remove_nvs_set_u32(nvs, op, data_offsets[i]);
+        if (e == ESP_OK) e = remove_nvs_set_u32(nvs, sp, data_sizes[i]);
+    }
+    /* Active is the final field, committed only after the complete cleanup
+     * manifest is durable. Recovery can retry erases after metadata removal. */
+    if (e == ESP_OK) e = nvs_set_u8(nvs, "active", 1);
+    if (e == ESP_OK) e = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (e == ESP_OK) s_remove_recovery_needed = true;
+    return e;
+}
+
+static esp_err_t remove_intent_read(bool *pending, uint32_t *pid,
+                                    uint32_t *offset, uint32_t *size,
+                                    uint8_t *data_count,
+                                    uint32_t data_offsets[META_DATA_MAX],
+                                    uint32_t data_sizes[META_DATA_MAX])
+{
+    if (!pending || !pid || !offset || !size || !data_count ||
+        !data_offsets || !data_sizes) return ESP_ERR_INVALID_ARG;
+    *pending = false;
+    *data_count = 0;
+    nvs_handle_t nvs;
+    esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
+    if (e != ESP_OK) return e;
+    uint8_t active = 0;
+    e = nvs_get_u8(nvs, "active", &active);
+    if (remove_nvs_key_missing(e)) { nvs_close(nvs); return ESP_OK; }
+    if (e != ESP_OK) { nvs_close(nvs); return e; }
+    if (active == 0) { nvs_close(nvs); return ESP_OK; }
+    e = remove_nvs_get_u32(nvs, "p", pid);
+    if (e == ESP_OK) e = remove_nvs_get_u32(nvs, "o", offset);
+    if (e == ESP_OK) e = remove_nvs_get_u32(nvs, "z", size);
+    uint8_t count = 0;
+    if (e == ESP_OK) {
+        e = nvs_get_u8(nvs, "dc", &count);
+        /* Older intent records predate durable DATA extent snapshots. Their
+         * original order erased DATA before metadata commit, so zero is safe. */
+        if (remove_nvs_key_missing(e)) { e = ESP_OK; count = 0; }
+    }
+    if (e == ESP_OK && count > META_DATA_MAX) e = ESP_ERR_INVALID_STATE;
+    for (uint8_t i = 0; e == ESP_OK && i < count; i++) {
+        char op[8], sp[8];
+        snprintf(op, sizeof(op), "do%u", (unsigned)i);
+        snprintf(sp, sizeof(sp), "ds%u", (unsigned)i);
+        e = remove_nvs_get_u32(nvs, op, &data_offsets[i]);
+        if (e == ESP_OK) e = remove_nvs_get_u32(nvs, sp, &data_sizes[i]);
+        if (e == ESP_OK && data_sizes[i] == 0) e = ESP_ERR_INVALID_STATE;
+    }
+    nvs_close(nvs);
+    if (e != ESP_OK) return ESP_ERR_INVALID_STATE;
+    *data_count = count;
+    *pending = true;
+    return ESP_OK;
+}
+static esp_err_t remove_intent_clear(void)
+{
+    nvs_handle_t nvs;
+    esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
+    if (e != ESP_OK) return e;
+    e = nvs_set_u8(nvs, "active", 0);
+    if (e == ESP_OK) e = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (e == ESP_OK) s_remove_recovery_needed = false;
+    return e;
+}
+
+static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
+                                             uint32_t offset, uint32_t size)
+{
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve || slot < 0 || slot >= (int)carve->count) return ESP_ERR_NOT_FOUND;
+    const meta_carve_slot_t *target = &carve->slot[slot];
+    if (target->play_id != pid || target->offset != offset || target->size != size) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Legacy APPs with unknown play_id cannot safely claim or delete DATA.
+     * Fail closed rather than create orphan DATA or erase another APP's data. */
+    if (pid == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
+
+    /* Snapshot all extents before the metadata commit invalidates the active
+     * carve view. Never erase bytes while their DATA records are still live:
+     * a failed commit must leave every owned DATA byte untouched. */
+    uint32_t data_offsets[META_DATA_MAX];
+    uint32_t data_sizes[META_DATA_MAX];
+    uint8_t data_count = 0;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *data = &carve->data[i];
+        if (pid == 0 || data->play_id != pid) continue;
+        if (data_count >= META_DATA_MAX) return ESP_ERR_INVALID_STATE;
+        data_offsets[data_count] = data->offset;
+        data_sizes[data_count] = data->size;
+        data_count++;
+    }
+
+    /* First atomically remove APP + owned DATA records and materialize the
+     * new partition table. If this fails, do not erase APP or DATA bytes. */
+    const esp_err_t commit = meta_carve_flash_remove_app_and_data(slot);
+    if (commit != ESP_OK) return commit;
+
+    /* The records are now gone, so failed erases can only leave unregistered
+     * stale bytes. Future allocation must erase its chosen extent before use. */
+    esp_err_t first_error = ESP_OK;
+    const esp_err_t app_erase = esp_flash_erase_region(NULL, offset, META_SIG_SECTOR);
+    if (app_erase != ESP_OK) {
+        ESP_LOGE(TAG, "remove: APP header erase failed @0x%08lx: %s",
+                 (unsigned long)offset, esp_err_to_name(app_erase));
+        first_error = app_erase;
+    }
+    for (uint8_t i = 0; i < data_count; i++) {
+        const esp_err_t e = esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i]);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "cascade erase failed @0x%08lx size=%lu err=%s",
+                     (unsigned long)data_offsets[i], (unsigned long)data_sizes[i],
+                     esp_err_to_name(e));
+            if (first_error == ESP_OK) first_error = e;
+        }
+    }
+    return first_error;
+}
+
+static esp_err_t remove_recovery_gate(bool *did_recover)
+{
+    if (!s_remove_recovery_needed) {
+        if (did_recover) *did_recover = false;
+        return ESP_OK;
+    }
+    const esp_err_t e = remove_recover_pending(did_recover);
+    if (e == ESP_OK) s_remove_recovery_needed = false;
+    return e;
+}
+static esp_err_t remove_recover_pending(bool *did_recover)
+{
+    if (did_recover) *did_recover = false;
+    bool pending;
+    uint32_t pid, offset, size;
+    uint8_t data_count = 0;
+    uint32_t data_offsets[META_DATA_MAX] = {0};
+    uint32_t data_sizes[META_DATA_MAX] = {0};
+    esp_err_t e = remove_intent_read(&pending, &pid, &offset, &size,
+                                     &data_count, data_offsets, data_sizes);
+    if (e != ESP_OK || !pending) return e;
+    if (did_recover) *did_recover = true;
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return ESP_ERR_INVALID_STATE;
+    int found = -1;
+    for (uint8_t i = 0; i < carve->count; i++) {
+        const meta_carve_slot_t *slot = &carve->slot[i];
+        if (slot->play_id == pid && slot->offset == offset && slot->size == size) {
+            found = i; break;
+        }
+    }
+    if (found >= 0) {
+        /* Metadata is still present: retry the complete commit-first removal. */
+        e = remove_app_bytes_and_commit(found, pid, offset, size);
+        if (e != ESP_OK) return e;
+    } else {
+        /* Metadata was committed before power loss/erase failure. The durable
+         * intent still identifies old extents, so retry cleanup without ever
+         * reintroducing their records. Erases are idempotent. */
+        e = esp_flash_erase_region(NULL, offset, META_SIG_SECTOR);
+        if (e != ESP_OK) return e;
+        for (uint8_t i = 0; i < data_count; i++) {
+            e = esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i]);
+            if (e != ESP_OK) return e;
+        }
+    }
+    return remove_intent_clear();
+}
+
+// POST /api/install/remove —— APP + 全部关联 DATA 级联删除
 static esp_err_t h_install_remove(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
-
+    session_lock();
+    const bool install_busy = s_session.confirmed || s_session.session_opened;
+    session_unlock();
+    if (install_busy) return reply(req, "409 Conflict", "cannot uninstall during an install session");
     static char body[512];
     size_t len = 0;
     const esp_err_t rd = req_body(req, body, sizeof(body), &len);
-    if (rd == ESP_ERR_INVALID_SIZE) {
-        return reply(req, "413 Payload Too Large", "body too large");
-    }
+    if (rd == ESP_ERR_INVALID_SIZE) return reply(req, "413 Payload Too Large", "body too large");
     if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
-
-    // 严格解析(scan_int 拒字符串/小数;旧手写 strstr 会把 "slot":"3" 当 0 删错槽)。
     meta_install_remove_req_t rm;
     if (!meta_install_model_parse_remove(body, len, &rm)) {
         return reply(req, "400 Bad Request", "invalid remove request");
     }
-
+    bool recovered = false;
+    const esp_err_t recovery = remove_recovery_gate(&recovered);
+    if (recovery != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "previous uninstall recovery failed; retry");
+    }
+    if (recovered) {
+        return reply(req, "409 Conflict", "previous uninstall recovered; refresh slot list");
+    }
     const meta_carve_t *carve = meta_carve_flash_carve();
     if (!meta_install_model_remove_ok(carve, rm.slot)) {
         return reply(req, "404 Not Found", "no such slot");
     }
-
-    if (rm.erase_data) {
-        // 显式"删除数据"(design §6):擦该玩法全部数据记录(字节 + 记录)。
-        // erase_data 一次一条且会改动记录 —— 先快照 label 列表再逐条擦。
-        const uint32_t pid = carve->slot[rm.slot].play_id;
-        if (pid != 0) {
-            char labels[META_DATA_MAX][META_DATA_LABEL_MAX + 1];
-            uint8_t n = 0;
-            for (uint8_t i = 0; i < carve->data_count && n < META_DATA_MAX; i++) {
-                if (carve->data[i].play_id != pid) continue;
-                memcpy(labels[n], carve->data[i].label, sizeof(labels[0]));
-                labels[n][META_DATA_LABEL_MAX] = '\0';
-                n++;
-            }
-            for (uint8_t i = 0; i < n; i++) {
-                const esp_err_t e = meta_carve_flash_erase_data(pid, labels[i]);
-                if (e != ESP_OK) {
-                    ESP_LOGW(TAG, "erase_data failed: play_id=%u label=%s",
-                             (unsigned)pid, labels[i]);
-                }
-            }
-        }
-    } else {
-        // 默认归档:不擦字节,保留用户数据,可被回收阶梯回收(design §6)。
-        const esp_err_t arc_err = meta_carve_flash_archive_slot_and_data(rm.slot);
-        if (arc_err != ESP_OK && arc_err != ESP_ERR_INVALID_ARG) {
-            ESP_LOGW(TAG, "archive_slot_and_data failed: %s", esp_err_to_name(arc_err));
-        }
+    const meta_carve_slot_t target = carve->slot[rm.slot];
+    if (target.play_id == 0 && carve->data_count > 0) {
+        return reply(req, "409 Conflict",
+                     "DATA ownership is unknown for this legacy APP; refusing unsafe uninstall");
     }
-
-    // 防"删除复活"(真机 2026-10-04):remove 只清记录、不擦镜像字节,而物化
-    // 表仍保留该分区 → 重启后扫描见有效镜像 → sync_states 把 EMPTY 顶回
-    // VALID,删除形同虚设(记录扇区 A/B _seq 22→23 现场实锤)。先擦镜像首
-    // sector(4KB):扫描首扇区全 0xFF 即判 EMPTY,与记录一致,复活链断。
-    // 擦除失败 → 500 不删(删了必复活,不如不删让用户重试)。
-    {
-        const esp_partition_t *part = slot_partition_any((int8_t)rm.slot);
-        if (part) {
-            const esp_err_t ee = esp_partition_erase_range(part, 0, META_SIG_SECTOR);
-            if (ee != ESP_OK) {
-                ESP_LOGE(TAG, "remove: image header erase failed: %s",
-                         esp_err_to_name(ee));
-                return reply(req, "500 Internal Server Error",
-                             "erase image header failed");
-            }
-        }
+    if (remove_intent_write(rm.slot, &target) != ESP_OK) {
+        return reply(req, "500 Internal Server Error", "cannot persist uninstall intent");
     }
-
-    if (meta_carve_flash_remove(rm.slot) != ESP_OK) {
-        return reply(req, "500 Internal Server Error", "remove failed");
+    const esp_err_t e = remove_app_bytes_and_commit(rm.slot, target.play_id,
+                                                     target.offset, target.size);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "uninstall remains pending for slot=%d: %s", rm.slot, esp_err_to_name(e));
+        return reply(req, "500 Internal Server Error", "uninstall interrupted; retry to resume safely");
     }
-
-    ESP_LOGI(TAG, "slot %d removed (%s)", rm.slot,
-             rm.erase_data ? "data erased" : "data archived");
+    if (remove_intent_clear() != ESP_OK) {
+        ESP_LOGW(TAG, "uninstall committed but intent cleanup deferred");
+    }
+    ESP_LOGI(TAG, "slot %d and associated DATA removed", rm.slot);
     return reply(req, "200 OK", "ok");
 }
 
@@ -1588,8 +2991,21 @@ esp_err_t meta_install_net_start(void)
     if (!s_init) return ESP_ERR_INVALID_STATE;
     if (s_httpd) return ESP_OK;   // 幂等:已在跑
 
+    /* Resume interrupted APP/DATA deletion before exposing the management API. */
+    bool recovered = false;
+    const esp_err_t recovery = remove_recover_pending(&recovered);
+    if (recovery != ESP_OK) {
+        ESP_LOGE(TAG, "pending uninstall recovery failed: %s", esp_err_to_name(recovery));
+        /* Fail closed: do not expose install/remove APIs while a destructive
+         * transaction is unresolved. A new install could otherwise change the
+         * carve before the persisted uninstall target can be recovered. */
+        return recovery;
+    }
+
     httpd_config_t hcfg = HTTPD_DEFAULT_CONFIG();
-    hcfg.max_uri_handlers = 12;    // / + pair/status/prepare/session/chunk/finalize/cancel
+    // Storage snapshot adds bounded partition erase/write endpoints alongside info/read.
+    // Keep explicit headroom so the service does not fail to start at URI registration.
+    hcfg.max_uri_handlers = 24;
     hcfg.max_open_sockets = 3;
     hcfg.backlog_conn = 2;
     hcfg.lru_purge_enable = true;
@@ -1614,11 +3030,21 @@ esp_err_t meta_install_net_start(void)
         { "/api/install/prepare", HTTP_POST, h_install_prepare, NULL },
         { "/api/install/session", HTTP_POST, h_install_session, NULL },
         { "/api/install/chunk",   HTTP_POST, h_install_chunk,   NULL },
+        { "/api/install/data",    HTTP_POST, h_install_data,    NULL },
+        { "/api/install/data/read",HTTP_GET,  h_install_data_read,NULL },
+        { "/api/install/storage/info", HTTP_GET, h_install_storage_info, NULL },
+        { "/api/install/storage/read", HTTP_GET, h_install_storage_read, NULL },
+        { "/api/install/storage/erase", HTTP_POST, h_install_storage_erase, NULL },
+        { "/api/install/storage/write", HTTP_POST, h_install_storage_write, NULL },
+        { "/api/install/nvs/info", HTTP_GET, h_install_nvs_info, NULL },
+        { "/api/install/nvs/read", HTTP_GET, h_install_nvs_read, NULL },
+        { "/api/install/slot/read",HTTP_GET,  h_install_slot_read,NULL },
         { "/api/install/finalize",HTTP_POST, h_install_finalize,NULL },
         { "/api/install/cancel",  HTTP_POST, h_install_cancel,  NULL },
         { "/api/install/remove",  HTTP_POST, h_install_remove,  NULL },
         { "/api/backup/import",   HTTP_POST, h_backup_import,   NULL },
         { "/api/install/slots",   HTTP_GET,  h_install_slots,   NULL },
+        { "/favicon.ico",         HTTP_GET,  h_favicon,         NULL },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
         if (httpd_register_uri_handler(s_httpd, &uris[i]) != ESP_OK) {
@@ -1641,156 +3067,11 @@ void meta_install_net_stop(void)
     meta_install_token_stop();   // 幂等:未开 token 时也只是清空状态
 }
 
-// POST /api/backup/import —— 导入归档数据(§M5.12)
+// POST /api/backup/import —— 暂停旧版仅元数据导入，防止创建没有真实内容的 DATA。
 static esp_err_t h_backup_import(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-
-    static char body[4096];
-    size_t len = 0;
-    const esp_err_t rd = req_body(req, body, sizeof(body), &len);
-    if (rd == ESP_ERR_INVALID_SIZE) {
-        return reply(req, "413 Payload Too Large", "body too large");
-    }
-    if (rd != ESP_OK) return reply(req, "400 Bad Request", "read error");
-
-    uint32_t play_id = 0;
-    char *endptr;
-    char *p = strstr(body, "\"play_id\"");
-    if (!p) return reply(req, "400 Bad Request", "missing play_id");
-    p = strchr(p, ':');
-    if (!p) return reply(req, "400 Bad Request", "malformed play_id");
-    play_id = (uint32_t)strtoul(p + 1, &endptr, 10);
-    if (play_id == 0 || *endptr != ',') return reply(req, "400 Bad Request", "invalid play_id");
-
-    char import_version[33] = {0};
-    p = strstr(body, "\"firmware_version\"");
-    if (!p) return reply(req, "400 Bad Request", "missing firmware_version");
-    p = strchr(p, '"');
-    if (!p) return reply(req, "400 Bad Request", "malformed firmware_version");
-    p++;
-    const char *end = strchr(p, '"');
-    if (!end) return reply(req, "400 Bad Request", "unterminated firmware_version");
-    int ver_len = (int)(end - p);
-    if (ver_len <= 0 || ver_len >= (int)sizeof(import_version)) {
-        return reply(req, "400 Bad Request", "firmware_version too long");
-    }
-    strncpy(import_version, p, ver_len);
-
-    // IDF 5.5.3 签名:const esp_app_desc_t *esp_app_get_description(void)
-    // (host 桩原先虚构了 out 参数版,真编译才暴露分歧)。
-    const esp_app_desc_t *desc = esp_app_get_description();
-    const char *current_version = (desc && desc->version[0] != '\0')
-                                   ? desc->version : "0.0.0-placeholder";
-
-    if (strcmp(import_version, current_version) != 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "version mismatch: backup=%s, device=%s",
-                 import_version, current_version);
-        return reply(req, "400 Bad Request", msg);
-    }
-
-    const char *data_marker = strstr(body, "\"data\"");
-    if (!data_marker) return reply(req, "400 Bad Request", "missing data array");
-    char *array_start = strchr(data_marker, '[');
-    if (!array_start) return reply(req, "400 Bad Request", "malformed data array");
-    array_start++;
-
-    meta_backup_data_t raw[META_BACKUP_DATA_MAX];
-    int raw_count = 0;
-    p = array_start;
-    while (*p && raw_count < META_BACKUP_DATA_MAX) {
-        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-        if (*p != '{') break;
-        meta_backup_data_t rec = {0};
-        char *off_p = strstr(p, "\"offset\"");
-        if (!off_p) break;
-        off_p = strchr(off_p, ':');
-        if (!off_p) break;
-        rec.offset = (uint32_t)strtoul(off_p + 1, &endptr, 10);
-        char *size_p = strstr(p, "\"size\"");
-        if (!size_p) break;
-        size_p = strchr(size_p, ':');
-        if (!size_p) break;
-        rec.size = (uint32_t)strtoul(size_p + 1, &endptr, 10);
-        char *state_p = strstr(p, "\"state\"");
-        if (!state_p) break;
-        state_p = strchr(state_p, ':');
-        if (!state_p) break;
-        rec.state = (uint8_t)strtoul(state_p + 1, &endptr, 10);
-        char *label_p = strstr(p, "\"label\"");
-        if (label_p) {
-            label_p = strchr(label_p, '"');
-            if (label_p) {
-                label_p++;
-                const char *label_end = strchr(label_p, '"');
-                if (label_end) {
-                    int label_len = (int)(label_end - label_p);
-                    if (label_len > 0 && label_len < (int)sizeof(rec.label)) {
-                        strncpy(rec.label, label_p, label_len);
-                        rec.label[label_len] = '\0';
-                    }
-                }
-            }
-        }
-        if (raw_count < META_BACKUP_DATA_MAX) raw[raw_count++] = rec;
-        char *brace_end = strchr(p, '}');
-        if (!brace_end) break;
-        p = brace_end + 1;
-    }
-
-    // 筛选与空间判定走纯逻辑(meta_backup.c,host 可测)。
-    meta_backup_data_t import_records[META_BACKUP_DATA_MAX];
-    const int record_count = meta_backup_filter_import(raw, raw_count, import_records);
-    if (record_count == 0) return reply(req, "400 Bad Request", "no valid archived records");
-
-    uint32_t total_needed = 0;
-    for (int i = 0; i < record_count; i++) total_needed += import_records[i].size;
-
-    const meta_carve_t *carve = meta_carve_flash_carve();
-    if (!carve) return reply(req, "500 Internal Server Error", "carve not available");
-
-    uint32_t free_bytes = meta_carve_free(carve);
-    meta_import_verdict_t verdict = meta_backup_import_verdict(
-        free_bytes, total_needed, meta_carve_reclaimable(carve));
-    if (verdict == META_IMPORT_ERR_NEED_ARC) {
-        // meta_carve_flash_arc 返回实际回收字节数(0 = 无可用归档)。回收后重新判定。
-        ESP_LOGI(TAG, "pool pressure %lu needed, free %lu, attempting ARC",
-                 (unsigned long)total_needed, (unsigned long)free_bytes);
-        (void)meta_carve_flash_arc(total_needed - free_bytes);
-        free_bytes = meta_carve_free(meta_carve_flash_carve());
-        verdict = meta_backup_import_verdict(free_bytes, total_needed, 0);
-    }
-    if (verdict != META_IMPORT_OK) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "insufficient space: need %lu, free %lu",
-                 (unsigned long)total_needed, (unsigned long)free_bytes);
-        return reply(req, "507 Insufficient Storage", msg);
-    }
-
-    // 在副本上追加再提交:失败时 s_carve 不被改动(避免内存态与 flash 分歧)。
-    meta_carve_t next = *carve;
-    for (int i = 0; i < record_count; i++) {
-        meta_carve_data_t d;
-        memset(&d, 0, sizeof(d));
-        d.play_id = play_id;
-        d.offset = import_records[i].offset;
-        d.size = import_records[i].size;
-        d.state = META_DATA_PRISTINE;
-        d.type = 1;
-        d.subtype = 1;
-        strncpy(d.label, import_records[i].label, sizeof(d.label) - 1);
-        if (!meta_carve_data_append(&next, &d)) {
-            return reply(req, "500 Internal Server Error", "failed to update carve table");
-        }
-    }
-
-    esp_err_t commit_err = meta_carve_flash_commit(&next, true);
-    if (commit_err != ESP_OK) {
-        return reply(req, "500 Internal Server Error", "failed to commit carve table");
-    }
-
-    char resp[128];
-    snprintf(resp, sizeof(resp), "{\"records\":%d,\"ok\":true}", record_count);
-    return reply(req, "200 OK", resp);
+    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    return reply(req, "501 Not Implemented",
+                 "byte-level backup restore is not implemented; metadata-only import is disabled");
 }

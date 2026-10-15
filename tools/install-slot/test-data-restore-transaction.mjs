@@ -1,0 +1,216 @@
+#!/usr/bin/env node
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { executeDataRestoreTransaction } from "../../install-slot/data-restore-transaction.js";
+
+const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const app = new Uint8Array([0xe9, 1, 2, 3, 4, 5]);
+const data = new Uint8Array([9, 8, 7, 6, 5, 4, 3]);
+const manifest = {
+  manifest_version: 2, kind: "meta-pass-slot-backup",
+  created_utc: "2026-10-12T00:00:00.000Z", complete: true, missing_slots: [],
+  slots: [{ play_id: 101, source_slot: 0, name: "demo",
+    files: [{ name: "app.bin", bytes: app.length, sha256: digest(app), type: "app" }] }],
+  data: [{ play_id: 101, label: "cfg_save", type: 1, subtype: 64, state: 1,
+    bytes: data.length, sha256: digest(data), file: "data/101/0.bin" }],
+};
+const plan = { manifestVersion: 2, playIds: [101], dataBytes: 4096,
+  data: [{ play_id: 101, label: "cfg_save", type: 1, subtype: 64, state: 1,
+    bytes: data.length, sha256: digest(data), file: "data/101/0.bin", allocatedBytes: 4096 }] };
+const payloads = new Map([["app.bin", app], ["data/101/0.bin", data]]);
+
+function fakeDevice({ failReadback = false, failAppWrite = false, failCommit = false, commitAppliedThenTimeout = false, failPostCommitState = false } = {}) {
+  const events = [];
+  const store = new Map();
+  let staged = true;
+  let commitApplied = false;
+  const device = {
+    async beginRestore(meta) { events.push(["begin", meta]); return "opaque-txn"; },
+    async allocateData(token, record) { events.push(["allocate", record]); store.set("data", new Uint8Array(record.bytes)); return "opaque-data-handle"; },
+    async writeData(token, handle, offset, bytes) { events.push(["writeData", offset, bytes.length]); store.get("data").set(bytes, offset); },
+    async readData(token, handle, offset, length) {
+      events.push(["readData", offset, length]);
+      if (failReadback) return new Uint8Array(length).fill(0);
+      return store.get("data").slice(offset, offset + length);
+    },
+    async writeApp(token, slot, file, bytes) { events.push(["writeApp", slot.play_id]); if (failAppWrite) throw new Error("simulated APP write failure"); store.set("app", bytes.slice()); },
+    async verifyApp(token, slot, file) { events.push(["verifyApp", slot.play_id]); },
+    async commitRestore(token, value) { events.push(["commit", value]); if (failCommit) throw new Error("simulated timeout before durable commit"); staged = false; commitApplied = true; if (commitAppliedThenTimeout) throw new Error("simulated timeout after durable commit"); return { committed: true }; },
+    async readCommittedState(ids) { events.push(["verifyState", ids]); return failPostCommitState ? { committed: true, playIds: ids, data: [] } : { committed: true, playIds: ids, data: [{ play_id: 101, label: "cfg_save", bytes: data.length, sha256: digest(data) }] }; },
+    async cleanupStaging(token) { events.push(["cleanup", token]); staged = false; },
+  };
+  return { device, events, staged: () => staged, commitApplied: () => commitApplied };
+}
+
+{
+  const { device, events } = fakeDevice();
+  const result = await executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 });
+  assert.equal(result.committed, true);
+  assert.ok(events.some(e => e[0] === "commit"));
+  assert.ok(events.some(e => e[0] === "verifyState"));
+  assert.equal(events.some(e => e[0] === "cleanup"), false);
+  console.log("PASS 1: DATA is staged/read back, APP verified, commit and ownership recheck run");
+}
+{
+  const { device, events } = fakeDevice({ failReadback: true });
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 }), /DATA readback digest mismatch/);
+  assert.equal(events.some(e => e[0] === "commit"), false);
+  assert.equal(events.some(e => e[0] === "cleanup"), true);
+  console.log("PASS 2: readback mismatch blocks metadata commit and cleans staging");
+}
+{
+  const { device, events, staged } = fakeDevice({ failCommit: true });
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 }), /commit may have started/);
+  assert.equal(events.some(e => e[0] === "cleanup"), false);
+  assert.equal(staged(), true);
+  console.log("PASS 3: ambiguous commit preserves staging for recovery inspection");
+}
+{
+  const { device, events, staged } = fakeDevice({ failAppWrite: true });
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 }), /simulated APP write failure/);
+  assert.equal(events.some(e => e[0] === "commit"), false, "APP write failure must never reach commit");
+  assert.equal(events.some(e => e[0] === "cleanup"), true, "pre-commit failure must clean temporary staging");
+  assert.equal(staged(), false);
+  console.log("PASS 4: APP write failure aborts before commit and cleans temporary staging");
+}
+{
+  const { device, events, staged, commitApplied } = fakeDevice({ commitAppliedThenTimeout: true });
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 }), /commit may have started/);
+  assert.equal(commitApplied(), true, "fake device simulates durable ownership commit before transport timeout");
+  assert.equal(events.some(e => e[0] === "cleanup"), false, "ambiguous post-commit timeout must never clean staging");
+  assert.equal(staged(), false, "the device may already have atomically published the staged allocation");
+  console.log("PASS 5: timeout after durable commit preserves state for recovery and never cleans staging");
+}
+{
+  const { device, events } = fakeDevice({ failPostCommitState: true });
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b), chunkSize: 4 }), /commit may have started/);
+  assert.ok(events.some(e => e[0] === "verifyState"), "post-commit state must be inspected");
+  assert.equal(events.some(e => e[0] === "cleanup"), false, "failed verification cannot clean possibly referenced extents");
+  console.log("PASS 6: ownership verification failure preserves possibly committed DATA and requests recovery inspection");
+}
+{
+  const { device, events } = fakeDevice();
+  const mismatchedPlan = { ...plan, dataBytes: 8192 };
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }), /capacity totals do not match/);
+  assert.equal(events.length, 0, "capacity mismatch must be rejected before device transaction");
+  console.log("PASS 7: capacity totals are recomputed from the manifest before device I/O");
+}
+{
+  const { device, events } = fakeDevice();
+  const mismatchedPlan = { ...plan, data: [] };
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }), /DATA identities do not match/);
+  assert.equal(events.length, 0, "plan mismatch must be rejected before device transaction");
+  console.log("PASS 8: plan identities must exactly match the archive manifest");
+}
+{
+  const secondData = new Uint8Array([2, 4, 6]);
+  const digest2 = digest(secondData);
+  const manifestWithTwoData = {
+    ...manifest,
+    data: [
+      manifest.data[0],
+      { play_id: 101, label: "other_cfg", type: 1, subtype: 64, state: 1,
+        bytes: secondData.length, sha256: digest2, file: "data/101/1.bin" },
+    ],
+  };
+  // Same length as the manifest, but duplicates the first identity and omits
+  // the second. A length + Array.some comparison would incorrectly accept this.
+  const duplicatePlan = {
+    ...plan,
+    dataBytes: 8192,
+    data: [plan.data[0], { ...plan.data[0] }],
+  };
+  const { device, events } = fakeDevice();
+  await assert.rejects(
+    executeDataRestoreTransaction({
+      manifest: manifestWithTwoData,
+      payloads: new Map([...payloads, ["data/101/1.bin", secondData]]),
+      plan: duplicatePlan,
+      device,
+      sha256Hex: async b => digest(b),
+    }),
+    /duplicate DATA identities|DATA identities do not match/,
+  );
+  assert.equal(events.length, 0, "duplicate plan identities must fail before device I/O");
+  console.log("PASS 10: duplicate DATA plan identities cannot stand in for a missing reservation");
+}
+{
+  const mismatchedPlan = {
+    ...plan,
+    data: [{ ...plan.data[0], subtype: 65 }],
+  };
+  const { device, events } = fakeDevice();
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest, payloads, plan: mismatchedPlan, device, sha256Hex: async b => digest(b) }),
+    /DATA identities do not match/,
+  );
+  assert.equal(events.length, 0, "DATA type metadata must match before device I/O");
+  console.log("PASS 11: DATA subtype drift is rejected before device I/O");
+}
+{
+  const nvs = new Uint8Array([0x4e, 0x56, 0x53]);
+  const manifestWithNvs = {
+    ...manifest,
+    nvs: { file: "nvs.bin", bytes: nvs.length, sha256: digest(nvs) },
+  };
+  const archiveWithNvs = new Map([...payloads, ["nvs.bin", nvs]]);
+  const { device, events } = fakeDevice();
+  const result = await executeDataRestoreTransaction({
+    manifest: manifestWithNvs, payloads: archiveWithNvs, plan, device,
+    sha256Hex: async b => digest(b), chunkSize: 4,
+  });
+  assert.equal(result.committed, true);
+  assert.equal(events.some(e => /nvs/i.test(e[0])), false,
+    "NVS payload must be validated but never sent to device write methods");
+  console.log("PASS 14: NVS archive integrity is checked while destination NVS remains untouched");
+}
+{
+  const { device, events } = fakeDevice();
+  const duplicateAppPlan = { ...plan, playIds: [101, 101] };
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest, payloads, plan: duplicateAppPlan, device, sha256Hex: async b => digest(b) }),
+    /APP identities do not match/,
+  );
+  assert.equal(events.length, 0, "duplicate APP plan IDs must fail before device I/O");
+  console.log("PASS 12: duplicate APP plan identities are rejected");
+}
+{
+  const { device, events } = fakeDevice();
+  const malformedManifest = { ...manifest, data: [{ ...manifest.data[0], subtype: "64" }] };
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest: malformedManifest, payloads, plan, device, sha256Hex: async b => digest(b) }),
+    /invalid restore manifest/,
+  );
+  assert.equal(events.length, 0, "malformed manifest fields must fail before device I/O");
+  console.log("PASS 13: malformed manifest is rejected before device I/O");
+}
+{
+  const bad = new Map(payloads);
+  bad.set("data/101/0.bin", new Uint8Array([1, 1, 1]));
+  const { device, events } = fakeDevice();
+  await assert.rejects(executeDataRestoreTransaction({ manifest, payloads: bad, plan, device, sha256Hex: async b => digest(b) }), /payload length changed/);
+  assert.equal(events.length, 0, "invalid payload must be rejected before device writes");
+  console.log("PASS 9: mutated payload is rejected before opening device transaction");
+}
+
+for (const rejection of ["transport reset", null]) {
+  const { device: baseDevice, events, staged } = fakeDevice();
+  const device = {
+    ...baseDevice,
+    async commitRestore() { events.push(["commitNonErrorRejection"]); throw rejection; },
+  };
+  await assert.rejects(
+    executeDataRestoreTransaction({ manifest, payloads, plan, device, sha256Hex: async b => digest(b) }),
+    (error) => {
+      assert.equal(error instanceof Error, true);
+      assert.equal(error.restoreStateUncertain, true);
+      assert.equal(error.code, "RESTORE_COMMIT_UNCERTAIN");
+      assert.match(error.message, /commit may have started/);
+      return true;
+    },
+  );
+  assert.equal(events.some(e => e[0] === "cleanup"), false,
+    "non-Error commit rejection must not trigger staging cleanup");
+  assert.equal(staged(), true);
+}
+console.log("PASS 15: string/null commit rejections are normalized without losing uncertain-state protection");

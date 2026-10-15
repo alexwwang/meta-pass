@@ -43,6 +43,10 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize);
 // 不在 carve 的下标 → ESP_ERR_INVALID_ARG,不写任何东西。
 esp_err_t meta_carve_flash_remove(int slot);
 
+/* Commit removal of an APP and all DATA records keyed to its play_id in one
+ * durable carve/table update. Caller must erase referenced bytes first. */
+esp_err_t meta_carve_flash_remove_app_and_data(int slot);
+
 // 扫描回填:把派生态(EMPTY/VALID/INVALID + sha + name)同步进记录;
 // 无变化不写(磨损友好)。count 必须 == 规范 carve 槽数(同一张表派生)。
 esp_err_t meta_carve_flash_sync_states(const meta_slot_info_t *slots, int count);
@@ -55,6 +59,10 @@ esp_err_t meta_carve_flash_set_valid(int slot, const char *name,
                                      uint32_t image_len,
                                      const uint8_t sha256[32]);   // 运行时装过 carved 表 → 退出商店页复位
 esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE]);
+ 
+// Materialize the runtime partition view for a Child Firmware immediately
+// before boot. active_play_id == 0 means launcher/no child data.
+esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id);
 
 // ---- M5 数据生命周期 -------------------------------------------------------
 
@@ -76,8 +84,8 @@ typedef struct {
 esp_err_t meta_carve_flash_mark_dirty_selected(const meta_carve_data_key_t *keys,
                                                uint8_t n_keys);
 
-// 卸载归档:将指定槽位对应的所有数据记录翻为 ARCHIVED(默认策略,不擦字节)。
-// 调用 meta_carve_flash_remove 前使用此函数;后者只删槽位记录。
+// 旧版兼容：将槽位关联 DATA 标为 ARCHIVED。新版本卸载必须使用
+// meta_carve_flash_remove_app_and_data 一次提交删除 APP 与全部关联 DATA。
 esp_err_t meta_carve_flash_archive_slot_and_data(int slot);
 
 // 显式擦除指定 play_id(+可选 label)的一条数据记录:记录先行 —— 先把条目
@@ -88,6 +96,7 @@ esp_err_t meta_carve_flash_erase_data(uint32_t play_id, const char *label);
 // 池压力 ARC:整条回收 ARCHIVED 数据记录,最旧优先,直到释放 ≥ target 字节。
 // 先提交更新后的记录、再擦字节;返回实际回收字节数(0 = 无可用归档 /
 // 提交失败)。DIRTY(在用)不回收;PRISTINE 属第 4 级(最后手段),不在此回收。
+uint32_t meta_carve_flash_arc_prepare(uint32_t target);
 uint32_t meta_carve_flash_arc(uint32_t target);
 
 // M5: 升级数据迁移 —— 在池内拷贝数据(bytes)并返回结果。

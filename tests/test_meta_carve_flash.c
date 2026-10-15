@@ -305,6 +305,16 @@ static void test_sync_states(void)
     assert(after.carve.slot[0].name[0] == 'p');
     assert(after.carve.slot[1].state == META_SLOT_VALID);
 
+    // 回归(真机 2026-10-08 S4 实锤):sync_states 从运行时表重建槽位条目时
+    // 必须保留记录侧 play_id —— 它被 memset 清零会导致卸载归档链
+    // archive_slot_and_data 命中 play_id==0 → INVALID_STATE,DATA 永不 ARCHIVED。
+    meta_carve_t with_pid = *meta_carve_flash_carve();
+    with_pid.slot[0].play_id = 42;
+    assert(meta_carve_flash_commit(&with_pid, false) == ESP_OK);
+    assert(meta_carve_flash_sync_states(slots, 3) == ESP_OK);
+    assert(read_best(&after));
+    assert(after.carve.slot[0].play_id == 42);
+
     // 无变化 → 不重写(seq 不再前进;磨损友好)。
     meta_carve_rec_t cur = after;
     assert(meta_carve_flash_sync_states(slots, 3) == ESP_OK);
@@ -377,7 +387,7 @@ static void make_rec_with_data(meta_carve_rec_t *rec, uint32_t play_id,
     rec->carve.data[0].size = size;
     rec->carve.data[0].state = state;
     rec->carve.data[0].type = 1;   // DATA
-    rec->carve.data[0].subtype = 1;  // non-OTA data type
+    rec->carve.data[0].subtype = 0x82;  // non-OTA data type
     if (label) {
         strncpy(rec->carve.data[0].label, label,
                 sizeof(rec->carve.data[0].label) - 1);
@@ -396,6 +406,65 @@ static void make_rec_with_data(meta_carve_rec_t *rec, uint32_t play_id,
         }
         assert(0);
     }
+}
+
+static void test_remove_app_and_data_atomically(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+    meta_carve_rec_t rec;
+    make_rec_with_data(&rec, 123, "save", 0x280000, 0x1000, META_DATA_DIRTY);
+    rec.carve.count = 3;
+    rec.carve.slot[1].kind = META_CARVE_KIND_APP;
+    rec.carve.slot[1].offset = 0x360000;
+    rec.carve.slot[1].size = 0x1F0000;
+    rec.carve.slot[1].play_id = 456;
+    rec.carve.slot[2].kind = META_CARVE_KIND_APP;
+    rec.carve.slot[2].offset = 0x560000;
+    rec.carve.slot[2].size = 0x29E000;
+    rec.carve.slot[2].play_id = 789;
+    rec.carve.data_count = 2;
+    rec.carve.data[1] = rec.carve.data[0];
+    rec.carve.data[1].offset = 0x290000;
+    rec.carve.data[1].size = 0x2000;
+    strcpy(rec.carve.data[1].label, "assets");
+    rec.carve.slot[0].play_id = 123;
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+    meta_carve_rec_t before_remove, committed;
+    assert(read_best(&before_remove));
+    assert(meta_carve_flash_remove_app_and_data(0) == ESP_OK);
+    assert(read_best(&committed));
+    assert(committed.seq == before_remove.seq + 1);
+    const meta_carve_t *cur = meta_carve_flash_carve();
+    assert(cur->count == 2);
+    assert(cur->data_count == 0);
+    assert(meta_carve_find_data(cur, 123, "save") == -1);
+    assert(meta_carve_find_data(cur, 123, "assets") == -1);
+    restart();
+    meta_carve_rec_t after;
+    assert(read_best(&after));
+    assert(after.carve.count == 2 && after.carve.data_count == 0);
+    printf("PASS remove APP + all DATA in one durable metadata commit\n");
+}
+static void test_remove_unknown_app_refuses_orphan_data(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+    meta_carve_rec_t rec;
+    make_rec_with_data(&rec, 123, "save", 0x280000, 0x1000, META_DATA_DIRTY);
+    rec.carve.slot[0].play_id = 0; /* legacy identity cannot prove DATA ownership */
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+    meta_carve_rec_t before, after;
+    assert(read_best(&before));
+    assert(meta_carve_flash_remove_app_and_data(0) == ESP_ERR_INVALID_STATE);
+    assert(read_best(&after));
+    assert(after.seq == before.seq);
+    assert(after.carve.count == 1 && after.carve.data_count == 1);
+    printf("PASS unknown APP identity refuses cascade delete\n");
 }
 
 static void test_set_dirty(void)
@@ -499,6 +568,37 @@ static void test_erase_data(void)
     printf("PASS erase_data (durable across restart)\n");
 }
 
+static void test_arc_prepare_transaction(void)
+{
+    reset_all();
+    load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
+                 META_PT_SIZE);
+    assert(meta_carve_flash_ensure() == ESP_OK);
+
+    meta_carve_rec_t rec;
+    make_rec_with_data(&rec, 333, "old", 0x2A0000, 0x1000, META_DATA_ARCHIVED);
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+
+    uint8_t data[0x1000];
+    memset(data, 0x5A, sizeof(data));
+    assert(esp_flash_write(NULL, data, 0x2A0000, sizeof(data)) == ESP_OK);
+
+    // Prepare removes the record from the allocation metadata but must NOT erase
+    // its physical bytes: an install transaction may still roll the carve back.
+    assert(meta_carve_flash_arc_prepare(0x1000) == 0x1000);
+    assert(meta_carve_flash_carve()->data_count == 0);
+    uint8_t got[0x1000];
+    assert(esp_flash_read(NULL, got, 0x2A0000, sizeof(got)) == ESP_OK);
+    assert(memcmp(got, data, sizeof(got)) == 0);
+
+    // Simulate deterministic rollback of the prepare phase.
+    assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
+    assert(meta_carve_flash_carve()->data_count == 1);
+    assert(meta_carve_flash_carve()->data[0].play_id == 333);
+    assert(meta_carve_flash_carve()->data[0].offset == 0x2A0000);
+    printf("PASS arc_prepare_transaction (metadata rollback keeps source bytes)\\n");
+}
+
 static void test_arc(void)
 {
     reset_all();
@@ -518,7 +618,7 @@ static void test_arc(void)
     rec.carve.data[1].size = 0x1000;
     rec.carve.data[1].state = META_DATA_ARCHIVED;
     rec.carve.data[1].type = 1;
-    rec.carve.data[1].subtype = 1;
+    rec.carve.data[1].subtype = 0x82;
     strncpy(rec.carve.data[1].label, "b", sizeof(rec.carve.data[1].label) - 1);
 
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
@@ -598,7 +698,7 @@ static void test_mark_dirty_selected(void)
     rec.carve.data[1].size = 0x2000;
     rec.carve.data[1].state = META_DATA_PRISTINE;
     rec.carve.data[1].type = 1;
-    rec.carve.data[1].subtype = 1;
+    rec.carve.data[1].subtype = 0x82;
     strncpy(rec.carve.data[1].label, "rec",
             sizeof(rec.carve.data[1].label) - 1);
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
@@ -654,10 +754,13 @@ int main(void)
     test_commit_rotation_and_torn_write();
     test_sync_states();
     test_remove_slot();
+    test_remove_app_and_data_atomically();
+    test_remove_unknown_app_refuses_orphan_data();
     test_set_dirty();
     test_archive_slot_and_data();
     test_erase_data();
     test_arc();
+    test_arc_prepare_transaction();
     test_mark_dirty_selected();
     test_data_copy();
     printf("PASS test_meta_carve_flash\n");

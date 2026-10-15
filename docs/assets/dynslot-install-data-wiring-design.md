@@ -8,10 +8,12 @@ Date: 2026-10-03
 Branch: `feat/dynslot`
 Parent: `dynslot-m5-design.md` (lifecycle), `dynslot-design.md` §4.5 (reclaim ladder).
 
-Status: **final (2026-10-04)** — revised after review (§1.0/§4/§7) and
-arbitrated: (1) data_copy migration block retired, (2) F4 mask-based DIRTY,
-(3) plan B materialization (end-of-install reboot + fabricated handles).
-Implement per §1.0/§2/§3/§5; P1-4 landed, P0-5 device/phone wiring done.
+Status: **final (2026-10-04, implementation addendum)** — revised after review (§1.0/§4/§7) and
+arbitrated: (1) the original incorrect P0-5 data_copy migration block is retired, (2) F4 mask-based DIRTY,
+(3) plan B materialization (deferred store-exit reboot + fabricated handles). The current implementation retains
+M5's **correct pool-internal DATA resize migration** (erase destination, copy bytes, then switch the durable
+carve; rollback preserves the old extent). This is existing-DATA upgrade behavior, not the P0-5 initial DATA
+payload path. Implement per §1.0/§2/§3/§5; P1-4 landed, P0-5 device/phone wiring done.
 
 ## 1. Problem
 
@@ -35,7 +37,7 @@ This draft wires both layers: new-slot materialization (F1) + record
 creation (F2) in one transaction, and the reclaim ladder into the no-fit
 decision.
 
-### 1.0 How F1 materializes (final 2026-10-04: plan B — end-of-install reboot)
+### 1.0 How F1 materializes (final 2026-10-04: plan B — deferred store-exit reboot)
 
 **Hard constraint: the IDF partition-table cache.** `esp_partition_find_first`
 (used by both `meta_store_slot_partition` and `esp_ota_begin`) loads the 0x8000
@@ -45,7 +47,7 @@ the NEXT boot and are consistent by construction — so the only open question
 is how THIS boot's upload/verify path addresses the carved slot.
 
 **Plan B (arbitrated 2026-10-04): fabricated handles for the upload; the
-reboot lands after a successful install.**
+the reboot lands when the store page is exited after a successful install.**
 
 1. **Prepare (the confirm step):** `place_offer` decides on a copy (shape
    check → idempotent scan + data backfill → slot first → per-entry data
@@ -64,9 +66,13 @@ reboot lands after a successful install.**
    consult the table. Idempotent retries (phone re-sending the same prepare)
    hit the place_offer idempotent branch → no duplicate materialization.
 3. **Success:** if this session materialized the table (`table_changed`),
-   reboot ~300 ms after the response flushes (esp_timer, same rhythm as the
-   remove flow). The device list and the boot path are fully consistent on
-   the next boot.
+   finalize first returns `done` and does **not reboot during the current HTTP
+   session**. The phone must be able to poll `done`; an immediate reboot would
+   turn an accepted finalize into a transient status-unreachable failure.
+   The implementation therefore marks reboot pending
+   (`meta_carve_flash_reboot_pending`) and reboots when leaving the store page.
+   The durable carve record is still written before table materialization, so
+   the next boot and power-loss recovery use the same committed state.
 4. **Cancel / reject / overwritten offer:** a **session-created slot** is
    reclaimed via `meta_carve_flash_remove` (no user data inside: empty or a
    half-written garbage image); existing slots keep the INVALID path. A
@@ -75,7 +81,7 @@ reboot lands after a successful install.**
    `carved_new_slot` is reset to -1 BEFORE the session clear so the
    just-installed slot can never be reclaimed.
 
-**Rejected alternatives:** reboot right after prepare (an extra phone-device
+**Rejected alternatives:** reboot during the active finalize/session exchange (an extra phone-device
 round-trip to re-send prepare; and the remove flow shows "reboot" is only a
 rhythm convention here); zero reboots end-to-end (fabricated handles PLUS
 re-deriving the device list scan from the carve record — saving ~3 s in
@@ -234,3 +240,16 @@ deferred to v2).
 4. **P1-4 dependency**: landed (58caa0e — `/api/install/slots` exposes data
    records, `parseSlots` passes them through, `geomFromListing` unions
    occupancy); record creation unblocked.
+
+
+## 8. APP slot lifecycle for new installs (decision, 2026-10-10)
+
+**Every install must allocate a fresh APP carve from the dynamic pool; installing over an existing APP slot is forbidden.** The phone UI and device prepare API both enforce this: the UI only offers a new allocator proposal and fails closed if the dynamic slot listing is unavailable; the device rejects legacy install requests without `has_carve`.
+
+- The installer only shows the new carve proposed for the current APP image. Existing empty, valid, and invalid slots are not install targets.
+- Removing an APP first clears the image header that could otherwise let boot scanning resurrect the slot, then commits removal of the carve record. Its extent returns to the pool. A later install may receive the same physical offset, but only as a new allocation with a new slot identity.
+- DATA lifecycle is independent of the APP slot. By default, deleting an APP archives associated DATA instead of silently erasing user data; explicit erasure remains a separate confirmed action.
+- On prepare/upload failure, reclaim only the new carve created by that attempt; never release a previously committed APP slot prematurely.
+- The displayed slot number is a transient index derived from current carve ordering, not a durable identity. Insertion/removal can change indices; durable association must use persisted record fields such as play ID and label.
+
+This policy reduces state branches and improves pool utilization. The old fixed-slot install path is no longer a compatibility fallback for new installs; devices without dynamic-pool support must be upgraded rather than silently overwriting an existing slot.

@@ -28,6 +28,7 @@
 // ---- 本地 HTTP 面(文档 §6.5;所有本地 API 的自定义头) ----
 #define META_INSTALL_SESSION_HDR "X-Meta-Session"   // token hex;全部端点必带
 #define META_INSTALL_OFFSET_HDR  "X-Meta-Offset"    // chunk 写偏移(十进制)
+#define META_INSTALL_DATA_INDEX_HDR "X-Meta-Data-Index" // Child DATA manifest index
 
 // QR token:128 bit 随机(文档 §8 下限),hex 形态上屏/入 URL fragment。
 #define META_INSTALL_TOKEN_BYTES    16
@@ -102,6 +103,12 @@ esp_err_t meta_install_session_open(const meta_install_session_req_t *req);
 esp_err_t meta_install_chunk_accept(uint32_t offset, uint32_t length, bool *duplicate);
 // 顺序写入一块(内部推进 offset;首次写入懒做 OTA begin 与 SHA 起算)。
 esp_err_t meta_install_chunk_write(const void *data, uint32_t length);
+/* Child DATA initial-image upload. Index/offset are validated against the
+ * already-confirmed manifest; existing DATA records are preserved and are
+ * reported as already complete by session setup. */
+esp_err_t meta_install_data_write(uint8_t data_index, uint32_t offset,
+                                   const void *data, uint32_t length,
+                                   bool *duplicate);
 esp_err_t meta_install_finalize(void);
 esp_err_t meta_install_cancel(void);
 

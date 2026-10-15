@@ -1,0 +1,319 @@
+<p align="right">
+  <strong>简体中文</strong> · <a href="storage-test-report-20261008.md">English</a>
+</p>
+
+# Storage 分支测试报告 — feat/storage
+
+**日期**:2026-10-08
+**分支**:`feat/storage`
+**最终 commit**:`5eed4b87a984a88485509a4ac2a0d577a506e55e`(`feat/storage`)——
+包含 §3 记录的两个真机驱动修复,故烧录镜像与已提交工作树逐字节一致
+**固件 SHA-256**:`5518535173c7d3352400a134f1f05f5b17d3b92b840af5a3a21edcb07b14f36e`
+(1,111,408 字节,app 镜像于 0x10000)
+
+---
+
+## 1. 模拟器测试(passport-sim)
+
+**状态**:早期固件构建上通过——**仅背景证据,未在最终 commit `5eed4b8` 上重跑**。
+按 handoff 要求,不得写成本次最终提交的 simulator PASS,也不得据此阻塞合并。
+
+```
+✔ meta-pass 完整镜像在 QEMU 里引导并渲染出 240x320 屏幕
+✔ QEMU CPU 在 boot 后仍持续运行而非停在异常状态
+✔ DOWN 键移动列表选中项(画面随之重绘)
+✔ 连续 4 次 DOWN 绕列表一圈,固件不崩溃
+✔ UP 与 DOWN 成对使用,焦点来回移动且画面稳定
+```
+
+环境:Node.js v26.3.0,passport-sim 本地 checkout,
+`tools/sim/esp_emu_bg.wasm`(3.3 MB)。退出码 0。
+
+---
+
+## 2. 真机 Smoke 测试
+
+**最终状态**:**通过 — S0/S2/S3/S4/S5/S6 全绿**
+**运行目录**:`tools/realdevice/logs/20261008-121330/`(证据包完整:
+command.txt、stdout.log、stderr.log、uart.log、slots/status 响应、
+report.json、report.md、flash/{table.bin,store.bin,recordings.bin})
+**真实断电**:未执行 — 按 handoff 规则记为 POWER_LOSS_UNTESTED
+(软复位 ≠ 断电)。S5 仅用了 esptool 软复位。
+
+### 2.1 环境
+
+| 项 | 值 |
+|----|----|
+| 设备 | ESP32-C3 AI Passport,8 MB flash |
+| USB 口 | `/dev/cu.<serial>` |
+| MAC | `<mac>` |
+| LAN IP | `<ip>`(AP `<ssid>`,WPA2,rssi −66/−67 dBm) |
+| 烧录方式 | 仅 app `write_flash 0x10000` — NVS、分区表、otadata、cardid 均未动(无 `erase-flash`) |
+| IDF | v5.5.3-dirty;宿主 Python 环境经 `IDF_PYTHON_ENV_PATH=idf5.5_py3.10_env` 固定(自动侦测的 py3.14 venv `pydantic_core` ABI 损坏 — 见 §3 问题 1) |
+| Node | `/usr/local/bin/node`(真 Node;`~/.local/bin/node` 是 bun 包装,`node -e argv` 会坏) |
+
+### 2.2 阶段结果
+
+| 阶段 | 描述 | 结果 | 关键证据 |
+|------|------|------|----------|
+| S0 | 清池+store、启动、NVS token 复用 | 通过 | `carve loaded: fresh device (safe table)`、`session token restored across reboot`、install 服务就绪、HTTP 401→200 |
+| S1 | 配对 | 通过(token 复用路径) | `复用 NVS 持久化 token` — 无需物理按键 |
+| S2 | 首次 APP+DATA 安装(carve 提案 + 续传探针) | 通过 | `prepare#1 200 (carve idx=0 off=0x180000)`、`DATA[0] resume checkpoint offset=2048`、`DATA[0] done offset=4096`、`finalize 200`、重启 → `carve loaded seq=2 slots=1` |
+| S3 | 第二个槽安装 | 通过 | `prepare#2 200`、`finalize 200`、重启 → `carve loaded seq=4 slots=2` |
+| S4 | 删除 + ARCHIVED,再 eraseData 删除 | 通过 | remove slot0 → `seq=6 slots=1`,DATA `recordings` state=2(ARCHIVED);remove slot1 eraseData → `seq=7 slots=0` |
+| S5 | 370,469 B 处掐断、软复位、幂等续传 | 通过 | 服务自动恢复、旧 token 仍有效、幂等重发 prepare 200、`finalize 200`、重启 → `carve loaded seq=10 slots=1` |
+| S6 | flash 回读 + DATA 字节比对 | 通过 | recordings.bin(4096 B)== 首传镜像,SHA-256 `4e441a35…7205ec`;table.bin + store.bin 已存档 |
+
+`report.json` 状态:PASS,soft_reset_tested: true,
+physical_power_loss_tested: false,failure_category: None。
+
+### 2.3 UART 证据(最终运行)
+
+```
+meta_carve: fresh device (safe table); no carve yet
+install_local: session token restored across reboot
+meta-pass: 就绪:APP 槽=0 free=6766592B s0=0 s1=0 s2=0
+meta_carve: carve committed: seq=1 slots=1 materialize=1   (S2 prepare)
+meta_carve: carve loaded: seq=2 slots=1                    (S2 重启)
+meta_carve: carve committed: seq=4 slots=2 materialize=1   (S3 prepare)
+meta_carve: carve loaded: seq=4 slots=2                    (S3 重启)
+meta_carve: carve loaded: seq=6 slots=1                    (S4 归档删除)
+meta_carve: carve loaded: seq=7 slots=0                    (S4 eraseData 删除)
+meta_carve: carve loaded: seq=10 slots=1                   (S5 续装+finalize 重启)
+```
+
+---
+
+## 3. 测试中发现的问题(均已当场解决)
+
+### 问题 1 — 环境:IDF Python env 自动侦测损坏(存量问题)
+
+`source ~/esp/esp-idf-v5.5.3/export.sh` 自动侦测 Python 3.14.7 并激活
+`idf5.5_py3.14_env`,其 `pydantic_core` 带的是 `cpython-310` 原生模块
+(ABI 不匹配)→ 所有 `idf.py` 调用死于
+`No module named 'pydantic_core._pydantic_core'`。smoke  harness 正走这条路
+启 `idf.py monitor`,当天首轮运行 UART 采集因此完全失效。
+
+**规避(未改仓库)**:运行 smoke 前 export
+`IDF_PYTHON_ENV_PATH=$HOME/.espressif/python_env/idf5.5_py3.10_env`
+(已验证健康:pydantic_core 2.46.5 可导入)。
+
+**建议**:重装 py3.14 venv(`idf_tools.py install-python-env`)或删除它,
+让自动侦测回落到健康环境。
+
+### 问题 2 — 固件(已修):`/api/install/status` JSON 截断
+
+**症状**(运行 `20261008-115132`):S2 在测试 harness 崩
+`json.decoder.JSONDecodeError: Expecting ',' delimiter: line 1 column 283`,
+解析 DATA prefix 上传后的 status 响应时。
+
+**根因**(`main/meta_store_install.c`,`h_install_status`):响应尾巴 `]}`
+用 `snprintf(body + off, …)` 追加,但 `off` 未含这两字节;
+`httpd_resp_send(req, body, off)` 发出的 body 缺最后两字节。
+姊妹函数 `h_install_session` 用的是 `httpd_resp_sendstr`(按 strlen),
+本来就对。
+
+**证据**:探针实测设备返回 282 字节、结尾 `…"done":false}` —
+恰好短 2 字节。
+
+**修复**:status handler 改用 `httpd_resp_sendstr`,与 session handler
+同款。同类构造点已全量 grep:全文件仅这两处这样拼 JSON,无其他副本需改。
+
+### 问题 3 — 固件(已修):`sync_states` 清零槽位 `play_id` → 归档链断裂
+
+**症状**(运行 `20261008-115953`):S4 失败 — UART 报
+`archive_slot_and_data failed: ESP_ERR_INVALID_STATE`;删除槽位后 DATA
+`recordings` 停在 state=0(未变 ARCHIVED=2)。
+
+**根因**(`main/meta_carve_flash.c`,`meta_carve_flash_sync_states`):
+运行时表回填用 `memset(&built, 0, …)` 重建槽位条目,只回填了
+kind/offset/size/state/SHA/name。`play_id` 是记录侧元数据、运行时表
+不带此字段,于是每次回填提交(即每次安装后 `materialize=0` 的 seq 前进)
+都把它静默清零。`meta_carve_flash_archive_slot_and_data` 随后撞上
+`play_id == 0 → ESP_ERR_INVALID_STATE` 守卫。
+
+**证据**:真机 flash 回读(`read_flash 0x35A000`)解码 store 两扇区,
+槽位条目 `play_id=0`,而数据记录 `play_id=1`。
+
+**修复**:回填时把 `play_id` 复制进 `built`。回归断言加进
+`tests/test_meta_carve_flash.c::test_sync_states`(置 play_id=42 → sync
+→ 断言保留)。
+
+### 问题 4 — 测试 harness(已修):S6 读长十六进制格式
+
+**症状**(运行 `20261008-120733`):S6 字节比对失败,只回读 1000 字节。
+
+**根因**(`tools/realdevice/smoke.py` S6):f-string 产出
+`read_flash 0x2a0000 1000 …` — `{len(data_bytes):x}` 把 4096 渲染成
+`1000` 且没有 `0x` 前缀,esptool 按十进制 1000 解析。
+
+**证据**:已回读的 1000 字节与 fixture 0 差异 — flash 内容本就对,
+只是读短了。
+
+**修复**:输出 `0x{len(data_bytes):x}`。文件内其余 `read_flash` 长度
+已查(其上两处调用),均不缺前缀。
+
+---
+
+## 4. 本次测试会话中的代码改动
+
+| 文件 | 改动 | 原因 |
+|------|------|------|
+| `main/meta_store_install.c` | `h_install_status`:`httpd_resp_send(req, body, off)` → `httpd_resp_sendstr(req, body)` | 问题 2 — off 未计入 `]}` 尾巴 |
+| `main/meta_carve_flash.c` | `sync_states`:重建条目时保留 `slot[i].play_id` | 问题 3 — 记录侧元数据被每次回填清零 |
+| `tests/test_meta_carve_flash.c` | `test_sync_states` 加回归断言 | 问题 3 — play_id=42 经 sync 保留 |
+| `tools/realdevice/smoke.py` | S6 读长 `0x{len:x}` | 问题 4 — flash 回读被截断 |
+
+修复后的宿主验证:`test_meta_carve_flash` 全套 PASS
+(12 个场景,含新回归);姊妹套件经 `tools/validate.sh --static` 整体重跑
+— 见 §5。
+
+## 5. 验证
+
+- 真机 smoke:`tools/realdevice/logs/20261008-121330/` — 退出码 0,
+  全阶段 PASS(输出见 §2.2)。
+- 宿主测试:`test_meta_carve_flash` 整个文件 PASS(不止新断言);
+  报告文档落地后 `--static` 全套(文档规则、公钥一致性、全部 C 宿主
+  测试、actionlint)转绿。
+- 固件重编 + 仅 app 烧录由启动日志(`carve loaded`、
+  `LAN install service ready`)与通过的本次运行双重确认。
+- 一致性 grep:JSON 响应构造点(问题 2)与 `read_flash` 长度实参
+  (问题 4)已查姊妹副本 — 无遗漏。
+
+## 6. 前端模块 × 真机回归
+
+§2 的 smoke 是 Python urllib 协议客户端 —— 从不 import 任何前端模块,因此只证明
+*设备契约*。`tests/test_phone_install.mjs` 证明模块逻辑,但对的是 mock 设备,所以
+mock 与固件的漂移看不见(问题 2 那个被截断的 `/api/install/status` 响应就能骗过
+mock,只在这里暴露)。本节补这个缺口:用真 `fetch` 驱动真实的
+`install-slot/phone-install.js` 打同一台设备。
+
+**状态**:**通过 — 20/20,100.1 s,退出码 0**
+**编排器**:`tools/realdevice/run_browser_smoke.py --ip <ip> --port <serial>`
+(复用持久化 NVS token,无需物理配对按键)
+**固件**:与 §2 逐字节一致 —— 设备 0x10000 回读与 `build/FoloToy-AI-Passport.bin`
+比对,SHA-256 `5518535173c7…`。设备身份见 §2.1;下方输出已由编排器脱敏
+(token、LAN IP、串口号、主机 home 目录)。
+
+### 6.1 各阶段证明什么
+
+| 阶段 | 路径 | 证明 |
+|------|------|------|
+| P0 | `GET /api/install/slots` + `parseSlots` | 协议 v2 门禁与形状校验,作用于真机清单 |
+| P1 | `preflightMeta → prepareImage → geomFromListing → runInstall → slots → remove` | 真实手机端安装路径:2 MB 商店下载、SHA-256 校验、解包、carve 提案、prepare(`slot >= 0` 时设备自动确认)、session、分块上传、finalize、slots 回读、remove→归档、DATA 快照与运行前逐字节一致 |
+| P2 | 合成完整 flash 镜像 → `extractDataImages → prepareImage → runInstall(data) → remove{eraseData}` | Child DATA 分支:extent 分配、`/api/install/data` 分块上传、finalize、记录落盘(`state=0`)、擦除清掉 APP + DATA 且无归档残留 |
+| P2.5 | store SHA / analyze SHA 不符时调 `prepareImage` | 两道浏览器侧闸门在**任何上传之前**判死 —— 设备没有此校验,浏览器是唯一防线 |
+| P2.6 | `esptool run` 软复位 | 记录跨软复位存活 → 落在 flash/NVS,不是 RAM 假象 |
+| cleanup | — | 状态中立:设备恢复至运行前状态 |
+
+### 6.2 完整运行输出(已脱敏)
+
+```text
+$ /usr/local/bin/node $HOME/ai-passport/meta-pass/tools/realdevice/browser_smoke.mjs --ip <ip> --port /dev/<serial> --fixture $HOME/ai-passport/meta-pass/build/FoloToy-AI-Passport.bin --token <token>
+
+##[1] 前置: device=<ip> bridge=真 fetch(零 mock) fixture=build/FoloToy-AI-Passport.bin
+##[2] ✓ [P0] 设备在线 + slots 协议 v2 — count=1 free=5640192 archivedData=1
+##[3] ✓ [P0] parseSlots 对真机清单全字段通过(含数据 carve 记录) — slots=0
+##[4] ✓ [P1] preflightMeta 可用(analyze + 商店详情,与 UI 同入口) — id=1 name=AI Passport 天气时钟固件 · 全中文界面 + 壁纸休眠屏 imageLen=1999200 store=2064736
+##[5] ✓ [P1] prepareImage 走真下载+校验+解包(与 UI continueInstall 同入口) — imageLen=1999200 sha=74c727816bcd carveOff=0x360000 carveSize=2007040 5.4s
+##[6] ✓ [P1] 提案落点/容量自洽(carveSize 由设备 meta_carve_need 复核) — off=0x360000 size=2007040 >= imageLen=1999200 (delta=7840B 尾部分区)
+##[7] ✓ [P1] runInstall 全流程(prepare→设备直确认→session→chunk→finalize→done) — slot=1 stages=[prepare→confirm→session→upload→finalize→done] offset=1999200
+##[8] ✓ [P1] 真机 slots 回读确认安装落盘 — slot=1 name=Browser Smoke state=valid len=1999200
+##[9] ✓ [P1] 已装应用 len 等于解包镜像长(非 0) — len=1999200
+##[10] ✓ [P1] bridge.remove 真机 200 + waitDeviceBack 回连 — slot=1 removed=true back=true
+##[11] ✓ [P1] 删除后 APP 槽消失(数据记录不参与 pool 占用) — count=1 free=5640192
+##[12] ✓ [P1] 删除后 DATA 记录与运行前快照一致(P1 无 Child DATA,不应新增) — data=[[1,"recordings",2]]
+##[13] ✓ [P2] 合成镜像被真实解析出 Child DATA 记录(extent > 初始镜像) — imageLen=1111408 data[1] label=recordings sub=0x82 req=8192 initial=2048B
+##[14] ✓ [P2] 合成 app 字节与仓库 build 一致(解包未损坏) — sha256=5518535173c7d335…
+##[15] ✓ [P2] prepareImage 夹具路径(真实下载 + sha256 校验 + 解包 + DATA 提取) — imageLen=1111408 dataExtent=8192B slot=1 carveOff=0x360000
+##[16] ✓ [P2] runInstall 带 Child DATA(分配 extent + /api/install/data 分块 + finalize) — slot=1 stages=[prepare→confirm→session→upload→upload data 1/1→finalize→done] data=2048/8192B
+##[17] ✓ [P2] Child DATA 记录随 finalize 落盘(设备 P1-4 占用域) — slot=1 data[play=987654321 label=recordings off=0x2b0000 size=8192 state=0]
+##[18] ✓ [P2.5] 闸门1 商店 store sha 不符 → verify 判死(未上传) — verify: store sha256 mismatch
+##[19] ✓ [P2.5] 闸门2 analyze 解包 sha 与镜像不符 → preflight 判死(未上传) — preflight: extracted mismatch vs analyze
+##[20] ✓ [P2.6] 复位后安装记录仍在(flash/NVS 持久,非 RAM 假象) — soft-reset via /dev/<serial>, persisted=1/1
+##[21] ✓ [P2] remove{eraseData:true} 擦除 APP 槽与 Child DATA(不留归档残留) — removed=true back=true dataGone=true
+##[22] 结果: 20/20 通过
+[##REPORT] 机读 JSON 从略 — 见本地证据目录 report.json
+##[23] 清理: 仅移除本测试创建的槽位/数据记录(不动既有槽位与归档)
+##[24]   - slot@0x360000 已不在清单
+##[25]   - slot@0x360000 已不在清单
+##[26] ✓ [cleanup] 测试数据记录全部清除(设备恢复到运行前状态) — cleaned=0 count=1 archivedData=1
+```
+
+P1 注记:`prepareImage` 传的是 `geomFromListing` 的提案槽位,不是 `-1`。
+`-1` 语义是"等设备物理确认",无人值守下会永久挂起。
+
+P2 注记:商店里没有既带 Child DATA 又装得下 8 MB 池的受支持玩法(play 200 是
+6.6 MB)。因此合成一个结构合法的完整 flash 镜像 —— 真分区表、`build/` 的真实
+app 字节、一条 0x82 文件系统数据分区。`data[]` 由 `extractDataImages` **解析**
+而来,非手工拼装,所以 `prepareImage` 的 verify / extract / DATA 提取三道门仍
+真实执行。`extent`(8192 B)刻意大于初始 payload(2048 B)。
+
+### 6.3 标准门禁
+
+- `tools/validate.sh --static` 对两个 harness 脚本做语法门(`py_compile` +
+  `node --check`),避免脚本提交后静默失效。
+- `.github/workflows/realdevice-smoke.yml` 新增一步:协议 smoke 之后立即在同一台
+  设备上跑 `run_browser_smoke.py`,self-hosted runner、仅 `workflow_dispatch`。
+  云端 CI 不会自动烧板。
+
+---
+
+## 7. 最终代码/测试审计(handoff 8 项必做)
+
+针对最终固件提交 `5eed4b8` 的审计结论:
+
+1. **最终 diff 范围**:`90c66f3..5eed4b8` 共 8 文件(+443/−3),全部属本轮真机验收
+   产出——2 个固件修复、1 个回归测试、1 个 harness 修复、2 份测试报告、
+   2 份 changelog。无无关改动,无需回滚或标记。
+2. **槽位字段所有权**:`meta_carve_slot_t` 有 7 个字段。其中 `state`、
+   `image_len`、`image_sha256`、`name` 由运行时表回填(运行时是事实源);
+   `kind`、`offset`、`size`、`play_id` 是记录侧元数据,重建时必须从原记录拷贝。
+   全仓库唯一的从零重建槽位条目的位置就是 `sync_states`(`memset` 后用
+   `memcmp` 判定改动),其余 `memset` 均为尾部清零或新建数据记录,无同类风险。
+   修复后 7 个字段均有明确来源。
+3. **回归测试有效性**:已做变异验证——临时移除 `built.play_id` 一行后
+   `test_meta_carve_flash` 以 SIGABRT(断言失败,exit 134)终止;恢复修复后
+   全部 15 个场景 PASS。断言真实覆盖该缺陷,非空转。
+4. **三个修复的证据覆盖**:
+   - 截断 HTTP status JSON → 真机直接证据(282 字节、恰差 2 字节)+ 最终运行
+     S2 的 status 轮询全绿;另核算最坏载荷 857B / 缓冲区 1024B,留 167B,
+     无二次截断风险。
+   - 状态同步丢失 `play_id` → `test_sync_states` 回归断言 + 变异验证(见 3)
+     + 真机 S4 归档 PASS。
+   - S6 十六进制读长 → 真机直接证据(1000 字节回读、已读部分 0 差异)
+     + 最终运行 S6 字节级回读 PASS;`py_compile` 纳入 static CI。
+5. **报告可追溯性**:已修正——本报告不再把受测固件描述为 `90c66f3` 之上的
+   未提交工作树,统一指向最终提交 `5eed4b8`;历史 simulator PASS 也已改为
+   「仅背景证据、未在最终提交重跑」。
+6. **CI**:`Static checks` 与 `Firmware checks` 在 `5eed4b8` 与后续文档提交
+   `8b2b363` 上均 success;`tools/validate.sh --static` 本地同样全绿。
+7. **未重跑真机套件**:审计未发现新缺陷,故未重跑;沿用最终固件
+   `5eed4b8` 的 S0–S6 证据(`20261008-121330`)。
+8. **断电独立对待**:S5 为软复位,仅证明 RAM 丢失后的恢复;未做受控断电,
+   维持 POWER_LOSS_UNTESTED,不宣称完整 P0-5 耐久性。
+
+审计回答:**无新缺陷;无需额外测试;无需代码或设计变更**;最终提交
+`5eed4b8`、固件 SHA-256、CI 双绿与 S0–S6 证据均可追溯;**物理断电未测**。
+
+---
+
+## 8. 结论
+
+- **模拟器**:早期构建上通过——仅背景证据,未在最终提交 `5eed4b8` 上重跑;
+  不构成合并阻塞。
+- **真机**:**通过** — 最终运行 S0–S6 全绿;DATA 字节级 flash 校验通过;
+  重启恢复通过(软复位)。
+- **前端模块 × 真机**:**通过** — §6 回归 20/20。手机端安装路径、空间管理
+  (remove / eraseData / 持久性)与 Child DATA 分支均已对真机验证,不止 mock。
+- **POWER_LOSS_UNTESTED**:未做物理断电;S5 与 P2.6 均只用 esptool 软复位。
+  不得以此报告断电耐久性。
+- **未测项**:物理按键导航(harness 已注明需人工抽验)、真实断电耐久、以及
+  USB 网页安装页(`install-slot.html`,经 `server.mjs` 走 Web Serial +
+  esptool-js)针对本固件的端到端 —— §6 覆盖的是浏览器手机模块,与 USB 页面
+  是两套独立实现。
+
+---
+
+*报告由 omp coding agent 撰写 — 2026-10-08。此前被阻塞的一轮报告
+(Agnes / Sapiens AI)保留在本文件的 git 历史中。*

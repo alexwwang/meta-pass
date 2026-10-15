@@ -30,7 +30,19 @@
 #include "esp_app_desc.h"
 
 #include "meta_store.h"
+#include "meta_carve_flash.h"
 #include "meta_sign.h"
+
+/* meta_store_boot_slot() now materializes the active Child DATA view. This
+ * scan-only host test does not exercise boot switching, so keep the device
+ * flash glue out of this test's link graph. The firmware build covers the
+ * real implementation.
+ */
+const meta_carve_t *meta_carve_flash_carve(void) { return NULL; }
+esp_err_t meta_carve_flash_materialize_active(uint32_t active_play_id) {
+    (void)active_play_id;
+    return 0;
+}
 
 void host_fixture_reset(void);
 const esp_partition_t *host_fixture_install(uint32_t addr, uint32_t size,

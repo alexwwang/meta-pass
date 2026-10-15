@@ -11,6 +11,7 @@
 // + revisionId 进程内缓存(隔离实例各自回源,正确性不受影响)。
 
 import { createStoreAnalyzer } from "./store-analyze.js";
+import { PLAY28_RECORDINGS_4M_PROFILE, PLAY28_RECORDINGS_3M_PROFILE } from "./data-size-profile.js";
 
 const BACKEND = "https://ai-passport.folotoy.cn";
 
@@ -234,8 +235,20 @@ export default {
       if (id == null || !PLAY_ID_RE.test(id)) {
         return err(400, "missing or invalid id parameter");
       }
+      const dataProfile = url.searchParams.get("dataProfile");
+      if (dataProfile && env.ENABLE_TEST_DATA_PROFILES !== "1") {
+        return err(403, "test data profiles are disabled");
+      }
+      if (dataProfile && dataProfile !== PLAY28_RECORDINGS_4M_PROFILE &&
+          dataProfile !== PLAY28_RECORDINGS_3M_PROFILE) {
+        return err(400, "unsupported data profile");
+      }
+      // Reject profile/play mismatches before market lookup or firmware download.
+      if (dataProfile && id !== "28") {
+        return err(400, "data profile is only valid for Play 28");
+      }
       try {
-        const out = await storeAnalyzer.analyze(Number(id));
+        const out = await storeAnalyzer.analyze(Number(id), dataProfile || null);
         // r10.18:成功时下发下载票据(HMAC,与玩法 id + 签发时间绑定,10 分钟有效);
         // 设备原样带回 sig+ts 才能吃 R2 快路径(无票/过期 = 自动降级老链路)。
         if (out && out.ok && env.DL_SECRET) {
@@ -507,14 +520,16 @@ export default {
     // 设备 boot 页(meta_store_install.c SHELL_HTML)以
     // <script type=module src=.../phone-install.js> 加载。单文件入口(内含
     // sha256 纯 JS 实现),同源 import extract-app-image/name-blob/
-    // store-analyze/dynslot-pool(ASSETS 静态服务)。版本策略 = no-store + 设备协议握手
+    // store-analyze/dynslot-pool/storage-snapshot(ASSETS 静态服务)。版本策略 = no-store + 设备协议握手
     // (status.protocol)双保险;大改版换文件名(boot 页 URL 随固件走)。
     // 入口与其静态 import 必须同走 no-store(审计 M4):入口 no-store 而 import
     // max-age=14400 时,部署后 4h 内手机会拿新入口配旧依赖,设备握手覆盖不到
     // 跨模块错位。
     if (path === "/phone-install.js" || path === "/extract-app-image.js" ||
         path === "/store-analyze.js" || path === "/name-blob.js" ||
-        path === "/dynslot-pool.js") {
+        path === "/dynslot-pool.js" || path === "/data-size-profile.js" ||
+        path === "/data-size-options.js" || path === "/data-byte-archive.js" ||
+        path === "/data-archive-restore.js" || path === "/storage-snapshot.js" || path === "/storage-snapshot-restore.js") {
       const asset = await env.ASSETS.fetch(new Request(new URL(path, req.url), req));
       if (!asset.ok) return err(404, "phone-install module missing from bundle");
       const headers = new Headers(asset.headers);

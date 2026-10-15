@@ -24,11 +24,14 @@
 // 纯 JS SHA-256:内置实现(与 FIPS 180-4 / 固件 mbedtls 同算法),注入实现
 // (setSha256,测试用 node:crypto)优先。
 
-import { extractAppImage, isFullImage } from "./extract-app-image.js";
-import { exportBackup, importBackup } from "./backup-data.js";
+import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-image.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
+import { applyDataSizeProfile } from "./data-size-profile.js";
+import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
-import { POOL, META_SLOT_COUNT, geomFromListing } from "./dynslot-pool.js";
+import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
+import { captureStorageSnapshot, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
+import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
 // ── 常量(与设备端 meta_install_model.h 同契约) ─────────────────────
 export const PROTOCOL_V1 = 1;
@@ -36,6 +39,16 @@ export const MAX_CHUNK = 65536;          // 设备 META_INSTALL_MAX_CHUNK
 const TAIL_SECTOR = 0x1000;              // 槽位尾部 4KB 名字 blob sector
 const METAPASS = "https://metapass.chuanxilu.net";
 const NAME_MAX = 32;                     // 设备端可显示名上限(META_NAME_LEN)
+
+// The embedded phone page ships only with v2+ devices and accepts only the
+// unambiguous v2 whole-device storage snapshot kind. Legacy USB v1.1 and the
+// retired APP+DATA logical v2 archive must never be interpreted as snapshots.
+export function assertPhoneArchiveVersion(manifest) {
+  if (!manifest || manifest.manifest_version !== 2 || manifest.kind !== "meta-pass-storage-snapshot") {
+    throw new Error("手机内嵌页只接受 v2 设备存储快照归档；旧 APP+DATA 逻辑归档不能按快照还原");
+  }
+  return manifest;
+}
 const CONFIRM_POLL_MS = 1000;            // 物理确认轮询间隔
 const CONFIRM_TIMEOUT_MS = 300000;       // 5 分钟无人确认即放弃(设备侧有会话超时)
 
@@ -129,6 +142,23 @@ export function detectDeviceOrigin() {
 // dynslot §4.5 槽位管理 slots/remove)。设备 API 无 CORS 头(§8),跨源调用
 // 仅限同源场景;跨源(手动 IP)时仍尝试,由浏览器策略决定成败(真机路径
 // 永远是同源,这条只服务高级用户)。
+function validStoragePartitionIdentity(partition) {
+  return !!partition && typeof partition.label === "string" &&
+    /^[A-Za-z0-9_-]{1,16}$/.test(partition.label) &&
+    Number.isSafeInteger(partition.type) && partition.type >= 0 && partition.type <= 255 &&
+    Number.isSafeInteger(partition.subtype) && partition.subtype >= 0 && partition.subtype <= 255 &&
+    Number.isSafeInteger(partition.offset) && partition.offset >= 0 &&
+    Number.isSafeInteger(partition.size) && partition.size > 0;
+}
+function storagePartitionHeaders(partition) {
+  return {
+    "X-Meta-Partition-Label": partition.label,
+    "X-Meta-Partition-Type": String(partition.type),
+    "X-Meta-Partition-Subtype": String(partition.subtype),
+    "X-Meta-Partition-Offset": String(partition.offset),
+    "X-Meta-Partition-Size": String(partition.size),
+  };
+}
 export function createBridge(deviceOrigin, token) {
   const base = (deviceOrigin || "").replace(/\/$/, "");
   async function call(path, opt = {}) {
@@ -162,6 +192,32 @@ export function createBridge(deviceOrigin, token) {
     try { text = await resp.text(); } catch { /* empty body */ }
     return { ok: resp.ok, status: resp.status, text };
   }
+  // Binary read path: do not pass DATA bytes through Response.text(), which can
+  // corrupt arbitrary byte values. The device endpoint enforces the same 4 KiB
+  // bound and resolves (play_id, label) to a validated carve reservation.
+  async function callBytes(path, opt = {}) {
+    const headers = { ...(opt.headers || {}) };
+    if (token) headers["X-Meta-Session"] = token;
+    let resp;
+    try {
+      resp = await fetch(base + path, {
+        ...opt, headers,
+        signal: opt.signal || AbortSignal.timeout(opt.timeoutMs || 15000),
+      });
+    } catch (e) {
+      return { ok: false, status: 0, text: `network: ${e && e.message ? e.message : e}`, bytes: null };
+    }
+    if (!resp.ok) {
+      let text = "";
+      try { text = await resp.text(); } catch { /* empty body */ }
+      return { ok: false, status: resp.status, text, bytes: null };
+    }
+    try {
+      return { ok: true, status: resp.status, text: "", bytes: new Uint8Array(await resp.arrayBuffer()) };
+    } catch (e) {
+      return { ok: false, status: resp.status, text: `binary response read failed: ${e && e.message ? e.message : e}`, bytes: null };
+    }
+  }
   return {
     token: () => token || "",
     status: () => call("/api/install/status"),
@@ -172,14 +228,151 @@ export function createBridge(deviceOrigin, token) {
       headers: { "X-Meta-Offset": String(off), "Content-Type": "application/octet-stream" },
       body: buf,
     }),
+    dataChunk: (index, off, buf) => call("/api/install/data", {
+      method: "POST",
+      headers: {
+        "X-Meta-Data-Index": String(index),
+        "X-Meta-Offset": String(off),
+        "Content-Type": "application/octet-stream",
+      },
+      body: buf,
+    }),
     finalize: () => call("/api/install/finalize", { method: "POST" }),
     cancel: () => call("/api/install/cancel", { method: "POST" }),
     // dynslot §4.5 槽位管理:清单(只读)+ 显式删除(设备先擦数据、再提交
     // 记录+物化表、200 后 150ms 复位 —— 重启窗口内 status 不可达)。
     slots: () => call("/api/install/slots"),
-    remove: (slot, opts) => call("/api/install/remove", { method: "POST",
-      json: opts?.eraseData ? { slot, eraseData: true } : { slot } }),
+    slotRead: (playId, offset, length) => {
+      if (!Number.isSafeInteger(playId) || playId <= 0 ||
+          !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid APP read request", bytes: null });
+      }
+      return callBytes("/api/install/slot/read", { headers: {
+        "X-Meta-Play-Id": String(playId),
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
+    dataRead: (playId, label, offset, length) => {
+      if (!Number.isSafeInteger(playId) || playId <= 0 ||
+          typeof label !== "string" || !/^[A-Za-z0-9_-]{1,16}$/.test(label) ||
+          !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid DATA read request", bytes: null });
+      }
+      return callBytes("/api/install/data/read", { headers: {
+        "X-Meta-Play-Id": String(playId),
+        "X-Meta-Data-Label": label,
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
+    // Read-only device-storage snapshot transport. Every read is bound to an
+    // exact live partition identity; callers never supply an absolute Flash address.
+    storageInfo: () => call("/api/install/storage/info"),
+    storageErase: (partition) => {
+      if (!validStoragePartitionIdentity(partition)) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid storage partition identity" });
+      }
+      return call("/api/install/storage/erase", { method: "POST", headers: storagePartitionHeaders(partition) });
+    },
+    storageWrite: (partition, offset, bytes) => {
+      if (!validStoragePartitionIdentity(partition) || !Number.isSafeInteger(offset) || offset < 0 ||
+          !(bytes instanceof Uint8Array) || bytes.length < 1 || bytes.length > 4096 ||
+          offset % 4 !== 0 || bytes.length % 4 !== 0 || offset > partition.size ||
+          bytes.length > partition.size - offset) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid storage partition write request" });
+      }
+      return call("/api/install/storage/write", {
+        method: "POST",
+        headers: {
+          ...storagePartitionHeaders(partition),
+          "X-Meta-Offset": String(offset),
+          "X-Meta-Length": String(bytes.length),
+          "Content-Type": "application/octet-stream",
+        },
+        body: bytes,
+      });
+    },
+    storageRead: (partition, offset, length) => {
+      if (!partition || typeof partition.label !== "string" ||
+          !/^[A-Za-z0-9_-]{1,16}$/.test(partition.label) ||
+          !Number.isSafeInteger(partition.type) || partition.type < 0 || partition.type > 255 ||
+          !Number.isSafeInteger(partition.subtype) || partition.subtype < 0 || partition.subtype > 255 ||
+          !Number.isSafeInteger(partition.offset) || partition.offset < 0 ||
+          !Number.isSafeInteger(partition.size) || partition.size <= 0 ||
+          !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096 ||
+          offset > partition.size || length > partition.size - offset) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid storage partition read request", bytes: null });
+      }
+      return callBytes("/api/install/storage/read", { headers: {
+        "X-Meta-Partition-Label": partition.label,
+        "X-Meta-Partition-Type": String(partition.type),
+        "X-Meta-Partition-Subtype": String(partition.subtype),
+        "X-Meta-Partition-Offset": String(partition.offset),
+        "X-Meta-Partition-Size": String(partition.size),
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
+    nvsInfo: () => call("/api/install/nvs/info"),
+    nvsRead: (offset, length) => {
+      if (!Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(length) || length < 1 || length > 4096) {
+        return Promise.resolve({ ok: false, status: 400, text: "invalid NVS read request", bytes: null });
+      }
+      return callBytes("/api/install/nvs/read", { headers: {
+        "X-Meta-Offset": String(offset),
+        "X-Meta-Length": String(length),
+      }});
+    },
+    remove: (slot) => call("/api/install/remove", { method: "POST",
+      json: { slot } }),
   };
+}
+
+// Read a complete v2 device-storage snapshot through the guarded partition bridge.
+// A failed read rejects the whole operation; callers must never package a partial snapshot.
+export async function readStorageSnapshot(bridge, { onProgress } = {}) {
+  const snapshot = await captureStorageSnapshot(bridge, { sha256Hex, onProgress });
+  return {
+    manifest: snapshot.manifest,
+    payloads: snapshot.payloads,
+    bytesRead: snapshot.bytesRead,
+    totalBytes: snapshot.totalBytes,
+    inventory: snapshot.inventory,
+  };
+}
+
+export async function createStorageSnapshotArchive(bridge, options = {}) {
+  const snapshot = await readStorageSnapshot(bridge, options);
+  const zip = await buildStorageSnapshotZip(snapshot, sha256Hex);
+  return { ...snapshot, zip };
+}
+
+// Read-only restore preflight: validates the complete archive, version contract,
+// and current device layout before the sequential writer is allowed to erase anything.
+export async function validateStorageSnapshotArchiveForDevice(bridge, input) {
+  const archive = await readStorageSnapshotZip(input, sha256Hex);
+  const response = await bridge.storageInfo();
+  if (!response?.ok || typeof response.text !== "string") {
+    throw new Error("cannot read target device partition table: " + (response?.text || response?.status || "unknown error"));
+  }
+  let info;
+  try { info = JSON.parse(response.text); }
+  catch { throw new Error("target device partition inventory is not valid JSON"); }
+  if (!info?.running_host || !Array.isArray(info.partitions)) {
+    throw new Error("target device partition inventory is incomplete");
+  }
+  assertSnapshotVersionCompatible(archive.manifest, info.meta_pass_version);
+  const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
+    targetPartitions: info.partitions,
+    runningHostPartition: info.running_host,
+    protectedRanges: info.protected_ranges || [],
+  });
+  return { ...archive, target: info, restorePlan };
 }
 
 // ── 槽位管理(design §4.5 Remove)───────────────────────────────────────
@@ -204,7 +397,8 @@ export function parseSlots(text) {
     }
     slots.push({ slot: s.slot, state: s.state, name: s.name,
                  size: s.size, len: s.len, limit: s.limit, offset: s.offset,
-                 kind: s.kind, arc: s.arc || 0 });
+                 kind: s.kind, arc: s.arc || 0,
+                 play_id: Number.isInteger(s.play_id) && s.play_id > 0 ? s.play_id : 0 });
   }
   slots.sort((a, b) => a.slot - b.slot);
   // protocol_version: 1=fixed-slot(old), 2=dynslot, missing defaults to 1 for backward compat
@@ -223,6 +417,8 @@ export function parseSlots(text) {
         data.push({ offset: x.offset, size: x.size,
                     state: Number.isInteger(x.state) ? x.state : 0,
                     play_id: Number.isInteger(x.play_id) ? x.play_id : 0,
+                    type: Number.isInteger(x.type) ? x.type : 1,
+                    subtype: Number.isInteger(x.subtype) ? x.subtype : 0,
                     label: typeof x.label === "string" ? x.label : "" });
       }
     }
@@ -317,11 +513,20 @@ export async function getPlayDetail(id) {
 // preflight(id) 保留为两阶段连跑的兼容入口(测试与旧调用)。
 // 轻量预检:analyze 与详情互相独立,并行发起 —— 点安装到出槽位抽屉的
 // 延迟 ≈ 两者较慢者;串行则叠加(真机反馈:点安装响应慢的一半来源)。
+export function requestedDataSizeProfile(hooks = {}) {
+  if (typeof hooks.dataSizeProfile === "string" && hooks.dataSizeProfile) return hooks.dataSizeProfile;
+  try {
+    return new URL(globalThis.location.href).searchParams.get("mp_test_data_profile") || null;
+  } catch { return null; }
+}
+
 export async function preflightMeta(id, hooks = {}) {
   const stage = (s) => hooks.stage?.(s);
   stage("analyze");
+  const profile = requestedDataSizeProfile(hooks);
+  const profileQuery = profile ? `&dataProfile=${encodeURIComponent(profile)}` : "";
   const [aRes, play] = await Promise.all([
-    mpJson(`/api/analyze?id=${encodeURIComponent(id)}`),
+    mpJson(`/api/analyze?id=${encodeURIComponent(id)}${profileQuery}`),
     getPlayDetail(id),
   ]);
   const a = aRes;
@@ -393,6 +598,7 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
 
   stage("解包");
   let ext;
+  let dataImages = [];
   try {
     // 解包上限 = 最大槽位上限(0x29E000-4KB=2740224)。extractAppImage
     // 的默认上限是硬编码 2MB 槽(2093056)——用它解 2.2MB 应用必炸,
@@ -406,6 +612,17 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
                   geom.proposal ? geom.proposal.limit : 0] : [0]),
     );
     ext = extractAppImage(merged, maxSlotLimit);
+    try {
+      dataImages = extractDataImages(merged);
+      const profile = requestedDataSizeProfile(hooks);
+      if (profile) dataImages = applyDataSizeProfile(dataImages, play.id, profile);
+    } catch (e) {
+      return {
+        ok: false,
+        stage: "extract",
+        reason: String(e && e.message ? e.message : e),
+      };
+    }
   } catch (e) {
     return { ok: false, stage: "extract", reason: String(e && e.message ? e.message : e) };
   }
@@ -465,6 +682,16 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     suggestedSlot,
     slot,               // 交互 v2:手机选定槽位;-1 = 设备物理确认
     slots,
+    // Device allocation contract: APP + each Child DATA extent form one
+    // allocation group. Keep required capacity separate from initial payload.
+    data: await Promise.all(dataImages.map(async (d) => ({
+      playId: play.id,
+      size: d.required_size,
+      label: d.label,
+      subtype: d.subtype,
+      initialImageSize: d.initial_image_size,
+      sha256: d.initial_image_size > 0 ? await sha256Hex(d.data) : undefined,
+    }))),
     reason: typeof a.reason === "string" && a.reason ? a.reason : "ok",
   };
   if (slotIsNew) {
@@ -473,8 +700,13 @@ export async function prepareImage(meta, slot, hooks = {}, userName = "", sel = 
     offer.carveOffset = geom.proposal.carveOffset;
     offer.carveSize = geom.proposal.carveSize;
   }
-  return { ok: true, offer, merged, ext, analyze: a, play };
+  return { ok: true, offer, merged, ext, dataImages, analyze: a, play };
 }
+
+// Restore one complete MPTB v2 APP+DATA group through the same device-side
+// install transaction used for a normal install. Raw Flash addresses never leave
+// the device; allocation is re-derived from the live listing and the device
+// independently validates the carve proposal.
 
 export async function preflight(id, hooks = {}) {
   const meta = await preflightMeta(id, hooks);
@@ -638,15 +870,80 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
     hooks.progress?.(offset, offer.imageLen);
   }
 
+  // Child DATA: existing allocations are reported done and are never overwritten.
+  const dataImages = Array.isArray(hooks.dataImages) ? hooks.dataImages : [];
+  const dataState = Array.isArray(sess?.data) ? sess.data : [];
+  for (let i = 0; i < dataImages.length; i++) {
+    const img = dataImages[i];
+    const expected = Number(img?.initial_image_size ?? 0);
+    if (!expected) continue;
+    if (!(img.data instanceof Uint8Array) || img.data.length !== expected) {
+      return fail("data-upload", `data ${i} buffer/length mismatch`);
+    }
+    const ds = dataState.find((x) => x && x.index === i);
+    if (ds?.done) continue;
+    let doff = Number.isFinite(ds?.offset) ? ds.offset : 0;
+    if (doff > expected) return fail("data-upload", `device data ${i} offset beyond image`);
+    let retriesData = 0;
+    hooks.stage?.(`upload data ${i + 1}/${dataImages.length}`);
+    while (doff < expected) {
+      const len = Math.min(maxChunk, expected - doff);
+      const dr = await bridge.dataChunk(i, doff, img.data.subarray(doff, doff + len));
+      if (dr.ok) {
+        doff += len;
+        retriesData = 0;
+        continue;
+      }
+      let s2 = null;
+      try { s2 = parseJsonReply(await bridge.status()); } catch { /* fatal below */ }
+      const ds2 = Array.isArray(s2?.data) ? s2.data.find((x) => x && x.index === i) : null;
+      const devOff = Number.isFinite(ds2?.offset) ? ds2.offset : null;
+      if (s2 && (s2.state === "failed" || s2.state === "cancelled" || s2.state === "done")) {
+        return fail("data-upload", dr.text || `HTTP ${dr.status}`, { status: dr.status, index: i, offset: doff });
+      }
+      if (devOff === null) {
+        return fail("data-upload", dr.text || `HTTP ${dr.status}`, { status: dr.status, index: i, offset: doff });
+      }
+      if (devOff === doff) {
+        if (++retriesData >= 3) {
+          return fail("data-upload", dr.text || `HTTP ${dr.status}`,
+            { status: dr.status, index: i, offset: doff, retries: retriesData });
+        }
+        continue;
+      }
+      doff = devOff;
+      retriesData = 0;
+      hooks.resume?.(doff);
+    }
+  }
+
   hooks.stage?.("finalize");
-  const fin = await bridge.finalize();
+  let fin;
+  try {
+    fin = await bridge.finalize();
+  } catch (error) {
+    // The request may have reached the device even when the transport rejects.
+    // Treat this as an uncertain commit outcome and never let the restore caller
+    // interpret it as a preflight failure eligible for cancellation.
+    return fail("finalize",
+      "finalize transport failed; commit state is uncertain: " +
+        (error?.message || String(error)),
+      { commitUncertain: true });
+  }
   if (!fin.ok) {
     let msg = fin.text || `HTTP ${fin.status}`;
+    let observedState = null;
     try {
       const s = parseJsonReply(await bridge.status());
+      observedState = s?.state ?? null;
       if (s?.message) msg = s.message;
     } catch { /* keep HTTP text */ }
-    return fail("finalize", msg, { status: fin.status });
+    // A failed HTTP response does not prove that finalize had no durable side
+    // effect. Only an explicit device "failed" terminal state is unambiguous.
+    return fail("finalize", msg, {
+      status: fin.status,
+      ...(observedState === "failed" ? {} : { commitUncertain: true }),
+    });
   }
 
   hooks.stage?.("done");
@@ -655,10 +952,12 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   const doneState = await pollUntil(bridge, (s) => s.state === "done" || s.state === "failed",
     hooks, Number(hooks.doneTimeoutMs) || 30000).catch(() => null);
   if (!doneState || doneState.state !== "done") {
+    const terminalFailure = doneState?.state === "failed";
     return fail("finalize",
-      doneState?.state === "failed"
+      terminalFailure
         ? (doneState.message || "device reported failure")
-        : "device did not reach done (finalize accepted but no confirmation)");
+        : "device did not reach done (finalize accepted but no confirmation)",
+      terminalFailure ? {} : { commitUncertain: true });
   }
   return { ok: true, slot };
 }
@@ -1139,28 +1438,109 @@ export function boot(opts = {}) {
 
   // ── 已安装管理(dynslot §4.5 Remove):清单 + 两步确认删除 + 重启回连 ──
   const MGMT_STATE = { valid: "有固件", invalid: "无固件", empty: "空" };
+  let archiveBusy = false;
+  let archiveMessage = "";
+  let archiveDownload = null;
+
+  async function doBackup() {
+    if (archiveBusy) return;
+    archiveBusy = true;
+    archiveMessage = "正在读取设备已分配存储并生成快照…";
+    try {
+      const assertIdle = async () => {
+        const status = await bridge.status();
+        if (!status.ok) throw new Error("无法确认设备安装状态");
+        let state;
+        try { state = JSON.parse(status.text); } catch { throw new Error("设备安装状态格式无效"); }
+        if (state.offer || state.confirmed || state.session) {
+          throw new Error("设备正在安装或等待确认；请结束安装后再备份");
+        }
+      };
+      await assertIdle();
+      const snapshot = await createStorageSnapshotArchive(bridge, {
+        onProgress: (p) => {
+          archiveMessage = "正在备份分区 " + p.label + "：" +
+            Math.floor(p.bytesRead * 100 / Math.max(1, p.totalBytes)) + "%";
+          const node = $("mp-backup-status");
+          if (node) node.textContent = archiveMessage;
+        },
+      });
+      await assertIdle();
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const filename = "metapass-storage-snapshot-" + stamp + ".zip";
+      const url = URL.createObjectURL(new Blob([snapshot.zip], { type: "application/zip" }));
+      if (archiveDownload?.url) URL.revokeObjectURL(archiveDownload.url);
+      archiveDownload = { url, filename };
+      archiveMessage = "设备存储快照已生成并通过 SHA-256 校验：" + filename +
+        "（" + snapshot.manifest.partitions.length + " 个分区，读取 " +
+        fmtMB(snapshot.bytesRead) + "）。归档未加密，可能包含 Wi-Fi 凭证、安装会话状态和子固件数据等敏感信息；请妥善保管。";
+      log(archiveMessage, "ok");
+    } catch (error) {
+      archiveMessage = "快照备份失败：" + (error && error.message ? error.message : String(error));
+      log(archiveMessage, "error");
+    } finally {
+      archiveBusy = false;
+      await showMgmt();
+      const status = $("mp-backup-status");
+      if (status) status.textContent = archiveMessage;
+    }
+  }
+
+  async function doRestoreArchive(file) {
+    if (!file || archiveBusy) return;
+    archiveBusy = true;
+    archiveMessage = "正在校验设备存储快照…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const checked = await validateStorageSnapshotArchiveForDevice(bridge, bytes);
+      const sourceVersion = checked.manifest.meta_pass.system_version;
+      const accepted = confirm(
+        "即将按快照覆盖 " + checked.manifest.partitions.length + " 个已分配分区。\n\n" +
+        "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
+        "若写入中断或恢复后无法正常启动，请重新刷入该版本，再连接设备并重试。\n\n" +
+        "继续恢复？"
+      );
+      if (!accepted) {
+        archiveMessage = "已取消快照恢复；未写入 Flash。";
+        log(archiveMessage, "warn");
+        return;
+      }
+      const result = await restoreStorageSnapshotArchive(bridge, bytes, {
+        sha256Hex,
+        onProgress: (event) => {
+          archiveMessage = "快照恢复：" + event.phase +
+            (event.partition ? " · " + event.partition : "") +
+            (Number.isInteger(event.relativeOffset) ? " · 相对偏移 0x" + event.relativeOffset.toString(16) : "");
+          const status = $("mp-backup-status");
+          if (status) status.textContent = archiveMessage;
+        },
+      });
+      archiveMessage = result.dataWritten
+        ? "快照数据已写入。请重启设备并确认 MetaPass 能正常启动、重新连接；此步骤尚未自动完成。"
+        : "快照恢复尚未完成。";
+      const status = $("mp-backup-status");
+      if (status) status.className = result.bootValidated ? "ok" : "warn";
+      log(archiveMessage, result.bootValidated ? "ok" : "warn");
+    } catch (error) {
+      const code = String(error?.code || "");
+      const restoring = code.startsWith("SNAPSHOT_RESTORE_");
+      archiveMessage = (restoring ? "快照恢复未完成：" : "快照还原预检失败：") +
+        (error?.message || String(error));
+      log(archiveMessage, "error");
+    } finally {
+      archiveBusy = false;
+      await showMgmt();
+      const status = $("mp-backup-status");
+      if (status) status.textContent = archiveMessage;
+    }
+  }
 
   function renderMgmt(info, busy) {
-    // M5 备份闭环:按 play_id 分组归档数据(state==2),每组一个导出按钮;
-    // 导入走文件选择器。设备旧固件(data 无 play_id)不显示导出。
-    const archivedByPid = new Map();
-    for (const d of info.data || []) {
-      if (d.state !== 2 || !d.play_id) continue;
-      if (!archivedByPid.has(d.play_id)) archivedByPid.set(d.play_id, []);
-      archivedByPid.get(d.play_id).push(d);
-    }
-    const exportRows = [...archivedByPid.entries()].map(([pid, recs]) => `
-        <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
-          <span style="flex:1;font-size:13.5px;color:var(--ink2)">玩法 ${pid} 的归档数据(${recs.length} 条 · ${fmtMB(recs.reduce((a, r) => a + r.size, 0))})</span>
-          <button class="mp-btn ghost" data-export-pid="${pid}" style="padding:6px 12px;font-size:13px">导出</button>
-        </div>`).join("");
     const backupSection = `
-      <h4 style="margin-top:14px">数据备份</h4>
-      ${exportRows || `<p class=mp-sub>没有归档数据可导出</p>`}
-      <div class=mp-actions style="margin-top:10px">
-        <button id=mp-mgmt-import class="mp-btn ghost">导入备份文件</button>
-        <input type=file id=mp-bk-file accept=".bin,application/octet-stream" style="display:none">
-      </div>`;
+      <h4 style="margin-top:14px">设备存储快照</h4>
+      <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。恢复采用逐分区擦除与写入，不提供自动回滚；写入中断或重启后无法正常启动时，请刷回归档记录的 MetaPass 版本后重试。</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>选择快照归档并恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
+      ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -1168,6 +1548,7 @@ export function boot(opts = {}) {
             <b>槽位 ${s.slot}</b> ${esc(s.name || "")}<br>
             <span style="font-size:12.5px;color:var(--ink2)">${MGMT_STATE[s.state] || s.state}${s.kind === "storage" ? " · 存储预留" : ""} · ${fmtMB(s.size)}${s.state !== "empty" ? ` · 已装 ${fmtMB(s.len)}` : ""}</span>
           </span>
+
           <button class="mp-btn ghost" data-rm="${s.slot}" style="padding:6px 12px;font-size:13px">删除</button>
         </div>`).join("")
       : `<p class=mp-sub>设备上还没有已分配槽位</p>`;
@@ -1177,6 +1558,7 @@ export function boot(opts = {}) {
       ${busy ? `<p class=mp-sub style="color:var(--red)">安装进行中 —— 请先完成或取消安装，再删除槽位</p>` : ""}
       ${rows}
       ${backupSection}
+      <p id=mp-backup-status class=mp-sub>${esc(archiveMessage)}</p>
       <div class=mp-actions>
         <button id=mp-mgmt-re class=mp-btn>刷新</button>
         <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
@@ -1184,30 +1566,21 @@ export function boot(opts = {}) {
     </section>`);
     $("mp-mgmt-x").onclick = clearPanel;
     $("mp-mgmt-re").onclick = showMgmt;
-    root.querySelectorAll("[data-export-pid]").forEach((b) => {
-      b.onclick = async () => {
-        b.disabled = true;
-        const r = await exportBackup(bridge, Number(b.dataset.exportPid));
-        log(r.ok ? `✓ 已导出玩法 ${b.dataset.exportPid} 的归档数据(${r.count} 条)`
-                 : `导出失败:${r.reason}`, r.ok ? "ok" : "error");
-        b.disabled = false;
-        if (!r.ok) failSheet("导出失败", r.reason);
+    const restorePick = $("mp-restore-pick");
+    const restoreInput = $("mp-restore-input");
+    if (restorePick && restoreInput) {
+      restorePick.disabled = busy || archiveBusy;
+      restorePick.onclick = () => restoreInput.click();
+      restoreInput.onchange = () => {
+        const file = restoreInput.files?.[0];
+        restoreInput.value = "";
+        if (file) doRestoreArchive(file);
       };
-    });
-    if ($("mp-mgmt-import")) {
-      $("mp-mgmt-import").onclick = () => $("mp-bk-file").click();
-      $("mp-bk-file").onchange = async () => {
-        const file = $("mp-bk-file").files[0];
-        $("mp-bk-file").value = "";
-        if (!file) return;
-        const sr = await bridge.status();
-        let fw = "";
-        try { fw = JSON.parse(sr.text)?.firmware_version || ""; } catch { /* 缺字段 → 版本校验由设备兜底 */ }
-        const r = await importBackup(bridge, file, fw);
-        log(r.ok ? "✓ 备份已导入" : `导入失败:${r.reason}`, r.ok ? "ok" : "error");
-        if (r.ok) showMgmt();
-        else failSheet("导入失败", r.reason);
-      };
+    }
+    const snapshotBackup = $("mp-snapshot-backup");
+    if (snapshotBackup) {
+      snapshotBackup.disabled = busy || archiveBusy;
+      snapshotBackup.onclick = () => doBackup();
     }
     root.querySelectorAll("[data-rm]").forEach((b) => {
       if (busy) { b.disabled = true; return; }
@@ -1251,36 +1624,21 @@ export function boot(opts = {}) {
   }
 
   async function doRemove(slot) {
-    const slotsData = await bridge.slots();
-    let arcCount = 0;
-    try {
-      const listing = parseSlots(slotsData.text);
-      const s = listing?.slots?.find(x => x.slot === slot);
-      arcCount = s?.arc || 0;
-    } catch {}
-    const arcMsg = arcCount > 0
-      ? `<p class="mp-sub">⚠️ ${arcCount} 条归档数据将保留。仅删除槽位记录。</p>`
-      : `<p class="mp-sub">确认删除槽位 ${slot}?数据已归档可恢复。</p>`;
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>${arcMsg}
-      ${arcCount ? `<label style="display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:14px">
-        <input type=checkbox id=mp-rm-erase style="margin-top:3px">
-        <span>同时删除数据(擦除后不可恢复;不勾 = 数据归档保留,可日后导出恢复)</span>
-      </label>` : ""}
-      <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>确认删除</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4>
+      <p class=mp-sub>⚠️ 卸载将永久删除此 APP 及其全部关联 DATA。你可以先导出设备存储快照；快照可能包含系统 NVS、Wi-Fi 凭证和安装会话状态。快照恢复采用逐分区擦除与写入，不提供自动回滚；若写入中断或重启后无法正常启动，请刷回归档记录的 MetaPass 版本后重试。请先确认已保存需要保留的归档。此操作不可恢复。</p>
+      <div class=mp-actions><button id=mp-mgmt-confirm class=mp-btn>删除 APP 及全部数据</button><button id=mp-mgmt-x class="mp-btn ghost">取消</button></div></section>`);
     $("mp-mgmt-confirm").onclick = async () => {
       $("mp-mgmt-confirm").disabled = true;
-      $("mp-mgmt-confirm").textContent = "删除中...";
-      const erase = !!$("mp-rm-erase")?.checked;
-      await doRemoveCommit(slot, erase);
+      $("mp-mgmt-confirm").textContent = "正在删除 APP 和数据...";
+      await doRemoveCommit(slot);
     };
     $("mp-mgmt-x").onclick = clearPanel;
   }
-
   let s_remove_seq = 0;   // 删除尝试代际:过期请求的失败不得盖掉较新的结果
-  async function doRemoveCommit(slot, eraseData = false) {
+  async function doRemoveCommit(slot) {
     const my = ++s_remove_seq;
     try {
-      return await doRemoveCommitInner(slot, eraseData);
+      return await doRemoveCommitInner(slot);
     } catch (e) {
       // 设备重启会使在途请求挂到 AbortSignal 超时(45s)才抛 —— 期间用户
       // 可能已重试并成功。这种迟到失败只记日志,不盖当前页面(真机 2026-10-04:
@@ -1292,16 +1650,24 @@ export function boot(opts = {}) {
       failSheet("删除失败", `设备未正常应答(${e && e.message ? e.message : e})—— 请开串口日志重试`);
     }
   }
-  async function doRemoveCommitInner(slot, eraseData = false) {
-    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>${eraseData ? "正在擦除数据并删除…" : "正在归档数据并删除…"}</p></section>`);
-    const r = await bridge.remove(slot, { eraseData });
+  async function doRemoveCommitInner(slot) {
+    setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>正在擦除 APP 和全部关联数据…</p></section>`);
+    const r = await bridge.remove(slot);
     if (r.status === 401) { failSheet("需要配对", "会话 token 失效 —— 重新扫码或配对后再试"); return; }
-    if (r.status === 409) { failSheet("无法删除", "安装进行中 —— 请先完成或取消安装"); return; }
+    if (r.status === 409) {
+      if ((r.text || "").includes("previous uninstall recovered")) {
+        log("✓ 已恢复上次中断的删除，正在刷新列表", "ok");
+        showMgmt();
+        return;
+      }
+      failSheet("无法删除", "安装进行中 —— 请先完成或取消安装");
+      return;
+    }
     if (r.status === 404) { failSheet("无法删除", "槽位已不存在 —— 点「刷新」查看最新列表"); return; }
     if (r.status === 400 || r.status === 413) { failSheet("无法删除", "请求被设备拒绝"); return; }
     if (!r.ok) { failSheet("删除失败", r.status ? `设备返回 ${r.status} —— 请重试` : "设备无响应 —— 请重试"); return; }
     // 200 = 记录已提交。复位推迟到退出商店页:这里设备原地不动,会话保持。
-    log(`✓ 槽位 ${slot} 已删除(${eraseData ? "数据已擦除" : "数据已归档"})`, "ok");
+    log(`✓ 槽位 ${slot} 及其全部关联数据已删除`, "ok");
     setPanel(`<section class=mp-panel><h4>删除槽位 ${slot}</h4><p class=mp-sub>删除完成,刷新列表…</p></section>`);
     const back = await waitDeviceBack(bridge, { tries: 25, delayMs: 1200 });
     if (back) {
@@ -1350,9 +1716,8 @@ export function boot(opts = {}) {
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
-    // dynslot §4.5:设备 carve 是槽位几何事实源(删除/新槽后与 SLOT_GEOMETRY
-    // 不同源)。slots() 不可达(旧固件无此路由 / 无 token)→ 回退 legacy 视图,
-    // 真伪仍由设备 prepare 时 offer_ok/carve_ok 终裁。
+    // dynslot §4.5:设备动态 carve 清单是分配事实源。新安装必须创建新的 APP carve；
+    // slots() 不可达或旧固件不支持动态池时 fail closed，不能退回固定/既有槽覆盖。
     let geom = null;
     try {
       const lr = await bridge.slots();
@@ -1367,17 +1732,28 @@ export function boot(opts = {}) {
   function showSlotPicker(meta, p, geom = null) {
     const a = meta.analyze;
     const imageLen = a?.extracted?.imageLen;
-    // dynslot(§4.5):设备 carve 派生表(current)+ 可放新槽提案(isNew,
-    // 下标 = 插入位,可能与既有下标同号 —— 洞位插入);不可达回退 legacy 三槽。
-    const opts = geom
-      ? geom.current.map((s) => ({ slot: s.slot, limit: s.limit, fit: s.fit, isNew: false }))
-        .concat(geom.proposal
-          ? [{ slot: geom.proposal.slot, limit: geom.proposal.limit, fit: true, isNew: true }]
-          : [])
-      : SLOT_GEOMETRY.map(({ slot, partSize }) => {
-          const limit = partSize - TAIL_SECTOR;
-          return { slot, limit, fit: Number.isFinite(imageLen) && imageLen <= limit, isNew: false };
-        });
+    // 新安装必须从动态回收池分配新的 APP carve。不得把已有 empty 槽、
+    // 已分配槽或 legacy 固定槽当作可复用目标；删除后的空间由池分配器重新分配。
+    // 无法读取动态槽位清单时 fail closed，避免悄悄回退到旧的原位覆盖语义。
+    if (!geom?.listing) {
+      const msg = "设备未提供动态回收池能力，无法安全创建新的 APP 槽位。请更新设备固件后重试。";
+      log(`✗ ${msg}`, "err");
+      failSheet("无法安装", `${p.name}\\n${msg}`);
+      return;
+    }
+    const opts = geom.proposal
+      ? [{ slot: geom.proposal.slot, limit: geom.proposal.limit, fit: true, isNew: true }]
+      : [];
+    const requiresDataCarve = Array.isArray(a?.data) && a.data.length > 0;
+    const missingDataAllocation = requiresDataCarve && (!geom?.listing ||
+      a.data.some((d) => !geom.listing.data.some((x) =>
+        x.play_id === Number(meta.play.id) && x.label === String(d.label || ""))));
+    if (requiresDataCarve && (!geom?.listing || (missingDataAllocation && !geom.proposal))) {
+      const msg = "该固件声明了新的独立 DATA 分区，但设备当前无法提供新的动态分区提案。请先释放足够的连续空间，或更新到支持动态 DATA 分区的设备固件。";
+      log(`✗ ${msg}`, "err");
+      failSheet("无法安装 DATA 固件", `${p.name}\n${msg}`);
+      return;
+    }
     const fit = opts.filter((o) => o.fit);
     if (fit.length === 0) {
       const msg = Number.isFinite(imageLen)
@@ -1389,12 +1765,8 @@ export function boot(opts = {}) {
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
-    const suggestedNum = geom
-      ? geom.suggestedSlot
-      : (fit.some((o) => o.slot === a?.suggestedSlot) ? a.suggestedSlot : fit[0].slot);
-    // 建议项按 (slot, isNew) 定位:洞位提案可与既有下标同号。
-    const suggestedOpt = fit.find((o) => o.slot === suggestedNum && !o.isNew)
-      ?? fit.find((o) => o.slot === suggestedNum && o.isNew) ?? fit[0];
+    // 动态设备只展示池分配器生成的新槽提案，不提供既有槽位复用选项。
+    const suggestedOpt = fit.find((o) => o.isNew) ?? fit[0];
     let chosen = { slot: suggestedOpt.slot, isNew: suggestedOpt.isNew };
     const isChosen = (o) => o.slot === chosen.slot && o.isNew === chosen.isNew;
     let nameVal = displayNameFor(a?.name, p);   // 重选槽位重渲染时保留用户已改名
@@ -1454,7 +1826,7 @@ export function boot(opts = {}) {
           requestAnimationFrame(() => { const n=$("mp-name"); if(n){n.focus(); n.setSelectionRange(n.value.length,n.value.length);} }); };
       });
       const confirm = $("mp-confirm");
-      confirm.disabled = false;
+      confirm.disabled = !chosen.isNew;
       confirm.onclick = () => {
         nameVal = cleanName(nameEl.value);           // 确认时再滤一次(防漏网)
         continueInstall(meta, chosen, nameVal.trim(), geom);
@@ -1475,7 +1847,7 @@ export function boot(opts = {}) {
         <div class=lb><span id=mp-stage>准备中</span><span id=mp-pct>预检…</span></div>
       </div>
     </section>`);
-    const bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
+    let bar = $("mp-bar"), stageEl = $("mp-stage"), pctEl = $("mp-pct");
     stage("下载固件");
     const pre = await prepareImage(meta, slot,
       { stage: (s) => { stageEl.textContent = s; } }, userName,
@@ -1485,9 +1857,142 @@ export function boot(opts = {}) {
       failSheet("安装失败", `${meta.play.name}\n[${pre.stage}] ${pre.reason}`);
       return;
     }
+
+    // DATA sizing is a general installation option, not a Play/test-profile
+    // switch. The device remains authoritative and revalidates every size.
+    const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
+    if (dataImages.length && geom?.listing) {
+      const declared = dataImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
+      const minimums = dataImages.map((d) => dataPartitionMinimum(d));
+      const existingSizes = dataImages.map((d) => {
+        const rec = geom.listing.data.find((x) =>
+          x.play_id === Number(meta.play.id) && x.label === String(d.label || ""));
+        return rec && Number.isSafeInteger(rec.size) ? rec.size : null;
+      });
+      const valid = declared.every((n) => Number.isSafeInteger(n) &&
+        n >= DATA_SIZE_GRANULE && n % DATA_SIZE_GRANULE === 0) &&
+        minimums.every((n) => Number.isSafeInteger(n) && n >= DATA_SIZE_GRANULE);
+      if (!valid) {
+        failSheet("数据分区容量无效", "固件声明的数据分区大小或最低容量不合法，已停止安装。");
+        return;
+      }
+      const appProposal = chosen.isNew ? geom.proposal : null;
+      // Existing DATA may grow during an install/update, but must never shrink:
+      // device-side migration retains the old extent as rollback source and
+      // rejects a target smaller than the current allocation. To calculate the
+      // target's capacity, remove only that DATA record from the occupancy view;
+      // all other slots and DATA reservations remain hard obstacles.
+      const editable = minimums.map((min, i) =>
+        existingSizes[i] == null || existingSizes[i] < min ||
+        (existingSizes[i] >= min && !chosen.isNew));
+      const listingWithoutTarget = (i) => ({
+        ...geom.listing,
+        data: geom.listing.data.filter((rec) =>
+          !(Number(rec.play_id ?? rec.playId) === Number(meta.play.id) &&
+            String(rec.label || "") === String(dataImages[i].label || "")))
+      });
+      const boundsByData = minimums.map((min, i) => dataSizeBounds(
+        existingSizes[i] != null && editable[i] ? listingWithoutTarget(i) : geom.listing,
+        appProposal, Math.max(min, existingSizes[i] || 0),
+        minimums.filter((_, j) => j !== i && editable[j] && existingSizes[j] == null)));
+      const impossible = minimums.findIndex((min, i) =>
+        editable[i] && Math.floor(boundsByData[i].max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE < min);
+      if (impossible >= 0) {
+        const min = minimums[impossible];
+        const bounds = boundsByData[impossible];
+        failSheet("数据分区空间不足",
+          `DATA ${impossible + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB；最大连续空闲空间 ${(bounds.max / (1024 * 1024)).toFixed(3)} MiB，总空闲空间 ${(bounds.available / (1024 * 1024)).toFixed(3)} MiB。固定分区不可移动，无法跨区拼接，请取消安装或释放存储后重试。`);
+        return;
+      }
+      const options = minimums.map((declaredMin, i) => {
+        const min = existingSizes[i] != null && editable[i]
+          ? Math.max(declaredMin, existingSizes[i]) : declaredMin;
+        if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
+        const bounds = boundsByData[i];
+        const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
+        const optionSet = buildDataSizeOptions(min, Math.max(min, max), declared[i], DATA_SIZE_STEP);
+        return { ...optionSet, available: bounds.available, index: i, existing: false };
+      });
+      const selections = options.map((o, i) => o.existing ? o.min : o.defaultSize);
+      const accepted = await new Promise((resolve) => {
+        const rows = dataImages.map((d, i) => {
+          const label = String(d.label || `DATA ${i + 1}`);
+          const opts = options[i].values.map((v) =>
+            `<option value="${v}" ${v === selections[i] ? "selected" : ""}>${(v / (1024 * 1024)).toFixed(v % (1024 * 1024) ? 3 : 0)} MiB</option>`
+          ).join("");
+          const note = options[i].existing ? " · 已有分区，保留当前容量" : ` · 范围 ${(options[i].min / (1024 * 1024)).toFixed(3)}–${(options[i].max / (1024 * 1024)).toFixed(3)} MiB · 总空闲 ${(options[i].available / (1024 * 1024)).toFixed(3)} MiB · 步进 1 MiB`;
+          return `<label style="display:block;margin:12px 0 4px">${esc(label)}${note}</label>
+            <select data-data-size="${i}" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)" ${options[i].existing || options[i].values.length <= 1 ? "disabled" : ""}>${opts}</select>`;
+        }).join("");
+        setPanel(`<section class=mp-panel>
+          <h4>数据分区大小</h4>
+          <p class=mp-sub>容量按 MiB 展示，设备按当前分区布局再次校验。已有数据分区不会在此流程中自动缩小或覆盖。</p>
+          ${rows}
+          <p class=mp-note>范围受当前连续空闲空间、分区对齐和固件声明的最小容量限制。</p>
+          <div class=mp-actions>
+            <button id=mp-data-confirm class=mp-btn>确认容量并安装</button>
+            <button id=mp-data-cancel class="mp-btn ghost">取消</button>
+          </div>
+        </section>`);
+        root.querySelectorAll("[data-data-size]").forEach((el) => {
+          el.addEventListener("change", () => {
+            const i = Number(el.dataset.dataSize);
+            const v = Number(el.value);
+            if (normalizeDataSize(v, { min: options[i].min, max: options[i].max }) !== null) {
+              selections[i] = v;
+            }
+          });
+        });
+        $("mp-data-confirm").onclick = () => {
+          // Validate the whole selection as a set: each dropdown's individual
+          // maximum assumes other DATA extents stay at their minima, so several
+          // simultaneous maximum choices must not overcommit the shared pool.
+          for (let i = 0; i < selections.length; i++) {
+            // Only brand-new DATA records need simulated reservations: existing
+            // records are already present in geom.listing and must not be counted twice.
+            const reserve = selections.filter((_, j) =>
+              j !== i && editable[j] && existingSizes[j] == null);
+            const bounds = dataSizeBounds(geom.listing, appProposal, minimums[i], reserve);
+            if (normalizeDataSize(selections[i], bounds) === null) {
+              failSheet("数据分区容量组合无效",
+                "当前选择的多个 DATA 容量无法同时放入现有分区布局，请调小部分容量后重试。");
+              return;
+            }
+          }
+          resolve(selections.slice());
+        };
+        $("mp-data-cancel").onclick = () => resolve(null);
+      });
+      if (!accepted) { clearPanel(); return; }
+      for (let i = 0; i < accepted.length; i++) {
+        const size = normalizeDataSize(accepted[i], { min: options[i].min, max: options[i].max });
+        if (size === null || size < minimums[i]) {
+          failSheet("数据分区容量无效", `DATA ${i + 1} 容量低于允许的最低容量。`);
+          return;
+        }
+        pre.offer.data[i].size = size;
+        pre.dataImages[i].required_size = size;
+        pre.dataImages[i].requiredSize = size;
+        pre.dataImages[i].size = size;
+      }
+      // The selector replaces the progress panel; recreate it before upload so
+      // subsequent progress callbacks update visible elements rather than a
+      // detached DOM subtree.
+      setPanel(`<section class=mp-panel>
+        <div class=mp-prog>
+          <progress id=mp-bar value=0 max=1></progress>
+          <div class=lb><span id=mp-stage>准备上传</span><span id=mp-pct>0%</span></div>
+        </div>
+      </section>`);
+      bar = $("mp-bar");
+      stageEl = $("mp-stage");
+      pctEl = $("mp-pct");
+    }
+
     stageEl.textContent = "上传";
     log("✓ " + pre.offer.name + " → 槽位 " + slot + ",开始上传");
     const r = await runInstall(bridge, pre.offer, pre.ext, {
+      dataImages: pre.dataImages,
       status: (s) => { if (s.confirmed) stageEl.textContent = "设备已确认,上传中"; },
       progress: (off, totalB) => {
         bar.value = off / totalB;

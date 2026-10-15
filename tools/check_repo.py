@@ -134,7 +134,10 @@ def check_document_languages(files: list[Path], errors: list[str]) -> None:
                 f"{path.relative_to(ROOT)}: missing top language link to {chinese_name}"
             )
 
-        english_prose = text.replace("简体中文", "")
+        # 语言规则只约束散文。剔除 fenced 代码块 —— 那是逐字证据(设备日志、
+        # 终端输出、CLI 用法),逐字保留才是证据的价值。用 \n 占位以保住行号。
+        english_prose = re.sub(r"```.*?```", lambda m: "\n" * m.group(0).count("\n"),
+                               text, flags=re.S).replace("简体中文", "")
         match = CJK_RE.search(english_prose)
         if match:
             line = english_prose.count("\n", 0, match.start()) + 1

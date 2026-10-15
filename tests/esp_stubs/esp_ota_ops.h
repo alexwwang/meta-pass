@@ -13,3 +13,4 @@ esp_err_t esp_ota_end(esp_ota_handle_t handle);
 esp_err_t esp_ota_abort(esp_ota_handle_t handle);
 esp_err_t esp_ota_get_partition_description(const esp_partition_t *partition, esp_app_desc_t *app_desc);
 esp_err_t esp_ota_set_boot_partition(const esp_partition_t *partition);
+const esp_partition_t *esp_ota_get_running_partition(void);

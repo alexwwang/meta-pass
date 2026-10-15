@@ -108,7 +108,7 @@ typedef struct {
 
 // 数据记录生命周期(M5):PRISTINE = 刚 carve、运行时未碰;
 // DIRTY = 玩法启动过(启动器在 OK 启动时落标,隐式信号);
-// ARCHIVED = 卸载时默认归档(用户数据保留,可被回收阶梯回收)。
+// ARCHIVED = 旧版本遗留的归档记录状态;新版本卸载不再创建该状态。
 typedef enum {
     META_DATA_PRISTINE = 0,
     META_DATA_DIRTY    = 1,
@@ -117,7 +117,7 @@ typedef enum {
 
 // 子固件声明的数据分区在池内的一条 carve 记录(M1 别名 + M5 生命周期)。
 typedef struct {
-    uint32_t play_id;   // 归属玩法 id(>0;卸载归档/升级保留按它匹配)
+    uint32_t play_id;   // 归属玩法 id(>0;卸载级联删除/升级保留按它匹配)
     uint32_t offset;    // 池内 64KB 对齐(与槽位同一分配器语义)
     uint32_t size;      // 4KB 粒度且 ≥ META_CARVE_MIN_DATA;无尾扇区
     uint8_t  state;     // meta_data_state_t
@@ -167,6 +167,11 @@ bool meta_carve_remove(meta_carve_t *c, uint8_t idx);
 bool meta_carve_place_data(const meta_carve_t *cur, uint32_t size,
                            uint32_t *out_offset);
 
+/* Find a new extent for an existing DATA record without allowing the new
+ * extent to overlap that record. Used by transactional DATA resize/migration. */
+bool meta_carve_place_data_move(const meta_carve_t *cur, uint8_t old_idx,
+                                uint32_t new_size, uint32_t *out_offset);
+
 // 按 (play_id, label) 查数据记录下标;无 → -1。play_id 0 永不匹配。
 int meta_carve_find_data(const meta_carve_t *c, uint32_t play_id, const char *label);
 
@@ -210,6 +215,15 @@ void meta_pt_legacy(uint8_t out[META_PT_SIZE]);
 // carved 表(§4.2 状态2):固定条目 + 槽位条目(offset 升序合并)。
 // carve 非法 → false 且不写 out。
 bool meta_pt_from_carve(const meta_carve_t *c, uint8_t out[META_PT_SIZE]);
+ 
+// Runtime partition table for an active Child Firmware.
+// All APP entries remain visible for boot selection, but DATA entries are
+// materialized only for the active play_id. active_play_id == 0 materializes
+// the launcher view with no Child DATA entries. This permits different children
+// to use the same data label (for example "storage") without duplicate labels
+// in the ESP-IDF partition table.
+bool meta_pt_from_carve_active(const meta_carve_t *c, uint32_t active_play_id,
+                               uint8_t out[META_PT_SIZE]);
 
 bool meta_pt_equal(const uint8_t a[META_PT_SIZE], const uint8_t b[META_PT_SIZE]);
 

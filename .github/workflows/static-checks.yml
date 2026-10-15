@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - feat/storage
   workflow_dispatch:
 
 permissions:

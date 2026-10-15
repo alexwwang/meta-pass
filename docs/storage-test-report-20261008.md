@@ -1,0 +1,347 @@
+<p align="right">
+  <a href="storage-test-report-20261008.zh_CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
+# Storage Branch Test Report — feat/storage
+
+**Date**: 2026-10-08
+**Branch**: `feat/storage`
+**Final commit**: `5eed4b87a984a88485509a4ac2a0d577a506e55e` (`feat/storage`) —
+contains the two real-device-driven fixes from §3, so the flashed image is
+byte-identical to the committed tree
+**Firmware SHA-256**: `5518535173c7d3352400a134f1f05f5b17d3b92b840af5a3a21edcb07b14f36e`
+(1,111,408 bytes, app image at 0x10000)
+
+---
+
+## 1. Simulator Test (passport-sim)
+
+**Status**: PASSED on an earlier firmware build — **background evidence only,
+not rerun against final commit `5eed4b8`**. Per the handoff, do not report this
+as final-commit simulator PASS, and do not block merge on it.
+
+```
+✔ meta-pass full image boots in QEMU and renders the 240x320 screen
+✔ QEMU CPU keeps running after boot (no exception stall)
+✔ DOWN key moves the list selection (frame redraws)
+✔ 4 consecutive DOWNs wrap the list without a crash
+✔ UP/DOWN pairs move focus back and forth with a stable frame
+```
+
+Environment: Node.js v26.3.0, passport-sim local checkout,
+`tools/sim/esp_emu_bg.wasm` (3.3 MB). Exit code 0.
+
+---
+
+## 2. Real-Device Smoke Test
+
+**Final status**: **PASS — S0/S2/S3/S4/S5/S6 all green**
+**Run**: `tools/realdevice/logs/20261008-121330/` (evidence package complete:
+command.txt, stdout.log, stderr.log, uart.log, slots/status responses,
+report.json, report.md, flash/{table.bin,store.bin,recordings.bin})
+**Physical power loss**: NOT performed — reported as POWER_LOSS_UNTESTED per
+handoff rule (soft reset ≠ power loss). S5 exercised esptool soft reset only.
+
+### 2.1 Setup
+
+| Item | Value |
+|------|-------|
+| Device | ESP32-C3 AI Passport, 8 MB flash |
+| USB port | `/dev/cu.<serial>` |
+| MAC | `<mac>` |
+| LAN IP | `<ip>` (AP `<ssid>`, WPA2, rssi −66/−67 dBm) |
+| Flash procedure | app-only `write_flash 0x10000` — NVS, partition table, otadata and cardid untouched (no `erase-flash`) |
+| IDF | v5.5.3-dirty; host Python env pinned via `IDF_PYTHON_ENV_PATH=idf5.5_py3.10_env` (the auto-detected py3.14 venv has a broken `pydantic_core` ABI — see §3 issue 1) |
+| Node | `/usr/local/bin/node` (real Node; `~/.local/bin/node` is a bun wrapper that breaks `node -e argv`) |
+
+### 2.2 Stage results
+
+| Stage | Description | Result | Key evidence |
+|-------|-------------|--------|--------------|
+| S0 | Pool+store erase, boot, token restore from NVS | PASS | `carve loaded: fresh device (safe table)`, `session token restored across reboot`, install service ready, HTTP 401→200 with restored token |
+| S1 | Pairing | PASS (token-reuse path) | `reusing persisted NVS token (no pairing/button needed)` — no physical button press needed |
+| S2 | First APP+DATA install (carve proposal, resume probe) | PASS | `prepare#1 200 (carve idx=0 off=0x180000)`, `DATA[0] resume checkpoint offset=2048`, `DATA[0] done offset=4096`, `finalize 200`, reboot → `carve loaded seq=2 slots=1` |
+| S3 | Second slot install | PASS | `prepare#2 200`, `finalize 200`, reboot → `carve loaded seq=4 slots=2` |
+| S4 | Delete + ARCHIVED, then eraseData delete | PASS | remove slot0 → `carve loaded seq=6 slots=1`, DATA `recordings` state=2 (ARCHIVED); remove slot1 eraseData → `seq=7 slots=0` |
+| S5 | Interrupt at 370,469 B, soft reset, idempotent resume | PASS | service auto-recovered, old token still valid, idempotent re-prepare 200, `finalize 200`, reboot → `carve loaded seq=10 slots=1` |
+| S6 | Flash readback + DATA byte compare | PASS | recordings.bin (4096 B) == initial image, SHA-256 `4e441a35…7205ec`; table.bin + store.bin archived |
+
+`report.json` status: PASS, soft_reset_tested: true,
+physical_power_loss_tested: false, failure_category: None.
+
+### 2.3 UART evidence (final run)
+
+```
+meta_carve: fresh device (safe table); no carve yet
+install_local: session token restored across reboot
+meta-pass: ready: APP slots=0 free=6766592B s0=0 s1=0 s2=0   (launcher banner)
+meta_carve: carve committed: seq=1 slots=1 materialize=1   (S2 prepare)
+meta_carve: carve loaded: seq=2 slots=1                    (S2 reboot)
+meta_carve: carve committed: seq=4 slots=2 materialize=1   (S3 prepare)
+meta_carve: carve loaded: seq=4 slots=2                    (S3 reboot)
+meta_carve: carve loaded: seq=6 slots=1                    (S4 archive remove)
+meta_carve: carve loaded: seq=7 slots=0                    (S4 eraseData remove)
+meta_carve: carve loaded: seq=10 slots=1                   (S5 resume+finalize reboot)
+```
+
+---
+
+## 3. Issues found during testing (all resolved in-session)
+
+### Issue 1 — ENV: IDF Python env auto-detection broken (pre-existing)
+
+`source ~/esp/esp-idf-v5.5.3/export.sh` auto-detects Python 3.14.7 and activates
+`idf5.5_py3.14_env`, whose `pydantic_core` ships a `cpython-310` native module
+(ABI mismatch) → every `idf.py` invocation dies with
+`No module named 'pydantic_core._pydantic_core'`. The smoke harness spawns
+`idf.py monitor` through exactly this path, so UART capture was dead on arrival
+in the first run of the day.
+
+**Workaround (no repo change)**: export
+`IDF_PYTHON_ENV_PATH=$HOME/.espressif/python_env/idf5.5_py3.10_env` (verified
+healthy: pydantic_core 2.46.5 imports) before running the smoke.
+
+**Recommendation**: reinstall the py3.14 venv
+(`idf_tools.py install-python-env`) or delete it so auto-detection falls back
+to a healthy env.
+
+### Issue 2 — FIRMWARE (fixed): `/api/install/status` JSON truncated
+
+**Symptom** (run `20261008-115132`): S2 crashed in the test harness with
+`json.decoder.JSONDecodeError: Expecting ',' delimiter: line 1 column 283`
+parsing the status response after a DATA prefix upload.
+
+**Root cause** (`main/meta_store_install.c`, `h_install_status`): the response
+tail `]}` was appended via `snprintf(body + off, …)` but `off` was never
+advanced past it; `httpd_resp_send(req, body, off)` then sent a body missing
+its final two bytes. The sibling `h_install_session` used
+`httpd_resp_sendstr` (strlen-based) and was correct.
+
+**Evidence**: probed device returned 282-byte body ending
+`…"done":false}` — exactly 2 bytes short.
+
+**Fix**: status handler now uses `httpd_resp_sendstr` like the session
+handler. Sibling call sites grepped: only these two build JSON this way; no
+other copy needed the change.
+
+### Issue 3 — FIRMWARE (fixed): `sync_states` wiped slot `play_id` → archive chain dead
+
+**Symptom** (run `20261008-115953`): S4 failed —
+`archive_slot_and_data failed: ESP_ERR_INVALID_STATE` in UART; DATA `recordings`
+stayed state=0 (not ARCHIVED=2) after removing its slot.
+
+**Root cause** (`main/meta_carve_flash.c`, `meta_carve_flash_sync_states`):
+the runtime-table backfill rebuilds each slot entry with
+`memset(&built, 0, …)` and repopulated only kind/offset/size/state/SHA/name.
+`play_id` is record-side metadata the runtime table does not carry, so every
+backfill commit (visible as `materialize=0` seq bumps after each install)
+silently zeroed it. `meta_carve_flash_archive_slot_and_data` then hit its
+`play_id == 0 → ESP_ERR_INVALID_STATE` guard.
+
+**Evidence**: store sectors decoded from real flash (`read_flash 0x35A000`)
+showed slot entries with `play_id=0` while the data record had `play_id=1`.
+
+**Fix**: copy `play_id` into `built` during backfill. Regression test added
+to `tests/test_meta_carve_flash.c::test_sync_states` (set play_id=42 → sync →
+assert preserved).
+
+### Issue 4 — HARNESS (fixed): S6 read length hex formatting
+
+**Symptom** (run `20261008-120733`): S6 byte compare failed with a 1000-byte
+readback.
+
+**Root cause** (`tools/realdevice/smoke.py` S6): f-string emitted
+`read_flash 0x2a0000 1000 …` — `{len(data_bytes):x}` rendered 4096 as `1000`
+without a `0x` prefix, and esptool parsed it as decimal 1000.
+
+**Evidence**: first 1000 readback bytes matched the fixture with 0 diffs —
+flash content was correct, only the read was short.
+
+**Fix**: emit `0x{len(data_bytes):x}`. No other `read_flash` length in the
+file lacked the prefix (checked both call sites above it).
+
+---
+
+## 4. Code changes made during this test session
+
+| File | Change | Reason |
+|------|--------|--------|
+| `main/meta_store_install.c` | `h_install_status`: `httpd_resp_send(req, body, off)` → `httpd_resp_sendstr(req, body)` | Issue 2 — off didn't count the `]}` tail |
+| `main/meta_carve_flash.c` | `sync_states`: preserve `slot[i].play_id` in rebuilt entry | Issue 3 — record-only metadata lost on every backfill |
+| `tests/test_meta_carve_flash.c` | regression assertion in `test_sync_states` | Issue 3 — play_id=42 survives sync |
+| `tools/realdevice/smoke.py` | S6 read length `0x{len:x}` | Issue 4 — truncated flash read |
+
+Host verification after fixes: full `test_meta_carve_flash` suite PASS
+(all 12 scenarios including the new regression); sibling suites re-run via
+`tools/validate.sh --static` — see §5.
+
+## 5. Verification
+
+- Real-device smoke: `tools/realdevice/logs/20261008-121330/` — exit 0,
+  all stages PASS (output quoted in §2.2).
+- Host tests: `test_meta_carve_flash` full file PASS (not just the new
+  assertion); whole `--static` suite (doc rules, key consistency, all C host
+  tests, actionlint) green after the report docs were added.
+- Firmware rebuild + app-only flash verified by boot log
+  (`carve loaded`, `LAN install service ready`) and the passing run itself.
+- Consistency greps: JSON-response builders (issue 2) and `read_flash` length
+  args (issue 4) checked for sibling copies — none remaining.
+
+## 6. Browser-Module × Real-Device Regression
+
+The §2 smoke is a Python urllib protocol client — it never imports a front-end
+module, so it proves the *device contract* only. `tests/test_phone_install.mjs`
+proves the module logic but against a mock device, so mock↔firmware drift is
+invisible (the truncated `/api/install/status` body in issue 2 would have passed
+the mock and only surfaced here). This section closes that gap: the real
+`install-slot/phone-install.js` driven by real `fetch` against the same device.
+
+**Status**: **PASS — 20/20, 100.1 s, exit 0**
+**Orchestrator**: `tools/realdevice/run_browser_smoke.py --ip <ip> --port <serial>`
+(restores the persisted NVS token, so no physical pairing press)
+**Firmware**: byte-identical to §2 — device flash read back at 0x10000 and
+compared against `build/FoloToy-AI-Passport.bin`, SHA-256 `5518535173c7…`.
+(Device identity is tabulated in §2.1; the output below is redacted by the
+orchestrator — token, LAN IP, serial port and host home dir.)
+
+### 6.1 What each phase proves
+
+| Phase | Path | Proves |
+|-------|------|--------|
+| P0 | `GET /api/install/slots` + `parseSlots` | protocol v2 gate and shape validation on the live device listing |
+| P1 | `preflightMeta → prepareImage → geomFromListing → runInstall → slots → remove` | the real phone-side install path: 2 MB store download, SHA-256 verify, extract, carve proposal, prepare (device auto-confirms when `slot >= 0`), session, chunked upload, finalize, slots readback, remove→archived, DATA snapshot byte-identical to pre-run |
+| P2 | synthetic full flash image → `extractDataImages → prepareImage → runInstall(data) → remove{eraseData}` | the Child DATA branch: extent allocation, `/api/install/data` chunk upload, finalize, record lands (`state=0`), erase clears APP + DATA with no archive residue |
+| P2.5 | `prepareImage` with mismatched store SHA / analyze SHA | both browser-side gates fire *before* any upload — the device has no such check, so the browser is the only line of defence |
+| P2.6 | `esptool run` soft reset | the record survives a soft reset → it is on flash/NVS, not a RAM artefact |
+| cleanup | — | state-neutral: device returns to its pre-run state |
+
+### 6.2 Full run output (redacted)
+
+```text
+$ /usr/local/bin/node $HOME/ai-passport/meta-pass/tools/realdevice/browser_smoke.mjs --ip <ip> --port /dev/<serial> --fixture $HOME/ai-passport/meta-pass/build/FoloToy-AI-Passport.bin --token <token>
+
+##[1] 前置: device=<ip> bridge=真 fetch(零 mock) fixture=build/FoloToy-AI-Passport.bin
+##[2] ✓ [P0] 设备在线 + slots 协议 v2 — count=1 free=5640192 archivedData=1
+##[3] ✓ [P0] parseSlots 对真机清单全字段通过(含数据 carve 记录) — slots=0
+##[4] ✓ [P1] preflightMeta 可用(analyze + 商店详情,与 UI 同入口) — id=1 name=AI Passport 天气时钟固件 · 全中文界面 + 壁纸休眠屏 imageLen=1999200 store=2064736
+##[5] ✓ [P1] prepareImage 走真下载+校验+解包(与 UI continueInstall 同入口) — imageLen=1999200 sha=74c727816bcd carveOff=0x360000 carveSize=2007040 5.4s
+##[6] ✓ [P1] 提案落点/容量自洽(carveSize 由设备 meta_carve_need 复核) — off=0x360000 size=2007040 >= imageLen=1999200 (delta=7840B 尾部分区)
+##[7] ✓ [P1] runInstall 全流程(prepare→设备直确认→session→chunk→finalize→done) — slot=1 stages=[prepare→confirm→session→upload→finalize→done] offset=1999200
+##[8] ✓ [P1] 真机 slots 回读确认安装落盘 — slot=1 name=Browser Smoke state=valid len=1999200
+##[9] ✓ [P1] 已装应用 len 等于解包镜像长(非 0) — len=1999200
+##[10] ✓ [P1] bridge.remove 真机 200 + waitDeviceBack 回连 — slot=1 removed=true back=true
+##[11] ✓ [P1] 删除后 APP 槽消失(数据记录不参与 pool 占用) — count=1 free=5640192
+##[12] ✓ [P1] 删除后 DATA 记录与运行前快照一致(P1 无 Child DATA,不应新增) — data=[[1,"recordings",2]]
+##[13] ✓ [P2] 合成镜像被真实解析出 Child DATA 记录(extent > 初始镜像) — imageLen=1111408 data[1] label=recordings sub=0x82 req=8192 initial=2048B
+##[14] ✓ [P2] 合成 app 字节与仓库 build 一致(解包未损坏) — sha256=5518535173c7d335…
+##[15] ✓ [P2] prepareImage 夹具路径(真实下载 + sha256 校验 + 解包 + DATA 提取) — imageLen=1111408 dataExtent=8192B slot=1 carveOff=0x360000
+##[16] ✓ [P2] runInstall 带 Child DATA(分配 extent + /api/install/data 分块 + finalize) — slot=1 stages=[prepare→confirm→session→upload→upload data 1/1→finalize→done] data=2048/8192B
+##[17] ✓ [P2] Child DATA 记录随 finalize 落盘(设备 P1-4 占用域) — slot=1 data[play=987654321 label=recordings off=0x2b0000 size=8192 state=0]
+##[18] ✓ [P2.5] 闸门1 商店 store sha 不符 → verify 判死(未上传) — verify: store sha256 mismatch
+##[19] ✓ [P2.5] 闸门2 analyze 解包 sha 与镜像不符 → preflight 判死(未上传) — preflight: extracted mismatch vs analyze
+##[20] ✓ [P2.6] 复位后安装记录仍在(flash/NVS 持久,非 RAM 假象) — soft-reset via /dev/<serial>, persisted=1/1
+##[21] ✓ [P2] remove{eraseData:true} 擦除 APP 槽与 Child DATA(不留归档残留) — removed=true back=true dataGone=true
+##[22] 结果: 20/20 通过
+[##REPORT] 机读 JSON 从略 — 见本地证据目录 report.json
+##[23] 清理: 仅移除本测试创建的槽位/数据记录(不动既有槽位与归档)
+##[24]   - slot@0x360000 已不在清单
+##[25]   - slot@0x360000 已不在清单
+##[26] ✓ [cleanup] 测试数据记录全部清除(设备恢复到运行前状态) — cleaned=0 count=1 archivedData=1
+```
+
+Note on P1: `prepareImage` is called with the `geomFromListing` proposal slot,
+not `-1`. `-1` means "wait for physical confirmation on device" and would hang
+forever unattended.
+
+Note on P2: the store has no supported play that both carries Child DATA and fits
+the 8 MB pool (play 200 is 6.6 MB). So a structurally valid full flash image is
+synthesised — a real partition table, the real app bytes from `build/`, and one
+0x82 filesystem data partition. `data[]` is then *parsed* by
+`extractDataImages`, not hand-assembled, so `prepareImage`'s verify / extract /
+DATA-extract gates still run for real. `extent` (8192 B) is deliberately larger
+than the initial payload (2048 B).
+
+### 6.3 Standard gate
+
+- `tools/validate.sh --static` syntax-gates the two harness scripts
+  (`py_compile` + `node --check`) so a submitted script cannot silently stop
+  running.
+- `.github/workflows/realdevice-smoke.yml` gained a second step that runs
+  `run_browser_smoke.py` against the same device immediately after the protocol
+  smoke, on the self-hosted runner, `workflow_dispatch` only. No board is
+  flashed automatically in cloud CI.
+
+---
+
+## 7. Final Code/Test Audit (handoff required items)
+
+Audit against final firmware commit `5eed4b8`:
+
+1. **Final diff scope**: `90c66f3..5eed4b8` touches 8 files (+443/−3), all
+   belonging to this validation round — 2 firmware fixes, 1 regression test,
+   1 harness fix, 2 test reports, 2 changelog entries. No unrelated changes;
+   nothing to revert or flag.
+2. **Slot field ownership**: `meta_carve_slot_t` has 7 fields. `state`,
+   `image_len`, `image_sha256` and `name` come from the runtime table (runtime
+   is the source of truth); `kind`, `offset`, `size` and `play_id` are
+   record-side metadata that must be copied from the existing record on
+   reconstruction. `sync_states` is the only place in the repository that
+   rebuilds a slot entry from scratch (`memset` then `memcmp` to detect
+   change); the other `memset` calls are tail zeroing or new data-record
+   allocation, so they carry no equivalent risk. All 7 fields now have a
+   defined source.
+3. **Regression test validity**: mutation-verified — temporarily removing the
+   `built.play_id` line makes `test_meta_carve_flash` abort (SIGABRT / exit 134
+   on the assertion); with the fix restored all 15 scenarios PASS. The
+   assertion genuinely covers the defect.
+4. **Evidence coverage for the three fixes**:
+   - Truncated HTTP status JSON → direct device evidence (282 bytes, exactly 2
+     short) plus all-green status polling in the final S2 run. Worst-case
+     payload computed at 857 B against the 1024 B buffer (167 B slack), so no
+     secondary truncation path exists.
+   - Lost `play_id` on state sync → `test_sync_states` regression assertion +
+     the mutation check above + real-device S4 archive PASS.
+   - S6 hex read length → direct device evidence (1000-byte readback, 0 diffs
+     in the bytes that were read) + final-run S6 byte-level PASS;
+     `py_compile` is in static CI.
+5. **Report traceability**: corrected — this report no longer describes the
+   tested firmware as an uncommitted working tree on `90c66f3`; it points at
+   final commit `5eed4b8`. The historical simulator PASS is also relabelled as
+   background evidence not rerun on the final commit.
+6. **CI**: `Static checks` and `Firmware checks` are both success on `5eed4b8`
+   and on the follow-up docs commit `8b2b363`; local
+   `tools/validate.sh --static` is green too.
+7. **No real-device rerun**: the audit found no new defect, so the suite was
+   not rerun; the existing `5eed4b8` S0–S6 evidence (`20261008-121330`) is
+   reused.
+8. **Power loss kept separate**: S5 used a soft reset, which proves RAM-loss
+   recovery only. No controlled power cut was performed; POWER_LOSS_UNTESTED is
+   retained and full P0-5 durability is not claimed.
+
+Audit answers: **no new defect; no additional test needed; no code or design
+change needed**. Final commit `5eed4b8`, firmware SHA-256, green CI and the
+S0–S6 evidence are all traceable; **physical power loss was not tested**.
+
+---
+
+## 8. Conclusion
+
+- **Simulator**: PASS on an earlier build — background evidence only, not
+  rerun against final commit `5eed4b8`; not a merge blocker.
+- **Real device**: **PASS** — S0–S6 all green on the final run; DATA byte-level
+  flash verification PASS; reboot recovery PASS (soft reset).
+- **Front-end module × real device**: **PASS** — 20/20 on the §6 regression. The
+  phone-side install path, space management (remove / eraseData / persistence)
+  and the Child DATA branch are exercised against the device, not just its mock.
+- **POWER_LOSS_UNTESTED**: no physical power cut was performed; S5 and P2.6 both
+  used esptool soft reset. Do not report this as power-loss durability.
+- **Untested items**: physical button navigation (manual check noted by the
+  harness), physical power-loss durability, and the USB-web install page
+  (`install-slot.html`, Web Serial + esptool-js via `server.mjs`) end-to-end
+  against this firmware — §6 covers the browser phone module, which is a
+  separate implementation from the USB page.
+
+---
+
+*Report by omp coding agent — 2026-10-08. Prior blocked run by Agnes
+(Sapiens AI) preserved in git history of this file.*
