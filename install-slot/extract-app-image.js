@@ -162,7 +162,11 @@ export function parseFirmwareManifest(buf) {
     // - NVS/PHY are global MVP resources and are not child DATA;
     // - filesystem DATA is allocated per child;
     // - other custom DATA is rejected rather than silently copied.
-    const metaOwned = subtype === 0x00 || label === "cardid";
+    const metaOwned =
+      subtype === 0x00 || // OTA metadata is owned by MetaPass
+      label === "cardid" ||
+      label === "nvs" || // the shared system NVS cannot be carved per child
+      label === "phy_init"; // shared PHY calibration is not child DATA
     if (metaOwned) continue;
 
     const supported =
@@ -208,7 +212,9 @@ export function parseFirmwareManifest(buf) {
   }
 
   const apps = partitions.filter(p => p.kind === "app");
-  const data = partitions.filter(p => p.kind === "data" && p.subtype !== 0x02 && p.subtype !== 0x01);
+  // Exclude system-owned partitions by their reserved labels, not by subtype:
+  // a child-owned NVS partition (e.g. label "store", subtype 0x02) is DATA.
+  const data = partitions.filter(p => p.kind === "data");
   if (!apps.some(p => p.subtype === 0x00)) {
     throw new Error("no factory app partition");
   }
@@ -277,8 +283,9 @@ export function parseDataPartitions(buf) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     const type = buf[off + 2];
     const subtype = buf[off + 3];
-    // subtype 0x81 = fat, 0x82 = spiffs, 0x83 = littlefs — 数据分区
-    if (type === 1 && (subtype === 0x81 || subtype === 0x82 || subtype === 0x83)) {
+    // Match the first-phase child DATA contract: FAT/SPIFFS/LittleFS plus
+    // child-owned NVS; exclude system-owned entries by reserved label.
+    if (type === 1 && subtype !== 0x00) {
       const offset = u32le(buf, off + 4);
       const size = u32le(buf, off + 8);
       // label 位于分区表条目的 +12..+27 字节(16B)。
@@ -286,7 +293,14 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      result.push({ offset, size, type: subtype === 0x81 ? 'fat' : subtype === 0x82 ? 'spiffs' : 'littlefs', label });
+      if (label === "cardid" || label === "nvs" || label === "phy_init") continue;
+      const typeName = subtype === 0x81 ? "fat"
+        : subtype === 0x82 ? "spiffs"
+        : subtype === 0x83 ? "littlefs"
+        : subtype === 0x02 ? "nvs"
+        : subtype === 0x01 ? "phy"
+        : "custom";
+      result.push({ offset, size, type: typeName, subtype, label });
     }
   }
   return result;
