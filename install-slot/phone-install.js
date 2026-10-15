@@ -1921,7 +1921,7 @@ export function boot(opts = {}) {
         setPanel(`<section class=mp-panel>
           <h4>数据分区配置</h4>
           <p class=mp-sub>可以不分配 DATA；选择分配后，该 DATA 只归属当前 APP。容量按 MiB 展示，设备会再次校验。</p>
-          <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id=mp-data-allocate type=checkbox checked> 分配专属 DATA 空间</label>
+          <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id=mp-data-allocate type=checkbox ${dataImages.length ? "checked" : ""}> 分配专属 DATA 空间</label>
           <div id=mp-data-rows>${rows}</div>
           <p class=mp-note>范围受当前连续空闲空间、分区对齐和固件声明的最小容量限制；请核对最大连续空闲空间与总空闲空间。</p>
           <div class=mp-actions>
@@ -1932,6 +1932,7 @@ export function boot(opts = {}) {
         const allocateBox = $("mp-data-allocate");
         const sizeRows = $("mp-data-rows");
         allocateBox.onchange = () => { sizeRows.hidden = !allocateBox.checked; };
+        sizeRows.hidden = !allocateBox.checked;
         root.querySelectorAll("[data-data-size]").forEach((el) => {
           el.addEventListener("change", () => {
             const i = Number(el.dataset.dataSize);
