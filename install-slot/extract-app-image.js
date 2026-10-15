@@ -295,7 +295,7 @@ export function parseDataPartitions(buf) {
       }
       if (subtype === 0x00 || subtype === 0x01 || subtype === 0x02 || label === "cardid" || label === "nvs") continue;
       const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 ||
-        (subtype === 0x40 && label === "e2edata");
+        label === "e2edata";
       if (!supported) continue;
       const typeName = subtype === 0x81 ? "fat"
         : subtype === 0x82 ? "spiffs"
