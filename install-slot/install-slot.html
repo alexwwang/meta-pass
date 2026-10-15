@@ -1489,13 +1489,15 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
           for (let j = 0; j < carve.data.length; j++) {
             const d = carve.data[j];
             if (d.label === sizingImages[i].label && d.subtype === sizingImages[i].subtype) {
-              throw new Error(`DATA label/subtype already exists: ${sizingImages[i].label} (remove or back up the existing owner first)`);
+              error.textContent = zh ? `DATA 标签/类型已被占用：${sizingImages[i].label}。可取消勾选，仅安装 APP。` : `DATA label/subtype already exists: ${sizingImages[i].label}. Uncheck allocation to install APP only.`;
+              return;
             }
           }
           for (let j = 0; j < i; j++) {
             if (sizingImages[i].label === sizingImages[j].label &&
                 sizingImages[i].subtype === sizingImages[j].subtype) {
-              throw new Error(`duplicate DATA label/subtype: ${sizingImages[i].label}`);
+              error.textContent = zh ? `DATA 标签/类型重复：${sizingImages[i].label}。可取消勾选，仅安装 APP。` : `Duplicate DATA label/subtype: ${sizingImages[i].label}. Uncheck allocation to install APP only.`;
+              return;
             }
           }
         }
