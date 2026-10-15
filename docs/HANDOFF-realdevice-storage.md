@@ -249,3 +249,26 @@ These tests still do not prove real Flash atomicity or physical power-loss durab
 - Partition size must be greater than zero and no more than 1 MiB; the actual device value comes from the endpoint.
 
 S1b is a new real-device assertion. Cloud CI validates the code/contract but does not substitute for running the smoke test on hardware.
+
+
+## Snapshot restore status (2026-10-15)
+
+This section supersedes any older pending handoff checklist for the v2 whole-device snapshot restore task. See the [real-device report](storage-snapshot-restore-test-report-2026-10-15.md).
+
+### Completed
+
+- Branch: `feat/storage`; fixes committed as [`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f).
+- The report records `./tools/validate.sh` full PASS (static, host, firmware); CI results are not a substitute for hardware evidence.
+- USB v2 snapshot backup PASS in 36.9 s; the archive includes the child DATA `e2edata` record.
+- USB v2 restore PASS; manual reboot confirmed MetaPass startup/reconnect; 44/44 extents byte-matched the archive payload.
+- Phone-page v2 restore PASS; manual reboot confirmed MetaPass startup/reconnect; 44/44 extents byte-matched the archive payload.
+- A snapshot with a different partition-table shape was rejected before the first erase.
+- USB v1 host tests recorded in the report passed. Real-device v1 restore is NOT RUN because the tested dynamic-mode device does not support that legacy restore scenario.
+
+### Evidence boundaries and regression policy
+
+- The tested firmware was built from `b74e9da` plus then-uncommitted worktree fixes and reported a `-dirty` version. Those fixes were subsequently committed as `7beba51d`; the report preserves the actual source provenance and does not claim the dirty firmware was built directly from the commit SHA.
+- This round exercised the phone page's v2 restore path only. The phone-page backup leg was not rerun on hardware, and the device's deployed CDN version lagged the repository branch. Do not describe the phone page's complete backup/restore pair as hardware-validated.
+- Physical power-loss testing and full-partition readback are not required for this scope. Acceptance is reboot, normal MetaPass startup/reconnect, plus independent byte comparison of all 44 recorded extents.
+- Regress only paths affected by a change. Do not rerun USB v1 archive tests when v1-specific code and its shared call paths are untouched; run targeted v1 checks if a future change can affect them.
+- The old pending checklist above is no longer an execution request for this completed round. For future code changes, add only tests justified by the changed impact surface and record new evidence in the dedicated report.
