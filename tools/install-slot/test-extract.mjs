@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages } from "../../install-slot/extract-app-image.js";
+import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages, parseDataPartitions } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
   tailSectorOffset, blobOffset, maxAppImageSize,
@@ -236,6 +236,10 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   assert.equal(m.data[0].label, "store");
   assert.equal(m.data[0].subtype, 0x02);
   assert.equal(m.data[0].required_size, 0x4000);
+  const helperData = parseDataPartitions(childNvs);
+  assert.equal(helperData.length, 1, "legacy helper must agree with manifest DATA admission");
+  assert.equal(helperData[0].label, "store");
+  assert.equal(helperData[0].subtype, 0x02);
   const images = extractDataImages(childNvs);
   assert.equal(images.length, 1);
   assert.equal(images[0].label, "store");
@@ -245,11 +249,13 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   const sysManifest = parseFirmwareManifest(systemNvs);
   assert.equal(sysManifest.supported, true);
   assert.equal(sysManifest.data.length, 0, "reserved global nvs must not become child DATA");
+  assert.equal(parseDataPartitions(systemNvs).length, 0);
 
   const systemPhy = buildManifestImage(app, 0x20000, 0x1000, 0x01, "phy_init");
   const phyManifest = parseFirmwareManifest(systemPhy);
   assert.equal(phyManifest.supported, true);
-  assert.equal(phyManifest.data.length, 0, "reserved global phy_init must not become child DATA");
+  assert.equal(phyManifest.data.length, 0, "reserved global PHY subtype must not become child DATA");
+  assert.equal(parseDataPartitions(systemPhy).length, 0);
   console.log("PASS 3d-NVS: child NVS is DATA; reserved global NVS/PHY remain MetaPass-owned");
 }
 
