@@ -162,7 +162,7 @@ export function parseFirmwareManifest(buf) {
     // - cardid is a legacy meta-pass-owned data partition;
     // - NVS/PHY are global MVP resources and are not child DATA;
     // - filesystem DATA is allocated per child;
-    // - other custom DATA is rejected rather than silently copied.
+    // - custom DATA is rejected unless its label is the reserved E2E fixture label.
     const metaOwned =
       subtype === 0x00 || // OTA metadata is owned by MetaPass
       subtype === 0x01 || // PHY calibration is a shared system resource
