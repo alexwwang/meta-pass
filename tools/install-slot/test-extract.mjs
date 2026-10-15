@@ -224,39 +224,25 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   console.log("PASS 3e: initial DATA payload extracted without uploading erased tail");
 }
 
-// Child-owned NVS must be allocated by its declared label; only the reserved
-// system NVS/PHY labels are excluded from per-child DATA.
+// First-phase contract: NVS/PHY are shared MVP resources, not child DATA.
+// This is subtype-based even when a firmware uses a non-reserved label.
 {
   const app = buildAppImage();
-  const childNvs = buildManifestImage(app, 0x20000, 0x4000, 0x02, "store");
-  childNvs.fill(0x31, 0x20000, 0x20010);
-  const m = parseFirmwareManifest(childNvs);
-  assert.equal(m.supported, true);
-  assert.equal(m.data.length, 1);
-  assert.equal(m.data[0].label, "store");
-  assert.equal(m.data[0].subtype, 0x02);
-  assert.equal(m.data[0].required_size, 0x4000);
-  const helperData = parseDataPartitions(childNvs);
-  assert.equal(helperData.length, 1, "legacy helper must agree with manifest DATA admission");
-  assert.equal(helperData[0].label, "store");
-  assert.equal(helperData[0].subtype, 0x02);
-  const images = extractDataImages(childNvs);
-  assert.equal(images.length, 1);
-  assert.equal(images[0].label, "store");
-  assert.equal(images[0].data.length, 0x10);
-
-  const systemNvs = buildManifestImage(app, 0x20000, 0x4000, 0x02, "nvs");
-  const sysManifest = parseFirmwareManifest(systemNvs);
-  assert.equal(sysManifest.supported, true);
-  assert.equal(sysManifest.data.length, 0, "reserved global nvs must not become child DATA");
-  assert.equal(parseDataPartitions(systemNvs).length, 0);
+  for (const label of ["store", "nvs", "legacy_cardid"]) {
+    const nvsImage = buildManifestImage(app, 0x20000, 0x4000, 0x02, label);
+    nvsImage.fill(0x31, 0x20000, 0x20010);
+    const manifest = parseFirmwareManifest(nvsImage);
+    assert.equal(manifest.supported, true, `${label}: shared NVS does not block APP admission`);
+    assert.equal(manifest.data.length, 0, `${label}: NVS subtype is excluded from child DATA`);
+    assert.equal(parseDataPartitions(nvsImage).length, 0, `${label}: helper agrees with manifest`);
+  }
 
   const systemPhy = buildManifestImage(app, 0x20000, 0x1000, 0x01, "phy_init");
   const phyManifest = parseFirmwareManifest(systemPhy);
   assert.equal(phyManifest.supported, true);
-  assert.equal(phyManifest.data.length, 0, "reserved global PHY subtype must not become child DATA");
+  assert.equal(phyManifest.data.length, 0, "PHY subtype must not become child DATA");
   assert.equal(parseDataPartitions(systemPhy).length, 0);
-  console.log("PASS 3d-NVS: child NVS is DATA; reserved global NVS/PHY remain MetaPass-owned");
+  console.log("PASS 3d-NVS: first-phase shared NVS/PHY excluded consistently by subtype");
 }
 
 // 3e. Unsupported custom data partition is an explicit admission failure.
