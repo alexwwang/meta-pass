@@ -1438,13 +1438,13 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
     for (let j = 0; j < carve.data.length; j++) {
       const d = carve.data[j];
       if (d.label === sizingImages[i].label && d.subtype === sizingImages[i].subtype) {
-        throw new Error(`DATA label/subtype already exists: ${dataImages[i].label} (remove or back up the existing owner first)`);
+        throw new Error(`DATA label/subtype already exists: ${sizingImages[i].label} (remove or back up the existing owner first)`);
       }
     }
     for (let j = 0; j < i; j++) {
-      if (dataImages[i].label === dataImages[j].label &&
-          dataImages[i].subtype === dataImages[j].subtype) {
-        throw new Error(`duplicate DATA label/subtype: ${dataImages[i].label}`);
+      if (sizingImages[i].label === dataImages[j].label &&
+          sizingImages[i].subtype === dataImages[j].subtype) {
+        throw new Error(`duplicate DATA label/subtype: ${sizingImages[i].label}`);
       }
     }
   }
@@ -1454,10 +1454,10 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
       minimums.filter((_, j) => j !== i));
     const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
     const min = minimums[i];
-    if (max < min) throw new Error(`not enough contiguous space for DATA ${d.label}: need ${fmtBytes(min)}, largest contiguous gap ${fmtBytes(max)}, total free ${fmtBytes(bounds.available)}. Fixed partitions cannot be moved or crossed.`);
+    if (max < min) return { min, max, values: [], defaultSize: null, available: bounds.available, selected: null, unavailable: true };
     const declared = Number(d.required_size);
     const optionSet = buildDataSizeOptions(min, max, declared, DATA_SIZE_STEP);
-    return { ...optionSet, available: bounds.available, selected: optionSet.defaultSize };
+    return { ...optionSet, available: bounds.available, selected: optionSet.defaultSize, unavailable: false };
   });
 
   rows.replaceChildren();
@@ -1468,13 +1468,14 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
     const label = document.createElement("label");
     label.style.display = "block";
     label.style.margin = "12px 0 4px";
-    label.textContent = zh
-      ? `${dataImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大连续 ${fmtBytes(o.max)} · 总空闲 ${fmtBytes(o.available)}`
-      : `${dataImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} max contiguous · ${fmtBytes(o.available)} total free`;
+    label.textContent = o.unavailable
+      ? (zh ? `${sizingImages[i].label} · 连续空间不足，无法分配` : `${sizingImages[i].label} · insufficient contiguous space`)
+      : (zh ? `${sizingImages[i].label} · 最小 ${fmtBytes(o.min)} – 最大连续 ${fmtBytes(o.max)} · 总空闲 ${fmtBytes(o.available)}` : `${sizingImages[i].label} · ${fmtBytes(o.min)} minimum – ${fmtBytes(o.max)} max contiguous · ${fmtBytes(o.available)} total free`);
     const select = document.createElement("select");
     select.dataset.dataSize = String(i);
     select.style.width = "100%";
     select.style.padding = "8px";
+    select.disabled = o.unavailable;
     for (const size of o.values) {
       const option = document.createElement("option");
       option.value = String(size);
@@ -1495,12 +1496,17 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
     };
     $("data-size-cancel").onclick = () => finish(null);
     $("data-size-confirm").onclick = () => {
+      if (!allocate.checked) { finish({ allocate: false, sizes: [] }); return; }
+      if (options.some((o) => o.unavailable)) {
+        error.textContent = zh ? "连续空间不足，无法分配 DATA；可取消勾选以仅安装 APP。" : "Insufficient contiguous space for DATA. Uncheck allocation to install APP only.";
+        return;
+      }
       const sizes = [...rows.querySelectorAll("select[data-data-size]")].map((el) => Number(el.value));
       let planned = carve;
-      for (let i = 0; i < dataImages.length; i++) {
+      for (let i = 0; i < sizingImages.length; i++) {
         const size = normalizeDataSize(sizes[i], { min: options[i].min, max: options[i].max });
         if (size === null || size < minimums[i]) {
-          error.textContent = zh ? `DATA ${dataImages[i].label} 容量无效` : `Invalid size for DATA ${dataImages[i].label}`;
+          error.textContent = zh ? `DATA ${sizingImages[i].label} 容量无效` : `Invalid size for DATA ${sizingImages[i].label}`;
           return;
         }
         const place = placeNewData(planned, size);
@@ -1512,12 +1518,12 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
           slots: planned.slots.slice(),
           data: [...planned.data, {
             playId: 0xfffffffe, offset: place.offset, size,
-            state: DATA_STATE.PRISTINE, subtype: dataImages[i].subtype,
-            type: 1, label: dataImages[i].label,
+            state: DATA_STATE.PRISTINE, subtype: sizingImages[i].subtype,
+            type: 1, label: sizingImages[i].label,
           }],
         };
         if (!carveValid(planned)) {
-          error.textContent = zh ? `DATA ${dataImages[i].label} 分配无效` : `Invalid DATA allocation for ${dataImages[i].label}`;
+          error.textContent = zh ? `DATA ${sizingImages[i].label} 分配无效` : `Invalid DATA allocation for ${sizingImages[i].label}`;
           return;
         }
       }
