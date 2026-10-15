@@ -120,6 +120,8 @@ LICENSE                  仓库许可证
 - [`docs/reference/`](reference/README.zh_CN.md) — 参考资料：按贡献者（`reference/<username>/`）组织可复用开发经验与已归档应用于册。
 - [`docs/`](README.zh_CN.md) 顶层 — [`CHANGELOG.zh_CN.md`](CHANGELOG.zh_CN.md)、[`fork-guide.zh_CN.md`](fork-guide.zh_CN.md)。
 - [`docs/assets/usb-web-e2e-design.zh_CN.md`](assets/usb-web-e2e-design.zh_CN.md) — 真机 USB Web UI E2E 测试设计与运行说明。
+- [`storage-snapshot-restore-test-report-2026-10-15.zh_CN.md`](storage-snapshot-restore-test-report-2026-10-15.zh_CN.md) — v2 整机快照备份/还原真机结果、覆盖边界和未执行项目。
+- [`HANDOFF-realdevice-storage.zh_CN.md`](HANDOFF-realdevice-storage.zh_CN.md) — storage 真机测试执行规范及当前快照恢复状态。
 
 GitHub 社区治理文档：[CONTRIBUTING.zh_CN.md](../.github/CONTRIBUTING.zh_CN.md)、[CODE_OF_CONDUCT.zh_CN.md](../.github/CODE_OF_CONDUCT.zh_CN.md)、[SECURITY.zh_CN.md](../.github/SECURITY.zh_CN.md)、[SUPPORT.zh_CN.md](../.github/SUPPORT.zh_CN.md)。
 
