@@ -1922,7 +1922,7 @@ export function boot(opts = {}) {
           <p class=mp-sub>可以不分配 DATA；选择分配后，该 DATA 只归属当前 APP。容量按 MiB 展示，设备会再次校验。</p>
           <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id=mp-data-allocate type=checkbox checked> 分配专属 DATA 空间</label>
           <div id=mp-data-rows>${rows}</div>
-          <p class=mp-note>范围受当前连续空闲空间、分区对齐和固件声明的最小容量限制。</p>
+          <p class=mp-note>范围受当前连续空闲空间、分区对齐和固件声明的最小容量限制；请核对最大连续空闲空间与总空闲空间。</p>
           <div class=mp-actions>
             <button id=mp-data-confirm class=mp-btn>确认容量并安装</button>
             <button id=mp-data-cancel class="mp-btn ghost">取消</button>
