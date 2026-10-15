@@ -202,11 +202,17 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   assert.equal(rejected.supported, false, "subtype 0x40 with an unregistered label stays fail-closed");
   assert.equal(rejected.reason, "unsupported-partition");
 
-  const unknownSubtype = buildManifestImage(app, dataOff, 0x10000, 0x41, "e2edata");
+  const fixtureVariant = buildManifestImage(app, dataOff, 0x10000, 0x41, "e2edata");
+  const variantManifest = parseFirmwareManifest(fixtureVariant);
+  assert.equal(variantManifest.supported, true, "the reserved E2E fixture label remains usable across test DATA subtype variants");
+  assert.equal(variantManifest.data.length, 1);
+  assert.equal(parseDataPartitions(fixtureVariant).length, 1, "legacy helper must preserve the same fixture admission");
+
+  const unknownSubtype = buildManifestImage(app, dataOff, 0x10000, 0x41, "custom");
   const unknown = parseFirmwareManifest(unknownSubtype);
-  assert.equal(unknown.supported, false, "a registered label must not whitelist an unregistered subtype");
+  assert.equal(unknown.supported, false, "unregistered labels remain rejected regardless of subtype");
   assert.equal(unknown.reason, "unsupported-partition");
-  console.log("PASS 3d-E2E: only the exact raw fixture tuple (subtype 0x40, label e2edata) is admitted");
+  console.log("PASS 3d-E2E: reserved e2edata fixture label supports subtype variants; other labels remain rejected");
 }
 
 // 3e. Initial DATA payload extraction is bounded by the actual non-erased image extent.
