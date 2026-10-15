@@ -1435,20 +1435,7 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
   if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
     throw new Error("DATA partition has an invalid declared minimum size");
   }
-  for (let i = 0; i < sizingImages.length; i++) {
-    for (let j = 0; j < carve.data.length; j++) {
-      const d = carve.data[j];
-      if (d.label === sizingImages[i].label && d.subtype === sizingImages[i].subtype) {
-        throw new Error(`DATA label/subtype already exists: ${sizingImages[i].label} (remove or back up the existing owner first)`);
-      }
-    }
-    for (let j = 0; j < i; j++) {
-      if (sizingImages[i].label === sizingImages[j].label &&
-          sizingImages[i].subtype === sizingImages[j].subtype) {
-        throw new Error(`duplicate DATA label/subtype: ${sizingImages[i].label}`);
-      }
-    }
-  }
+
 
   const options = sizingImages.map((d, i) => {
     const bounds = dataSizeBounds(listing, null, minimums[i],
@@ -1498,6 +1485,20 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
     $("data-size-cancel").onclick = () => finish(null);
     $("data-size-confirm").onclick = () => {
       if (!allocate.checked) { finish({ allocate: false, sizes: [] }); return; }
+        for (let i = 0; i < sizingImages.length; i++) {
+          for (let j = 0; j < carve.data.length; j++) {
+            const d = carve.data[j];
+            if (d.label === sizingImages[i].label && d.subtype === sizingImages[i].subtype) {
+              throw new Error(`DATA label/subtype already exists: ${sizingImages[i].label} (remove or back up the existing owner first)`);
+            }
+          }
+          for (let j = 0; j < i; j++) {
+            if (sizingImages[i].label === sizingImages[j].label &&
+                sizingImages[i].subtype === sizingImages[j].subtype) {
+              throw new Error(`duplicate DATA label/subtype: ${sizingImages[i].label}`);
+            }
+          }
+        }
       if (options.some((o) => o.unavailable)) {
         error.textContent = zh ? "连续空间不足，无法分配 DATA；可取消勾选以仅安装 APP。" : "Insufficient contiguous space for DATA. Uncheck allocation to install APP only.";
         return;
