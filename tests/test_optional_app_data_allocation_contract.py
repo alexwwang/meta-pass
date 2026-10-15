@@ -29,6 +29,8 @@ assert 'id=mp-data-allocate type=checkbox' in phone_choice
 assert "resolve([])" in phone_choice
 assert "pre.offer.data = [];" in phone_choice and "pre.dataImages = [];" in phone_choice
 assert "resolveAppDataChoice({ allocate: true, declaredImages: dataImages" in phone_choice
+assert "options.some((o) => o.unavailable)" in phone_choice
+assert "options[i].unavailable" in phone_choice
 assert "pre.offer.data = [{ playId: Number(meta.play.id)" in phone_choice
 
 assert 'if (v_initial > 0)' in device_model, "zero-payload DATA must not require an initial-image SHA"
