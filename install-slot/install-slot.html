@@ -179,6 +179,7 @@
     <form method="dialog" id="data-size-form">
       <h2 id="data-size-title">DATA partition sizes</h2>
       <p id="data-size-help" class="subtitle">Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.</p>
+      <label style="display:flex;gap:8px;align-items:center;margin:12px 0"><input id="data-size-allocate" type="checkbox" checked> <span id="data-size-allocate-label">分配专属 DATA 空间</span></label>
       <div id="data-size-rows"></div>
       <p id="data-size-error" class="error" role="alert"></p>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
@@ -259,6 +260,7 @@
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, extractDataImages, isFullImage, hex } from "./extract-app-image.js";
+import { makeBlankAppDataImage, resolveAppDataChoice } from "./data-allocation-choice.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
@@ -1412,8 +1414,8 @@ function dataSizingListing(carve) {
 
 // Capacity selector mirrors the phone installer: declared minimums and every
 // selected size are revalidated against the shared pool before any flash write.
-async function chooseUsbDataSizes(dataImages, carve) {
-  if (!dataImages.length) return [];
+async function chooseUsbDataSizes(dataImages, carve, playId) {
+  const sizingImages = dataImages.length ? dataImages : [makeBlankAppDataImage(playId)];
   const dialog = $("data-size-dialog");
   const rows = $("data-size-rows");
   const error = $("data-size-error");
@@ -1423,16 +1425,19 @@ async function chooseUsbDataSizes(dataImages, carve) {
     ? "为每个 DATA 分区选择容量。范围受当前连续空闲空间约束，提交前会再次验证。"
     : "Choose a capacity for each DATA partition. Limits are checked against current contiguous free space.";
   $("data-size-cancel").textContent = zh ? "取消" : "Cancel";
-  $("data-size-confirm").textContent = zh ? "确认容量" : "Confirm sizes";
+  $("data-size-confirm").textContent = zh ? "确认并继续" : "Confirm and continue";
+  $("data-size-allocate-label").textContent = zh ? "为此 APP 分配专属 DATA 空间" : "Allocate private DATA space for this APP";
+  const allocate = $("data-size-allocate");
+  allocate.checked = true;
   const listing = dataSizingListing(carve);
-  const minimums = dataImages.map((d) => dataPartitionMinimum(d));
+  const minimums = sizingImages.map((d) => dataPartitionMinimum(d));
   if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
     throw new Error("DATA partition has an invalid declared minimum size");
   }
-  for (let i = 0; i < dataImages.length; i++) {
+  for (let i = 0; i < sizingImages.length; i++) {
     for (let j = 0; j < carve.data.length; j++) {
       const d = carve.data[j];
-      if (d.label === dataImages[i].label && d.subtype === dataImages[i].subtype) {
+      if (d.label === sizingImages[i].label && d.subtype === sizingImages[i].subtype) {
         throw new Error(`DATA label/subtype already exists: ${dataImages[i].label} (remove or back up the existing owner first)`);
       }
     }
@@ -1444,7 +1449,7 @@ async function chooseUsbDataSizes(dataImages, carve) {
     }
   }
 
-  const options = dataImages.map((d, i) => {
+  const options = sizingImages.map((d, i) => {
     const bounds = dataSizeBounds(listing, null, minimums[i],
       minimums.filter((_, j) => j !== i));
     const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
@@ -1456,6 +1461,9 @@ async function chooseUsbDataSizes(dataImages, carve) {
   });
 
   rows.replaceChildren();
+  const refreshRows = () => { rows.hidden = !allocate.checked; };
+  allocate.onchange = refreshRows;
+  refreshRows();
   options.forEach((o, i) => {
     const label = document.createElement("label");
     label.style.display = "block";
@@ -1513,7 +1521,7 @@ async function chooseUsbDataSizes(dataImages, carve) {
           return;
         }
       }
-      finish(sizes);
+      finish({ allocate: true, sizes });
     };
     dialog.oncancel = (ev) => { ev.preventDefault(); finish(null); };
     dialog.showModal();
@@ -2963,23 +2971,28 @@ $("btn-install").addEventListener("click", async () => {
     // rollback source until the replacement has been fully written and committed.
     // Refuse this ambiguous case rather than creating duplicate labels or orphaning
     // the old instance's DATA.
-    if (dataImages.length) {
-      if (!dynMode || !carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
+    if (dynMode) {
+      if (!carveForInstall) throw new Error("DATA installation requires a valid dynamic carve record");
       const oldTarget = slotModel.carve.slots[plan.index];
       if (plan.action === PLAN.REUSE && oldTarget && oldTarget.state !== SLOT_STATE.EMPTY) {
         throw new Error("For a recoverable APP+DATA install, choose an empty slot or Auto. Remove the existing APP first rather than overwriting a live installation.");
       }
-      const sizes = await chooseUsbDataSizes(dataImages, carveForInstall);
-      if (!sizes) { log(t("msg_install_cancelled"), "warn"); return; }
       dataPlayId = nextDataPlayId(carveForInstall);
       if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
-      const dataPlan = planDataReservations(carveForInstall, dataImages, sizes, dataPlayId);
+      const choice = await chooseUsbDataSizes(dataImages, carveForInstall, dataPlayId);
+      if (!choice) { log(t("msg_install_cancelled"), "warn"); return; }
+      const selectedDataImages = resolveAppDataChoice({ allocate: choice.allocate, declaredImages: dataImages, playId: dataPlayId });
+      if (!selectedDataImages.length) {
+        plannedData = [];
+      } else {
+      const dataPlan = planDataReservations(carveForInstall, selectedDataImages, choice.sizes, dataPlayId);
       if (!dataPlan.ok) {
         throw new Error(`DATA allocation failed (${dataPlan.reason})${dataPlan.index == null ? "" : ` at partition ${dataPlan.index + 1}`}`);
       }
       plannedData = dataPlan.records;
       carveForInstall = dataPlan.carve;
       deferredDataInstall = true;
+      }
     }
 
     // 覆盖已安装子固件(VALID 槽)必须显式确认。
