@@ -165,8 +165,9 @@ export function parseFirmwareManifest(buf) {
     const metaOwned =
       subtype === 0x00 || // OTA metadata is owned by MetaPass
       subtype === 0x01 || // PHY calibration is a shared system resource
+      subtype === 0x02 || // NVS is a shared MVP resource in the first-phase contract
       label === "cardid" ||
-      label === "nvs"; // the default shared NVS label cannot be carved per child
+      label === "nvs"; // reserved shared NVS label
     if (metaOwned) continue;
 
     const supported =
@@ -291,14 +292,13 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      if (subtype === 0x00 || subtype === 0x01 || label === "cardid" || label === "nvs") continue;
-      const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 || subtype === 0x02 ||
+      if (subtype === 0x00 || subtype === 0x01 || subtype === 0x02 || label === "cardid" || label === "nvs") continue;
+      const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 ||
         (subtype === 0x40 && label === "e2edata");
       if (!supported) continue;
       const typeName = subtype === 0x81 ? "fat"
         : subtype === 0x82 ? "spiffs"
-        : subtype === 0x83 ? "littlefs"
-        : subtype === 0x02 ? "nvs" : "raw";
+        : subtype === 0x83 ? "littlefs" : "raw";
       result.push({ offset, size, type: typeName, subtype, label });
     }
   }
