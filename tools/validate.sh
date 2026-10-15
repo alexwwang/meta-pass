@@ -16,6 +16,7 @@ run_static_checks() {
     python3 tests/test_storage_four_goals_handoff_contract.py
     python3 tests/test_usb_backup_segmented_read.py
     python3 tests/test_storage_snapshot_device_contract.py
+    python3 tests/test_optional_app_data_allocation_contract.py
     node tools/install-slot/test-data-allocation-choice.mjs
 
     actionlint_bin="${ACTIONLINT_BIN:-}"
