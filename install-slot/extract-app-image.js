@@ -134,8 +134,9 @@ export function extractAppImage(buf, maxSize) {
   return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, tailSector, tailSectorOffset };
 }
 
-// 解析分区表中 subtype=0x81/0x82/0x83 的数据分区(FAT/SPIFFS/LittleFS)。
-// 返回 [{offset, size, type, label}] 数组;无则空数组。
+// 解析第一期准入范围内的 DATA 分区：FAT/SPIFFS/LittleFS，以及专用 E2E raw fixture。
+// NVS/PHY 按第一期约定属于共享资源，不返回；未知 DATA 类型由主 manifest 解析器拒绝。
+// 返回 [{offset, size, type, subtype, label}] 数组;无则空数组。
 export function parseFirmwareManifest(buf) {
   if (!isFullImage(buf)) throw new Error("firmware manifest requires a full flash image");
 
@@ -161,20 +162,24 @@ export function parseFirmwareManifest(buf) {
     // - cardid is a legacy meta-pass-owned data partition;
     // - NVS/PHY are global MVP resources and are not child DATA;
     // - filesystem DATA is allocated per child;
-    // - other custom DATA is rejected rather than silently copied.
-    const metaOwned = subtype === 0x00 || label === "cardid";
+    // - custom DATA is rejected unless its label is the reserved E2E fixture label.
+    const metaOwned =
+      subtype === 0x00 || // OTA metadata is owned by MetaPass
+      subtype === 0x01 || // PHY calibration is a shared system resource
+      subtype === 0x02 || // NVS is a shared MVP resource in the first-phase contract
+      label === "cardid" ||
+      label === "nvs"; // reserved shared NVS label
     if (metaOwned) continue;
 
     const supported =
       subtype === 0x81 || // FAT
       subtype === 0x82 || // SPIFFS
       subtype === 0x83 || // LittleFS
-      subtype === 0x02 || // NVS (global in MVP)
-      subtype === 0x01 || // PHY (global in MVP)
-      // Dedicated raw-sector E2E fixture only. Do not generalize acceptance of
-      // arbitrary custom subtypes: production DATA must have a registered
-      // format/semantics before it can be allocated or initialized.
-      (subtype === 0x40 && label === "e2edata");
+      // Dedicated E2E fixture is explicitly registered by its reserved label.
+      // Keep this test-only escape hatch independent of the synthetic subtype:
+      // automation fixtures may use different DATA subtypes while exercising
+      // the same raw read/write lifecycle. Never generalize this to other labels.
+      label === "e2edata";
     const meta = {
       kind: "data",
       label,
@@ -208,7 +213,10 @@ export function parseFirmwareManifest(buf) {
   }
 
   const apps = partitions.filter(p => p.kind === "app");
-  const data = partitions.filter(p => p.kind === "data" && p.subtype !== 0x02 && p.subtype !== 0x01);
+  // Only admitted child DATA partitions enter partitions; shared NVS/PHY and
+  // other system-owned entries were excluded above, while unknown types are in
+  // unsupported and cause fail-closed admission below.
+  const data = partitions.filter(p => p.kind === "data");
   if (!apps.some(p => p.subtype === 0x00)) {
     throw new Error("no factory app partition");
   }
@@ -277,8 +285,7 @@ export function parseDataPartitions(buf) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     const type = buf[off + 2];
     const subtype = buf[off + 3];
-    // subtype 0x81 = fat, 0x82 = spiffs, 0x83 = littlefs — 数据分区
-    if (type === 1 && (subtype === 0x81 || subtype === 0x82 || subtype === 0x83)) {
+    if (type === 1) {
       const offset = u32le(buf, off + 4);
       const size = u32le(buf, off + 8);
       // label 位于分区表条目的 +12..+27 字节(16B)。
@@ -286,7 +293,14 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      result.push({ offset, size, type: subtype === 0x81 ? 'fat' : subtype === 0x82 ? 'spiffs' : 'littlefs', label });
+      if (subtype === 0x00 || subtype === 0x01 || subtype === 0x02 || label === "cardid" || label === "nvs") continue;
+      const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 ||
+        label === "e2edata";
+      if (!supported) continue;
+      const typeName = subtype === 0x81 ? "fat"
+        : subtype === 0x82 ? "spiffs"
+        : subtype === 0x83 ? "littlefs" : "raw";
+      result.push({ offset, size, type: typeName, subtype, label });
     }
   }
   return result;

@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages } from "../../install-slot/extract-app-image.js";
+import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages, parseDataPartitions } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
   tailSectorOffset, blobOffset, maxAppImageSize,
@@ -200,7 +200,19 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   const unregistered = buildManifestImage(app, dataOff, 0x10000, 0x40, "custom");
   const rejected = parseFirmwareManifest(unregistered);
   assert.equal(rejected.supported, false, "subtype 0x40 with an unregistered label stays fail-closed");
-  console.log("PASS 3d-E2E: explicit raw DATA fixture accepted; other subtype-0x40 labels rejected");
+  assert.equal(rejected.reason, "unsupported-partition");
+
+  const fixtureVariant = buildManifestImage(app, dataOff, 0x10000, 0x41, "e2edata");
+  const variantManifest = parseFirmwareManifest(fixtureVariant);
+  assert.equal(variantManifest.supported, true, "the reserved E2E fixture label remains usable across test DATA subtype variants");
+  assert.equal(variantManifest.data.length, 1);
+  assert.equal(parseDataPartitions(fixtureVariant).length, 1, "legacy helper must preserve the same fixture admission");
+
+  const unknownSubtype = buildManifestImage(app, dataOff, 0x10000, 0x41, "custom");
+  const unknown = parseFirmwareManifest(unknownSubtype);
+  assert.equal(unknown.supported, false, "unregistered labels remain rejected regardless of subtype");
+  assert.equal(unknown.reason, "unsupported-partition");
+  console.log("PASS 3d-E2E: reserved e2edata fixture label supports subtype variants; other labels remain rejected");
 }
 
 // 3e. Initial DATA payload extraction is bounded by the actual non-erased image extent.
@@ -222,6 +234,27 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   assert.equal(images[0].data[0x1233], 0x33);
   assert.ok(images[0].data.every((b, i) => b === (i & 0xff)));
   console.log("PASS 3e: initial DATA payload extracted without uploading erased tail");
+}
+
+// First-phase contract: NVS/PHY are shared MVP resources, not child DATA.
+// This is subtype-based even when a firmware uses a non-reserved label.
+{
+  const app = buildAppImage();
+  for (const label of ["store", "nvs", "legacy_cardid"]) {
+    const nvsImage = buildManifestImage(app, 0x20000, 0x4000, 0x02, label);
+    nvsImage.fill(0x31, 0x20000, 0x20010);
+    const manifest = parseFirmwareManifest(nvsImage);
+    assert.equal(manifest.supported, true, `${label}: shared NVS does not block APP admission`);
+    assert.equal(manifest.data.length, 0, `${label}: NVS subtype is excluded from child DATA`);
+    assert.equal(parseDataPartitions(nvsImage).length, 0, `${label}: helper agrees with manifest`);
+  }
+
+  const systemPhy = buildManifestImage(app, 0x20000, 0x1000, 0x01, "phy_init");
+  const phyManifest = parseFirmwareManifest(systemPhy);
+  assert.equal(phyManifest.supported, true);
+  assert.equal(phyManifest.data.length, 0, "PHY subtype must not become child DATA");
+  assert.equal(parseDataPartitions(systemPhy).length, 0);
+  console.log("PASS 3d-NVS: first-phase shared NVS/PHY excluded consistently by subtype");
 }
 
 // 3e. Unsupported custom data partition is an explicit admission failure.
