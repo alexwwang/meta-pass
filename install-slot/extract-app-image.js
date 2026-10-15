@@ -134,8 +134,9 @@ export function extractAppImage(buf, maxSize) {
   return { data: buf.slice(appStart, appStart + imgLen), length: imgLen, source, tailSector, tailSectorOffset };
 }
 
-// 解析分区表中 subtype=0x81/0x82/0x83 的数据分区(FAT/SPIFFS/LittleFS)。
-// 返回 [{offset, size, type, label}] 数组;无则空数组。
+// 解析第一期准入范围内的 DATA 分区：FAT/SPIFFS/LittleFS，以及专用 E2E raw fixture。
+// NVS/PHY 按第一期约定属于共享资源，不返回；未知 DATA 类型由主 manifest 解析器拒绝。
+// 返回 [{offset, size, type, subtype, label}] 数组;无则空数组。
 export function parseFirmwareManifest(buf) {
   if (!isFullImage(buf)) throw new Error("firmware manifest requires a full flash image");
 
@@ -213,8 +214,9 @@ export function parseFirmwareManifest(buf) {
   }
 
   const apps = partitions.filter(p => p.kind === "app");
-  // Exclude system-owned partitions by their reserved labels, not by subtype:
-  // a child-owned NVS partition (e.g. label "store", subtype 0x02) is DATA.
+  // Only admitted child DATA partitions enter partitions; shared NVS/PHY and
+  // other system-owned entries were excluded above, while unknown types are in
+  // unsupported and cause fail-closed admission below.
   const data = partitions.filter(p => p.kind === "data");
   if (!apps.some(p => p.subtype === 0x00)) {
     throw new Error("no factory app partition");
