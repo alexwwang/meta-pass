@@ -1443,8 +1443,8 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
       }
     }
     for (let j = 0; j < i; j++) {
-      if (sizingImages[i].label === dataImages[j].label &&
-          sizingImages[i].subtype === dataImages[j].subtype) {
+      if (sizingImages[i].label === sizingImages[j].label &&
+          sizingImages[i].subtype === sizingImages[j].subtype) {
         throw new Error(`duplicate DATA label/subtype: ${sizingImages[i].label}`);
       }
     }
