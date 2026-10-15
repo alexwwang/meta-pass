@@ -1897,15 +1897,6 @@ export function boot(opts = {}) {
         existingSizes[i] != null && editable[i] ? listingWithoutTarget(i) : geom.listing,
         appProposal, Math.max(min, existingSizes[i] || 0),
         minimums.filter((_, j) => j !== i && editable[j] && existingSizes[j] == null)));
-      const impossible = minimums.findIndex((min, i) =>
-        editable[i] && Math.floor(boundsByData[i].max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE < min);
-      if (impossible >= 0) {
-        const min = minimums[impossible];
-        const bounds = boundsByData[impossible];
-        failSheet("数据分区空间不足",
-          `DATA ${impossible + 1} 至少需要 ${(min / (1024 * 1024)).toFixed(3)} MiB；最大连续空闲空间 ${(bounds.max / (1024 * 1024)).toFixed(3)} MiB，总空闲空间 ${(bounds.available / (1024 * 1024)).toFixed(3)} MiB。固定分区不可移动，无法跨区拼接，请取消安装或释放存储后重试。`);
-        return;
-      }
       const options = minimums.map((declaredMin, i) => {
         const min = existingSizes[i] != null && editable[i]
           ? Math.max(declaredMin, existingSizes[i]) : declaredMin;
@@ -1989,9 +1980,9 @@ export function boot(opts = {}) {
           return;
         }
         pre.offer.data[i].size = size;
-        pre.sizingImages[i].required_size = size;
-        pre.sizingImages[i].requiredSize = size;
-        pre.sizingImages[i].size = size;
+        pre.dataImages[i].required_size = size;
+        pre.dataImages[i].requiredSize = size;
+        pre.dataImages[i].size = size;
       }
       // The selector replaces the progress panel; recreate it before upload so
       // subsequent progress callbacks update visible elements rather than a
