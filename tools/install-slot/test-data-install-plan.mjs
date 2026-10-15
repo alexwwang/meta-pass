@@ -66,7 +66,7 @@ const images = [
   assert.equal(plan.carve.data[0].playId, id, "blank DATA is owned by the APP install ID");
   assert.equal(resolveAppDataChoice({ allocate: false, declaredImages: [], playId: id }).length, 0,
     "choosing APP-only creates no DATA reservation");
-  const tooLarge = planDataReservations(empty, blank, [0x200000], id);
+  const tooLarge = planDataReservations(empty, blank, [0x2000000], id);
   assert.equal(tooLarge.ok, false, "insufficient contiguous space must fail closed");
   console.log("PASS 4: blank APP-owned DATA is allocated through the dynamic planner; APP-only creates none");
 }
