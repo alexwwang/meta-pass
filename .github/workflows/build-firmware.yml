@@ -70,5 +70,6 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           name: "${{ github.ref_name }}"
+          body_path: docs/release-notes/${{ github.ref_name }}.md
           files: release/meta-pass_v*.bin
           fail_on_unmatched_files: true
