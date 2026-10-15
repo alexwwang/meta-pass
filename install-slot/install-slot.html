@@ -1429,7 +1429,7 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
   $("data-size-confirm").textContent = zh ? "确认并继续" : "Confirm and continue";
   $("data-size-allocate-label").textContent = zh ? "为此 APP 分配专属 DATA 空间" : "Allocate private DATA space for this APP";
   const allocate = $("data-size-allocate");
-  allocate.checked = true;
+  allocate.checked = dataImages.length > 0;
   const listing = dataSizingListing(carve);
   const minimums = sizingImages.map((d) => dataPartitionMinimum(d));
   if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
