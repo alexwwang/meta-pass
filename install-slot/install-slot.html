@@ -260,7 +260,7 @@
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, extractDataImages, isFullImage, hex } from "./extract-app-image.js";
-import { makeBlankAppDataImage, resolveAppDataChoice } from "./data-allocation-choice.js";
+import { resolveAppDataChoice } from "./data-allocation-choice.js";
 import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
@@ -1416,7 +1416,7 @@ function dataSizingListing(carve) {
 // Capacity selector mirrors the phone installer: declared minimums and every
 // selected size are revalidated against the shared pool before any flash write.
 async function chooseUsbDataSizes(dataImages, carve, playId) {
-  const sizingImages = dataImages.length ? dataImages : [makeBlankAppDataImage(playId)];
+  const sizingImages = dataImages;
   const dialog = $("data-size-dialog");
   const rows = $("data-size-rows");
   const error = $("data-size-error");
@@ -1430,6 +1430,13 @@ async function chooseUsbDataSizes(dataImages, carve, playId) {
   $("data-size-allocate-label").textContent = zh ? "为此 APP 分配专属 DATA 空间" : "Allocate private DATA space for this APP";
   const allocate = $("data-size-allocate");
   allocate.checked = dataImages.length > 0;
+  allocate.disabled = dataImages.length === 0;
+  if (dataImages.length === 0) {
+    $("data-size-help").textContent = zh
+      ? "该固件没有声明 DATA 分区，MetaPass 无法推断它如何发现或初始化 DATA。本次只能安装 APP；需要 DATA 的固件必须提供明确的分区声明/访问约定。"
+      : "This firmware declares no DATA partition. MetaPass cannot infer how it discovers or initializes DATA, so this install is APP-only. Firmware that needs DATA must provide an explicit partition/access contract.";
+    $("data-size-allocate-label").textContent = zh ? "该固件未声明 DATA，无法分配" : "DATA unavailable: not declared by this firmware";
+  }
   const listing = dataSizingListing(carve);
   const minimums = sizingImages.map((d) => dataPartitionMinimum(d));
   if (minimums.some((n) => !Number.isSafeInteger(n) || n < DATA_SIZE_GRANULE)) {
@@ -2993,7 +3000,7 @@ $("btn-install").addEventListener("click", async () => {
       if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
       const choice = await chooseUsbDataSizes(dataImages, carveForInstall, dataPlayId);
       if (!choice) { log(t("msg_install_cancelled"), "warn"); return; }
-      const selectedDataImages = resolveAppDataChoice({ allocate: choice.allocate, declaredImages: dataImages, playId: dataPlayId });
+      const selectedDataImages = resolveAppDataChoice({ allocate: choice.allocate, declaredImages: dataImages });
       if (!selectedDataImages.length) {
         plannedData = [];
       } else {
