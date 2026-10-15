@@ -4,11 +4,11 @@ Language: [简体中文](storage-snapshot-restore-test-report-2026-10-15.zh_CN.m
 
 ## Verdict
 
-**PASS after fixes.** The handoff acceptance (§19–20 of `HANDOFF-realdevice-storage.zh_CN.md`) is met on the fixed tree: USB v2 snapshot backup/restore PASS, phone-page v2 snapshot restore PASS, USB v1 regression (host level) PASS, with reboot + reconnect verified after each restore and byte-level evidence. Testing also exposed and fixed three real defects at `b74e9da`.
+**v2 snapshot real-device acceptance PASS within the scope recorded here.** USB v2 snapshot backup/restore and phone-page v2 snapshot restore passed. Both restore paths were followed by manual reboot, successful MetaPass startup/reconnect, and byte-for-byte comparison of all 44 extents. A different partition-table shape was rejected before the first erase. USB v1 real-device restore was not run; v1 compatibility claims are limited to the recorded host tests. The three defects found during testing were fixed in [`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f).
 
 ## Environment
 
-- HEAD under test: `b74e9da` (v2.1.0-1475) **plus worktree fixes** (firmware reports `v2.1.0-1475-gb74e9da-dirty`).
+- Tested firmware source: `b74e9da` (v2.1.0-1475) plus then-uncommitted worktree fixes; firmware reported `v2.1.0-1475-gb74e9da-dirty`. Those fixes were subsequently committed to `feat/storage` as [`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f). This report records the actual test source state and does not claim the dirty firmware was built directly from that commit.
 - Device: ESP32-C3 AI Passport, 8 MB Flash; full e2e-test image flashed (`build-e2e/FoloToy-AI-Passport-full-e2e.bin`, test-control build `CONFIG_META_E2E_TEST_CONTROL=y`), sha256 `6dd5f281…` (post-fix rebuild).
 - WiFi re-provisioned after full flash by writing a minimal NVS image (namespace `metapass`, keys `sta_ssid`/`sta_pass`) at 0x9000; pairing via `E2E SESSION_RESET` (token redacted, `/tmp/token.txt`).
 - Host: macOS 15.7.4, Chrome 155.0.8059.40, Node v26.3.0, esptool 5.4.0, ESP-IDF 5.5.3.
@@ -45,10 +45,11 @@ Language: [简体中文](storage-snapshot-restore-test-report-2026-10-15.zh_CN.m
 - Restoring a snapshot onto a **different table shape** (group uninstalled → placeholders back in table) is rejected pre-erase: "snapshot does not cover every eligible allocated partition" — fail-closed before any Flash write, as specified.
 - Uninstall cleanup raced briefly ("pending uninstall cleanup failed; retry" for ~60 s); the fail-closed gate held and the idempotent recovery completed after reboot (`carve loaded: seq=3 slots=0`). No data-loss symptom beyond the erase in progress.
 
-### USB v1 compatibility regression
+### USB v1 compatibility boundary
 
-- Host tests `test-data-byte-archive.mjs`, `test-backup-data.mjs`, `test-slot-backup.mjs` all PASS (v1 manifest rejection of DATA archives, NVS payload path, v1 restore data-path contract).
-- Real-device v1 restore: **NOT RUN** — the device is dynamic-mode; v1 restore requires a fixed-slot device. Per handoff: host test + explicit NOT RUN, no false PASS.
+- The host tests recorded in this run — `test-data-byte-archive.mjs`, `test-backup-data.mjs`, and `test-slot-backup.mjs` — all PASS for v1 DATA-archive rejection, the NVS payload path, and the v1 restore data-path contract.
+- Real-device v1 restore: **NOT RUN** — this is a dynamic-mode device; v1 restore requires a fixed-slot device. Host PASS is not reported as a hardware PASS.
+- Future regression policy: rerun v1 tests only when a change touches v1-specific archive/restore code or a shared path that can affect it; do not rerun unaffected v1 paths mechanically.
 
 ## Not covered
 
@@ -60,10 +61,6 @@ Language: [简体中文](storage-snapshot-restore-test-report-2026-10-15.zh_CN.m
 
 `tools/realdevice/logs/20261015-snapshot-restore/`: `environment.txt`, inventories, per-step rundirs (`usb-backup`, `usb-backup2`, `usb-backup3-fixed`, `usb-restore`, `usb-restore-fixed`, `phone-restore`, `phone-restore-fixed`) with driver logs, page logs, result JSON, screenshots, dumps and `t6-*-byte-compare.json`. UART logs in `/tmp/uart-*.log` (tokens redacted).
 
-## Fixes to commit
+## Commit status
 
-- `main/meta_store_install.c` — carve DATA identity fallback for storage snapshot inventory/read/erase/write.
-- `install-slot/install-slot.html` — module-scope `assertLoader`; merge carve DATA into snapshot inventory.
-- `tools/install-slot/server.mjs` — static whitelist for snapshot modules.
-- `tests/test_storage_snapshot_device_contract.py`, `tests/test_usb_backup_segmented_read.py` — contract assertions for the DATA merge.
-- New drivers: `tools/realdevice/usb_snapshot_backup_once.mjs`, `usb_snapshot_restore_once.mjs`, `phone_snapshot_restore_once.mjs`.
+The device-side DATA inventory/read/erase/write fix, USB inventory and `assertLoader` fixes, dev-server module allowlist, contract tests, and real-device drivers are committed on `feat/storage` in [`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f). No code changes from this report remain pending commit.
