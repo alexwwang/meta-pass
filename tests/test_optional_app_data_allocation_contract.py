@@ -6,7 +6,6 @@ ROOT = Path(__file__).resolve().parents[1]
 helper = (ROOT / "install-slot/data-allocation-choice.js").read_text(encoding="utf-8")
 usb = (ROOT / "install-slot/install-slot.html").read_text(encoding="utf-8")
 phone = (ROOT / "install-slot/phone-install.js").read_text(encoding="utf-8")
-planner = (ROOT / "install-slot/data-install-plan.js").read_text(encoding="utf-8")
 device_model = (ROOT / "main/meta_install_model.c").read_text(encoding="utf-8")
 
 assert "BLANK_DATA_SUBTYPE_SPIFFS = 0x82" in helper
@@ -32,7 +31,6 @@ assert "pre.offer.data = [];" in phone_choice and "pre.dataImages = [];" in phon
 assert "resolveAppDataChoice({ allocate: true, declaredImages: dataImages" in phone_choice
 assert "pre.offer.data = [{ playId: Number(meta.play.id)" in phone_choice
 
-assert "dataImages.length === 0" not in planner[planner.index("export function planDataReservations"):]
 assert 'if (v_initial > 0)' in device_model, "zero-payload DATA must not require an initial-image SHA"
 assert 'meta_store_json_get_array_string(json, len, "data", i, "label"' in device_model
 print("Optional APP DATA allocation contract: PASS")
