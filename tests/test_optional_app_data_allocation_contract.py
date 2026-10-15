@@ -19,13 +19,15 @@ assert 'id="data-size-allocate"' in usb
 usb_choice = usb[usb.index("async function chooseUsbDataSizes"):usb.index("\nasync function verifyFlashReadback")]
 assert "if (!dataImages.length) return []" not in usb_choice
 assert "finish({ allocate: false, sizes: [] })" in usb_choice
+assert "allocate.checked = dataImages.length > 0" in usb_choice
 assert "resolveAppDataChoice({ allocate: choice.allocate" in usb
 assert "planDataReservations(carveForInstall, selectedDataImages, choice.sizes, dataPlayId)" in usb
 
 assert 'import { makeBlankAppDataImage, resolveAppDataChoice } from "./data-allocation-choice.js";' in phone
 phone_choice = phone[phone.index("// DATA sizing is a general installation option"):phone.index('\n    stageEl.textContent = "上传";')]
 assert "if (geom?.listing)" in phone_choice
-assert 'id=mp-data-allocate type=checkbox' in phone_choice
+assert 'id=mp-data-allocate type=checkbox ${dataImages.length ? "checked" : ""}' in phone_choice
+assert "sizeRows.hidden = !allocateBox.checked;" in phone_choice
 assert "resolve([])" in phone_choice
 assert "pre.offer.data = [];" in phone_choice and "pre.dataImages = [];" in phone_choice
 assert "resolveAppDataChoice({ allocate: true, declaredImages: dataImages" in phone_choice
