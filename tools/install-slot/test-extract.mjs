@@ -224,6 +224,35 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
   console.log("PASS 3e: initial DATA payload extracted without uploading erased tail");
 }
 
+// Child-owned NVS must be allocated by its declared label; only the reserved
+// system NVS/PHY labels are excluded from per-child DATA.
+{
+  const app = buildAppImage();
+  const childNvs = buildManifestImage(app, 0x20000, 0x4000, 0x02, "store");
+  childNvs.fill(0x31, 0x20000, 0x20010);
+  const m = parseFirmwareManifest(childNvs);
+  assert.equal(m.supported, true);
+  assert.equal(m.data.length, 1);
+  assert.equal(m.data[0].label, "store");
+  assert.equal(m.data[0].subtype, 0x02);
+  assert.equal(m.data[0].required_size, 0x4000);
+  const images = extractDataImages(childNvs);
+  assert.equal(images.length, 1);
+  assert.equal(images[0].label, "store");
+  assert.equal(images[0].data.length, 0x10);
+
+  const systemNvs = buildManifestImage(app, 0x20000, 0x4000, 0x02, "nvs");
+  const sysManifest = parseFirmwareManifest(systemNvs);
+  assert.equal(sysManifest.supported, true);
+  assert.equal(sysManifest.data.length, 0, "reserved global nvs must not become child DATA");
+
+  const systemPhy = buildManifestImage(app, 0x20000, 0x1000, 0x01, "phy_init");
+  const phyManifest = parseFirmwareManifest(systemPhy);
+  assert.equal(phyManifest.supported, true);
+  assert.equal(phyManifest.data.length, 0, "reserved global phy_init must not become child DATA");
+  console.log("PASS 3d-NVS: child NVS is DATA; reserved global NVS/PHY remain MetaPass-owned");
+}
+
 // 3e. Unsupported custom data partition is an explicit admission failure.
 {
   const app = buildAppImage();
