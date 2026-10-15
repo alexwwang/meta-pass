@@ -26,8 +26,10 @@ assert "planDataReservations(carveForInstall, selectedDataImages, choice.sizes, 
 
 assert 'import { resolveAppDataChoice } from "./data-allocation-choice.js";' in phone
 phone_choice = phone[phone.index("// DATA sizing is a general installation option"):phone.index('\n    stageEl.textContent = "上传";')]
-assert "if (geom?.listing && dataImages.length > 0)" in phone_choice
-assert 'id=mp-data-allocate type=checkbox ${dataImages.length ? "checked" : ""}' in phone_choice
+assert "if (geom?.listing)" in phone_choice
+assert 'id=mp-data-allocate type=checkbox' in phone_choice
+assert '未声明 DATA，无法分配' in phone_choice
+assert '不能安全地自动创建空 DATA 分区' in phone_choice
 assert "sizeRows.hidden = !allocateBox.checked;" in phone_choice
 assert "resolve([])" in phone_choice
 assert "pre.offer.data = [];" in phone_choice and "pre.dataImages = [];" in phone_choice
