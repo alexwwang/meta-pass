@@ -1903,8 +1903,9 @@ export function boot(opts = {}) {
         if (!editable[i]) return { min: existingSizes[i], max: existingSizes[i], values: [existingSizes[i]], index: i, existing: true };
         const bounds = boundsByData[i];
         const max = Math.floor(bounds.max / DATA_SIZE_GRANULE) * DATA_SIZE_GRANULE;
-        const optionSet = buildDataSizeOptions(min, Math.max(min, max), declared[i], DATA_SIZE_STEP);
-        return { ...optionSet, available: bounds.available, index: i, existing: false };
+        if (max < min) return { min, max, values: [], defaultSize: null, available: bounds.available, index: i, existing: false, unavailable: true };
+        const optionSet = buildDataSizeOptions(min, max, declared[i], DATA_SIZE_STEP);
+        return { ...optionSet, available: bounds.available, index: i, existing: false, unavailable: false };
       });
       const selections = options.map((o, i) => o.existing ? o.min : o.defaultSize);
       const accepted = await new Promise((resolve) => {
@@ -1942,6 +1943,10 @@ export function boot(opts = {}) {
         });
         $("mp-data-confirm").onclick = () => {
           if (!allocateBox.checked) { resolve([]); return; }
+          if (options.some((o) => o.unavailable)) {
+            failSheet("数据分区空间不足", "当前连续空闲空间不足以分配专属 DATA。请取消勾选以仅安装 APP，或先释放存储后重试。");
+            return;
+          }
           // Validate the whole selection as a set: each dropdown's individual
           // maximum assumes other DATA extents stay at their minima, so several
           // simultaneous maximum choices must not overcommit the shared pool.
