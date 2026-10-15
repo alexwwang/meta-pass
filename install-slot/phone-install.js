@@ -28,7 +28,7 @@ import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-i
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
-import { makeBlankAppDataImage, resolveAppDataChoice } from "./data-allocation-choice.js";
+import { resolveAppDataChoice } from "./data-allocation-choice.js";
 import { sanitizeDisplayName } from "./name-blob.js";
 import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { captureStorageSnapshot, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
@@ -1862,8 +1862,8 @@ export function boot(opts = {}) {
     // DATA sizing is a general installation option, not a Play/test-profile
     // switch. The device remains authoritative and revalidates every size.
     const dataImages = Array.isArray(pre.dataImages) ? pre.dataImages : [];
-    if (geom?.listing) {
-      const sizingImages = dataImages.length ? dataImages : [makeBlankAppDataImage(Number(meta.play.id))];
+    if (geom?.listing && dataImages.length > 0) {
+      const sizingImages = dataImages;
       const declared = sizingImages.map((d) => Number(d.required_size ?? d.requiredSize ?? d.size));
       const minimums = sizingImages.map((d) => dataPartitionMinimum(d));
       const existingSizes = sizingImages.map((d) => {
@@ -1972,12 +1972,7 @@ export function boot(opts = {}) {
         pre.offer.data = [];
         pre.dataImages = [];
       } else {
-        pre.dataImages = resolveAppDataChoice({ allocate: true, declaredImages: dataImages, playId: Number(meta.play.id) });
-        if (dataImages.length === 0) {
-          pre.offer.data = [{ playId: Number(meta.play.id), size: pre.dataImages[0].required_size,
-            label: pre.dataImages[0].label, subtype: pre.dataImages[0].subtype,
-            initialImageSize: 0, sha256: undefined }];
-        }
+        pre.dataImages = resolveAppDataChoice({ allocate: true, declaredImages: dataImages });
       }
       for (let i = 0; i < accepted.length; i++) {
         const size = normalizeDataSize(accepted[i], { min: options[i].min, max: options[i].max });
