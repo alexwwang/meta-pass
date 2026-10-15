@@ -283,9 +283,7 @@ export function parseDataPartitions(buf) {
     if (buf[off] !== PARTITION_MAGIC_LO || buf[off + 1] !== PARTITION_MAGIC_HI) break;
     const type = buf[off + 2];
     const subtype = buf[off + 3];
-    // Match the first-phase child DATA contract: FAT/SPIFFS/LittleFS plus
-    // child-owned NVS; exclude system-owned entries by reserved label.
-    if (type === 1 && subtype !== 0x00) {
+    if (type === 1) {
       const offset = u32le(buf, off + 4);
       const size = u32le(buf, off + 8);
       // label 位于分区表条目的 +12..+27 字节(16B)。
@@ -293,13 +291,14 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      if (label === "cardid" || label === "nvs" || label === "phy_init") continue;
+      if (subtype === 0x00 || label === "cardid" || label === "nvs" || label === "phy_init") continue;
+      const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 || subtype === 0x02 ||
+        (subtype === 0x40 && label === "e2edata");
+      if (!supported) continue;
       const typeName = subtype === 0x81 ? "fat"
         : subtype === 0x82 ? "spiffs"
         : subtype === 0x83 ? "littlefs"
-        : subtype === 0x02 ? "nvs"
-        : subtype === 0x01 ? "phy"
-        : "custom";
+        : subtype === 0x02 ? "nvs" : "raw";
       result.push({ offset, size, type: typeName, subtype, label });
     }
   }
