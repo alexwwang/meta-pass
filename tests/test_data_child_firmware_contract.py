@@ -40,7 +40,8 @@ for token, label in [
 assert "e2edata,  data, 0x40" in partitions, "partition template must declare e2edata DATA"
 assert "0x10000" in partitions, "DATA reservation must be 64 KiB in template"
 extractor = (ROOT / "install-slot/extract-app-image.js").read_text(encoding="utf-8")
-assert '(subtype === 0x40 && label === "e2edata")' in extractor, "only the explicitly named raw DATA E2E fixture may use subtype 0x40"
+assert 'label === "e2edata"' in extractor, "the reserved E2E DATA label must remain admitted across fixture subtype variants"
+assert 'label === "custom"' not in extractor, "unregistered custom DATA labels must not be admitted by label-specific fixture rule"
 assert "other custom DATA is rejected" in extractor, "unregistered custom DATA subtypes must remain fail-closed"
 assert "esp_partition_write(" not in driver, "host client must not write flash directly"
 assert "static esp_err_t h_install_data_read(httpd_req_t *req)" in install_net, "mobile DATA backup needs a real byte-read endpoint"
