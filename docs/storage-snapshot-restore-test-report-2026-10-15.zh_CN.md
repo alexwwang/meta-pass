@@ -4,11 +4,11 @@
 
 ## 结论
 
-**修复后 PASS。** handoff(`HANDOFF-realdevice-storage.zh_CN.md` §19–20)的验收项在修复后的代码树上全部达成:USB v2 快照备份/还原 PASS、手机内嵌页 v2 快照还原 PASS、USB v1 兼容回归(host 层)PASS;每次还原后均完成重启 + 重连验证,并有逐字节证据。测试同时暴露并修复了 `b74e9da` 上的三个真实缺陷。
+**本轮 v2 快照真机验收 PASS（按本报告列明的覆盖范围）。** USB v2 快照备份/还原 PASS，手机内嵌页 v2 快照还原 PASS；两条恢复链路均在人工重启后确认 MetaPass 正常启动并重连，44/44 extents 与归档载荷逐字节一致。不同分区表形状在首次擦除前被拒绝。USB v1 真机恢复未执行；v1 兼容结论只限本报告记录的 host 测试，不扩大为真机 PASS。测试发现的三个缺陷已随提交 `7beba51d8d529ca4eb62a1c98d6da26dbda6b54f` 修复。
 
 ## 环境
 
-- 被测 HEAD:`b74e9da`(v2.1.0-1475)**叠加工作区修复**(固件报 `v2.1.0-1475-gb74e9da-dirty`)。
+- 真机固件构建来源：`b74e9da`（v2.1.0-1475）加当时尚未提交的工作区修复；固件版本报告为 `v2.1.0-1475-gb74e9da-dirty`。对应修复随后提交到 `feat/storage`，提交为 [`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f)。因此，本报告如实记录测试时的源码状态，不把 dirty 构建伪称为由该提交直接构建。
 - 设备:ESP32-C3 AI Passport,8MB Flash;烧录 e2e 测试全量镜像(`build-e2e/FoloToy-AI-Passport-full-e2e.bin`,`CONFIG_META_E2E_TEST_CONTROL=y`),修复后重编产物 sha256 `6dd5f281…`。
 - 全量烧录擦除 WiFi 凭证后,以最小 NVS 镜像(命名空间 `metapass`,键 `sta_ssid`/`sta_pass`)写入 0x9000 完成配网;经 `E2E SESSION_RESET` 免按键配对(token 已脱敏,存 `/tmp/token.txt`)。
 - 主机:macOS 15.7.4、Chrome 155.0.8059.40、Node v26.3.0、esptool 5.4.0、ESP-IDF 5.5.3。
@@ -46,10 +46,11 @@
 - 卸载清理曾短时竞争("pending uninstall cleanup failed; retry" 约 60s);fail-closed 门禁生效,幂等恢复在重启后完成(`carve loaded: seq=3 slots=0`)。
 - 修复前证据:含 DATA 记录的快照(第 2 次备份)manifest 中**没有 e2edata**,还原后该分区仍是 0xAA,DATA 记录不可恢复。
 
-### USB v1 兼容回归
+### USB v1 兼容边界
 
-- host 测试 `test-data-byte-archive.mjs`、`test-backup-data.mjs`、`test-slot-backup.mjs` 全部 PASS(v1 归档的 DATA 拒收、NVS 载荷路径、v1 还原数据通路契约)。
-- v1 真机还原:**NOT RUN** —— 本机为动态模式设备,v1 还原需要固定槽设备。按 handoff 要求:host 测试 + 明确 NOT RUN,不虚报 PASS。
+- 本轮记录的 host 测试 `test-data-byte-archive.mjs`、`test-backup-data.mjs`、`test-slot-backup.mjs` 均 PASS（分别覆盖 v1 归档 DATA 拒收、NVS 载荷路径与 v1 还原数据通路契约）。
+- v1 真机还原：**NOT RUN**。当前设备为动态模式，v1 真机还原需要固定槽设备；不将 host PASS 表述为真机 PASS。
+- 后续回归原则：只有改动触及 v1 专用归档/还原代码或其共享调用路径时，才重新执行对应 v1 测试；未受影响的 v1 路径不做无差别重跑。
 
 ## 未覆盖项
 
@@ -61,10 +62,6 @@
 
 `tools/realdevice/logs/20261015-snapshot-restore/`:`environment.txt`、各步 inventory、每次运行的 rundir(`usb-backup`、`usb-backup2`、`usb-backup3-fixed`、`usb-restore`、`usb-restore-fixed`、`phone-restore`、`phone-restore-fixed`,含驱动日志、页面日志、结果 JSON、截图、dump 与 `t6-*-byte-compare.json`)。UART 日志在 `/tmp/uart-*.log`(token 已脱敏)。
 
-## 待提交修复
+## 修复提交状态
 
-- `main/meta_store_install.c` —— storage 快照 inventory/read/erase/write 的 carve DATA 身份回退。
-- `install-slot/install-slot.html` —— `assertLoader` 提升模块级;快照 inventory 并入 carve DATA。
-- `tools/install-slot/server.mjs` —— 快照模块静态白名单。
-- `tests/test_storage_snapshot_device_contract.py`、`tests/test_usb_backup_segmented_read.py` —— DATA 合并的契约断言。
-- 新增驱动:`tools/realdevice/usb_snapshot_backup_once.mjs`、`usb_snapshot_restore_once.mjs`、`phone_snapshot_restore_once.mjs`。
+上述设备侧 DATA inventory/read/erase/write 修复、USB inventory 与 `assertLoader` 修复、dev server 静态模块白名单、契约测试和真机驱动均已提交到 `feat/storage`，提交为 [`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f)。本节不再有待提交代码项。
