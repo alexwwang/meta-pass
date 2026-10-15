@@ -13,7 +13,7 @@ assert "declares no DATA partition/access contract" in helper
 assert "makeBlankAppDataImage" not in helper, "do not invent a DATA label/subtype without an access contract"
 assert "0x40" not in helper, "test-only raw-sector subtype must not be generalized"
 
-assert 'import { makeBlankAppDataImage, resolveAppDataChoice } from "./data-allocation-choice.js";' in usb
+assert 'import { resolveAppDataChoice } from "./data-allocation-choice.js";' in usb
 assert 'id="data-size-allocate"' in usb
 usb_choice = usb[usb.index("async function chooseUsbDataSizes"):usb.index("\nasync function verifyFlashReadback")]
 assert "sizingImages = dataImages;" in usb_choice
@@ -24,9 +24,9 @@ assert "allocate.checked = dataImages.length > 0" in usb_choice
 assert "resolveAppDataChoice({ allocate: choice.allocate" in usb
 assert "planDataReservations(carveForInstall, selectedDataImages, choice.sizes, dataPlayId)" in usb
 
-assert 'import { makeBlankAppDataImage, resolveAppDataChoice } from "./data-allocation-choice.js";' in phone
+assert 'import { resolveAppDataChoice } from "./data-allocation-choice.js";' in phone
 phone_choice = phone[phone.index("// DATA sizing is a general installation option"):phone.index('\n    stageEl.textContent = "上传";')]
-assert "if (geom?.listing)" in phone_choice
+assert "if (geom?.listing && dataImages.length > 0)" in phone_choice
 assert 'id=mp-data-allocate type=checkbox ${dataImages.length ? "checked" : ""}' in phone_choice
 assert "sizeRows.hidden = !allocateBox.checked;" in phone_choice
 assert "resolve([])" in phone_choice
