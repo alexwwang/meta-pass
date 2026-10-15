@@ -471,43 +471,24 @@ passport-sim 可作为额外回归层；如未对当前提交执行，不得报�
 
 本次 host 回归由 `tests/test_storage_snapshot_restore.mjs` 覆盖：预检拒绝（版本/布局/接口能力）、顺序擦除与写入、稀疏区域恢复、写入失败停止、重启成功/失败结果，以及不执行全分区读回。它不能代替真机启动验收。真机任务只需验证一次真实快照恢复后能重新启动和连接；不要求物理断电测试或逐字节重复读取整个分区。
 
-## 20. 2026-10-15 执行交接：v2 整机存储快照恢复
+## 20. 2026-10-15 状态更新：v2 整机存储快照恢复已完成
 
-本节是当前快照恢复任务的执行入口，优先级高于把历史 S0-S6 全部重跑。历史 S0-S6、APP carve、DATA 事务与 NVS 测试仅在本次改动影响其路径时才回归，不要因为本 handoff 较长就把所有旧阶段无差别重跑。
+本节已从“待执行交接”更新为结果记录。快照恢复专项真机报告：[`storage-snapshot-restore-test-report-2026-10-15.zh_CN.md`](storage-snapshot-restore-test-report-2026-10-15.zh_CN.md)。
 
-### 当前代码与 CI 基线
+### 已完成结果
 
-- 分支：`feat/storage`
-- 本次 handoff 更新时的 HEAD：`f7baa7684b3288b2165c477f383cb3d58ce80264`
-- 静态检查：PASS（[run](https://github.com/alexwwang/meta-pass/actions/runs/38655528038)）
-- 固件检查：PASS（[run](https://github.com/alexwwang/meta-pass/actions/runs/38655528049)）
-- 两项 PR 触发检查也在同一 SHA 上 PASS（静态检查 [run](https://github.com/alexwwang/meta-pass/actions/runs/38655533887)，固件检查 [run](https://github.com/alexwwang/meta-pass/actions/runs/38655533996)）。
-- 关键实现：`install-slot/storage-snapshot-restore.js`
-- 手机内嵌页面：`install-slot/phone-install.js` 的 `doRestoreArchive()`
-- USB 页面：`install-slot/install-slot.html` 的 snapshot restore 分支
-- 定向测试：`tests/test_storage_snapshot_restore.mjs`
+- 当前分支：`feat/storage`；修复提交：[`7beba51d`](https://github.com/alexwwang/meta-pass/commit/7beba51d8d529ca4eb62a1c98d6da26dbda6b54f)。
+- `./tools/validate.sh`：报告记录全量 PASS（静态、host、固件）；该结果不替代真机证据。
+- USB v2 快照备份：PASS，36.9 秒；归档包含 child DATA 的 `e2edata` 记录。
+- USB v2 快照恢复：PASS；人工重启后 MetaPass 正常启动并重连；44/44 extents 与归档载荷逐字节一致。
+- 手机内嵌页 v2 快照恢复：PASS；人工重启后 MetaPass 正常启动并重连；44/44 extents 与归档载荷逐字节一致。
+- 不同分区表形状的归档在首次擦除前被拒绝，符合 fail-closed 要求。
+- USB v1：报告中的 host 测试 PASS；动态模式真机不支持该 v1 恢复场景，真机项为 NOT RUN。
 
-本次实现已移除恢复后的全分区读回；成功结果字段是 `dataWritten`，不再用 `dataVerified` 暗示做过读回。归档哈希与结构、版本兼容、目标布局和保护范围必须在首次擦除前检查；写入失败立即停止且不自动回滚；写入全部完成后必须重启并确认设备正常启动、重新连接。当前 USB/手机页面由用户退出下载模式并重启，因此页面显示写入完成不等于启动验证通过。
+### 测试边界与后续回归规则
 
-### 本轮只执行以下必要回归
-
-1. 确认工作区干净、记录 HEAD 和构建产物 SHA-256；确认实际 HEAD 与本节 SHA 一致。若已前进到新提交，记录新 SHA，并对新 HEAD 执行以下步骤。
-2. 执行 `./tools/validate.sh`，记录完整命令、退出码与日志路径。不要只根据 GitHub CI 推断本地命令已执行。
-3. 若设备固件需重新构建，按仓库当前固件构建说明构建并记录产物 SHA-256；若使用 CI artifact，记录下载的 run ID、artifact 名称及 hash。
-4. 在当前固件上用 USB 页面恢复一个由同一设备创建的 v2 storage snapshot，验证归档预检、写入完成提示、退出下载模式后重启、设备正常启动并可重新连接。保存恢复前后的设备版本、分区 inventory 摘要和串口日志。
-5. 用手机内嵌页重复一次 v2 storage snapshot 恢复与重启连接验证。手机内嵌页只接受 v2 snapshot；不要把 USB v1 兼容要求扩展到手机页面。
-6. USB v1 兼容只做针对性回归：确认 v1 固定槽 APP/NVS 归档仍走原有路径，不被 v2 snapshot 分支误判或吞掉。若设备/测试夹具不支持 v1 真机恢复，执行现有 host test 并将真机项明确标记未执行，不要伪报 PASS。
-7. 只需验证重启后 MetaPass 能正常启动和重新连接；本期不要求全分区读回、自动回滚或物理断电测试。若重启后无法启动，收集 UART/HTTP/恢复进度证据，再刷回归档记录的 MetaPass 来源版本。不得把“写入成功”当作“启动成功”。
-
-### 必须检查的失败边界
-
-- 无效 ZIP、payload SHA-256 错误、MetaPass 版本不兼容、布局不匹配或保护区冲突：首次擦除前拒绝。
-- erase/write 任一步失败：停止后续写入和重启；错误中要包含阶段、分区和相对 offset（可用时）。
-- reboot/reconnect 失败：明确标记启动验证失败，并提示刷回归档来源 MetaPass 版本；不得报告恢复成功。
-- 没有自动重启适配器时：结果只能是 `bootValidated: false` / pending；本次 USB 与手机页面仍需执行人工重启验证。
-- 恢复后不能启动：保存恢复日志、完整 UART tail、设备版本、当前可读 inventory 和失败时的 progress；不要尝试全分区读取来替代启动验收。
-- 不得更改 `cardid` 位置，不得恢复宿主启动器分区，不得擦写未分配 Flash 间隙，不得通过绝对地址绕过分区身份和保护区检查。
-
-### 交付报告
-
-在本地 smoke 报告之外，新增一份专门的快照恢复结果（Markdown 即可），分别记录 USB v2、手机 v2、USB v1 兼容回归的 PASS/FAIL/NOT RUN；记录当前 HEAD、固件来源及 SHA-256、设备型号/版本、恢复前后是否成功重连、日志路径和失败归因。未接真机时将真机阶段标为 NOT RUN，不得用 CI PASS 代替。物理断电测试不在本期要求内，不需要因此阻塞交付。
+- 真机固件实际由 `b74e9da` 加当时未提交的工作区修复构建，版本标记为 `-dirty`；这些修复随后进入提交 `7beba51d`。报告保留这一事实，不声称测试固件直接由提交 SHA 构建。
+- 手机页本轮只验证 v2 恢复路径；手机页备份腿没有在本轮真机重跑，且设备当前 CDN 部署版本落后于仓库分支。不要将其表述为手机页完整备份/恢复双向真机 PASS。
+- 不要求物理断电测试或恢复后全分区读回；本期验收目标是恢复后重启、正常启动并重连，辅以独立 dump 的 44/44 extent 比对。
+- 只回归本轮实际影响的路径。USB v1 专用归档逻辑未被本轮修改时，不要求无差别重跑 v1；只有 v1 代码或其共享调用路径受影响时才补对应测试。
+- 不需要继续执行本节旧版“待执行”清单；后续若修改快照恢复代码，按变更影响面补测试，并将新证据追加到专项报告。
