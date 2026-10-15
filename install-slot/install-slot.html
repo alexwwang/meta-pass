@@ -422,8 +422,6 @@ async function loadSlotModel() {
 // 失败抛错:E4 语义(记录已立,引导钩子下次启动物化表,状态不模糊)。
 async function commitCarve(nextCarve, { materialize = true } = {}) {
   if (!carveValid(nextCarve)) throw new Error(t("err_carve_invalid"));
-  // H2: 每次 await 前校验 loader 未断开
-  function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected", { label: label ?? "操作" })); }
   let seq = (slotModel.seq + 1) >>> 0;
   if (seq === 0 || seq === 0xffffffff) seq = 1;   // = meta_carve_flash.c 回绕规则
   const rec = encodeRecord({ seq, slots: nextCarve.slots, data: nextCarve.data });
@@ -2302,6 +2300,9 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
 }
 
 
+// H2: 每次 await 前校验 loader 未断开(commitCarve 与快照 inventory 读取等路径共用)
+function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected", { label: label ?? "操作" })); }
+
 async function readUsbStorageInventory() {
   assertLoader("读取分区表以识别 MetaPass 宿主");
   const table = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
@@ -2326,7 +2327,21 @@ async function readUsbStorageInventory() {
     hosts.push({ ...part, version });
   }
   if (hosts.length !== 1) {
-    throw new Error("USB could not uniquely identify the MetaPass host partition from its ESP app descriptor; found " + hosts.length + ". No snapshot operation was started.");
+    throw new Error("USB could not uniquely identify the MetaPass host partition from its app descriptor; found " + hosts.length + ". No snapshot operation was started.");
+  }
+  // 2026-10-15 真机实证:launcher 运行态的物化表不含 child DATA 分区
+  // (meta_pt_from_carve_active 只给活动子固件物化),只按 0x8000 表解析会让
+  // 快照静默漏掉全部 child DATA。carve 记录是 DATA 分配的权威来源:把未物化的
+  // DATA 记录并入 inventory(完整 label/type/subtype/offset/size),与固件
+  // /api/install/storage/info 的口径一致;已物化(子固件在跑)时跳过避免重复。
+  const carveData = (slotModel.carve && Array.isArray(slotModel.carve.data)) ? slotModel.carve.data : [];
+  for (const d of carveData) {
+    if (!d || !d.size) continue;
+    const dup = partitions.some(p => p.label === d.label && p.type === d.type &&
+      p.subtype === d.subtype && p.offset === d.offset && p.size === d.size);
+    if (!dup) {
+      partitions.push({ label: d.label, type: d.type, subtype: d.subtype, offset: d.offset, size: d.size });
+    }
   }
   return {
     meta_pass_version: hosts[0].version,

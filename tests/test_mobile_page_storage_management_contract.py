@@ -350,12 +350,14 @@ class MobilePageStorageManagementContract(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertIn(token, mobile)
         for token in ("h_install_storage_info", "h_install_storage_read",
-                      "esp_ota_get_running_partition()", 'strcmp(part->label, "cardid") == 0',
+                      "esp_ota_get_running_partition()", 'strcmp(label, "cardid") == 0',
+                      "install_carve_data_match(",
                       "part->address != part_offset || part->size != part_size",
                       "origin_allowed(req)", "req_token_ok(req)",
                       "length > INSTALL_IO_BUF",
                       "esp_partition_read(part, offset, read_buf, length)",
-                      "offset > part->size || length > part->size - offset",
+                      "esp_flash_read(NULL, read_buf, part_offset + offset, length)",
+                      "offset > part_size || length > part_size - offset",
                       '"/api/install/storage/info"', '"/api/install/storage/read"'):
             with self.subTest(token=token):
                 self.assertIn(token, DEVICE)

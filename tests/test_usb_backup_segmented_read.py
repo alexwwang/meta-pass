@@ -60,6 +60,10 @@ require(
     "dynamic v2 snapshot must identify the host from the ESP app descriptor and use the raw snapshot builder",
 )
 require(
+    r"async function readUsbStorageInventory\(\).*?slotModel\.carve\.data.*?partitions\.push\(",
+    "snapshot inventory must merge carve DATA records (the launcher materialized table omits DATA partitions)",
+)
+require(
     r"if \(isDynMode\(slotModel\.mode\)\).*?createUsbStorageSnapshot",
     "dynamic mode must route backup through the v2 snapshot path",
 )

@@ -2206,6 +2206,9 @@ static esp_err_t h_install_nvs_read(httpd_req_t *req)
 
 // GET /api/install/storage/info: read-only live partition inventory for storage snapshots.
 // The browser receives partition identities, never arbitrary Flash addresses to write.
+static const meta_carve_data_t *install_carve_data_match(const char *label, uint32_t type,
+                                                         uint32_t subtype, uint32_t offset,
+                                                         uint32_t size);
 static bool install_partition_same(const esp_partition_t *a, const esp_partition_t *b)
 {
     return a && b && a->type == b->type && a->subtype == b->subtype &&
@@ -2253,13 +2256,13 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
     esp_partition_iterator_t it = esp_partition_find(ESP_PARTITION_TYPE_ANY,
                                                       ESP_PARTITION_SUBTYPE_ANY, NULL);
     bool first = true;
+    char escaped[40];
     while (it) {
         const esp_partition_t *part = esp_partition_get(it);
         if (!part) {
             esp_partition_iterator_release(it);
             return reply(req, "500 Internal Server Error", "partition iterator returned an empty entry");
         }
-        char escaped[40];
         json_escape(part->label, escaped, sizeof(escaped));
         snprintf(item, sizeof(item),
                  "%s{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"running_host\":%s}",
@@ -2274,8 +2277,32 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
         first = false;
         it = esp_partition_next(it);
     }
-    e = httpd_resp_sendstr_chunk(req, "]}");
-    if (e != ESP_OK) return e;
+    // 2026-10-15 真机实证:launcher 运行态的物化表不含 child DATA 分区
+    // (meta_pt_from_carve_active 只给活动子固件物化),只按 esp_partition 枚举
+    // 会让快照静默漏掉全部 DATA。carve 记录是 DATA 分配的权威来源:把未物化
+    // 的 DATA 记录并入 inventory(完整 label/type/subtype/offset/size),capture
+    // 与 restore 两端读到同一份 eligible 集合。已物化(子固件在跑)时表内已有
+    // 同身份条目,跳过避免重复。
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (carve) {
+        for (uint8_t i = 0; i < carve->data_count; i++) {
+            const meta_carve_data_t *d = &carve->data[i];
+            if (d->size == 0) continue;
+            const esp_partition_t *materialized =
+                esp_partition_find_first(d->type, (esp_partition_subtype_t)d->subtype, d->label);
+            if (materialized && materialized->address == d->offset && materialized->size == d->size) {
+                continue;
+            }
+            json_escape(d->label, escaped, sizeof(escaped));
+            snprintf(item, sizeof(item),
+                     ",{\"label\":\"%s\",\"type\":%u,\"subtype\":%u,\"offset\":%" PRIu32 ",\"size\":%" PRIu32 ",\"running_host\":false}",
+                     escaped, (unsigned)d->type, (unsigned)d->subtype, d->offset, d->size);
+            e = httpd_resp_sendstr_chunk(req, item);
+            if (e != ESP_OK) return e;
+        }
+        e = httpd_resp_sendstr_chunk(req, "]}");
+        if (e != ESP_OK) return e;
+    }
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
@@ -2316,20 +2343,31 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
     }
 
     const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
-    if (!part || part->address != part_offset || part->size != part_size) {
-        return reply(req, "409 Conflict", "partition identity does not match live partition table");
+    const meta_carve_data_t *carve_data = NULL;
+    if (part) {
+        if (part->address != part_offset || part->size != part_size) {
+            return reply(req, "409 Conflict", "partition identity does not match live partition table");
+        }
+    } else {
+        // launcher 运行态未物化的 DATA 分区:按 carve 记录完整身份校验后读。
+        carve_data = install_carve_data_match(label, type, subtype, part_offset, part_size);
+        if (!carve_data) {
+            return reply(req, "409 Conflict", "partition identity does not match live partition table");
+        }
     }
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
-    if (strcmp(part->label, "cardid") == 0 || install_partition_same(part, running)) {
+    if (strcmp(label, "cardid") == 0 || (part && install_partition_same(part, running))) {
         return reply(req, "403 Forbidden", "protected partition cannot be read by storage snapshot API");
     }
-    if (offset > part->size || length > part->size - offset) {
+    if (offset > part_size || length > part_size - offset) {
         return reply(req, "416 Range Not Satisfiable", "storage partition read range out of bounds");
     }
 
     static uint8_t read_buf[INSTALL_IO_BUF];
-    const esp_err_t e = esp_partition_read(part, offset, read_buf, length);
+    const esp_err_t e = part
+        ? esp_partition_read(part, offset, read_buf, length)
+        : esp_flash_read(NULL, read_buf, part_offset + offset, length);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "storage partition read failed label=%s off=%" PRIu32 ": %s",
                  label, offset, esp_err_to_name(e));
@@ -2342,8 +2380,38 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
 
 // Resolve a snapshot target only through an exact identity in the current live partition table.
 // The caller never supplies an absolute Flash address as a write target.
-static esp_err_t install_snapshot_target(httpd_req_t *req, const esp_partition_t **out_part,
-                                         uint32_t *out_offset, uint32_t *out_length,
+//
+// 2026-10-15 真机实证:launcher 运行态的物化表只给活动子固件物化 DATA 分区
+// (meta_pt_from_carve_active 设计),普通备份场景(页面在 launcher 在线时操作)
+// 下快照会静默漏掉全部 child DATA。carve 记录才是 DATA 分配的权威来源,因此
+// 身份解析在表内分区之外,同时接受 carve DATA 记录(完整 label/type/subtype/
+// offset/size 匹配),读写经 esp_flash_* 按记录偏移执行,仍不接受绝对地址。
+typedef struct {
+    const esp_partition_t  *part;   // 表内分区命中(优先);carve 命中时为 NULL
+    const meta_carve_data_t *data;  // carve DATA 记录命中;表内命中时为 NULL
+    uint32_t abs_offset;            // 分区/记录的起始 Flash 地址
+    uint32_t size;                  // 几何大小(字节)
+    uint32_t rel_offset;            // need_range 时的分区相对偏移
+    uint32_t length;                // need_range 时的长度
+} install_snapshot_target_t;
+
+static const meta_carve_data_t *install_carve_data_match(const char *label, uint32_t type,
+                                                         uint32_t subtype, uint32_t offset,
+                                                         uint32_t size)
+{
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return NULL;
+    for (uint8_t i = 0; i < carve->data_count; i++) {
+        const meta_carve_data_t *d = &carve->data[i];
+        if (d->size > 0 && (uint32_t)d->type == type && (uint32_t)d->subtype == subtype &&
+            d->offset == offset && d->size == size && strcmp(d->label, label) == 0) {
+            return d;
+        }
+    }
+    return NULL;
+}
+
+static esp_err_t install_snapshot_target(httpd_req_t *req, install_snapshot_target_t *out,
                                          bool need_range)
 {
     char label[18], type_str[8], subtype_str[8], part_off_str[16], part_size_str[16];
@@ -2370,22 +2438,44 @@ static esp_err_t install_snapshot_target(httpd_req_t *req, const esp_partition_t
     }
 
     const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
-    if (!part || part->address != part_offset || part->size != part_size) {
-        return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+    const meta_carve_data_t *data = NULL;
+    if (part) {
+        if (part->address != part_offset || part->size != part_size) {
+            return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+        }
+    } else {
+        // 表内未物化(launcher 运行态的 DATA 分区):按 carve 记录做完整身份校验。
+        data = install_carve_data_match(label, type, subtype, part_offset, part_size);
+        if (!data) {
+            return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+        }
     }
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
-    if (strcmp(part->label, "cardid") == 0 || install_partition_same(part, running) ||
-        part->readonly || part->erase_size == 0) {
+    if (strcmp(label, "cardid") == 0 || (part && install_partition_same(part, running))) {
+        return reply(req, "403 Forbidden", "snapshot target is protected");
+    }
+    if (part && (part->readonly || part->erase_size == 0)) {
         return reply(req, "403 Forbidden", "snapshot target is protected or read-only");
     }
-    if (need_range && (offset > part->size || length > part->size - offset)) {
+    if (need_range && (offset > part_size || length > part_size - offset)) {
         return reply(req, "416 Range Not Satisfiable", "snapshot write range out of bounds");
     }
-    *out_part = part;
-    if (out_offset) *out_offset = offset;
-    if (out_length) *out_length = length;
+    out->part = part;
+    out->data = data;
+    out->abs_offset = part ? (uint32_t)part->address : data->offset;
+    out->size = part_size;
+    out->rel_offset = offset;
+    out->length = length;
     return ESP_OK;
+}
+
+static const char *label_of_target(const install_snapshot_target_t *t)
+{
+    if (!t) return "?";
+    if (t->part) return t->part->label;
+    if (t->data) return t->data->label;
+    return "?";
 }
 
 // POST /api/install/storage/erase: erase one exact eligible partition, including NVS.
@@ -2400,15 +2490,18 @@ static esp_err_t h_install_storage_erase(httpd_req_t *req)
     session_unlock();
     if (install_busy) return reply(req, "409 Conflict", "storage restore unavailable during installation");
 
-    const esp_partition_t *part = NULL;
-    esp_err_t e = install_snapshot_target(req, &part, NULL, NULL, false);
+    install_snapshot_target_t target = {0};
+    esp_err_t e = install_snapshot_target(req, &target, false);
     if (e != ESP_OK) return e;
-    if ((part->address % part->erase_size) != 0 || (part->size % part->erase_size) != 0) {
+    const uint32_t erase_sector = target.part ? target.part->erase_size : 4096u;
+    if ((target.abs_offset % erase_sector) != 0 || (target.size % erase_sector) != 0) {
         return reply(req, "409 Conflict", "partition geometry is not erase-sector aligned");
     }
-    e = esp_partition_erase_range(part, 0, part->size);
+    e = target.part
+        ? esp_partition_erase_range(target.part, 0, target.size)
+        : esp_flash_erase_region(NULL, target.abs_offset, target.size);
     if (e != ESP_OK) {
-        ESP_LOGE(TAG, "snapshot erase failed label=%s: %s", part->label, esp_err_to_name(e));
+        ESP_LOGE(TAG, "snapshot erase failed label=%s: %s", label_of_target(&target), esp_err_to_name(e));
         return reply(req, "500 Internal Server Error", "snapshot partition erase failed");
     }
     return reply(req, "200 OK", "erased");
@@ -2425,10 +2518,11 @@ static esp_err_t h_install_storage_write(httpd_req_t *req)
     session_unlock();
     if (install_busy) return reply(req, "409 Conflict", "storage restore unavailable during installation");
 
-    const esp_partition_t *part = NULL;
-    uint32_t offset = 0, length = 0;
-    esp_err_t e = install_snapshot_target(req, &part, &offset, &length, true);
+    install_snapshot_target_t target = {0};
+    esp_err_t e = install_snapshot_target(req, &target, true);
     if (e != ESP_OK) return e;
+    const uint32_t offset = target.rel_offset;
+    const uint32_t length = target.length;
     if (req->content_len != (size_t)length) {
         return reply(req, "400 Bad Request", "snapshot body length does not match X-Meta-Length");
     }
@@ -2439,10 +2533,12 @@ static esp_err_t h_install_storage_write(httpd_req_t *req)
         if (n <= 0) return reply(req, "408 Request Timeout", "snapshot write body incomplete");
         received += (size_t)n;
     }
-    e = esp_partition_write(part, offset, write_buf, length);
+    e = target.part
+        ? esp_partition_write(target.part, offset, write_buf, length)
+        : esp_flash_write(NULL, write_buf, target.abs_offset + offset, length);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "snapshot write failed label=%s off=%" PRIu32 ": %s",
-                 part->label, offset, esp_err_to_name(e));
+                 label_of_target(&target), offset, esp_err_to_name(e));
         return reply(req, "500 Internal Server Error", "snapshot partition write failed");
     }
     return reply(req, "200 OK", "written");
