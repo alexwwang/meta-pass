@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/CMakeFiles/bootloader"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/CMakeFiles/bootloader.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/CMakeFiles/bootloader-complete.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule"
+		},
+		{
+			"file" : "/Users/alex/ai-passport/meta-pass/build-e2e/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"bootloader"
+		],
+		"name" : "bootloader"
+	}
+}

@@ -2369,15 +2369,44 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
 // H2: 每次 await 前校验 loader 未断开(commitCarve 与快照 inventory 读取等路径共用)
 function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected", { label: label ?? "操作" })); }
 
+// 921600 链路下单次 readFlash 可能静默返回被篡改的字节(幻读)。结构性小读
+// 幻读的破坏是静默的:分区表幻读把条目 magic 打成 0xFFFF 会提前截断 eligible
+// 集合;app 头幻读会让宿主识别漏掉 factory → 宿主误判到子固件槽 → 覆盖校验
+// 报 "does not cover every eligible allocated partition"(2026-10-16 真机:同一
+// 固件备份成功而还原被拒;2026-10-15 自动化在同链路上亦复现一次,重连即过)。
+// 对策:小读多数表决——采 3 份,取字节完全一致的两份;读不出/不一致即报错,
+// 绝不带着可疑结构继续。
+async function readFlashMajority(addr, size, { samples = 3, maxAttempts = 6 } = {}) {
+  const collected = [];
+  let attempts = 0;
+  while (collected.length < samples && attempts < maxAttempts) {
+    attempts++;
+    try {
+      const buf = await loader.readFlash(addr, size);
+      if (buf instanceof Uint8Array && buf.length === size) collected.push(buf);
+    } catch (e) { /* 瞬时错误:采下一份 */ }
+  }
+  const hex = "0x" + addr.toString(16);
+  if (collected.length < samples) {
+    throw new Error("flash read at " + hex + " unstable: only " + collected.length + " of " + samples + " samples readable");
+  }
+  for (let i = 0; i < collected.length; i++) {
+    for (let j = i + 1; j < collected.length; j++) {
+      if (collected[i].every((b, k) => b === collected[j][k])) return collected[i];
+    }
+  }
+  throw new Error("flash read at " + hex + " unstable: no two of " + samples + " samples agree");
+}
+
 async function readUsbStorageInventory() {
   assertLoader("读取分区表以识别 MetaPass 宿主");
-  const table = await loader.readFlash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
+  const table = await readFlashMajority(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
   const partitions = parsePartitionTable(table);
   const candidates = partitions.filter(p => p.type === 0 && (p.subtype === 0 || (p.subtype >= 0x10 && p.subtype <= 0x1f)));
   const hosts = [];
   for (const part of candidates) {
     if (part.size < 0x100) continue;
-    const head = await loader.readFlash(part.offset, 0x100);
+    const head = await readFlashMajority(part.offset, 0x100);
     if (!(head instanceof Uint8Array) || head.length !== 0x100 || head[0] !== 0xe9) continue;
     const desc = head.subarray(0x20);
     // ESP_APP_DESC_MAGIC_WORD (0xABCD5432, little-endian) is part of the

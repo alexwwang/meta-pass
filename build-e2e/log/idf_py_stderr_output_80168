@@ -1,0 +1,1 @@
+Command: /Users/alex/.espressif/python_env/idf5.5_py3.10_env/bin/python -m esptool --chip esp32c3 merge_bin -o /Users/alex/ai-passport/meta-pass/build-e2e/FoloToy-AI-Passport-full-e2e.bin -f raw @flash_args

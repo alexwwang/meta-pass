@@ -1,0 +1,2 @@
+source /Users/alex/ai-passport/meta-pass/build-e2e/bootloader/gdbinit/symbols
+source /Users/alex/ai-passport/meta-pass/build-e2e/bootloader/gdbinit/connect

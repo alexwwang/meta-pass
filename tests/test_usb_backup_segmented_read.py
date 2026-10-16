@@ -81,6 +81,12 @@ require(
     "snapshot inventory must merge carve DATA records (the launcher materialized table omits DATA partitions)",
 )
 require(
+    r"async function readUsbStorageInventory\(\).*?readFlashMajority\(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE\).*?"
+    r"readFlashMajority\(part\.offset, 0x100\)",
+    "snapshot inventory must read the partition table and app descriptors via majority vote "
+    "(a single corrupted read silently truncates the eligible set or misidentifies the host)",
+)
+require(
     r"if \(isDynMode\(slotModel\.mode\)\).*?createUsbStorageSnapshot",
     "dynamic mode must route backup through the v2 snapshot path",
 )

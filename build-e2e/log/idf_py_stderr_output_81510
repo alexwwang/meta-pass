@@ -1,0 +1,13 @@
+Command: ninja all
+CMake Warning at /Users/alex/esp/esp-idf-v5.5.3/tools/cmake/build.cmake:629 (message):
+Call Stack (most recent call first):
+  /Users/alex/esp/esp-idf-v5.5.3/tools/cmake/project.cmake:741 (idf_build_process)
+  CMakeLists.txt:4 (project)
+
+
+CMake Warning at /Users/alex/esp/esp-idf-v5.5.3/tools/cmake/project.cmake:754 (message):
+  Missing kconfig option.  Re-run the build process...
+Call Stack (most recent call first):
+  CMakeLists.txt:4 (project)
+
+

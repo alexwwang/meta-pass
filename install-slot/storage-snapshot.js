@@ -251,7 +251,10 @@ export function validateStorageSnapshotManifest(manifest, {
     }
     const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition, protectedRanges);
     if (manifest.partitions.length !== eligible.length) {
-      fail("snapshot does not cover every eligible allocated partition");
+      const names = (list) => list.map((p) => p.label).sort().join(",");
+      fail("snapshot does not cover every eligible allocated partition " +
+        "(snapshot: " + manifest.partitions.length + " [" + names(manifest.partitions) + "]; " +
+        "device: " + eligible.length + " [" + names(eligible) + "])");
     }
     for (const target of eligible) {
       const source = manifest.partitions.find((p) => p.label === target.label &&
