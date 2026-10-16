@@ -355,11 +355,14 @@ async function loadSlotModel() {
   let rawB = null;
   let recordError = false;
   // 连接后立即读 4KB 数据容易超时(stub 刚就绪/波特率刚切换)——加一次重试
-  // 与 backup 的 readFlashChunked 不同:此处只需单次重试,不需要 L1/L2/L3 恢复
+  // 与 backup 的 readFlashChunked 不同:此处只需单次重试,不需要 L1/L2/L3 恢复。
+  // 重试覆盖整个瞬时串口抖动族(2026-10-16 真机:921600 下 "No serial data
+  // received"/"Invalid head of packet" 与 timeout 同为瞬时错误,单次重读即可恢复)。
+  const TRANSIENT_READ_ERR = /timeout|No serial data received|Invalid head of packet/;
   const readWithRetry = async (addr, size) => {
     try { return await loader.readFlash(addr, size); }
     catch (e) {
-      if (!e.message || !e.message.includes("timeout")) throw e;
+      if (!e.message || !TRANSIENT_READ_ERR.test(e.message)) throw e;
       await new Promise((r) => setTimeout(r, 200));
       return await loader.readFlash(addr, size);
     }
@@ -2693,7 +2696,9 @@ $("restore-input").addEventListener("change", async (ev) => {
   if (!file) return;
   try {
     const archiveBytes = new Uint8Array(await file.arrayBuffer());
-    const entries = readDataArchiveZip(archiveBytes);
+    // v2 快照按 4KiB 页建 extent,几百条目是常态(2026-10-16 真机:703 条目
+    // 的合法快照被默认 maxEntries=128 拒读)。与 readStorageSnapshotZip 口径一致。
+    const entries = readDataArchiveZip(archiveBytes, { maxEntries: 4096, maxEntryBytes: 8 * 1024 * 1024 });
     const manifestBytes = entries.get(MANIFEST_NAME);
     if (!manifestBytes) throw new Error(t("msg_restore_manifest_missing", { name: MANIFEST_NAME }));
     const manifestText = new TextDecoder().decode(manifestBytes);
