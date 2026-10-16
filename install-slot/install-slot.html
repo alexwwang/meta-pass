@@ -647,9 +647,17 @@ function renderSlotView() {
 }
 
 // 第 5 步备份勾选:与槽位表同源重建(保留用户已勾选状态)。
+// 动态模式:v2 整盘快照没有槽位选择概念,隐藏勾选 UI(2026-10-16 用户决策);
+// 固定槽 legacy 模式保留勾选。
 function rebuildBackupCheckboxes(view) {
   const wrap = $("bk-slot0")?.closest("p");
   if (!wrap) return;
+  if (view.dyn) {
+    wrap.textContent = "";
+    wrap.style.display = "none";
+    return;
+  }
+  wrap.style.display = "";
   const prev = new Map();
   for (const inp of wrap.querySelectorAll('input[type="checkbox"]')) {
     prev.set(inp.id, inp.checked);
@@ -2177,6 +2185,22 @@ function archiveSlotIdentity(slot, physicalSlot) {
 // 如果重建会话失败，直接终止备份；绝不生成不完整 ZIP。
 const BACKUP_SESSION_SEGMENT = 0x80000;
 
+// 读取 APP/DATA 归属的权威视图(carve 记录两个扇区),只读、不改全局状态。
+// 2026-10-16 真机教训:此前重启校验复用 loadSlotModel(),它在串口抖动导致
+// 记录/分区表读失败时先把 slotModel 降级(recordBroken/carve=null/seq=0),
+// 随后的归属比较把瞬时读错误误报成"ownership changed",还污染了全局状态
+// (真机日志:restore 恢复后全部 chunk 失败时页面状态被毁)。
+async function readCarveOwnershipSnapshot() {
+  const rawA = await loader.readFlash(STORE_OFFSET, STORE_SECTOR_SIZE);
+  const rawB = await loader.readFlash(STORE_OFFSET + STORE_SECTOR_SIZE, STORE_SECTOR_SIZE);
+  const pick = pickRecord(rawA, rawB);
+  return {
+    seq: pick && pick.rec ? pick.rec.seq : 0,
+    slots: pick && pick.rec ? JSON.stringify(pick.rec.slots) : "null",
+    data: pick && pick.rec ? JSON.stringify(pick.rec.data) : "null",
+  };
+}
+
 async function restartBackupReadSession() {
   const port = transport?.device;
   if (!port || !ESPLoader || !Transport) {
@@ -2184,11 +2208,9 @@ async function restartBackupReadSession() {
   }
   const oldLoader = loader;
   const oldTransport = transport;
-  const before = {
-    seq: slotModel.seq,
-    slots: JSON.stringify(slotModel.carve?.slots || []),
-    data: JSON.stringify(slotModel.carve?.data || []),
-  };
+  // 旧会话仍可读:先落盘取证再断开。任何读错误直接抛出原始串口错误,
+  // 绝不降级 slotModel —— 归属比较只回答"记录变没变",不回答"链路抖没抖"。
+  const before = await readCarveOwnershipSnapshot();
   log("DATA backup: opening a fresh serial/loader session at segment boundary", "warn");
   try { await withTimeout(oldTransport.disconnect(), 5000, "backup session close timed out"); }
   catch (err) { log("Previous backup session close: " + err.message, "warn"); }
@@ -2206,12 +2228,7 @@ async function restartBackupReadSession() {
     globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
     transport = nextTransport;
     loader = nextLoader;
-    await loadSlotModel();
-    const after = {
-      seq: slotModel.seq,
-      slots: JSON.stringify(slotModel.carve?.slots || []),
-      data: JSON.stringify(slotModel.carve?.data || []),
-    };
+    const after = await readCarveOwnershipSnapshot();
     if (before.seq !== after.seq || before.slots !== after.slots || before.data !== after.data) {
       throw new Error("APP/DATA ownership metadata changed while restarting the backup session");
     }
@@ -2290,7 +2307,14 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
         try { log(msg, "warn"); } catch { console.error(msg); }
       }
     }
-    if (!chunk) throw lastErr;
+    if (!chunk) {
+      // 高速链路反复抖动时给出已验证的逃生通道(2026-10-16 真机:921600 连续
+      // "No serial data received" 而 115200 走 esptool 同款停等路径可靠)。
+      if (linkBaud !== ROM_BAUD) {
+        throw new Error(lastErr.message + "(921600 链路反复失败,可用 ?baud=115200 强制慢速可靠链路重试)");
+      }
+      throw lastErr;
+    }
     buf.set(chunk.subarray(0, n), got);
     got += n;
     if (debugMode()) log(`[debug] 0x${(start + got - n).toString(16)} +${n}B · ${Date.now() - chunkT0}ms`, "warn");
