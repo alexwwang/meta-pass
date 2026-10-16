@@ -100,7 +100,8 @@ assert intent_writer.index('nvs_set_u8(nvs, "active", 0)') < intent_writer.index
 recovery_start = install_net.index("static esp_err_t remove_recover_pending(bool *did_recover)\n{")
 recovery_end = install_net.index("// POST /api/install/remove", recovery_start)
 recovery_handler = install_net[recovery_start:recovery_end]
-assert recovery_handler.index("esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i])") < recovery_handler.index("return remove_intent_clear()"), "recovery intent must remain active until every cleanup erase succeeds"
+assert recovery_handler.index("esp_flash_erase_region(NULL, data_offsets[i], data_sizes[i])") < recovery_handler.index("remove_intent_clear()"), "recovery intent must remain active until every cleanup erase succeeds"
+assert "intent" in recovery_handler and "non-fatal" in recovery_handler, "intent clear failure after successful erases must be non-fatal (no permanent endpoint lockout)"
 assert "Metadata was committed before power loss/erase failure" in install_net, "recovery must retry erases after metadata is already removed"
 prepare_start = install_net.index("static esp_err_t h_install_prepare(")
 prepare_end = install_net.index("// POST /api/install/session", prepare_start)
