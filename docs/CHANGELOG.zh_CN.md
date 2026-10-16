@@ -6,6 +6,12 @@
 
 ## Unreleased
 
+## v2.2.0 (2026-10-16)
+
+- **USB 存储快照备份/还原真机还原链路加固（2026-10-16）**：由一份真实归档（`metapass-storage-snapshot-v2_v2.1.0-1475-gb74e9da-dirty_2026-10-16T03-31-50.zip`,703 条目/7 分区，当日早上成功备份）驱动连续六项修复：快照 zip 条目上限对齐备份口径（`maxEntries`/`maxEntryBytes` 4096/8 MiB)；槽位模型加载重试从裸 `timeout` 扩为串口抖动族（`No serial data received`、`Invalid head of packet`)；结构性小读（分区表、app 描述头）改 3 样本多数表决；还原语义定调——档案布局为权威，live 0x8000 表只是 bootloader 按 carve 记录派生的启动态物化视图，live 缺项永不阻塞还原；安全红线收敛为两条（与受保护 live 分区重叠、与身份不同的现有分配重叠即备份后被 re-carve)，其余空间一律按档案身份写回；写回档案内 store 分区即重建 carve 记录，布局随下次启动自愈。链路自适应分档降速（921600→460800→230400→115200)+重同步带重试保住长读。备份遇 carve 记录不可读硬失败；还原打 error 日志并走自愈路径放行。所有修复均先以真实归档本地重放真机场景再提交，快照/还原/dynslot/契约测试与 `validate.sh --static` 全绿。
+
+- **USB 备份链路速度自适应分档降速（2026-10-15）**：无需 URL 参数，抖动持续即 921600→460800→230400→115200 逐级降速，长整读在噪声线缆/端口上可靠完成。
+
 - **v2 整机快照备份/还原真机验证（2026-10-15）**：修复快照 inventory 漏掉非活动 child DATA 的严重缺陷；设备侧按 carve DATA 身份补齐 inventory/read/erase/write，USB 页面合并 carve DATA，并修复 dev server 快照模块 404 与 `assertLoader` 作用域错误。USB v2 备份、USB v2 恢复、手机页 v2 恢复通过真机验证；两条恢复路径人工重启后均正常启动并重连，44/44 extents 与归档逐字节一致；分区表形状不匹配在首次擦除前拒绝。USB v1 host 测试有记录，v1 真机恢复 NOT RUN。详见 `docs/storage-snapshot-restore-test-report-2026-10-15.zh_CN.md`。
 
 - **统一归档还原的系统 NVS 策略**：USB 与手机页面一致，所有归档版本均可校验归档内 NVS 的长度/摘要，但恢复时绝不把归档 NVS 写入目标设备；目标设备现有 NVS（包括 Wi-Fi 凭证和设备本地状态）保持不变。USB v1.1 归档仍可用于旧固定槽设备的 APP 还原，归档中的 NVS 仅用于校验/留存，不再自动覆盖设备 NVS。新增静态契约回归，防止 USB v1 恢复路径重新引入 NVS 写入。
