@@ -6,6 +6,18 @@
 
 ## Unreleased
 
+## v2.2.1 (2026-10-16)
+
+Patch 发布。以下各项均在打 tag 前于真机实测验证（2026-10-16)，且全部落在 v2.2.0 tag 之后。
+
+- **还原冲突红线全撤，唯一红线=受保护分区重叠（2026-10-16）**:`buildStorageSnapshotRestorePlan` 不再按身份不符拒绝（`conflicts with current allocation`)。relabel 设备（档案 `ota_1` @0x360000 vs 表现 `ota_0` @0x360000）放行：slot label/subtype 是 carve 记录槽位序号的位置名（`ota_0`=`slots[0]`)，不构成身份；还原=档案把整机恢复到记录状态，live 表只是启动态物化视图。`unownedRestored` 按几何（offset+size）判定。恶意档案仍在 manifest 层被拒（`invalid snapshot extent`)。
+
+- **快照版本门改同 major 向前兼容（2026-10-16）**:v2.2.0 设备现接受 v2.1.0 档案。`assertSnapshotVersionCompatible`：低于档案声明 min 的构建拒绝；旧式精确钉死（`min===max`）档案同 major 放行、跨 major 拒绝；显式范围档案保持 min/max 边界。capture 侧声明 `min=sourceVersion, max=v{major}.99.99`。依据：存储结构只在 major 边界变更——若 v2.x 内改存储结构需收紧判定或 bump major。
+
+- **备份首点 "No serial data received" 修复（2026-10-16）**：备份入口的归属取证读是全链唯一无重试裸读；现失败即触发 `restartBackupReadSession()`（归属读重试+四档降速），重试用尽才终止备份。另：备份/安装入口在槽位模型状态未知时（`slotModel.stateUnknown`:carve 记录与分区表双双不可读）一律拒操作，不再静默降级 legacy 并报误导性"请勾选槽位";`readFlashMajority` 失败现在附带最后一个底层错误（`cause`)。
+
+- **固件 httpd 快照擦写解析加槽位几何匹配（2026-10-16，固件）**：手机页还原走 `POST /api/install/storage/erase|write`，其 `install_snapshot_target` 原强制精确分区身份，记录重雕 relabel 后一律 409。现落空时回退 `install_carve_slot_match`——按 offset+size 几何命中 carve 记录里已分配（非 EMPTY）的 APP 槽位，label/subtype 不参与；表内同名几何不符同样改走几何匹配而非 409。cardid/运行宿主红线、只读保护、写范围越界约束保留；擦写经 `esp_flash_*` 打记录偏移。**需重刷本固件——v2.2.0 固件上手机页还原在 relabel 设备仍 409。**
+
 ## v2.2.0 (2026-10-16)
 
 - **USB 存储快照备份/还原真机还原链路加固（2026-10-16）**：由一份真实归档（`metapass-storage-snapshot-v2_v2.1.0-1475-gb74e9da-dirty_2026-10-16T03-31-50.zip`,703 条目/7 分区，当日早上成功备份）驱动连续六项修复：快照 zip 条目上限对齐备份口径（`maxEntries`/`maxEntryBytes` 4096/8 MiB)；槽位模型加载重试从裸 `timeout` 扩为串口抖动族（`No serial data received`、`Invalid head of packet`)；结构性小读（分区表、app 描述头）改 3 样本多数表决；还原语义定调——档案布局为权威，live 0x8000 表只是 bootloader 按 carve 记录派生的启动态物化视图，live 缺项永不阻塞还原；安全红线收敛为两条（与受保护 live 分区重叠、与身份不同的现有分配重叠即备份后被 re-carve)，其余空间一律按档案身份写回；写回档案内 store 分区即重建 carve 记录，布局随下次启动自愈。链路自适应分档降速（921600→460800→230400→115200)+重同步带重试保住长读。备份遇 carve 记录不可读硬失败；还原打 error 日志并走自愈路径放行。所有修复均先以真实归档本地重放真机场景再提交，快照/还原/dynslot/契约测试与 `validate.sh --static` 全绿。
