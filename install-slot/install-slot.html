@@ -329,6 +329,7 @@ const slotModel = {
   targetSector: 0,             // 下一次记录提交写入的扇区(0=A,1=B)
   seq: 0,                      // 当前记录 seq(无记录 → 0;首提交 → 1)
   loaded: false,               // 是否已完成一次连接探测
+  stateUnknown: false,         // 记录+分区表双双不可读:mode 仅为占位兜底
   recordBroken: false,         // 记录扇区读取异常(≠「设备上无记录」)
 };
 let slotView = null;           // 最近一次 buildSlotView 结果(调试桥可读)
@@ -422,6 +423,10 @@ async function loadSlotModel() {
     slotModel.legacySlots = [];
   }
   slotModel.mode = mode;
+  // 记录与分区表双双不可读 = 设备状态完全未知:此时 mode 只是占位兜底,
+  // 备份/安装必须拒操作(否则动态设备会被当旧固定槽设备走 legacy 路径,
+  // 报莫须有的"请勾选槽位" —— 2026-10-16 真机回归)。
+  slotModel.stateUnknown = !!(recordError && !parts);
   slotModel.loaded = true;
   renderSlotView();
   return mode;
@@ -933,6 +938,7 @@ const I18N = {
     btn_restore: "Restore",
     data_backup_unavailable: "Fixed-slot devices retain historical v1 APP/NVS backup. Dynamic layouts use v2 raw storage snapshots with source-version metadata. ZIP files are unencrypted and may contain Wi-Fi credentials, device state and child-firmware data. Removing an APP also deletes its owned DATA.",
     msg_backup_busy: "Another operation is in progress.",
+    msg_slot_model_not_loaded: "Slot model was not loaded (device read failed at connect). Disconnect, reconnect, and wait for the slot table before retrying.",
     msg_backup_pick_slot: "Select at least one slot to back up.",
     msg_backup_single_group: "Backup supports one APP+DATA group per archive. Select exactly one APP slot.",
     msg_backup_v2_required: "Transactional APP+DATA backup requires dynamic storage; legacy fixed-slot backup is not supported.",
@@ -1151,6 +1157,7 @@ const I18N = {
     btn_restore: "开始恢复",
     data_backup_unavailable: "USB 固定槽设备保留历史 v1 APP/NVS 归档兼容；动态布局使用 v2 原始存储快照。ZIP 未加密，可能包含 Wi-Fi 凭证、设备状态和玩法数据。删除 APP 会同时删除其关联 DATA。",
     msg_backup_busy: "有操作正在进行中。",
+    msg_slot_model_not_loaded: "槽位模型未加载成功(连接时设备读取失败)。请断开重连,等待槽位表出现后再试。",
     msg_backup_pick_slot: "请至少勾选一个要备份的槽位。",
     msg_backup_single_group: "每个归档只支持一个 APP+DATA 组，请只选择一个 APP 槽位。",
     msg_backup_v2_required: "事务化 APP+DATA 备份需要动态存储模式；不再支持旧版固定槽位备份。",
@@ -2299,7 +2306,23 @@ async function restartBackupReadSession() {
 // chunk, the inner reader renews the session and retries the same flash offset.
 async function readFlashChunked(start, size, onProgress, onRetry) {
   backupDegradeTarget = null;   // 新一次备份从当前档开始,失败后再逐档降速
-  backupOwnershipRef = await readCarveOwnershipSnapshot();
+  // 备份入口的归属取证是一次裸读,曾成为整链唯一无重试环节:链路刚建立后的
+  // 首次事务抖动(No serial data received)在这一发就直接终止整个备份,
+  // 而再点一次即可成功(2026-10-16 真机:首点必败、重试点成功)。入口与其它
+  // chunk 同等对待:失败 → 重建会话(自带归属读重试 + 降档)再取,取不到才终止。
+  backupOwnershipRef = null;
+  let lastEntryErr = null;
+  for (let attempt = 1; attempt <= BACKUP_RETRIES; attempt++) {
+    try {
+      backupOwnershipRef = await readCarveOwnershipSnapshot();
+      break;
+    } catch (err) {
+      lastEntryErr = err;
+      log(`备份入口归属读取失败(${err.message}),重建会话重试 ${attempt}/${BACKUP_RETRIES - 1}`, "warn");
+      if (attempt < BACKUP_RETRIES) await restartBackupReadSession();  // 内部有归属读重试;此时 ref 为 null,不触发比较
+    }
+  }
+  if (!backupOwnershipRef) throw (lastEntryErr || new Error("ownership read failed"));
   const out = new Uint8Array(size);
   let offset = 0;
   while (offset < size) {
@@ -2386,16 +2409,18 @@ function assertLoader(label) { if (!loader) throw new Error(t("err_disconnected"
 async function readFlashMajority(addr, size, { samples = 3, maxAttempts = 6 } = {}) {
   const collected = [];
   let attempts = 0;
+  let lastErr = null;
   while (collected.length < samples && attempts < maxAttempts) {
     attempts++;
     try {
       const buf = await loader.readFlash(addr, size);
       if (buf instanceof Uint8Array && buf.length === size) collected.push(buf);
-    } catch (e) { /* 瞬时错误:采下一份 */ }
+    } catch (e) { lastErr = e; /* 瞬时错误:采下一份 */ }
   }
   const hex = "0x" + addr.toString(16);
+  const cause = lastErr ? ` (last error: ${lastErr.message || lastErr})` : "";
   if (collected.length < samples) {
-    throw new Error("flash read at " + hex + " unstable: only " + collected.length + " of " + samples + " samples readable");
+    throw new Error("flash read at " + hex + " unstable: only " + collected.length + " of " + samples + " samples readable" + cause);
   }
   for (let i = 0; i < collected.length; i++) {
     for (let j = i + 1; j < collected.length; j++) {
@@ -2518,6 +2543,15 @@ function downloadStorageSnapshot(zip, version) {
 
 $("btn-backup").addEventListener("click", async () => {
   if (busy || !loader) return;
+  // 连接时 loadSlotModel 失败会静默降级,slotModel.mode 停在初始占位
+  // LEGACY_FALLBACK —— 不拦截的话动态设备会走进旧固定槽路径,报莫须有的
+  // "请勾选槽位"(2026-10-16 真机回归)。未加载 = 状态未知,一律拒操作。
+  if (!slotModel.loaded || slotModel.stateUnknown) {
+    $("backup-status").textContent = t("msg_slot_model_not_loaded");
+    $("backup-status").className = "error";
+    log(t("msg_slot_model_not_loaded"), "error");
+    return;
+  }
   if (isDynMode(slotModel.mode)) {
     busy = true;
     refreshInstallButton();
@@ -3041,6 +3075,9 @@ $("btn-install").addEventListener("click", async () => {
     } else {
       image = await prepareCommunityImage();
     }
+    // 与备份同一红线:槽位模型未加载 = 设备模式未知,绝不按占位 LEGACY_FALLBACK
+    // 走旧固定槽安装路径(会把动态设备当 legacy 写死偏移)。
+    if (!slotModel.loaded || slotModel.stateUnknown) throw new Error(t("msg_slot_model_not_loaded"));
     const target = selectedSlotTarget();
     if (!target) throw new Error(t("err_pick_slot_first"));
 
