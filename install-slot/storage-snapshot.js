@@ -64,20 +64,33 @@ function validateMetaPassMetadata(metaPass) {
 
 export function assertSnapshotVersionCompatible(manifest, currentVersion) {
   validateMetaPassMetadata(manifest?.meta_pass);
-  if (!parseVersion(currentVersion)) {
+  const currentParsed = parseVersion(currentVersion);
+  if (!currentParsed) {
     throw new Error("Target device did not report a valid MetaPass version; restore refused before Flash writes");
   }
   const { min_inclusive: min, max_inclusive: max } = manifest.meta_pass.compatible_versions;
-  const exactSourceVersion = min === max;
-  if ((exactSourceVersion && currentVersion !== min) ||
-      compareVersions(currentVersion, min) < 0 || compareVersions(currentVersion, max) > 0) {
-    const source = manifest.meta_pass.system_version;
+  const refuse = (why) => {
     const error = new Error(
-      `MetaPass ${currentVersion} is outside this snapshot's supported range ${min}–${max}. ` +
-      `Reflash MetaPass ${source} (the version used for this snapshot), reconnect, and retry.`
+      `MetaPass ${currentVersion} cannot restore this snapshot (taken on ${manifest.meta_pass.system_version}): ${why} ` +
+      "Snapshots are forward-compatible within the same major MetaPass line."
     );
     error.code = "SNAPSHOT_VERSION_INCOMPATIBLE";
     throw error;
+  };
+  if (compareVersions(currentVersion, min) < 0) {
+    refuse(`firmware is older than the snapshot's minimum (${min}).`);
+  }
+  if (min === max) {
+    // 旧归档把兼容范围钉死为源版本精确值。存储结构按 major 版本线演进,
+    // 同 major 内结构未变即向前兼容(2026-10-16 真机:v2.1.0 档案还原到
+    // v2.2.0 设备被拒);跨 major 才属于不同的存储代际。
+    if (currentParsed.numbers[0] !== parseVersion(min).numbers[0]) {
+      refuse(`the snapshot belongs to the v${parseVersion(min).numbers[0]} storage line.`);
+    }
+    return true;
+  }
+  if (compareVersions(currentVersion, max) > 0) {
+    refuse(`firmware is newer than the snapshot's declared maximum (${max}).`);
   }
   return true;
 }
@@ -406,7 +419,15 @@ export async function captureStorageSnapshot(device, {
   const manifest = buildStorageSnapshotManifest({
     partitions: snapshotPartitions,
     metaPassVersion: sourceVersion,
-    compatibleMetaPassVersions: { min_inclusive: sourceVersion, max_inclusive: sourceVersion },
+    // 向前兼容:存储结构按 major 版本线演进,归档声明 min=源版本、
+    // max=同 major 天花板;同 major 内更新的固件可还原旧档案。
+    compatibleMetaPassVersions: (() => {
+      const parsed = parseVersion(sourceVersion);
+      return {
+        min_inclusive: sourceVersion,
+        max_inclusive: parsed ? `v${parsed.numbers[0]}.99.99` : sourceVersion,
+      };
+    })(),
   });
   // manifest 刚由 eligible(= live inventory 的权威合并视图)逐项读出,
   // 自洽;不再做布局相等校验(还原语义已改为档案布局为准,见

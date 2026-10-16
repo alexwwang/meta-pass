@@ -60,7 +60,7 @@ assert.deepEqual(manifest.meta_pass, {
   compatible_versions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
 });
 assert.equal(assertSnapshotVersionCompatible(manifest, "2.3.1"), true);
-assert.throws(() => assertSnapshotVersionCompatible(manifest, "3.0.0"), /Reflash MetaPass 2.0.0/);
+assert.throws(() => assertSnapshotVersionCompatible(manifest, "3.0.0"), /declared maximum/);
 assert.throws(() => assertSnapshotVersionCompatible(manifest, undefined), /valid MetaPass version/);
 const taggedVersion = "v0.2.2-35-gaa25c52";
 const taggedManifest = buildStorageSnapshotManifest({
@@ -70,8 +70,12 @@ const taggedManifest = buildStorageSnapshotManifest({
 });
 assert.equal(assertSnapshotVersionCompatible(taggedManifest, taggedVersion), true,
   "git-describe version strings from ESP-IDF app descriptors are valid source versions");
-assert.throws(() => assertSnapshotVersionCompatible(taggedManifest, "v0.2.2-34-gabcdef0"), /Reflash MetaPass/,
-  "a different build is outside the conservative exact-source compatibility range");
+assert.throws(() => assertSnapshotVersionCompatible(taggedManifest, "v1.0.0"), /v0 storage line/,
+  "a different major version is a different storage generation");
+assert.equal(assertSnapshotVersionCompatible(taggedManifest, "v0.2.2-36-gabcdef0"), true,
+  "forward-compatible: a newer build in the same major line restores the snapshot");
+assert.throws(() => assertSnapshotVersionCompatible(taggedManifest, "v0.2.2-34-gabcdef0"), /older than the snapshot's minimum/,
+  "an older build than the snapshot source is still refused");
 const zip = await buildStorageSnapshotZip({
   manifest,
   payloads: new Map([["extents/store-000010.bin", payload]]),
@@ -255,6 +259,35 @@ assert.throws(() => eligibleSnapshotPartitions([
   assert.equal(captured.manifest.partitions[1].extents[0].offset, 0);
   assert.equal(captured.payloads.get(captured.manifest.partitions[1].extents[0].file).length, 4096);
   assert.equal(captured.payloads.get(captured.manifest.partitions[1].extents[0].file)[0x20], 0x5a);
+}
+
+// 版本兼容策略:向前兼容 —— 同 major 版本线内,新固件可还原旧档案;
+// 低于源版本或跨 major(不同存储代际)才拒绝。旧归档把范围钉死为源版本
+// 精确值(min===max)时同样按同 major 放行(2026-10-16 真机:v2.1.0 档案
+// 还原到 v2.2.0 设备)。
+{
+  const legacyPinned = {
+    meta_pass: {
+      system_version: "v2.1.0-1475-gb74e9da-dirty",
+      compatible_versions: { min_inclusive: "v2.1.0-1475-gb74e9da-dirty", max_inclusive: "v2.1.0-1475-gb74e9da-dirty" },
+    },
+  };
+  assert.equal(assertSnapshotVersionCompatible(legacyPinned, "v2.2.0"), true,
+    "newer same-major firmware restores an older exact-pinned snapshot");
+  assert.equal(assertSnapshotVersionCompatible(legacyPinned, "v2.1.0-2000-gdeadbeef"), true,
+    "same-line prerelease firmware restores an older exact-pinned snapshot");
+  assert.throws(() => assertSnapshotVersionCompatible(legacyPinned, "v3.0.0"), /v2 storage line/);
+  assert.throws(() => assertSnapshotVersionCompatible(legacyPinned, "v2.0.0"), /older than the snapshot's minimum/);
+  assert.throws(() => assertSnapshotVersionCompatible(legacyPinned, null), /did not report a valid MetaPass version/);
+  // 显式范围归档:max 之上拒绝,范围之内(含同 major 更新)放行。
+  const ranged = {
+    meta_pass: {
+      system_version: "v2.1.0",
+      compatible_versions: { min_inclusive: "v2.1.0", max_inclusive: "v2.99.99" },
+    },
+  };
+  assert.equal(assertSnapshotVersionCompatible(ranged, "v2.2.0"), true);
+  assert.throws(() => assertSnapshotVersionCompatible(ranged, "v3.0.0"), /declared maximum/);
 }
 
 console.log("PASS storage snapshot manifest, protected ranges, sparse extents, layout compatibility, and payload integrity");

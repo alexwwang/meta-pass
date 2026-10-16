@@ -67,7 +67,7 @@ for (const version of ["3.0.0", null]) {
   const device = mockDevice({ version });
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
-    /outside this snapshot's supported range|did not report a valid MetaPass version/,
+    /cannot restore this snapshot|did not report a valid MetaPass version/,
   );
   assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false, "version preflight runs before writes");
 }
