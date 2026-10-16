@@ -6,6 +6,16 @@
 
 ## Unreleased
 
+## v2.2.2 (2026-10-16)
+
+Patch release. Both firmware fixes below were root-caused from hardware evidence (serial logs + NVS post-mortem) and validated on a real device before tagging.
+
+- **Session token: 30-minute TTL + dual-slot lifetime (firmware, 2026-10-16)**: fixes the recurring "first store entry after boot shows pair code `-`" bug. Root cause: the resume path marked the restored session `pair_used`, so the pair code was never re-displayed after any boot. New rules: every token carries a 30-minute TTL (`META_INSTALL_TOKEN_TTL_MS`, counted from boot — the device has no RTC); issuing a new token never evicts the old one, so a phone already connected keeps working; the old token is revoked only when *consumed* (first successful auth / pair-code redeem); a controlled reboot (install-finish restart) preserves the live session via a RAM-only arm flag set before page teardown; within one session lifetime any restart — controlled, normal, or hard power-cut — keeps the token valid. The only termination paths are a normal store exit (`token_stop`) or TTL expiry.
+
+- **Slot remove: permanent HTTP 500 / black screen fixed (firmware, 2026-10-16)**: deleting a slot returned 200, but the next `/api/install/storage/info` failed with HTTP 500 and the device could black-screen. Root cause: `meta_carve_flash_table_write()` calls `esp_partition_unload_all()` during commit materialize, freeing partition-cache list entries while open NVS handles hold a raw `NVSPartition::mESPPartition` pointer (IDF `nvs_partition.hpp`) — every subsequent NVS read/write was a use-after-free; the uninstall intent then failed cleanup forever and the recovery gate failed closed on every request. Fixes: after any runtime materialize, `nvs_flash_deinit()` + `nvs_flash_init()` rebuild the partition pointer (skipped silently when NVS is not initialized at early boot); and after a successful erase, a failing `remove_intent_clear()` is now logged as WARN and not propagated — erase is idempotent, so leftover intent can no longer lock the endpoint permanently.
+
+- **`tools/realdevice/log_capture.py` port is now a required `-p` argument (2026-10-16)**: removes a hardcoded local serial path that violated CI hygiene.
+
 ## v2.2.1 (2026-10-16)
 
 Patch release. All items below were hardware-validated on a real device (2026-10-16) before tagging; each landed after the v2.2.0 tag.

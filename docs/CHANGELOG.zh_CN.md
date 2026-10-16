@@ -6,6 +6,16 @@
 
 ## Unreleased
 
+## v2.2.2 (2026-10-16)
+
+Patch 发布。以下两项固件修复均由真机证据（串口日志 + NVS 验尸）定位根因，打 tag 前已在真机验证。
+
+- **会话 token:30 分钟 TTL + 双槽生命周期（固件，2026-10-16）**：修复"每次开机首次进商店配对码显示 `-`"。根因：恢复会话被标记 `pair_used`，任何一次开机后配对码都不再显示。新规则：每个 token 带 30 分钟 TTL（`META_INSTALL_TOKEN_TTL_MS`，从本次开机起算——设备无 RTC)；签发新 token 不顶替旧 token，已连接的手机不受影响；旧 token 仅在**被消费**（首个成功鉴权/配对码兑换）时才吊销；受控重启（安装完成自动重启）通过 RAM 旗标在 page teardown 前置位保留会话；会话存活期内任意重启（受控/普通/硬断电）token 均有效。唯一终止途径 = 正常离店 `token_stop` 或 TTL 过期。
+
+- **删槽永久 HTTP 500 / 设备黑屏修复（固件，2026-10-16）**：删除槽位返回 200，但下一个 `/api/install/storage/info` 请求 500、设备可能黑屏。根因：`meta_carve_flash_table_write()` 提交物化时调用 `esp_partition_unload_all()` 释放分区缓存列表项，而已打开的 NVS 句柄持有裸指针 `NVSPartition::mESPPartition`(IDF `nvs_partition.hpp`)——此后一切 NVS 读写都是 use-after-free；卸载 intent 因此永远无法清掉，recovery gate 每次请求 fail-closed。修复：任何 runtime 物化后 `nvs_flash_deinit()` + `nvs_flash_init()` 重建分区指针（boot 早期 NVS 未初始化时静默跳过）；擦除成功后 `remove_intent_clear()` 失败降级 WARN 不再向上返错——擦除幂等，残留 intent 不再永久锁端点。
+
+- **`tools/realdevice/log_capture.py` 串口改为必填 `-p` 参数（2026-10-16）**：移除硬编码本地串口路径（违反 CI 规范）。
+
 ## v2.2.1 (2026-10-16)
 
 Patch 发布。以下各项均在打 tag 前于真机实测验证（2026-10-16)，且全部落在 v2.2.0 tag 之后。
