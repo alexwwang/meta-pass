@@ -1042,8 +1042,8 @@ static void goto_page(page_t page)
          && meta_carve_flash_reboot_pending());
     if (reboot_after_teardown) {
         // 必须在 page_teardown 之前:token_stop(teardown 内)见到该旗标会
-        // 跳过擦除并落一次性恢复 marker —— 手机凭原 token 免重扫续连。
-        (void)meta_install_arm_resume_once();
+        // 跳过擦除 —— 手机凭原 token 免重扫续连(会话活过这次受控重启)。
+        (void)meta_install_arm_session_preserve();
     }
     page_teardown();
     s_page = page;

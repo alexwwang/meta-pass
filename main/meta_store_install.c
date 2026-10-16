@@ -74,6 +74,15 @@ typedef struct {
     bool     pair_used;          // 已被成功兑换(一次性)
     int64_t  pair_created_ms;    // 生成时刻(esp_timer 单调毫秒)
     int      pair_tries;         // 已累计错误次数
+    // 2026-10-16 双槽(用户决策:签发不顶替、消费才顶替,30 分钟 TTL):
+    // current 被消费(首个成功鉴权/兑换)时吊销 prev;prev 也可因自身 TTL
+    // 到期或正常离店清场而失效。prev 不持久化 —— 跨重启续连只靠 current
+    // (重启续连是本职场景;TTL 边界场景旧 token 本就临近死亡)。
+    int64_t  token_issued_ms;    // current 签发时刻
+    bool     token_consumed;     // current 已被消费(顶替触发,只触发一次)
+    bool     prev_valid;
+    char     prev_hex[META_INSTALL_TOKEN_HEX_LEN + 1];
+    int64_t  prev_issued_ms;
 } session_token_t;
 
 typedef struct {
@@ -606,11 +615,28 @@ static void lan_url_into(char *out, size_t out_sz, const char *token_hex)
              b[0], b[1], b[2], b[3], token_hex);
 }
 
-// 配对码签发(与当前 token 绑定;兑换结果还是同一个 token)。
-// 2026-10-16 真机修订:恢复出来的会话也补发。旧语义"恢复会话 pair_used=
-// true、码不复活"导致每次恢复后屏上 pair code 显示 "-",用户无法手输配对
-// 码进手机页(QR 路径不受影响);而 QR 里的 token 本就公开给近场任何人,
-// 为同一 token 补发一次性配对码不扩大暴露面。仅"无在途 offer/上传"时补发。
+// token TTL(2026-10-16 用户决策:30 分钟;见头文件 META_INSTALL_TOKEN_TTL_MS)。
+static bool token_ttl_expired(int64_t issued_ms)
+{
+    return esp_timer_get_time() / 1000 - issued_ms > (int64_t)META_INSTALL_TOKEN_TTL_MS;
+}
+
+// current 被消费(首个成功鉴权请求 / 配对码兑换):此刻才吊销历史 token。
+// 签发本身不顶替 —— 已持有旧 token 的手机在新 token 签发后保持不断连。
+static void token_mark_consumed(void)
+{
+    if (!s_token.token_consumed) {
+        s_token.token_consumed = true;
+        if (s_token.prev_valid) {
+            ESP_LOGI(TAG, "new token consumed; revoking previous token");
+        }
+    }
+    s_token.prev_valid = false;
+}
+
+// 配对码签发(与当前 token 绑定;兑换结果还是同一个 token)。token_start
+// 在配对态(无在途 offer/上传)一律调用 —— 恢复出来的旧会话也补发,屏上
+// pair code 永不为 "-" (2026-10-16 真机;QR 已公开 token,补发不扩大暴露面)。
 static void pair_code_issue(void)
 {
     snprintf(s_token.pair_code, sizeof(s_token.pair_code), "%06u",
@@ -631,12 +657,21 @@ static esp_err_t token_generate(void)
 {
     // 128 bit 随机(esp_random 每次 32 bit,拼 4 次;文档 §8 下限)。
     // token 只以 hex 形态驻留(比较也走 hex),不单独存字节副本。
+    // 旧 current 降一级为 prev:保持有效直到被消费顶替 / 自身 TTL 到期 /
+    // 正常离店。签发不顶替(2026-10-16 用户决策)。
+    if (s_token.token_valid) {
+        memcpy(s_token.prev_hex, s_token.token_hex, sizeof(s_token.prev_hex));
+        s_token.prev_issued_ms = s_token.token_issued_ms;
+        s_token.prev_valid = true;
+    }
     uint8_t raw[META_INSTALL_TOKEN_BYTES];
     for (int i = 0; i < META_INSTALL_TOKEN_BYTES; i++) {
         raw[i] = (uint8_t)esp_random();
     }
     token_to_hex(raw, s_token.token_hex);
     s_token.token_valid = true;
+    s_token.token_issued_ms = esp_timer_get_time() / 1000;
+    s_token.token_consumed = false;
     pair_code_issue();
     token_persist();   // 受控重启后 token_start 原样恢复,手机连接不断
     return ESP_OK;
@@ -658,26 +693,32 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
 }
 
 // ---- 中断续连持久标志(用户决策①,NVS "metapass"/"inst_active") ----
-// 2026-10-16 一次性 marker 修订(用户决策):区分"安装/删除物化后的受控重
-// 启"与"普通开机"。旧机制只看 inst_active,硬断电残留会让之后每次普通
-// 开机都恢复旧会话(首进商店配对码显示 "-"、看着像死会话)。现机制:
-//   inst_active  = 会话存活(token_start 置位 / token_stop 清除),不变;
-//   inst_r_once  = 一次性 marker,仅受控重启路径(main.c goto_page
-//                  reboot_after_teardown)在 esp_restart 前置位;
-//   boot 消费    = resume_pending 读到 marker 即清;普通开机见到"有
-//                  inst_active 无 marker" = 硬断电残留,顺手清掉
-//                  inst_active + inst_tok,token_restore 不再复活旧会话。
-// 标志丢失的最坏结果只是退化为重新配对,不丢正确性。
-static const char k_nvs_ns_install[]      = "metapass";
-static const char k_nvs_key_active[]      = "inst_active";
-static const char k_nvs_key_token[]       = "inst_tok";
-static const char k_nvs_key_resume_once[] = "inst_r_once";
+// token_start 置位、token_stop 清除;复位后 app_main 读它决定是否自动恢复
+// STA + install 服务,手机凭持久化 token 重发 prepare 免重扫 QR。
+// 2026-10-16 两轮真机修订收敛(用户决策):
+//   会话存活期间任意重启(安装物化受控重启 / 普通重启 / 硬断电)都必须能
+//   恢复 —— token 失效 = 手机断连,违背本机制的存在意义;不做"开机类型"
+//   区分。首进商店配对码显示 "-" 的问题由 token_start 的配对码补发解决
+//   (token 不变,恢复不破坏任何已持有 token 的连接)。
+//   唯一终止 = 正常离店 token_stop:清 inst_active + inst_tok + 配对码。
+//   注意 token_stop 在 page_teardown 里先于受控重启执行,故 reboot 路径
+//   由 meta_install_arm_session_preserve() 置 RAM 旗标令其跳过擦除。
+// 一切写入 best-effort:标志丢失的最坏结果只是退化为重新配对,不丢正确性。
+static const char k_nvs_ns_install[] = "metapass";
+static const char k_nvs_key_active[] = "inst_active";
+static const char k_nvs_key_token[]  = "inst_tok";
 
-static void session_nvs_erase_stale(nvs_handle_t h)
+// 受控重启保留会话的 RAM 旗标:由 meta_install_arm_session_preserve() 在
+// page_teardown 之前置位;token_stop 见到它即跳过 token/标志擦除
+// (teardown 先于 esp_restart,不跳则重启后续连被自己的离店清场杀掉)。
+static bool s_preserve_session_once;
+
+// 受控重启前由 UI 调用(仅 goto_page 的 reboot_after_teardown 路径),且
+// 必须在 page_teardown 之前。
+esp_err_t meta_install_arm_session_preserve(void)
 {
-    nvs_erase_key(h, k_nvs_key_active);
-    nvs_erase_key(h, k_nvs_key_token);
-    nvs_commit(h);
+    s_preserve_session_once = true;
+    return ESP_OK;
 }
 
 static void resume_flag_set(bool active)
@@ -694,50 +735,14 @@ static void resume_flag_set(bool active)
     nvs_close(h);
 }
 
-// 受控重启保留会话的 RAM 旗标:由 meta_install_arm_resume_once() 在
-// page_teardown 之前置位;token_stop 见到它即跳过 token/标志擦除,并
-// 把一次性 NVS marker 落盘(teardown 走完、esp_restart 之前)。
-static bool s_preserve_session_once;
-
-// 受控重启前由 UI 调用(仅 reboot_after_teardown 路径),且必须在
-// page_teardown 之前:硬断电/普通开机不会经过这里,天然与普通开机区分。
-esp_err_t meta_install_arm_resume_once(void)
-{
-    s_preserve_session_once = true;
-    return ESP_OK;
-}
-
 bool meta_install_resume_pending(void)
 {
     nvs_handle_t h;
-    uint8_t active = 0, once = 0;
+    uint8_t active = 0;
     if (nvs_open(k_nvs_ns_install, NVS_READONLY, &h) != ESP_OK) return false;
-    const esp_err_t e_active = nvs_get_u8(h, k_nvs_key_active, &active);
-    const esp_err_t e_once   = nvs_get_u8(h, k_nvs_key_resume_once, &once);
+    const esp_err_t e = nvs_get_u8(h, k_nvs_key_active, &active);
     nvs_close(h);
-
-    if (e_once == ESP_OK && once == 1) {
-        // 一次性 marker:消费即清(无论 inst_active 是否还在,防半擦除残留)。
-        nvs_handle_t w;
-        if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &w) == ESP_OK) {
-            nvs_erase_key(w, k_nvs_key_resume_once);
-            nvs_commit(w);
-            nvs_close(w);
-        }
-        return e_active == ESP_OK && active == 1;
-    }
-    // 无 marker 却有存活标志 = 硬断电/旧版本残留:普通开机不得恢复,清场。
-    if (e_active == ESP_OK && active == 1) {
-        ESP_LOGW(TAG, "stale install session flags without reboot marker; wiping");
-        nvs_handle_t w;
-        if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &w) == ESP_OK) {
-            session_nvs_erase_stale(w);
-            nvs_erase_key(w, k_nvs_key_resume_once);
-            nvs_commit(w);
-            nvs_close(w);
-        }
-    }
-    return false;
+    return e == ESP_OK && active == 1;
 }
 
 // ---- 会话 token 持久化(2026-10-04 交互修订②,2026-10-16 一次性 marker 修订) ----
@@ -758,7 +763,6 @@ static void token_persist_erase(void)
     nvs_handle_t h;
     if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_erase_key(h, k_nvs_key_token);
-    nvs_erase_key(h, k_nvs_key_resume_once);   // 连 marker 一起清,防半残留
     nvs_commit(h);
     nvs_close(h);
 }
@@ -778,6 +782,11 @@ static bool token_restore(void)
     }
     memcpy(s_token.token_hex, hex, sizeof(s_token.token_hex));
     s_token.token_valid = true;
+    // 设备无 RTC,跨重启的 TTL 窗口从本次启动起算(手机须在开机后 30 分钟内
+    // 回连;这是重启续连场景的本来要求)。prev 不持久化,跨重启清空。
+    s_token.token_issued_ms = esp_timer_get_time() / 1000;
+    s_token.token_consumed = false;
+    s_token.prev_valid = false;
     s_token.pair_valid  = false;
     s_token.pair_used   = true;
     s_token.pair_tries  = 0;
@@ -788,6 +797,20 @@ static bool token_restore(void)
 esp_err_t meta_install_token_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
+    // 30 分钟 TTL(用户决策):current 过期 → prev 仍在期内则提级续用(并重
+    //  persist,防重启后恢复回已死的 current);prev 也过期才全新签发。
+    if (s_token.token_valid && token_ttl_expired(s_token.token_issued_ms)) {
+        ESP_LOGW(TAG, "token expired (>30 min)");
+        s_token.token_valid = false;
+        if (s_token.prev_valid && !token_ttl_expired(s_token.prev_issued_ms)) {
+            memcpy(s_token.token_hex, s_token.prev_hex, sizeof(s_token.token_hex));
+            s_token.token_issued_ms = s_token.prev_issued_ms;
+            s_token.token_valid = true;
+            s_token.token_consumed = false;
+            token_persist();
+        }
+        s_token.prev_valid = false;
+    }
     if (!s_token.token_valid) {
         if (!token_restore()) token_generate();
     }
@@ -817,17 +840,10 @@ void meta_install_token_stop(void)
     if (s_preserve_session_once) {
         // 受控重启保留会话(2026-10-16,用户决策):token/inst_active 原样
         // 留在 NVS(token_generate 时已 persist),手机重启后凭原 token 免
-        // 重扫续连;此处只落一次性恢复 marker,boot 读到即消费。不 memset、
-        // 不擦除 —— 擦除由 boot 的 resume_pending(无 marker 分支)或下次
-        // 正常离店 token_stop 负责。
+        // 重扫续连。不 memset、不擦除 —— 会话存活期间任意后续重启都继续
+        // 恢复;清场只发生在正常离店 token_stop(非保留分支)。
         s_preserve_session_once = false;
         s_session.active = false;
-        nvs_handle_t h;
-        if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) == ESP_OK) {
-            nvs_set_u8(h, k_nvs_key_resume_once, 1);
-            nvs_commit(h);
-            nvs_close(h);
-        }
         status_set("idle", "");
         session_unlock();
         return;
@@ -843,13 +859,23 @@ void meta_install_token_stop(void)
 bool meta_install_token_from_hex(const char *hex, size_t hex_len)
 {
     if (!hex || hex_len != META_INSTALL_TOKEN_HEX_LEN) return false;
-    if (!s_token.token_valid) return false;
     // 先验字符集(只接受小写 hex),再与签发 token 定长比较。
     for (int i = 0; i < META_INSTALL_TOKEN_HEX_LEN; i++) {
         const char c = hex[i];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
-    return memcmp(hex, s_token.token_hex, META_INSTALL_TOKEN_HEX_LEN) == 0;
+    // current:期内且匹配 → 消费,吊销历史 token。
+    if (s_token.token_valid && !token_ttl_expired(s_token.token_issued_ms)
+        && memcmp(hex, s_token.token_hex, META_INSTALL_TOKEN_HEX_LEN) == 0) {
+        token_mark_consumed();
+        return true;
+    }
+    // prev:期内且匹配 → 放行,不触发任何顶替(它已是被顶替后仍有效的旧 token)。
+    if (s_token.prev_valid && !token_ttl_expired(s_token.prev_issued_ms)
+        && memcmp(hex, s_token.prev_hex, META_INSTALL_TOKEN_HEX_LEN) == 0) {
+        return true;
+    }
+    return false;
 }
 
 // 配对码兑换(§8:短 TTL + 尝试上限 + 一次性)。
@@ -872,6 +898,7 @@ static bool pair_redeem(const char *code, size_t code_len)
         return false;
     }
     s_token.pair_used = true;
+    token_mark_consumed();   // 配对码兑换成功 = 新手机已接入,吊销历史 token
     return true;
 }
 

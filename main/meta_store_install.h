@@ -38,6 +38,10 @@
 #define META_INSTALL_PAIR_DIGITS     6
 #define META_INSTALL_PAIR_TTL_MS     300000u  // 5 分钟内未用即作废
 #define META_INSTALL_PAIR_MAX_TRIES  5        // 连续错误达到即作废(重新进店才再生成)
+// token 有效期(2026-10-16 用户决策):30 分钟。新 token 须被消费(首个成功
+// 鉴权请求或配对码兑换)才顶替旧 token —— 签发本身不顶替,保护已连接手机
+// 在新 token 签发后不断连;旧 token 被顶替/自身到期/正常离店三者任一吊销。
+#define META_INSTALL_TOKEN_TTL_MS    (30 * 60 * 1000)
 
 // 上传停滞阈值(审计 M6):uploading 态下超过此时长无 chunk 活动,store 死线
 // 不再续期 —— 手机消失后由正常超时浮层询问用户,而不是无限吊住 WiFi/OTA。
@@ -85,13 +89,13 @@ bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
 // token_stop,如上传中途断电)→ true。复位后 app_main 据此自动恢复 STA +
 // install 服务,手机用持久化 token 重发 prepare 免重扫 QR。NVS 标志,
 // 读取须在 meta_store_net_init()(内部 nvs_flash_init)之后。
-// 2026-10-16 一次性 marker 语义:仅当上次重启是"安装/删除物化后的受控重
-// 启"(goto_page reboot_after_teardown 路径调用了 meta_install_arm_resume_once)
-// 才返回 true;普通开机/硬断电残留返回 false 并顺手清场。
+// 2026-10-16 语义:会话存活期间任意重启(受控/普通/硬断电)都恢复;唯一
+// 终止 = 正常离店 token_stop 清场。不做开机类型区分。
 bool      meta_install_resume_pending(void);
 
-// 受控重启前(reboot_after_teardown)置一次性恢复 marker;仅该路径调用。
-esp_err_t meta_install_arm_resume_once(void);
+// 受控重启前(reboot_after_teardown)在 page_teardown 之前调用:令
+// token_stop 跳过擦除,本会话活过这次重启(手机凭原 token 免扫续连)。
+esp_err_t meta_install_arm_session_preserve(void);
 
 // ---- offer 确认状态机(UI 入口,文档 §6.4) ----
 // 拷贝当前待确认 offer(无则 false)。快照复制:UI 渲染期间允许手机重新
