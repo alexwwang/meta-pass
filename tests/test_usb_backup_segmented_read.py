@@ -44,9 +44,14 @@ require(
     "failed reads must use bounded retries and a finite per-chunk timeout",
 )
 require(
+    r"const BACKUP_BAUD_LADDER = Object\.freeze\(\[921600, 460800, 230400, ROM_BAUD\]\).*?"
+    r"function lowerBackupBaud\(baud\)",
+    "baud degrade must be graduated (921600 → 460800 → 230400 → 115200), not a single jump to the ROM baud",
+)
+require(
     r"async function restartBackupReadSession\(\).*?"
-    r"backupDegradeBaud && linkBaud !== ROM_BAUD.*?baudrate: nextBaud",
-    "session restart must degrade to the ROM baud automatically after unstable reads (adaptive, no URL parameter)",
+    r"backupDegradeTarget && backupDegradeTarget < linkBaud.*?baudrate: nextBaud",
+    "session restart must apply the graduated degrade target (adaptive, no URL parameter)",
 )
 reader_start = PAGE.index("async function readFlashChunkedSingleSession(")
 reader_end = PAGE.index('$("btn-backup").addEventListener', reader_start)

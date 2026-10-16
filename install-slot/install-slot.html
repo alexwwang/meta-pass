@@ -2185,10 +2185,16 @@ function archiveSlotIdentity(slot, physicalSlot) {
 // 如果重建会话失败，直接终止备份；绝不生成不完整 ZIP。
 const BACKUP_SESSION_SEGMENT = 0x80000;
 
-// 高速链路自适应降速:chunk 读失败置位,下一次重建会话时自动落到 ROM 波特并
-// 沿用(2026-10-16 用户决策:速度自适应,不暴露 URL 参数)。每次备份入口复位,
-// 新的备份仍先试高速。
-let backupDegradeBaud = false;
+// 高速链路自适应降速:chunk 读失败只降一档,不一次落到最低(2026-10-16 用户决策:
+// 分档降速,速度自适应,不暴露 URL 参数)。每次备份入口复位,新的备份仍从最高档开始。
+// ROM 波特恒为末档;ESPLoader.changeBaud 支持任意档,esptool.py 同款。
+const BACKUP_BAUD_LADDER = Object.freeze([921600, 460800, 230400, ROM_BAUD]);
+function lowerBackupBaud(baud) {
+  const rung = BACKUP_BAUD_LADDER.indexOf(baud);
+  if (rung < 0) return ROM_BAUD;
+  return BACKUP_BAUD_LADDER[Math.min(rung + 1, BACKUP_BAUD_LADDER.length - 1)];
+}
+let backupDegradeTarget = null;   // null = 维持当前档;否则为下一档目标波特率
 // 备份开始时一次性取证的 APP/DATA 归属视图。重启会话只做 after 对比,
 // 绝不在垂死的旧会话上做 before 读(2026-10-16 真机:旧会话 read-error 后
 // before 读直接抛 No serial data received,一次重试机会就被浪费)。
@@ -2226,9 +2232,9 @@ async function restartBackupReadSession() {
   let lastSyncErr = null;
   for (let syncAttempt = 1; syncAttempt <= BACKUP_RETRIES; syncAttempt++) {
     const nextTransport = new Transport(port, false);
-    // 自适应降速:有 chunk 失败记录且当前仍在高速 → 本次重建直接落 ROM 波特。
-    const degrade = backupDegradeBaud && linkBaud !== ROM_BAUD;
-    const nextBaud = degrade ? ROM_BAUD : linkBaud;
+    // 自适应降速:有降档目标且确实更低 → 本次重建直接用目标档。
+    const nextBaud = (backupDegradeTarget && backupDegradeTarget < linkBaud)
+      ? backupDegradeTarget : linkBaud;
     const nextLoader = new ESPLoader({
       transport: nextTransport,
       baudrate: nextBaud,
@@ -2254,10 +2260,11 @@ async function restartBackupReadSession() {
       }
       transport = nextTransport;
       loader = nextLoader;
-      if (degrade) {
-        backupDegradeBaud = false;
-        linkBaud = ROM_BAUD;
-        log(t("msg_baud_fallback", { baud: HIGH_BAUD, err: "unstable backup reads", romBaud: ROM_BAUD }), "warn");
+      if (nextBaud < linkBaud) {
+        backupDegradeTarget = null;
+        const from = linkBaud;
+        linkBaud = nextBaud;
+        log(t("msg_baud_fallback", { baud: from, err: "unstable backup reads", romBaud: nextBaud }), "warn");
       }
       log("Fresh backup read session ready (" + chip + ")", "ok");
       return;
@@ -2281,7 +2288,7 @@ async function restartBackupReadSession() {
 // Public backup reader: read in bounded 512 KiB sessions. On a failed 32 KiB
 // chunk, the inner reader renews the session and retries the same flash offset.
 async function readFlashChunked(start, size, onProgress, onRetry) {
-  backupDegradeBaud = false;   // 新一次备份先跑高速,失败后再自适应降速
+  backupDegradeTarget = null;   // 新一次备份从当前档开始,失败后再逐档降速
   backupOwnershipRef = await readCarveOwnershipSnapshot();
   const out = new Uint8Array(size);
   let offset = 0;
@@ -2338,14 +2345,15 @@ async function readFlashChunkedSingleSession(start, size, onProgress, onRetry) {
       } catch (err) {
         chunk = null;
         lastErr = err;
-        // 高速链路疑似抖动:置降速位,下一次会话重建自动落 115200(自适应,无 URL 参数)。
-        if (linkBaud !== ROM_BAUD) backupDegradeBaud = true;
+        // 高速链路疑似抖动:降一档(分档,不一次到底),下一次会话重建用目标档。
+        if (linkBaud !== ROM_BAUD) backupDegradeTarget = lowerBackupBaud(linkBaud);
         // 每次失败都记录（包括最后一次），保留终止原因，便于定位传输层故障。
         const msg = `[read-error] 0x${(start + got).toString(16)} attempt ${attempt}/${BACKUP_RETRIES}: ${err && err.message ? err.message : String(err)}`;
         try { log(msg, "warn"); } catch { console.error(msg); }
       }
     }
     if (!chunk) throw lastErr;
+    backupDegradeTarget = null;   // 本块读成功:撤销降档意向,避免单次抖动无谓降速
     buf.set(chunk.subarray(0, n), got);
     got += n;
     if (debugMode()) log(`[debug] 0x${(start + got - n).toString(16)} +${n}B · ${Date.now() - chunkT0}ms`, "warn");
