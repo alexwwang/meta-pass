@@ -395,6 +395,12 @@ async function loadSlotModel() {
     log(t("msg_slot_table_read_failed", { err: err.message }), "warn");
   }
 
+  if (!recordError && !pick?.rec && parts && isDynslotLayout(parts)) {
+    // 2026-10-16 真机:记录两扇区均不可解码(表只剩 FIXED)→ DYN_FRESH 静默
+    // 兜底,快照流程会拿不完整的分配视图硬跑。必须醒目日志,否则排障无据。
+    log("carve 记录不可解码(两扇区均无有效记录);设备分配状态未知,槽位按空显示。快照备份会缺失子固件,快照还原将按档案重建记录。", "error");
+  }
+
   let mode = detectSlotMode({ record: slotModel.carve, partitions: parts });
   if (mode === MODE.DYN_FRESH && !slotModel.carve) slotModel.carve = emptyCarve();
   if (recordError && mode === MODE.DYN_FRESH) {
@@ -2399,7 +2405,7 @@ async function readFlashMajority(addr, size, { samples = 3, maxAttempts = 6 } = 
   throw new Error("flash read at " + hex + " unstable: no two of " + samples + " samples agree");
 }
 
-async function readUsbStorageInventory() {
+async function readUsbStorageInventory({ forRestore = false } = {}) {
   assertLoader("读取分区表以识别 MetaPass 宿主");
   const table = await readFlashMajority(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE);
   const partitions = parsePartitionTable(table);
@@ -2430,7 +2436,9 @@ async function readUsbStorageInventory() {
   // 不是分配权威。快照 inventory 必须把记录里已分配但未物化的槽位/数据并入
   // (mergeCarveAllocations,与 /api/install/storage/info 同口径),否则备份会
   // 静默漏掉子固件,还原预检会把同一设备误报为布局不兼容。
-  if (slotModel.recordBroken) {
+  // 记录读失败:备份必须硬失败(覆盖无法核实);还原允许继续 —— 档案自带
+  // store 分区,写回即重建记录(recordUnusable 路径,plan 做冲突红线校验)。
+  if (slotModel.recordBroken && !forRestore) {
     throw new Error("carve record is unreadable (see connect log); snapshot coverage cannot be verified. Reconnect and retry.");
   }
   const merged = mergeCarveAllocations(partitions, slotModel.carve);
@@ -2438,15 +2446,20 @@ async function readUsbStorageInventory() {
     meta_pass_version: hosts[0].version,
     running_host: { label: hosts[0].label, type: hosts[0].type, subtype: hosts[0].subtype, offset: hosts[0].offset, size: hosts[0].size },
     partitions: merged,
+    record_unusable: !!(slotModel.recordBroken || slotModel.mode === MODE.DYN_FRESH),
   };
 }
 
-function usbSnapshotDevice(inventory) {
+function usbSnapshotDevice(inventory, { fallbackPartitions = [] } = {}) {
   const resolve = identity => {
-    const p = inventory.partitions.find(x => x.label === identity.label && x.type === identity.type &&
+    const exact = inventory.partitions.find(x => x.label === identity.label && x.type === identity.type &&
       x.subtype === identity.subtype && x.offset === identity.offset && x.size === identity.size);
-    if (!p) throw new Error("Live partition identity changed: " + identity.label);
-    return p;
+    if (exact) return exact;
+    // recordUnusable 还原:档案分区无 live 身份匹配(plan 已放行),按档案身份直写。
+    const fallback = fallbackPartitions.find(x => x.label === identity.label && x.type === identity.type &&
+      x.subtype === identity.subtype && x.offset === identity.offset && x.size === identity.size);
+    if (fallback) return fallback;
+    throw new Error("Live partition identity changed: " + identity.label);
   };
   return {
     async storageInfo() { return { ok: true, ...inventory }; },
@@ -2735,18 +2748,25 @@ $("restore-input").addEventListener("change", async (ev) => {
     }
     if (rawManifest?.kind === "meta-pass-storage-snapshot") {
       const archive = await readStorageSnapshotZip(archiveBytes, sha256Hex);
-      const inventory = await readUsbStorageInventory();
+      const inventory = await readUsbStorageInventory({ forRestore: true });
       assertSnapshotVersionCompatible(archive.manifest, inventory.meta_pass_version);
+      const recordUnusable = !!inventory.record_unusable;
       const restorePlan = buildStorageSnapshotRestorePlan(archive.manifest, {
-        targetPartitions: inventory.partitions, runningHostPartition: inventory.running_host, protectedRanges: [],
+        targetPartitions: inventory.partitions,
+        runningHostPartition: inventory.running_host,
+        protectedRanges: [],
+        recordUnusable,
       });
-      restoreZip = { kind: "snapshot", bytes: archiveBytes, manifest: archive.manifest, restorePlan };
+      restoreZip = { kind: "snapshot", bytes: archiveBytes, manifest: archive.manifest, restorePlan, recordUnusable };
       $("restore-info").textContent = "v2 快照预检通过：" + restorePlan.partitionCount +
         " 个分区；来源 MetaPass " + archive.manifest.meta_pass.system_version +
-        "。将按档案布局恢复（carve 记录随 store 分区写回，下次启动自动重物化分区表）。";
+        (recordUnusable
+          ? "。设备 carve 记录不可解码——档案含备份时的记录(store 分区)，恢复会将其写回并重建布局。"
+          : "。将按档案布局恢复（carve 记录随 store 分区写回，下次启动自动重物化分区表）。");
       $("restore-info").className = "ok";
       $("btn-restore").disabled = busy || !loader;
-      log("v2 storage snapshot validated for safe restore against live USB inventory (archive layout wins)", "ok");
+      log("v2 storage snapshot validated for safe restore against live USB inventory (archive layout wins)" +
+        (recordUnusable ? "; carve record unusable — archive is the allocation authority" : ""), "ok");
       return;
     }
     if (rawManifest?.manifest_version === 2) {
@@ -2921,13 +2941,19 @@ $("btn-restore").addEventListener("click", async () => {
       const accepted = confirm(
         "即将按档案布局覆盖 " + restoreZip.restorePlan.partitionCount + " 个分区（数据 + carve 记录）。\n\n" +
         "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
-        "设备上与档案冲突的现有分配会被拒绝预检；写入中断或重启后无法正常启动时不会自动回滚，请刷回该版本后重试。\n\n继续恢复？"
+        (restoreZip.recordUnusable
+          ? "⚠ 设备 carve 记录当前不可解码——恢复会把档案内备份时的记录写回 store 分区并重建分区布局。\n"
+          : "设备上与档案冲突的现有分配已被预检拒绝。\n") +
+        "写入中断或重启后无法正常启动时不会自动回滚，请刷回该版本后重试。\n\n继续恢复？"
       );
       if (!accepted) throw new Error("已取消快照恢复；未写入 Flash。");
-      const inventory = await readUsbStorageInventory();
-      const device = usbSnapshotDevice(inventory);
+      const inventory = await readUsbStorageInventory({ forRestore: true });
+      const device = usbSnapshotDevice(inventory, {
+        fallbackPartitions: restoreZip.restorePlan.partitions.map((p) => p.partition),
+      });
       const result = await restoreStorageSnapshotArchive(device, restoreZip.bytes, {
         sha256Hex,
+        recordUnusable: restoreZip.recordUnusable,
         onProgress: event => {
           if (Number.isFinite(event.completedBytes) && event.totalBytes > 0) setRestoreProgress(event.completedBytes / event.totalBytes * 100);
           const offset = Number.isInteger(event.relativeOffset) ? " · 相对偏移 0x" + event.relativeOffset.toString(16) : "";

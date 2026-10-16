@@ -145,21 +145,61 @@ assert.throws(() => validateStorageSnapshotManifest(manifest, {
   runningHostPartition: host,
   protectedRanges: [{ offset: 0x1a0000, size: 0x1000 }],
 }), /protected partition/);
-// 还原以档案布局为准:live 表是 carve 记录的启动态物化视图,合法地小于档案
-// (2026-10-16 真机:下载模式下 0x8000 表只剩 FIXED 项,记录仍拥有全部槽位)。
-// 缺项不构成拒绝;只有重叠且身份不同的现有分配才拒绝。
+// 还原身份规则:live 表是 carve 记录的启动态物化视图,合法地小于档案
+// (2026-10-16 真机:下载模式下 0x8000 表只剩 FIXED 项,记录仍拥有全部槽位),
+// 缺项本身不是拒绝理由 —— 合并记录后的权威 inventory 必须能身份匹配每个
+// 档案分区。记录不可解码(recordUnusable)时档案自成权威,允许直写自愈。
 {
   const minimalLive = partitions.filter((p) => p === host || p.label === "cardid" || p.label === "nvs");
-  const partialPlan = buildStorageSnapshotRestorePlan(manifest, {
+  assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
     targetPartitions: minimalLive, runningHostPartition: host,
+  }), /is not a current device allocation/);
+  const healingPlan = buildStorageSnapshotRestorePlan(manifest, {
+    targetPartitions: minimalLive, runningHostPartition: host, recordUnusable: true,
   });
-  assert.equal(partialPlan.partitionCount, 3, "unmaterialized live view must not shrink the restore plan");
-  assert.equal(partialPlan.partitions.find((p) => p.partition.label === "store").partition.offset, 0x1a0000,
+  assert.equal(healingPlan.partitionCount, 3, "recordUnusable: archive is the allocation authority");
+  assert.deepEqual(healingPlan.unownedRestored, ["store", "pool_0"]);
+  assert.equal(healingPlan.partitions.find((p) => p.partition.label === "store").partition.offset, 0x1a0000,
     "restore targets are the archive's recorded offsets, never the live view");
 }
+// carve 记录合并后的权威 inventory(表未物化槽位)必须身份匹配 → 正常通过
+{
+  const { mergeCarveAllocations } = await import("../install-slot/dynslot-record.js");
+  const record = {
+    slots: [
+      { state: 1, kind: 0, offset: 0x1a0000, size: 0x10000, imageLen: 1, playId: 1, sha: new Uint8Array(32), name: "s" },
+    ],
+    data: [
+      { playId: 2, offset: 0x1b0000, size: 0x20000, state: 0, subtype: 0x42, type: 1, label: "pool_0" },
+    ],
+  };
+  // 与 manifest 同构的合成档案:store→ota 槽位、pool_0→DATA,验证合并后身份匹配
+  const dynManifest = buildStorageSnapshotManifest({
+    metaPassVersion: "2.0.0",
+    compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
+    partitions: [
+      { label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x6000, extents: [] },
+      { label: "ota_0", type: 0, subtype: 0x10, offset: 0x1a0000, size: 0x10000, extents: [] },
+      { label: "pool_0", type: 1, subtype: 0x42, offset: 0x1b0000, size: 0x20000, extents: [] },
+    ],
+  });
+  const dynHost = { label: "factory", type: 0, subtype: 0, offset: 0x10000, size: 0x180000 };
+  const baseLive = [
+    dynHost,
+    { label: "cardid", type: 1, subtype: 0x40, offset: 0xf000, size: 0x1000 },
+    { label: "nvs", type: 1, subtype: 2, offset: 0x9000, size: 0x6000 },
+  ];
+  const merged = mergeCarveAllocations(baseLive, record);
+  const dynPlan = buildStorageSnapshotRestorePlan(dynManifest, {
+    targetPartitions: merged, runningHostPartition: dynHost,
+  });
+  assert.equal(dynPlan.partitionCount, 3, "record-merged inventory satisfies identity rule");
+  assert.deepEqual(dynPlan.unownedRestored, []);
+}
 assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
-  targetPartitions: [...partitions,
-    { label: "reused", type: 0, subtype: 0x11, offset: 0x1a0000, size: 0x8000 }],
+  targetPartitions: partitions.map((p) => p.label === "store"
+    ? { label: "reused", type: 0, subtype: 0x11, offset: 0x1a0000, size: 0x8000 }
+    : p),
   runningHostPartition: host,
 }), /conflicts with current allocation/);
 assert.throws(() => buildStorageSnapshotRestorePlan({

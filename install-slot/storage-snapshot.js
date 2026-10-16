@@ -264,15 +264,25 @@ export function validateStorageSnapshotManifest(manifest, {
 // only the 6 FIXED entries while the record still owned ota_0/ota_1/recordings.
 // The carve record itself lives inside the snapshot (store partition), so
 // writing the plan restores the record, and the bootloader hook re-materializes
-// the table from it on the next boot (META_BOOT_TABLE_RESTORE_RECORD). The live
-// inventory is consulted only for SAFETY: an archived partition may not
-// overlap a protected live partition (running host/cardid) nor a *different*
-// current allocation (e.g. space freed after backup and re-carved for another
-// child) — those refuse instead of silently corrupting unrelated data.
+// the table from it on the next boot (META_BOOT_TABLE_RESTORE_RECORD).
+//
+// Live-state rule per archived partition:
+// - Overlap with a protected live partition (running host/cardid) → refuse.
+// - Overlap with a live allocation of DIFFERENT identity (re-carved space) →
+//   refuse; the device changed since backup and unrelated data would corrupt.
+// - Exact identity match with a live allocation → restore in place.
+// - No live match → refuse, UNLESS recordUnusable is set (the device's carve
+//   record is unreadable/absent, so live allocation state is unknown and the
+//   self-contained archive is the only authority). That mode heals such
+//   devices: the archived store partition carries the backup-time record back
+//   onto flash (2026-10-16 real device: record lost between backup and restore,
+//   preflight passed an overlap-only check, and the run died mid-erase with
+//   "Live partition identity changed" after already erasing NVS/phy_init).
 export function buildStorageSnapshotRestorePlan(manifest, {
   targetPartitions,
   runningHostPartition,
   protectedRanges = [],
+  recordUnusable = false,
 } = {}) {
   validateStorageSnapshotManifest(manifest, { protectedRanges });
   if (!Array.isArray(targetPartitions) || !validPartition(runningHostPartition)) {
@@ -282,6 +292,7 @@ export function buildStorageSnapshotRestorePlan(manifest, {
     a.subtype === b.subtype && a.offset === b.offset && a.size === b.size;
   const protectedLive = targetPartitions.filter((p) => isProtectedPartition(p, runningHostPartition));
   const liveAlloc = targetPartitions.filter((p) => !isProtectedPartition(p, runningHostPartition));
+  const unowned = [];
   const partitions = manifest.partitions.map((source) => {
     for (const prot of protectedLive) {
       if (overlaps(source.offset, source.size, prot.offset, prot.size)) {
@@ -289,13 +300,30 @@ export function buildStorageSnapshotRestorePlan(manifest, {
           "; refusing to restore");
       }
     }
-    for (const live of liveAlloc) {
-      if (overlaps(source.offset, source.size, live.offset, live.size) && !sameIdentity(source, live)) {
-        fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
-          " conflicts with current allocation " + live.label + " @0x" + live.offset.toString(16) +
-          " (different label/size); the device was re-carved after this backup was taken");
-      }
+    const match = liveAlloc.find((live) => sameIdentity(source, live));
+    if (match) {
+      return {
+        partition: {
+          label: source.label, type: source.type, subtype: source.subtype,
+          offset: source.offset, size: source.size,
+        },
+        erase: { relativeOffset: 0, bytes: source.size },
+        extents: source.extents.map((e) => ({
+          file: e.file, relativeOffset: e.offset, bytes: e.bytes, sha256: e.sha256,
+        })),
+      };
     }
+    const conflicting = liveAlloc.find((live) => overlaps(source.offset, source.size, live.offset, live.size));
+    if (conflicting) {
+      fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
+        " conflicts with current allocation " + conflicting.label + " @0x" + conflicting.offset.toString(16) +
+        " (different label/size); the device was re-carved after this backup was taken");
+    }
+    if (!recordUnusable) {
+      fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
+        " is not a current device allocation; it was removed after this backup was taken");
+    }
+    unowned.push(source.label);
     return {
       partition: {
         label: source.label, type: source.type, subtype: source.subtype,
@@ -312,6 +340,7 @@ export function buildStorageSnapshotRestorePlan(manifest, {
     partitionCount: partitions.length,
     totalEraseBytes: partitions.reduce((sum, p) => sum + p.erase.bytes, 0),
     partitions,
+    unownedRestored: unowned,
   };
 }
 

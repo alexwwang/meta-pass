@@ -84,20 +84,35 @@ for (const version of ["3.0.0", null]) {
 }
 
 // A live table that materializes fewer partitions than the archive (the launcher
-// derives the runtime view from the carve record per boot state) must NOT block
-// restore — the archive layout is authoritative.
+// derives the runtime view from the carve record per boot state) blocks restore
+// UNLESS the carve record is unusable — the self-contained archive (store
+// partition holds the backup-time record) is then the allocation authority.
 {
   const calls = [];
   const minimalLive = partitions.filter(p => p.label === "cardid" || p.label === "nvs");
-  const device = {
+  const makeDevice = () => ({
     async storageInfo() {
       calls.push("info");
       return { ok: true, meta_pass_version: "2.2.0", running_host: host, partitions: minimalLive };
     },
     async storageErase(partition) { calls.push(["erase", partition.label, partition.offset, partition.size]); return { ok: true }; },
     async storageWrite(partition, offset, bytes) { calls.push(["write", partition.label, partition.offset + offset, bytes.length]); return { ok: true }; },
-  };
-  const result = await restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) });
+  });
+  // 记录可读口径:缺分配必须拒绝,且一个字节都不写
+  calls.length = 0;
+  const strictDevice = makeDevice();
+  await assert.rejects(
+    restoreStorageSnapshotArchive(strictDevice, archive, { sha256Hex: async bytes => hash(bytes) }),
+    /is not a current device allocation/,
+  );
+  assert.equal(calls.some(c => Array.isArray(c)), false,
+    "identity preflight must refuse before any Flash mutation");
+  // 记录不可解码口径:按档案身份直写(含 store → 记录随数据自愈)
+  calls.length = 0;
+  const result = await restoreStorageSnapshotArchive(makeDevice(), archive, {
+    sha256Hex: async bytes => hash(bytes),
+    recordUnusable: true,
+  });
   assert.equal(result.dataWritten, true);
   assert.equal(result.bootValidated, false, "USB adapter has no reboot hook");
   const storeErase = calls.find(c => Array.isArray(c) && c[0] === "erase" && c[1] === "store");

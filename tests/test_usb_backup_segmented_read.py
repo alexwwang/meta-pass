@@ -73,16 +73,16 @@ if "resyncAfterReadError" in PAGE:
     raise SystemExit("FAIL: obsolete layered recovery remains in the backup page")
 
 require(
-    r"async function readUsbStorageInventory\(\).*?project !== \"FoloToy-AI-Passport\".*?async function createUsbStorageSnapshot",
+    r"async function readUsbStorageInventory\(\{?.*?project !== \"FoloToy-AI-Passport\".*?async function createUsbStorageSnapshot",
     "dynamic v2 snapshot must identify the host from the ESP app descriptor and use the raw snapshot builder",
 )
 require(
-    r"async function readUsbStorageInventory\(\).*?mergeCarveAllocations\(partitions, slotModel\.carve\)",
+    r"async function readUsbStorageInventory\(\{?.*?mergeCarveAllocations\(partitions, slotModel\.carve\)",
     "snapshot inventory must merge carve slot+DATA allocations (the 0x8000 table is only a "
     "boot-time materialization view; the carve record is the allocation authority)",
 )
 require(
-    r"async function readUsbStorageInventory\(\).*?readFlashMajority\(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE\).*?"
+    r"async function readUsbStorageInventory\(\{?.*?readFlashMajority\(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE\).*?"
     r"readFlashMajority\(part\.offset, 0x100\)",
     "snapshot inventory must read the partition table and app descriptors via majority vote "
     "(a single corrupted read silently truncates the eligible set or misidentifies the host)",

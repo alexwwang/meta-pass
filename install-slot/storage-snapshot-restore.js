@@ -40,6 +40,7 @@ async function writeChunk(device, partition, relativeOffset, bytes) {
 
 export async function restoreStorageSnapshotArchive(device, input, {
   sha256Hex,
+  recordUnusable = false,
   onProgress = () => {},
 } = {}) {
   if (typeof sha256Hex !== "function") throw new TypeError("SHA-256 implementation is required");
@@ -57,6 +58,7 @@ export async function restoreStorageSnapshotArchive(device, input, {
     targetPartitions: inventory.partitions,
     runningHostPartition: inventory.running_host,
     protectedRanges: inventory.protected_ranges || [],
+    recordUnusable,
   });
 
   let completedBytes = 0;
