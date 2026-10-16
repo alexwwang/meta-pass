@@ -28,13 +28,25 @@ require(
 require(
     r"async function restartBackupReadSession\(\).*?"
     r"await withTimeout\(nextLoader\.main\(\).*?"
-    r"await loadSlotModel\(\).*?"
+    r"readCarveOwnershipSnapshot\(\).*?"
     r"APP/DATA ownership metadata changed while restarting the backup session",
     "session restart must resync and reject changed APP/DATA ownership metadata",
 )
+_restart_start = PAGE.index("async function restartBackupReadSession(")
+_restart_end = PAGE.index("async function readFlashChunked(", _restart_start)
+if "loadSlotModel()" in PAGE[_restart_start:_restart_end]:
+    raise SystemExit(
+        "FAIL: session restart must not call loadSlotModel() — a transient record-read "
+        "failure degrades slotModel and is then misreported as ownership change"
+    )
 require(
     r"const BACKUP_RETRIES = 3;.*?const BACKUP_READ_TIMEOUT_MS = 15000;",
     "failed reads must use bounded retries and a finite per-chunk timeout",
+)
+require(
+    r"async function restartBackupReadSession\(\).*?"
+    r"backupDegradeBaud && linkBaud !== ROM_BAUD.*?baudrate: nextBaud",
+    "session restart must degrade to the ROM baud automatically after unstable reads (adaptive, no URL parameter)",
 )
 reader_start = PAGE.index("async function readFlashChunkedSingleSession(")
 reader_end = PAGE.index('$("btn-backup").addEventListener', reader_start)
