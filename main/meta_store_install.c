@@ -2389,6 +2389,7 @@ static esp_err_t h_install_storage_read(httpd_req_t *req)
 typedef struct {
     const esp_partition_t  *part;   // 表内分区命中(优先);carve 命中时为 NULL
     const meta_carve_data_t *data;  // carve DATA 记录命中;表内命中时为 NULL
+    const meta_carve_slot_t *slot;  // carve 槽位几何命中(relabel 场景);其余为 NULL
     uint32_t abs_offset;            // 分区/记录的起始 Flash 地址
     uint32_t size;                  // 几何大小(字节)
     uint32_t rel_offset;            // need_range 时的分区相对偏移
@@ -2406,6 +2407,27 @@ static const meta_carve_data_t *install_carve_data_match(const char *label, uint
         if (d->size > 0 && (uint32_t)d->type == type && (uint32_t)d->subtype == subtype &&
             d->offset == offset && d->size == size && strcmp(d->label, label) == 0) {
             return d;
+        }
+    }
+    return NULL;
+}
+
+// 槽位几何匹配(2026-10-16 与页面还原语义对齐):slot 的 label/subtype 是
+// carve 记录槽位序号的位置名,bootloader 每次启动按记录物化表 —— 记录被
+// 重雕后同一片字节只是改名(档案 ota_1 @0x360000 vs 表现 ota_0 @0x360000
+// 真机实证)。因此表内精确身份落空时,按 offset+size 几何命中记录里的
+// 已分配槽位即接受,type 必须为 APP(0)。label/subtype 不参与匹配。
+static const meta_carve_slot_t *install_carve_slot_match(uint32_t type,
+                                                         uint32_t offset,
+                                                         uint32_t size)
+{
+    if (type != 0 || size == 0) return NULL;
+    const meta_carve_t *carve = meta_carve_flash_carve();
+    if (!carve) return NULL;
+    for (uint8_t i = 0; i < carve->count; i++) {
+        const meta_carve_slot_t *s = &carve->slot[i];
+        if (s->state != META_SLOT_EMPTY && s->offset == offset && s->size == size) {
+            return s;
         }
     }
     return NULL;
@@ -2439,19 +2461,33 @@ static esp_err_t install_snapshot_target(httpd_req_t *req, install_snapshot_targ
 
     const esp_partition_t *part = esp_partition_find_first((uint8_t)type, (uint8_t)subtype, label);
     const meta_carve_data_t *data = NULL;
+    const meta_carve_slot_t *slot = NULL;
     if (part) {
         if (part->address != part_offset || part->size != part_size) {
-            return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+            // 表内同名牌位几何不符 = 记录被重雕后的 relabel/重排:不落 409,
+            // 改按几何在 carve 记录里找占有该片空间的槽位(见上注释)。
+            part = NULL;
+            slot = install_carve_slot_match(type, part_offset, part_size);
+            if (!slot) {
+                return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+            }
         }
     } else {
-        // 表内未物化(launcher 运行态的 DATA 分区):按 carve 记录做完整身份校验。
+        // 表内未物化(launcher 运行态的 DATA 分区):先按 carve DATA 记录做
+        // 完整身份校验;落空再按几何匹配 carve 槽位(备份后记录重雕场景)。
         data = install_carve_data_match(label, type, subtype, part_offset, part_size);
         if (!data) {
-            return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+            slot = install_carve_slot_match(type, part_offset, part_size);
+            if (!slot) {
+                return reply(req, "409 Conflict", "snapshot partition identity does not match live partition table");
+            }
         }
     }
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (!running) return reply(req, "500 Internal Server Error", "running host partition unavailable");
+    if (slot && (uint32_t)running->address == slot->offset) {
+        return reply(req, "403 Forbidden", "snapshot target is protected");
+    }
     if (strcmp(label, "cardid") == 0 || (part && install_partition_same(part, running))) {
         return reply(req, "403 Forbidden", "snapshot target is protected");
     }
@@ -2463,7 +2499,10 @@ static esp_err_t install_snapshot_target(httpd_req_t *req, install_snapshot_targ
     }
     out->part = part;
     out->data = data;
-    out->abs_offset = part ? (uint32_t)part->address : data->offset;
+    out->slot = slot;
+    out->abs_offset = part ? (uint32_t)part->address
+                    : data ? data->offset
+                    : slot->offset;
     out->size = part_size;
     out->rel_offset = offset;
     out->length = length;
@@ -2475,6 +2514,7 @@ static const char *label_of_target(const install_snapshot_target_t *t)
     if (!t) return "?";
     if (t->part) return t->part->label;
     if (t->data) return t->data->label;
+    if (t->slot) return t->slot->name;
     return "?";
 }
 
