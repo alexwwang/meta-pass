@@ -43,6 +43,11 @@ require(
     r"const BACKUP_RETRIES = 3;.*?const BACKUP_READ_TIMEOUT_MS = 15000;",
     "failed reads must use bounded retries and a finite per-chunk timeout",
 )
+require(
+    r"async function restartBackupReadSession\(\).*?"
+    r"backupDegradeBaud && linkBaud !== ROM_BAUD.*?baudrate: nextBaud",
+    "session restart must degrade to the ROM baud automatically after unstable reads (adaptive, no URL parameter)",
+)
 reader_start = PAGE.index("async function readFlashChunkedSingleSession(")
 reader_end = PAGE.index('$("btn-backup").addEventListener', reader_start)
 reader = PAGE[reader_start:reader_end]
