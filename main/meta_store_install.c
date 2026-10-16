@@ -606,6 +606,27 @@ static void lan_url_into(char *out, size_t out_sz, const char *token_hex)
              b[0], b[1], b[2], b[3], token_hex);
 }
 
+// 配对码签发(与当前 token 绑定;兑换结果还是同一个 token)。
+// 2026-10-16 真机修订:恢复出来的会话也补发。旧语义"恢复会话 pair_used=
+// true、码不复活"导致每次恢复后屏上 pair code 显示 "-",用户无法手输配对
+// 码进手机页(QR 路径不受影响);而 QR 里的 token 本就公开给近场任何人,
+// 为同一 token 补发一次性配对码不扩大暴露面。仅"无在途 offer/上传"时补发。
+static void pair_code_issue(void)
+{
+    snprintf(s_token.pair_code, sizeof(s_token.pair_code), "%06u",
+             (unsigned)(esp_random() % 1000000U));
+    s_token.pair_code[META_INSTALL_PAIR_DIGITS] = '\0';
+    s_token.pair_valid = true;
+    s_token.pair_used = false;
+    s_token.pair_tries = 0;
+    s_token.pair_created_ms = esp_timer_get_time() / 1000;
+    // 打 UART:真机自动化冒烟(tools/realdevice/smoke.py)从串口日志取
+    // 配对码换 token,免读屏。token 本就印在设备 QR 上给近场任何人看,
+    // 串口(持有者物理接触)不扩大暴露面。
+    ESP_LOGI(TAG, "pair ready: code=%s token=%s",
+             s_token.pair_code, s_token.token_hex);
+}
+
 static esp_err_t token_generate(void)
 {
     // 128 bit 随机(esp_random 每次 32 bit,拼 4 次;文档 §8 下限)。
@@ -616,19 +637,8 @@ static esp_err_t token_generate(void)
     }
     token_to_hex(raw, s_token.token_hex);
     s_token.token_valid = true;
-    snprintf(s_token.pair_code, sizeof(s_token.pair_code), "%06u",
-             (unsigned)(esp_random() % 1000000U));
-    s_token.pair_code[META_INSTALL_PAIR_DIGITS] = '\0';
-    s_token.pair_valid = true;
-    s_token.pair_used = false;
-    s_token.pair_tries = 0;
-    s_token.pair_created_ms = esp_timer_get_time() / 1000;
+    pair_code_issue();
     token_persist();   // 受控重启后 token_start 原样恢复,手机连接不断
-    // 打 UART:真机自动化冒烟(tools/realdevice/smoke.py)从串口日志取
-    // 配对码换 token,免读屏。token 本就印在设备 QR 上给近场任何人看,
-    // 串口(持有者物理接触)不扩大暴露面。
-    ESP_LOGI(TAG, "pair ready: code=%s token=%s",
-             s_token.pair_code, s_token.token_hex);
     return ESP_OK;
 }
 
@@ -648,13 +658,27 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
 }
 
 // ---- 中断续连持久标志(用户决策①,NVS "metapass"/"inst_active") ----
-// token_start 置位、token_stop 清除;复位后 app_main 读它决定是否自动恢复
-// STA + install 服务,手机凭持久化 token 重发 prepare 免重扫 QR。
-// 方案B 下 prepare 不再中途复位,本标志服务的是"上传中途断电/崩溃"的
-// 非受控复位 —— 无它,用户必须重扫 QR 且上传从头再来(chunk 进度在 RAM)。
-// 一切写入 best-effort:标志丢失的最坏结果只是退化为重新配对,不丢正确性。
-static const char k_nvs_ns_install[] = "metapass";
-static const char k_nvs_key_active[] = "inst_active";
+// 2026-10-16 一次性 marker 修订(用户决策):区分"安装/删除物化后的受控重
+// 启"与"普通开机"。旧机制只看 inst_active,硬断电残留会让之后每次普通
+// 开机都恢复旧会话(首进商店配对码显示 "-"、看着像死会话)。现机制:
+//   inst_active  = 会话存活(token_start 置位 / token_stop 清除),不变;
+//   inst_r_once  = 一次性 marker,仅受控重启路径(main.c goto_page
+//                  reboot_after_teardown)在 esp_restart 前置位;
+//   boot 消费    = resume_pending 读到 marker 即清;普通开机见到"有
+//                  inst_active 无 marker" = 硬断电残留,顺手清掉
+//                  inst_active + inst_tok,token_restore 不再复活旧会话。
+// 标志丢失的最坏结果只是退化为重新配对,不丢正确性。
+static const char k_nvs_ns_install[]      = "metapass";
+static const char k_nvs_key_active[]      = "inst_active";
+static const char k_nvs_key_token[]       = "inst_tok";
+static const char k_nvs_key_resume_once[] = "inst_r_once";
+
+static void session_nvs_erase_stale(nvs_handle_t h)
+{
+    nvs_erase_key(h, k_nvs_key_active);
+    nvs_erase_key(h, k_nvs_key_token);
+    nvs_commit(h);
+}
 
 static void resume_flag_set(bool active)
 {
@@ -670,22 +694,56 @@ static void resume_flag_set(bool active)
     nvs_close(h);
 }
 
+// 受控重启保留会话的 RAM 旗标:由 meta_install_arm_resume_once() 在
+// page_teardown 之前置位;token_stop 见到它即跳过 token/标志擦除,并
+// 把一次性 NVS marker 落盘(teardown 走完、esp_restart 之前)。
+static bool s_preserve_session_once;
+
+// 受控重启前由 UI 调用(仅 reboot_after_teardown 路径),且必须在
+// page_teardown 之前:硬断电/普通开机不会经过这里,天然与普通开机区分。
+esp_err_t meta_install_arm_resume_once(void)
+{
+    s_preserve_session_once = true;
+    return ESP_OK;
+}
+
 bool meta_install_resume_pending(void)
 {
     nvs_handle_t h;
-    uint8_t v = 0;
+    uint8_t active = 0, once = 0;
     if (nvs_open(k_nvs_ns_install, NVS_READONLY, &h) != ESP_OK) return false;
-    const esp_err_t e = nvs_get_u8(h, k_nvs_key_active, &v);
+    const esp_err_t e_active = nvs_get_u8(h, k_nvs_key_active, &active);
+    const esp_err_t e_once   = nvs_get_u8(h, k_nvs_key_resume_once, &once);
     nvs_close(h);
-    return e == ESP_OK && v == 1;
+
+    if (e_once == ESP_OK && once == 1) {
+        // 一次性 marker:消费即清(无论 inst_active 是否还在,防半擦除残留)。
+        nvs_handle_t w;
+        if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &w) == ESP_OK) {
+            nvs_erase_key(w, k_nvs_key_resume_once);
+            nvs_commit(w);
+            nvs_close(w);
+        }
+        return e_active == ESP_OK && active == 1;
+    }
+    // 无 marker 却有存活标志 = 硬断电/旧版本残留:普通开机不得恢复,清场。
+    if (e_active == ESP_OK && active == 1) {
+        ESP_LOGW(TAG, "stale install session flags without reboot marker; wiping");
+        nvs_handle_t w;
+        if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &w) == ESP_OK) {
+            session_nvs_erase_stale(w);
+            nvs_erase_key(w, k_nvs_key_resume_once);
+            nvs_commit(w);
+            nvs_close(w);
+        }
+    }
+    return false;
 }
 
-// ---- 会话 token 持久化(2026-10-04 交互修订②) ----
+// ---- 会话 token 持久化(2026-10-04 交互修订②,2026-10-16 一次性 marker 修订) ----
 // 手机连接须活过受控重启("装完/退出商店页重启后手机还能继续操作")。
-// token 签发即落 NVS;token_stop(正常离店/闲置到期)擦除。配对码保持
-// 一次性语义:恢复出来的会话 pair_used=true、pair_valid=false,码不复活。
-static const char k_nvs_key_token[] = "inst_tok";
-
+// token 签发即落 NVS;token_stop(正常离店/闲置到期)擦除。一次性 marker
+// 机制与恢复语义见上(resume_flag_set / resume_pending 段)。
 static void token_persist(void)
 {
     nvs_handle_t h;
@@ -700,6 +758,7 @@ static void token_persist_erase(void)
     nvs_handle_t h;
     if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_erase_key(h, k_nvs_key_token);
+    nvs_erase_key(h, k_nvs_key_resume_once);   // 连 marker 一起清,防半残留
     nvs_commit(h);
     nvs_close(h);
 }
@@ -734,9 +793,13 @@ esp_err_t meta_install_token_start(void)
     }
     resume_flag_set(true);   // 置续连标志;正常离店 token_stop 时清除
     s_session.active = true;
-    // 无在途 offer/session 时归位 pairing(首次进店、失败/取消/拒绝回退);
-    // 有在途 offer 则保持现状,不覆盖手机侧流程。
+    // 无在途 offer/session 时归位 pairing(首次进店、失败/取消/拒绝回退、
+    // 受控重启恢复后的续连起点);有在途 offer 则保持现状,不覆盖手机侧流程。
+    // 配对态一律 (重)签发配对码:token 是 NVS 恢复出来的旧会话时,旧语义
+    // 会让屏上 pair code 显示 "-"(2026-10-16 真机,用户决策:续连保留、
+    // 码必补发 —— QR 已公开 token,补发不扩大暴露面)。
     if (!s_session.offer_ready && !s_session.confirmed && !s_session.session_opened) {
+        pair_code_issue();
         status_set("pairing", "scan QR or enter pair code");
     }
     return ESP_OK;
@@ -751,6 +814,24 @@ void meta_install_token_stop(void)
         meta_slot_mark_invalid(&s_slots[s_session.confirmed_slot]);
     }
     offer_and_upload_clear();
+    if (s_preserve_session_once) {
+        // 受控重启保留会话(2026-10-16,用户决策):token/inst_active 原样
+        // 留在 NVS(token_generate 时已 persist),手机重启后凭原 token 免
+        // 重扫续连;此处只落一次性恢复 marker,boot 读到即消费。不 memset、
+        // 不擦除 —— 擦除由 boot 的 resume_pending(无 marker 分支)或下次
+        // 正常离店 token_stop 负责。
+        s_preserve_session_once = false;
+        s_session.active = false;
+        nvs_handle_t h;
+        if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) == ESP_OK) {
+            nvs_set_u8(h, k_nvs_key_resume_once, 1);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        status_set("idle", "");
+        session_unlock();
+        return;
+    }
     memset(&s_token, 0, sizeof(s_token));
     s_session.active = false;
     resume_flag_set(false);   // 正常离店:清除续连标志

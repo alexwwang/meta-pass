@@ -85,7 +85,13 @@ bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
 // token_stop,如上传中途断电)→ true。复位后 app_main 据此自动恢复 STA +
 // install 服务,手机用持久化 token 重发 prepare 免重扫 QR。NVS 标志,
 // 读取须在 meta_store_net_init()(内部 nvs_flash_init)之后。
+// 2026-10-16 一次性 marker 语义:仅当上次重启是"安装/删除物化后的受控重
+// 启"(goto_page reboot_after_teardown 路径调用了 meta_install_arm_resume_once)
+// 才返回 true;普通开机/硬断电残留返回 false 并顺手清场。
 bool      meta_install_resume_pending(void);
+
+// 受控重启前(reboot_after_teardown)置一次性恢复 marker;仅该路径调用。
+esp_err_t meta_install_arm_resume_once(void);
 
 // ---- offer 确认状态机(UI 入口,文档 §6.4) ----
 // 拷贝当前待确认 offer(无则 false)。快照复制:UI 渲染期间允许手机重新

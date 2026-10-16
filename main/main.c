@@ -1040,6 +1040,11 @@ static void goto_page(page_t page)
     const bool reboot_after_teardown =
         (page == PAGE_LIST && s_page >= PAGE_STORE_NET && s_page <= PAGE_STORE_CANCEL
          && meta_carve_flash_reboot_pending());
+    if (reboot_after_teardown) {
+        // 必须在 page_teardown 之前:token_stop(teardown 内)见到该旗标会
+        // 跳过擦除并落一次性恢复 marker —— 手机凭原 token 免重扫续连。
+        (void)meta_install_arm_resume_once();
+    }
     page_teardown();
     s_page = page;
     s_sel = 0;
