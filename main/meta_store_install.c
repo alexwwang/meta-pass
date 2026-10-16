@@ -3064,7 +3064,17 @@ static esp_err_t remove_recover_pending(bool *did_recover)
             if (e != ESP_OK) return e;
         }
     }
-    return remove_intent_clear();
+    // 字节已擦净,破坏性交涉即算完结。intent 清不掉(NVS 故障等)不永久
+    // 500:擦除幂等,残留的 intent 只会让下次启动多做一遍无害擦除。
+    // 2026-10-16 真机:unload_all 后 NVS 野指针致 clear 静默失败,此处若
+    // 继续向上返回错误,storage/info 等全部端点被 fail-closed 永久锁死。
+    const esp_err_t clear_err = remove_intent_clear();
+    if (clear_err != ESP_OK) {
+        ESP_LOGW(TAG, "uninstall recovered but intent cleanup failed (non-fatal): %s",
+                 esp_err_to_name(clear_err));
+        s_remove_recovery_needed = false;   // 擦除已完成,不再拦截后续端点
+    }
+    return ESP_OK;
 }
 
 // POST /api/install/remove —— APP + 全部关联 DATA 级联删除

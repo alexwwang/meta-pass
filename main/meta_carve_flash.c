@@ -18,6 +18,7 @@
 #include "esp_partition.h"
 #include "esp_flash_partitions.h"   // ESP_PARTITION_TABLE_* / esp_partition_is_flash_region_writable
 #include "esp_log.h"
+#include "nvs_flash.h"   // 物化后 NVS 分区指针重建(nvs_flash_deinit/init)
 
 static const char *TAG = "meta_carve";
 
@@ -234,6 +235,19 @@ esp_err_t meta_carve_flash_table_write(const uint8_t table[META_PT_SIZE])
     // 物化是分区表变化的唯一漏斗,且全部调用方与在途 OTA 串行(单 httpd
     // 任务 + prepare 拒并发),此处 unload 后下次访问即从刚写好的表重建。
     esp_partition_unload_all();
+    // 2026-10-16 真机根因二:unload_all 会 free 缓存列表项,而 NVS 句柄
+    // (NVSPartition::mESPPartition)持有的是指向列表项的裸指针 —— unload
+    // 之后一切 NVS 读写都是 use-after-free(删槽后 remove_intent_clear
+    // 静默失败 → intent 残留 → storage/info 永久 500;黑屏 panic 同源)。
+    // 必须让 NVS 分区重新登记。boot 早期(ensure/hook,先于 nvs_flash_init)
+    // deinit 返回 NOT_INITIALIZED,静默跳过即可。
+    if (nvs_flash_deinit() == ESP_OK) {
+        const esp_err_t nvs_err = nvs_flash_init();
+        if (nvs_err != ESP_OK) {
+            ESP_LOGE(TAG, "nvs re-init after table materialize failed: %s",
+                     esp_err_to_name(nvs_err));
+        }
+    }
     s_in_progress = false;
     return ESP_OK;
 }
