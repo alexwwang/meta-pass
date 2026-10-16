@@ -2189,15 +2189,19 @@ const BACKUP_SESSION_SEGMENT = 0x80000;
 // 沿用(2026-10-16 用户决策:速度自适应,不暴露 URL 参数)。每次备份入口复位,
 // 新的备份仍先试高速。
 let backupDegradeBaud = false;
+// 备份开始时一次性取证的 APP/DATA 归属视图。重启会话只做 after 对比,
+// 绝不在垂死的旧会话上做 before 读(2026-10-16 真机:旧会话 read-error 后
+// before 读直接抛 No serial data received,一次重试机会就被浪费)。
+let backupOwnershipRef = null;
 
 // 读取 APP/DATA 归属的权威视图(carve 记录两个扇区),只读、不改全局状态。
 // 2026-10-16 真机教训:此前重启校验复用 loadSlotModel(),它在串口抖动导致
 // 记录/分区表读失败时先把 slotModel 降级(recordBroken/carve=null/seq=0),
 // 随后的归属比较把瞬时读错误误报成"ownership changed",还污染了全局状态
 // (真机日志:restore 恢复后全部 chunk 失败时页面状态被毁)。
-async function readCarveOwnershipSnapshot() {
-  const rawA = await loader.readFlash(STORE_OFFSET, STORE_SECTOR_SIZE);
-  const rawB = await loader.readFlash(STORE_OFFSET + STORE_SECTOR_SIZE, STORE_SECTOR_SIZE);
+async function readCarveOwnershipSnapshot(ld = loader) {
+  const rawA = await ld.readFlash(STORE_OFFSET, STORE_SECTOR_SIZE);
+  const rawB = await ld.readFlash(STORE_OFFSET + STORE_SECTOR_SIZE, STORE_SECTOR_SIZE);
   const pick = pickRecord(rawA, rawB);
   return {
     seq: pick && pick.rec ? pick.rec.seq : 0,
@@ -2211,56 +2215,74 @@ async function restartBackupReadSession() {
   if (!port || !ESPLoader || !Transport) {
     throw new Error("Cannot restart backup read session: serial port or esptool is unavailable");
   }
-  const oldLoader = loader;
   const oldTransport = transport;
-  // 旧会话仍可读:先落盘取证再断开。任何读错误直接抛出原始串口错误,
-  // 绝不降级 slotModel —— 归属比较只回答"记录变没变",不回答"链路抖没抖"。
-  const before = await readCarveOwnershipSnapshot();
   log("DATA backup: opening a fresh serial/loader session at segment boundary", "warn");
   try { await withTimeout(oldTransport.disconnect(), 5000, "backup session close timed out"); }
   catch (err) { log("Previous backup session close: " + err.message, "warn"); }
 
-  const nextTransport = new Transport(port, false);
-  // 自适应降速:有 chunk 失败记录且当前仍在高速 → 本次重建直接落 ROM 波特。
-  const degrade = backupDegradeBaud && linkBaud !== ROM_BAUD;
-  const nextBaud = degrade ? ROM_BAUD : linkBaud;
-  const nextLoader = new ESPLoader({
-    transport: nextTransport,
-    baudrate: nextBaud,
-    romBaudrate: ROM_BAUD,
-  });
-  try {
-    const chip = await withTimeout(nextLoader.main(), 20000, "backup session sync timed out");
-    await withTimeout(nextLoader.readReg(nextLoader.CHIP_DETECT_MAGIC_REG_ADDR), 5000,
-      "backup session baud verification timed out");
-    globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
-    transport = nextTransport;
-    loader = nextLoader;
-    const after = await readCarveOwnershipSnapshot();
-    if (before.seq !== after.seq || before.slots !== after.slots || before.data !== after.data) {
-      throw new Error("APP/DATA ownership metadata changed while restarting the backup session");
+  // 重同步带重试:新会话同步 + 归属读都可能遭遇残余抖动,一次失败直接重建再试,
+  // 绝不把单次 No serial data received 当终点(2026-10-16 真机:单次重同步
+  // 失败后整个备份被放弃,而重试完全可能成功)。
+  let lastSyncErr = null;
+  for (let syncAttempt = 1; syncAttempt <= BACKUP_RETRIES; syncAttempt++) {
+    const nextTransport = new Transport(port, false);
+    // 自适应降速:有 chunk 失败记录且当前仍在高速 → 本次重建直接落 ROM 波特。
+    const degrade = backupDegradeBaud && linkBaud !== ROM_BAUD;
+    const nextBaud = degrade ? ROM_BAUD : linkBaud;
+    const nextLoader = new ESPLoader({
+      transport: nextTransport,
+      baudrate: nextBaud,
+      romBaudrate: ROM_BAUD,
+    });
+    try {
+      const chip = await withTimeout(nextLoader.main(), 20000, "backup session sync timed out");
+      await withTimeout(nextLoader.readReg(nextLoader.CHIP_DETECT_MAGIC_REG_ADDR), 5000,
+        "backup session baud verification timed out");
+      globalThis.__READFLASH_PARAMS__ = [READFLASH_BLOCK, READFLASH_WINDOW];
+      // 归属读在新建会话上重试,串口错误可恢复,不匹配才是真终止条件。
+      let after = null, ownershipErr = null;
+      for (let readAttempt = 1; readAttempt <= BACKUP_RETRIES; readAttempt++) {
+        try { after = await readCarveOwnershipSnapshot(nextLoader); break; }
+        catch (err) { ownershipErr = err; }
+      }
+      if (!after) throw (ownershipErr || new Error("ownership read failed"));
+      if (backupOwnershipRef &&
+          (backupOwnershipRef.seq !== after.seq ||
+           backupOwnershipRef.slots !== after.slots ||
+           backupOwnershipRef.data !== after.data)) {
+        throw new Error("APP/DATA ownership metadata changed while restarting the backup session");
+      }
+      transport = nextTransport;
+      loader = nextLoader;
+      if (degrade) {
+        backupDegradeBaud = false;
+        linkBaud = ROM_BAUD;
+        log(t("msg_baud_fallback", { baud: HIGH_BAUD, err: "unstable backup reads", romBaud: ROM_BAUD }), "warn");
+      }
+      log("Fresh backup read session ready (" + chip + ")", "ok");
+      return;
+    } catch (err) {
+      lastSyncErr = err;
+      try { await nextTransport.disconnect(); } catch {}
+      if (err.message && err.message.includes("ownership metadata changed")) throw err;
+      if (syncAttempt < BACKUP_RETRIES) {
+        log(`重同步第 ${syncAttempt}/${BACKUP_RETRIES - 1} 次失败(${err.message}),重建会话重试`, "warn");
+      }
     }
-    if (degrade) {
-      backupDegradeBaud = false;
-      linkBaud = ROM_BAUD;
-      log(t("msg_baud_fallback", { baud: HIGH_BAUD, err: "unstable backup reads", romBaud: ROM_BAUD }), "warn");
-    }
-    log("Fresh backup read session ready (" + chip + ")", "ok");
-  } catch (err) {
-    try { await nextTransport.disconnect(); } catch {}
-    loader = null;
-    transport = null;
-    deviceNvs = null;
-    $("chip-status").textContent = t("msg_device_gone");
-    $("chip-status").className = "error";
-    throw new Error("Cannot resume backup after session restart: " + err.message);
   }
+  loader = null;
+  transport = null;
+  deviceNvs = null;
+  $("chip-status").textContent = t("msg_device_gone");
+  $("chip-status").className = "error";
+  throw new Error("Cannot resume backup after session restart: " + (lastSyncErr && lastSyncErr.message));
 }
 
 // Public backup reader: read in bounded 512 KiB sessions. On a failed 32 KiB
 // chunk, the inner reader renews the session and retries the same flash offset.
 async function readFlashChunked(start, size, onProgress, onRetry) {
   backupDegradeBaud = false;   // 新一次备份先跑高速,失败后再自适应降速
+  backupOwnershipRef = await readCarveOwnershipSnapshot();
   const out = new Uint8Array(size);
   let offset = 0;
   while (offset < size) {

@@ -28,7 +28,7 @@ require(
 require(
     r"async function restartBackupReadSession\(\).*?"
     r"await withTimeout\(nextLoader\.main\(\).*?"
-    r"readCarveOwnershipSnapshot\(\).*?"
+    r"readCarveOwnershipSnapshot\(.*?"
     r"APP/DATA ownership metadata changed while restarting the backup session",
     "session restart must resync and reject changed APP/DATA ownership metadata",
 )
