@@ -77,8 +77,9 @@ require(
     "dynamic v2 snapshot must identify the host from the ESP app descriptor and use the raw snapshot builder",
 )
 require(
-    r"async function readUsbStorageInventory\(\).*?slotModel\.carve\.data.*?partitions\.push\(",
-    "snapshot inventory must merge carve DATA records (the launcher materialized table omits DATA partitions)",
+    r"async function readUsbStorageInventory\(\).*?mergeCarveAllocations\(partitions, slotModel\.carve\)",
+    "snapshot inventory must merge carve slot+DATA allocations (the 0x8000 table is only a "
+    "boot-time materialization view; the carve record is the allocation authority)",
 )
 require(
     r"async function readUsbStorageInventory\(\).*?readFlashMajority\(PARTITION_TABLE_OFFSET, PARTITION_TABLE_READ_SIZE\).*?"

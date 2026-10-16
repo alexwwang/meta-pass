@@ -246,51 +246,62 @@ export function validateStorageSnapshotManifest(manifest, {
   }
 
   if (targetPartitions !== undefined) {
-    if (!Array.isArray(targetPartitions) || !validPartition(runningHostPartition)) {
-      fail("target partition table and running host partition are required");
-    }
-    const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition, protectedRanges);
-    if (manifest.partitions.length !== eligible.length) {
-      const names = (list) => list.map((p) => p.label).sort().join(",");
-      fail("snapshot does not cover every eligible allocated partition " +
-        "(snapshot: " + manifest.partitions.length + " [" + names(manifest.partitions) + "]; " +
-        "device: " + eligible.length + " [" + names(eligible) + "])");
-    }
-    for (const target of eligible) {
-      const source = manifest.partitions.find((p) => p.label === target.label &&
-        p.type === target.type && p.subtype === target.subtype);
-      if (!source || target.offset !== source.offset || target.size !== source.size) {
-        fail("target partition layout is incompatible or snapshot is incomplete: " + target.label);
-      }
-    }
+    // 兼容旧调用:还原语义已改为"以档案布局为准,只做安全冲突校验",
+    // 覆盖/相等判定在 buildStorageSnapshotRestorePlan 内完成(见该函数注释)。
+    fail("validateStorageSnapshotManifest no longer accepts targetPartitions; use buildStorageSnapshotRestorePlan for restore-time safety checks");
   }
   return manifest;
 }
 
-// Build a deterministic, non-mutating restore plan. Erasing each eligible
+// Build a deterministic, non-mutating restore plan. Erasing each archived
 // partition before writing its extents restores omitted sparse ranges to 0xFF;
 // no operation addresses an unallocated Flash gap.
+//
+// Restore targets are the ARCHIVE's recorded partitions — never the live
+// runtime view. The 0x8000 table is a boot-time materialization of the carve
+// record (meta_pt_from_carve_active) and legitimately varies with boot state:
+// 2026-10-16 real device refused restore because the download-mode table held
+// only the 6 FIXED entries while the record still owned ota_0/ota_1/recordings.
+// The carve record itself lives inside the snapshot (store partition), so
+// writing the plan restores the record, and the bootloader hook re-materializes
+// the table from it on the next boot (META_BOOT_TABLE_RESTORE_RECORD). The live
+// inventory is consulted only for SAFETY: an archived partition may not
+// overlap a protected live partition (running host/cardid) nor a *different*
+// current allocation (e.g. space freed after backup and re-carved for another
+// child) — those refuse instead of silently corrupting unrelated data.
 export function buildStorageSnapshotRestorePlan(manifest, {
   targetPartitions,
   runningHostPartition,
   protectedRanges = [],
 } = {}) {
-  validateStorageSnapshotManifest(manifest, {
-    targetPartitions,
-    runningHostPartition,
-    protectedRanges,
-  });
-  const eligible = eligibleSnapshotPartitions(targetPartitions, runningHostPartition, protectedRanges);
-  const partitions = eligible.map((target) => {
-    const source = manifest.partitions.find((p) => p.label === target.label &&
-      p.type === target.type && p.subtype === target.subtype);
-    if (!source) fail("restore plan is missing partition: " + target.label);
+  validateStorageSnapshotManifest(manifest, { protectedRanges });
+  if (!Array.isArray(targetPartitions) || !validPartition(runningHostPartition)) {
+    fail("target partition table and running host partition are required");
+  }
+  const sameIdentity = (a, b) => a.label === b.label && a.type === b.type &&
+    a.subtype === b.subtype && a.offset === b.offset && a.size === b.size;
+  const protectedLive = targetPartitions.filter((p) => isProtectedPartition(p, runningHostPartition));
+  const liveAlloc = targetPartitions.filter((p) => !isProtectedPartition(p, runningHostPartition));
+  const partitions = manifest.partitions.map((source) => {
+    for (const prot of protectedLive) {
+      if (overlaps(source.offset, source.size, prot.offset, prot.size)) {
+        fail("archived partition " + source.label + " overlaps protected live partition " + prot.label +
+          "; refusing to restore");
+      }
+    }
+    for (const live of liveAlloc) {
+      if (overlaps(source.offset, source.size, live.offset, live.size) && !sameIdentity(source, live)) {
+        fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
+          " conflicts with current allocation " + live.label + " @0x" + live.offset.toString(16) +
+          " (different label/size); the device was re-carved after this backup was taken");
+      }
+    }
     return {
       partition: {
-        label: target.label, type: target.type, subtype: target.subtype,
-        offset: target.offset, size: target.size,
+        label: source.label, type: source.type, subtype: source.subtype,
+        offset: source.offset, size: source.size,
       },
-      erase: { relativeOffset: 0, bytes: target.size },
+      erase: { relativeOffset: 0, bytes: source.size },
       extents: source.extents.map((e) => ({
         file: e.file, relativeOffset: e.offset, bytes: e.bytes, sha256: e.sha256,
       })),
@@ -385,8 +396,10 @@ export async function captureStorageSnapshot(device, {
     metaPassVersion: sourceVersion,
     compatibleMetaPassVersions: { min_inclusive: sourceVersion, max_inclusive: sourceVersion },
   });
+  // manifest 刚由 eligible(= live inventory 的权威合并视图)逐项读出,
+  // 自洽;不再做布局相等校验(还原语义已改为档案布局为准,见
+  // buildStorageSnapshotRestorePlan)。
   validateStorageSnapshotManifest(manifest, {
-    targetPartitions: partitions,
     runningHostPartition: host,
     protectedRanges: info.protected_ranges || [],
   });

@@ -295,6 +295,7 @@ import {
   emptyCarve, carveValid, pickRecord, decodeAndValidate,
   encodeRecord, materializeTable, insertSlot, placeNewData,
   DATA_STATE, planInstall, planRemove, detectSlotMode, isDynMode, buildSlotView, checkTable,
+  mergeCarveAllocations,
 } from "./dynslot-record.js";
 // mock 设备(?mock=1):内存 flash 模拟真机读写语义,供无硬件的浏览器走查(设计 §10)。
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
@@ -2424,24 +2425,19 @@ async function readUsbStorageInventory() {
   if (hosts.length !== 1) {
     throw new Error("USB could not uniquely identify the MetaPass host partition from its app descriptor; found " + hosts.length + ". No snapshot operation was started.");
   }
-  // 2026-10-15 真机实证:launcher 运行态的物化表不含 child DATA 分区
-  // (meta_pt_from_carve_active 只给活动子固件物化),只按 0x8000 表解析会让
-  // 快照静默漏掉全部 child DATA。carve 记录是 DATA 分配的权威来源:把未物化的
-  // DATA 记录并入 inventory(完整 label/type/subtype/offset/size),与固件
-  // /api/install/storage/info 的口径一致;已物化(子固件在跑)时跳过避免重复。
-  const carveData = (slotModel.carve && Array.isArray(slotModel.carve.data)) ? slotModel.carve.data : [];
-  for (const d of carveData) {
-    if (!d || !d.size) continue;
-    const dup = partitions.some(p => p.label === d.label && p.type === d.type &&
-      p.subtype === d.subtype && p.offset === d.offset && p.size === d.size);
-    if (!dup) {
-      partitions.push({ label: d.label, type: d.type, subtype: d.subtype, offset: d.offset, size: d.size });
-    }
+  // 0x8000 表只是 carve 记录的启动态物化视图(meta_pt_from_carve_active,
+  // 只物化活动子固件,下载模式下甚至只剩 FIXED 6 项 —— 2026-10-16 真机实证),
+  // 不是分配权威。快照 inventory 必须把记录里已分配但未物化的槽位/数据并入
+  // (mergeCarveAllocations,与 /api/install/storage/info 同口径),否则备份会
+  // 静默漏掉子固件,还原预检会把同一设备误报为布局不兼容。
+  if (slotModel.recordBroken) {
+    throw new Error("carve record is unreadable (see connect log); snapshot coverage cannot be verified. Reconnect and retry.");
   }
+  const merged = mergeCarveAllocations(partitions, slotModel.carve);
   return {
     meta_pass_version: hosts[0].version,
     running_host: { label: hosts[0].label, type: hosts[0].type, subtype: hosts[0].subtype, offset: hosts[0].offset, size: hosts[0].size },
-    partitions,
+    partitions: merged,
   };
 }
 
@@ -2746,10 +2742,11 @@ $("restore-input").addEventListener("change", async (ev) => {
       });
       restoreZip = { kind: "snapshot", bytes: archiveBytes, manifest: archive.manifest, restorePlan };
       $("restore-info").textContent = "v2 快照预检通过：" + restorePlan.partitionCount +
-        " 个分区；来源 MetaPass " + archive.manifest.meta_pass.system_version;
+        " 个分区；来源 MetaPass " + archive.manifest.meta_pass.system_version +
+        "。将按档案布局恢复（carve 记录随 store 分区写回，下次启动自动重物化分区表）。";
       $("restore-info").className = "ok";
       $("btn-restore").disabled = busy || !loader;
-      log("v2 storage snapshot validated against live USB partition table", "ok");
+      log("v2 storage snapshot validated for safe restore against live USB inventory (archive layout wins)", "ok");
       return;
     }
     if (rawManifest?.manifest_version === 2) {
@@ -2922,9 +2919,9 @@ $("btn-restore").addEventListener("click", async () => {
     if (restoreZip.kind === "snapshot") {
       const sourceVersion = restoreZip.manifest.meta_pass.system_version;
       const accepted = confirm(
-        "即将按快照覆盖 " + restoreZip.restorePlan.partitionCount + " 个已分配分区。\n\n" +
+        "即将按档案布局覆盖 " + restoreZip.restorePlan.partitionCount + " 个分区（数据 + carve 记录）。\n\n" +
         "归档对应的 MetaPass 版本：" + sourceVersion + "。\n" +
-        "写入中断或重启后无法正常启动时不会自动回滚；请刷回该版本后重试。\n\n继续恢复？"
+        "设备上与档案冲突的现有分配会被拒绝预检；写入中断或重启后无法正常启动时不会自动回滚，请刷回该版本后重试。\n\n继续恢复？"
       );
       if (!accepted) throw new Error("已取消快照恢复；未写入 Flash。");
       const inventory = await readUsbStorageInventory();

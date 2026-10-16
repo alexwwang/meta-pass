@@ -77,10 +77,31 @@ for (const version of ["3.0.0", null]) {
   const device = mockDevice({ layoutMismatch: true });
   await assert.rejects(
     restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
-    /incompatible/,
+    /conflicts with current allocation/,
   );
   assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false,
     "layout preflight must finish before Flash mutation");
+}
+
+// A live table that materializes fewer partitions than the archive (the launcher
+// derives the runtime view from the carve record per boot state) must NOT block
+// restore — the archive layout is authoritative.
+{
+  const calls = [];
+  const minimalLive = partitions.filter(p => p.label === "cardid" || p.label === "nvs");
+  const device = {
+    async storageInfo() {
+      calls.push("info");
+      return { ok: true, meta_pass_version: "2.2.0", running_host: host, partitions: minimalLive };
+    },
+    async storageErase(partition) { calls.push(["erase", partition.label, partition.offset, partition.size]); return { ok: true }; },
+    async storageWrite(partition, offset, bytes) { calls.push(["write", partition.label, partition.offset + offset, bytes.length]); return { ok: true }; },
+  };
+  const result = await restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) });
+  assert.equal(result.dataWritten, true);
+  assert.equal(result.bootValidated, false, "USB adapter has no reboot hook");
+  const storeErase = calls.find(c => Array.isArray(c) && c[0] === "erase" && c[1] === "store");
+  assert.equal(storeErase[2], 0x21000, "erase targets the archive-recorded offset, not the live view");
 }
 
 // Missing write capability must fail before erase.

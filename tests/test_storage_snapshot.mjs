@@ -90,7 +90,7 @@ await assert.rejects(
   () => readStorageSnapshotZip(legacyLogicalZip, async (bytes) => hash(bytes)),
   /expected a v2 storage snapshot/,
 );
-validateStorageSnapshotManifest(manifest, { targetPartitions: partitions, runningHostPartition: host });
+validateStorageSnapshotManifest(manifest, { runningHostPartition: host });
 const restorePlan = buildStorageSnapshotRestorePlan(manifest, {
   targetPartitions: partitions, runningHostPartition: host,
 });
@@ -109,10 +109,11 @@ assert.throws(() => validateStorageSnapshotManifest({
   ...manifest,
   partitions: [{ ...manifest.partitions[0], offset: host.offset, size: host.size, label: "ota_0", type: 0, subtype: 0x10 }],
 }, { runningHostPartition: host }), /protected partition/);
-assert.throws(() => validateStorageSnapshotManifest(manifest, {
+// 当前分配与档案不等(同偏移不同大小 = re-carve 后的空间)→ 还原必须拒绝
+assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
   targetPartitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
   runningHostPartition: host,
-}), /incompatible/);
+}), /conflicts with current allocation/);
 assert.throws(() => buildStorageSnapshotManifest({
   metaPassVersion: "2.0.0",
   compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
@@ -141,14 +142,39 @@ await assert.rejects(() => validateStorageSnapshotPayloads(manifest, {}, async (
 
 
 assert.throws(() => validateStorageSnapshotManifest(manifest, {
-  targetPartitions: partitions,
   runningHostPartition: host,
   protectedRanges: [{ offset: 0x1a0000, size: 0x1000 }],
 }), /protected partition/);
-assert.throws(() => validateStorageSnapshotManifest({
+// 还原以档案布局为准:live 表是 carve 记录的启动态物化视图,合法地小于档案
+// (2026-10-16 真机:下载模式下 0x8000 表只剩 FIXED 项,记录仍拥有全部槽位)。
+// 缺项不构成拒绝;只有重叠且身份不同的现有分配才拒绝。
+{
+  const minimalLive = partitions.filter((p) => p === host || p.label === "cardid" || p.label === "nvs");
+  const partialPlan = buildStorageSnapshotRestorePlan(manifest, {
+    targetPartitions: minimalLive, runningHostPartition: host,
+  });
+  assert.equal(partialPlan.partitionCount, 3, "unmaterialized live view must not shrink the restore plan");
+  assert.equal(partialPlan.partitions.find((p) => p.partition.label === "store").partition.offset, 0x1a0000,
+    "restore targets are the archive's recorded offsets, never the live view");
+}
+assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
+  targetPartitions: [...partitions,
+    { label: "reused", type: 0, subtype: 0x11, offset: 0x1a0000, size: 0x8000 }],
+  runningHostPartition: host,
+}), /conflicts with current allocation/);
+assert.throws(() => buildStorageSnapshotRestorePlan({
   ...manifest,
-  partitions: manifest.partitions.filter((p) => p.label !== "pool_0"),
-}, { targetPartitions: partitions, runningHostPartition: host }), /every eligible allocated partition/);
+  partitions: [{ ...manifest.partitions[0], offset: host.offset, size: host.size, label: "ota_0", type: 0, subtype: 0x10 }],
+}, { targetPartitions: partitions, runningHostPartition: host }), /overlaps protected live partition/);
+// 档案缺分区不再是校验错误:档案即权威,还原按档案写(缺的分区只是不回滚)。
+// 相应 plan 按档案现有的分区构建。
+{
+  const trimmed = { ...manifest, partitions: manifest.partitions.filter((p) => p.label !== "pool_0") };
+  validateStorageSnapshotManifest(trimmed, { runningHostPartition: host });
+  assert.equal(buildStorageSnapshotRestorePlan(trimmed, {
+    targetPartitions: partitions, runningHostPartition: host,
+  }).partitionCount, 2);
+}
 assert.throws(() => eligibleSnapshotPartitions([
   ...partitions,
   { label: "overlap", type: 1, subtype: 0x43, offset: 0x1a8000, size: 0x1000 },

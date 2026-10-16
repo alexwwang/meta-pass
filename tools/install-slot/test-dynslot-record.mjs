@@ -679,4 +679,38 @@ const emptySlot = (offset, size, extra = {}) => ({
   console.log("PASS 12: mock device round trip (connect → install → allocate → remove)");
 }
 
+// mergeCarveAllocations:0x8000 表只是 carve 记录的启动态物化视图(2026-10-16
+// 真机:下载模式下表只剩 FIXED 6 项,记录仍拥有 ota_0/ota_1/recordings)。
+// 合并必须补全未物化的槽位与 DATA;身份相同跳过;五元组冲突抛错。
+{
+  const { SLOT_STATE } = rec;
+  const FIXED = [
+    { type: 1, subtype: 2, offset: 0x9000, size: 0x6000, label: "nvs" },
+    { type: 0, subtype: 0, offset: 0x10000, size: 0x170000, label: "factory" },
+    { type: 1, subtype: 2, offset: 0x35a000, size: 0x6000, label: "store" },
+    { type: 1, subtype: 0, offset: 0x7fe000, size: 0x2000, label: "otadata" },
+  ];
+  const carve = {
+    slots: [
+      { state: SLOT_STATE.VALID, kind: 0, offset: 0x180000, size: 0x13d400, imageLen: 1, playId: 1, sha: new Uint8Array(32), name: "a" },
+      { state: SLOT_STATE.VALID, kind: 0, offset: 0x360000, size: 0x165000, imageLen: 1, playId: 2, sha: new Uint8Array(32), name: "b" },
+      { state: SLOT_STATE.EMPTY, kind: 0, offset: 0, size: 0, imageLen: 0, playId: 0, sha: new Uint8Array(32), name: "" },
+    ],
+    data: [{ playId: 3, offset: 0x4d0000, size: 0x100000, state: 0, subtype: 129, type: 1, label: "recordings" }],
+  };
+  const merged = rec.mergeCarveAllocations(FIXED, carve);
+  assert.deepEqual(merged.map((p) => p.label), ["nvs", "factory", "store", "otadata", "ota_0", "ota_1", "recordings"]);
+  // 表已物化同名同址条目 → dedup,不产生重复
+  const fullTable = rec.mergeCarveAllocations(merged, carve);
+  assert.equal(fullTable.length, merged.length, "already-materialized entries must dedup");
+  // 无记录(legacy)/坏输入 → 原样返回
+  assert.equal(rec.mergeCarveAllocations(FIXED, null).length, FIXED.length);
+  // 记录与表矛盾(同 label 不同 offset)→ 抛错
+  assert.throws(() => rec.mergeCarveAllocations(FIXED, {
+    slots: [{ state: SLOT_STATE.VALID, kind: 0, offset: 0x200000, size: 0x1000, imageLen: 1, playId: 1, sha: new Uint8Array(32), name: "x" }],
+    data: [{ playId: 3, offset: 0x4d0000, size: 0x100000, state: 0, subtype: 129, type: 1, label: "store" }],
+  }), /conflicts with live partition table/);
+  console.log("PASS 13: mergeCarveAllocations (carve record is the allocation authority)");
+}
+
 console.log("ALL dynslot-record TESTS PASSED");

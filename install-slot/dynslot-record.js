@@ -253,6 +253,43 @@ export function checkTable(raw) {
   return false;   // 无 marker
 }
 
+/**
+ * 把 carve 记录中已分配但未物化进 live 表的分区并入,返回新数组(不动输入)。
+ * launcher 物化表随运行态变化(meta_pt_from_carve_active 只物化活动子固件,
+ * 2026-10-16 真机:下载模式下 0x8000 表只剩 FIXED 6 项,ota_0/ota_1/recordings
+ * 全部缺失),而 carve 记录才是 APP/DATA 分配的权威来源。快照覆盖校验必须以
+ * 合并后的集合为准,否则同一设备备份/还原因启动状态不同而互相拒认。
+ * 槽位: state != EMPTY 且 size > 0 → {type:0, subtype:0x10+i, label:"ota_<i>"}
+ *       (与 materializeTable 同源);DATA: size > 0,记录自带 type/subtype/label。
+ * 已与表一致的条目(五元组全等)跳过;五元组冲突(carve 与表矛盾)抛错,
+ * 绝不带着不可判定的结构继续。
+ */
+export function mergeCarveAllocations(partitions, carve) {
+  if (!Array.isArray(partitions) || !carve || typeof carve !== "object") return partitions.slice();
+  const out = partitions.slice();
+  const same = (a, b) => a.label === b.label && a.type === b.type &&
+    a.subtype === b.subtype && a.offset === b.offset && a.size === b.size;
+  const push = (entry) => {
+    const dup = out.some((p) => same(p, entry));
+    if (dup) return;
+    if (out.some((p) => p.label === entry.label || p.offset === entry.offset)) {
+      throw new Error("carve allocation conflicts with live partition table: " + entry.label);
+    }
+    out.push(entry);
+  };
+  const slots = Array.isArray(carve.slots) ? carve.slots : [];
+  slots.forEach((s, i) => {
+    if (!s || s.state === SLOT_STATE.EMPTY || !s.size) return;
+    push({ type: 0, subtype: 0x10 + i, offset: s.offset, size: s.size, label: "ota_" + i });
+  });
+  const data = Array.isArray(carve.data) ? carve.data : [];
+  for (const d of data) {
+    if (!d || !d.size) continue;
+    push({ type: d.type, subtype: d.subtype, offset: d.offset, size: d.size, label: d.label });
+  }
+  return out;
+}
+
 // ---- 记录解码(= meta_carve_rec_decode/raw_info) -----------------------------
 
 function recLayout(version) {
