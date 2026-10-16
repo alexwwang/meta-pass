@@ -125,7 +125,7 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
   };
   await assert.rejects(
     () => phone.validateStorageSnapshotArchiveForDevice(incompatibleBridge, archive.zip),
-    /incompatible/,
+    /conflicts with current allocation|re-carved|protected partition/,
   );
   console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
 }
