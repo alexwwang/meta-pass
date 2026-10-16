@@ -109,11 +109,17 @@ assert.throws(() => validateStorageSnapshotManifest({
   ...manifest,
   partitions: [{ ...manifest.partitions[0], offset: host.offset, size: host.size, label: "ota_0", type: 0, subtype: 0x10 }],
 }, { runningHostPartition: host }), /protected partition/);
-// 当前分配与档案不等(同偏移不同大小 = re-carve 后的空间)→ 还原必须拒绝
-assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
-  targetPartitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
-  runningHostPartition: host,
-}), /conflicts with current allocation/);
+// live 与档案不等(同偏移不同大小 / relabel / re-carve 重用)一律放行:
+// 还原 = 档案覆盖整机,label/subtype 是记录槽位序号的位置名,重雕后同
+// 一片字节改名不构成拒绝理由;档案范围外的 live 字节原样保留,下次启动
+// 按重建的记录重新物化表后即成为未分配空间。唯一红线是受保护分区。
+{
+  const shrunk = buildStorageSnapshotRestorePlan(manifest, {
+    targetPartitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
+    runningHostPartition: host,
+  });
+  assert.equal(shrunk.partitionCount, 3, "relabelled/resized live allocations do not block restore");
+}
 assert.throws(() => buildStorageSnapshotManifest({
   metaPassVersion: "2.0.0",
   compatibleMetaPassVersions: { min_inclusive: "2.0.0", max_inclusive: "2.9.9" },
@@ -194,12 +200,17 @@ assert.throws(() => validateStorageSnapshotManifest(manifest, {
   assert.equal(dynPlan.partitionCount, 3, "record-merged inventory satisfies identity rule");
   assert.deepEqual(dynPlan.unownedRestored, []);
 }
-assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
-  targetPartitions: partitions.map((p) => p.label === "store"
-    ? { label: "reused", type: 0, subtype: 0x11, offset: 0x1a0000, size: 0x8000 }
-    : p),
-  runningHostPartition: host,
-}), /conflicts with current allocation/);
+{
+  // re-carve 重用(relabel + 换大小)也不拒绝:档案权威,按档案范围写。
+  const reused = buildStorageSnapshotRestorePlan(manifest, {
+    targetPartitions: partitions.map((p) => p.label === "store"
+      ? { label: "reused", type: 0, subtype: 0x11, offset: 0x1a0000, size: 0x8000 }
+      : p),
+    runningHostPartition: host,
+  });
+  assert.equal(reused.partitionCount, 3);
+  assert.deepEqual(reused.unownedRestored, ["store"], "relabelled live slot is still owned; only the resized store is unowned");
+}
 assert.throws(() => buildStorageSnapshotRestorePlan({
   ...manifest,
   partitions: [{ ...manifest.partitions[0], offset: host.offset, size: host.size, label: "ota_0", type: 0, subtype: 0x10 }],

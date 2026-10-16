@@ -72,15 +72,15 @@ for (const version of ["3.0.0", null]) {
   assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false, "version preflight runs before writes");
 }
 
-// Live layout mismatch is rejected before the first erase.
+// Live layout mismatch (relabel / resize / re-carve) does NOT block restore:
+// the archive is authoritative and writes only its recorded ranges; live bytes
+// outside them are left untouched. Only protected-partition overlap refuses.
 {
   const device = mockDevice({ layoutMismatch: true });
-  await assert.rejects(
-    restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) }),
-    /conflicts with current allocation/,
-  );
-  assert.equal(device.calls.some(c => c[0] === "write" || c[0] === "erase"), false,
-    "layout preflight must finish before Flash mutation");
+  const result = await restoreStorageSnapshotArchive(device, archive, { sha256Hex: async bytes => hash(bytes) });
+  assert.equal(result.dataWritten, true);
+  const storeErase = device.calls.find(c => c[0] === "erase" && c[1] === "store");
+  assert.equal(storeErase[2], 0x1000, "erase follows the archive size, not the enlarged live allocation");
 }
 
 // A live table that materializes fewer partitions than the archive (the launcher

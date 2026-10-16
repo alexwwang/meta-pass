@@ -123,10 +123,12 @@ console.log("PASS archive version gate: phone page accepts v2 storage snapshots 
       partitions: partitions.map((p) => p.label === "store" ? { ...p, size: p.size - 0x1000 } : p),
     }) }),
   };
-  await assert.rejects(
-    () => phone.validateStorageSnapshotArchiveForDevice(incompatibleBridge, archive.zip),
-    /conflicts with current allocation|re-carved|protected partition/,
-  );
+  // Live layout drift (here: store shrunk) no longer blocks restore — the archive
+  // is authoritative; restore writes only the archived ranges. The only refusal
+  // rule is overlap with a protected live partition.
+  const driftPreflight = await phone.validateStorageSnapshotArchiveForDevice(incompatibleBridge, archive.zip);
+  assert.equal(driftPreflight.restorePlan.partitionCount, 2);
+  assert.ok(driftPreflight.restorePlan.unownedRestored.includes("store"));
   console.log("PASS complete sparse snapshot read: includes all eligible partitions and skips erased chunks");
 }
 const usbPage = readFileSync(path.join(ROOT, "install-slot", "install-slot.html"), "utf8");

@@ -266,21 +266,22 @@ export function validateStorageSnapshotManifest(manifest, {
 // writing the plan restores the record, and the bootloader hook re-materializes
 // the table from it on the next boot (META_BOOT_TABLE_RESTORE_RECORD).
 //
-// Live-state safety per archived partition (the only two refusal rules):
+// Live-state safety per archived partition (the ONLY refusal rule):
 // - Overlap with a protected live partition (running host/cardid) → refuse.
-// - Overlap with a live allocation of DIFFERENT identity (re-carved space that
-//   now belongs to another child) → refuse; restoring would corrupt data the
-//   archive does not cover.
-// Everything else is restored by the archive's recorded identity, whether or
-// not the device currently lists the allocation: space that was never
-// allocated or was freed without reuse is safe to overwrite, and the archived
-// store partition carries the backup-time carve record back onto flash, so the
-// layout heals on the next boot (META_BOOT_TABLE_RESTORE_RECORD). A readable
-// record that no longer owns the archived allocations is therefore NOT a
-// refusal reason (2026-10-16 real device: record lost/re-carved between
-// backup and restore; the earlier strict "is not a current device allocation"
-// rule made such devices unrestorable while preflight/execution identity
-// mismatches still erased NVS mid-run before failing).
+//   Slot/DATA labels and subtypes are positional
+//   (derived from the carve record's slot index, materialized per boot), so a
+//   record that was re-carved between backup and restore renumbers the very
+//   same bytes (archive ota_1 @0x360000 vs live ota_0 @0x360000 — 2026-10-16
+//   real device). That is relabelling, not reuse; restore = the archive
+//   returns the whole device to the recorded state, so every archived range is
+//   written regardless of what the live table currently calls it. Live bytes
+//   outside archived ranges are simply left untouched and become unallocated
+//   flash once the restored record re-materializes the table.
+// Everything is restored by the archive's recorded identity, whether or not
+// the device currently lists the allocation: space that was never allocated,
+// was freed, or was re-labelled/re-carved is overwritten by the archive, and
+// the archived store partition carries the backup-time carve record back onto
+// flash, so the layout heals on the next boot (META_BOOT_TABLE_RESTORE_RECORD).
 export function buildStorageSnapshotRestorePlan(manifest, {
   targetPartitions,
   runningHostPartition,
@@ -290,8 +291,6 @@ export function buildStorageSnapshotRestorePlan(manifest, {
   if (!Array.isArray(targetPartitions) || !validPartition(runningHostPartition)) {
     fail("target partition table and running host partition are required");
   }
-  const sameIdentity = (a, b) => a.label === b.label && a.type === b.type &&
-    a.subtype === b.subtype && a.offset === b.offset && a.size === b.size;
   const protectedLive = targetPartitions.filter((p) => isProtectedPartition(p, runningHostPartition));
   const liveAlloc = targetPartitions.filter((p) => !isProtectedPartition(p, runningHostPartition));
   const unowned = [];
@@ -302,14 +301,12 @@ export function buildStorageSnapshotRestorePlan(manifest, {
           "; refusing to restore");
       }
     }
-    const conflicting = liveAlloc.find((live) => overlaps(source.offset, source.size, live.offset, live.size) &&
-      !sameIdentity(source, live));
-    if (conflicting) {
-      fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
-        " conflicts with current allocation " + conflicting.label + " @0x" + conflicting.offset.toString(16) +
-        " (different label/size); the device was re-carved after this backup was taken");
+    // No identity/conflict rule: labels and subtypes are positional carve-record
+    // indices and legitimately change when the record is re-carved; the archive
+    // overwrites its recorded ranges regardless of what the live table calls them.
+    if (!liveAlloc.some((live) => live.offset === source.offset && live.size === source.size)) {
+      unowned.push(source.label);
     }
-    if (!liveAlloc.some((live) => sameIdentity(source, live))) unowned.push(source.label);
     return {
       partition: {
         label: source.label, type: source.type, subtype: source.subtype,
