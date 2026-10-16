@@ -2755,7 +2755,6 @@ $("restore-input").addEventListener("change", async (ev) => {
         targetPartitions: inventory.partitions,
         runningHostPartition: inventory.running_host,
         protectedRanges: [],
-        recordUnusable,
       });
       restoreZip = { kind: "snapshot", bytes: archiveBytes, manifest: archive.manifest, restorePlan, recordUnusable };
       $("restore-info").textContent = "v2 快照预检通过：" + restorePlan.partitionCount +
@@ -2953,7 +2952,6 @@ $("btn-restore").addEventListener("click", async () => {
       });
       const result = await restoreStorageSnapshotArchive(device, restoreZip.bytes, {
         sha256Hex,
-        recordUnusable: restoreZip.recordUnusable,
         onProgress: event => {
           if (Number.isFinite(event.completedBytes) && event.totalBytes > 0) setRestoreProgress(event.completedBytes / event.totalBytes * 100);
           const offset = Number.isInteger(event.relativeOffset) ? " · 相对偏移 0x" + event.relativeOffset.toString(16) : "";

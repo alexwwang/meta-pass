@@ -145,19 +145,17 @@ assert.throws(() => validateStorageSnapshotManifest(manifest, {
   runningHostPartition: host,
   protectedRanges: [{ offset: 0x1a0000, size: 0x1000 }],
 }), /protected partition/);
-// 还原身份规则:live 表是 carve 记录的启动态物化视图,合法地小于档案
-// (2026-10-16 真机:下载模式下 0x8000 表只剩 FIXED 项,记录仍拥有全部槽位),
-// 缺项本身不是拒绝理由 —— 合并记录后的权威 inventory 必须能身份匹配每个
-// 档案分区。记录不可解码(recordUnusable)时档案自成权威,允许直写自愈。
+// 还原安全红线只有两条:受保护分区重叠、与身份不同的现有分配重叠。
+// live 表是 carve 记录的启动态物化视图,合法地小于档案(2026-10-16 真机:
+// 下载模式下 0x8000 表只剩 FIXED 项);记录可读但已不拥有档案分配、或记录
+// 不可解码,都不是拒绝理由 —— 无冲突的未分配/已释放空间直接按档案身份写,
+// store 分区写回后 carve 记录随档案自愈。
 {
   const minimalLive = partitions.filter((p) => p === host || p.label === "cardid" || p.label === "nvs");
-  assert.throws(() => buildStorageSnapshotRestorePlan(manifest, {
-    targetPartitions: minimalLive, runningHostPartition: host,
-  }), /is not a current device allocation/);
   const healingPlan = buildStorageSnapshotRestorePlan(manifest, {
-    targetPartitions: minimalLive, runningHostPartition: host, recordUnusable: true,
+    targetPartitions: minimalLive, runningHostPartition: host,
   });
-  assert.equal(healingPlan.partitionCount, 3, "recordUnusable: archive is the allocation authority");
+  assert.equal(healingPlan.partitionCount, 3, "archive layout is authoritative; missing live allocations do not block restore");
   assert.deepEqual(healingPlan.unownedRestored, ["store", "pool_0"]);
   assert.equal(healingPlan.partitions.find((p) => p.partition.label === "store").partition.offset, 0x1a0000,
     "restore targets are the archive's recorded offsets, never the live view");

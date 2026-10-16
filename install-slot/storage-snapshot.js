@@ -266,23 +266,25 @@ export function validateStorageSnapshotManifest(manifest, {
 // writing the plan restores the record, and the bootloader hook re-materializes
 // the table from it on the next boot (META_BOOT_TABLE_RESTORE_RECORD).
 //
-// Live-state rule per archived partition:
+// Live-state safety per archived partition (the only two refusal rules):
 // - Overlap with a protected live partition (running host/cardid) → refuse.
-// - Overlap with a live allocation of DIFFERENT identity (re-carved space) →
-//   refuse; the device changed since backup and unrelated data would corrupt.
-// - Exact identity match with a live allocation → restore in place.
-// - No live match → refuse, UNLESS recordUnusable is set (the device's carve
-//   record is unreadable/absent, so live allocation state is unknown and the
-//   self-contained archive is the only authority). That mode heals such
-//   devices: the archived store partition carries the backup-time record back
-//   onto flash (2026-10-16 real device: record lost between backup and restore,
-//   preflight passed an overlap-only check, and the run died mid-erase with
-//   "Live partition identity changed" after already erasing NVS/phy_init).
+// - Overlap with a live allocation of DIFFERENT identity (re-carved space that
+//   now belongs to another child) → refuse; restoring would corrupt data the
+//   archive does not cover.
+// Everything else is restored by the archive's recorded identity, whether or
+// not the device currently lists the allocation: space that was never
+// allocated or was freed without reuse is safe to overwrite, and the archived
+// store partition carries the backup-time carve record back onto flash, so the
+// layout heals on the next boot (META_BOOT_TABLE_RESTORE_RECORD). A readable
+// record that no longer owns the archived allocations is therefore NOT a
+// refusal reason (2026-10-16 real device: record lost/re-carved between
+// backup and restore; the earlier strict "is not a current device allocation"
+// rule made such devices unrestorable while preflight/execution identity
+// mismatches still erased NVS mid-run before failing).
 export function buildStorageSnapshotRestorePlan(manifest, {
   targetPartitions,
   runningHostPartition,
   protectedRanges = [],
-  recordUnusable = false,
 } = {}) {
   validateStorageSnapshotManifest(manifest, { protectedRanges });
   if (!Array.isArray(targetPartitions) || !validPartition(runningHostPartition)) {
@@ -300,30 +302,14 @@ export function buildStorageSnapshotRestorePlan(manifest, {
           "; refusing to restore");
       }
     }
-    const match = liveAlloc.find((live) => sameIdentity(source, live));
-    if (match) {
-      return {
-        partition: {
-          label: source.label, type: source.type, subtype: source.subtype,
-          offset: source.offset, size: source.size,
-        },
-        erase: { relativeOffset: 0, bytes: source.size },
-        extents: source.extents.map((e) => ({
-          file: e.file, relativeOffset: e.offset, bytes: e.bytes, sha256: e.sha256,
-        })),
-      };
-    }
-    const conflicting = liveAlloc.find((live) => overlaps(source.offset, source.size, live.offset, live.size));
+    const conflicting = liveAlloc.find((live) => overlaps(source.offset, source.size, live.offset, live.size) &&
+      !sameIdentity(source, live));
     if (conflicting) {
       fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
         " conflicts with current allocation " + conflicting.label + " @0x" + conflicting.offset.toString(16) +
         " (different label/size); the device was re-carved after this backup was taken");
     }
-    if (!recordUnusable) {
-      fail("archived partition " + source.label + " @0x" + source.offset.toString(16) +
-        " is not a current device allocation; it was removed after this backup was taken");
-    }
-    unowned.push(source.label);
+    if (!liveAlloc.some((live) => sameIdentity(source, live))) unowned.push(source.label);
     return {
       partition: {
         label: source.label, type: source.type, subtype: source.subtype,
