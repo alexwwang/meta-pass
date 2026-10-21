@@ -2880,7 +2880,9 @@ static esp_err_t remove_intent_write(int slot, const meta_carve_slot_t *target)
         data_sizes[data_count] = d->size;
         data_count++;
     }
-    if (target->play_id == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
+    // 注:不要在此加"play_id==0 && data_count>0 拒写"守卫——上面的过滤已对
+    // 0 号槽天然得出 data_count=0(play_id=0 数据记录在合法 carve 中不存在,
+    // meta_carve_valid 硬拒),旧守卫把 0 号槽的卸载 intent 永久挡死。
 
     nvs_handle_t nvs;
     esp_err_t e = nvs_open(REMOVE_NVS_NS, NVS_READWRITE, &nvs);
@@ -2973,10 +2975,9 @@ static esp_err_t remove_app_bytes_and_commit(int slot, uint32_t pid,
     if (target->play_id != pid || target->offset != offset || target->size != size) {
         return ESP_ERR_INVALID_STATE;
     }
-    /* Legacy APPs with unknown play_id cannot safely claim or delete DATA.
-     * Fail closed rather than create orphan DATA or erase another APP's data. */
-    if (pid == 0 && carve->data_count > 0) return ESP_ERR_INVALID_STATE;
-
+    /* pid==0(legacy)槽没有可级联数据:下方收集循环对 pid==0 天然跳过全部
+     * 记录(play_id=0 数据记录在合法 carve 中不存在,meta_carve_valid 硬拒),
+     * data_count 恒为 0。旧守卫同款冗余,曾把 0 号槽卸载事务永久挡死。 */
     /* Snapshot all extents before the metadata commit invalidates the active
      * carve view. Never erase bytes while their DATA records are still live:
      * a failed commit must leave every owned DATA byte untouched. */
@@ -3108,10 +3109,12 @@ static esp_err_t h_install_remove(httpd_req_t *req)
         return reply(req, "404 Not Found", "no such slot");
     }
     const meta_carve_slot_t target = carve->slot[rm.slot];
-    if (target.play_id == 0 && carve->data_count > 0) {
-        return reply(req, "409 Conflict",
-                     "DATA ownership is unknown for this legacy APP; refusing unsafe uninstall");
-    }
+    // play_id=0 槽(legacy/v1 迁移/USB 页历史产物)允许卸载:meta_carve_valid
+    // 拒绝任何 play_id=0 的 DATA 记录(硬不变量),所以级联归档按 play_id
+    // 匹配时 0 号槽永远匹配不到数据——不存在"误删身份不明数据"的风险。
+    // 旧守卫(play_id==0 && data_count>0 → 409)防的是一笔不可能存在的账,
+    // 反把这类槽永久锁死;移除后存量毒槽可清,数据记录按 (play_id,label)
+    // 键控原样保留。
     if (remove_intent_write(rm.slot, &target) != ESP_OK) {
         return reply(req, "500 Internal Server Error", "cannot persist uninstall intent");
     }

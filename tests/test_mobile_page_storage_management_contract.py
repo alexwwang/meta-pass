@@ -250,7 +250,11 @@ class MobilePageStorageManagementContract(unittest.TestCase):
         self.assertIn("remove_recover_pending", device)
         self.assertIn("remove_app_bytes_and_commit", device)
         self.assertIn("meta_carve_flash_remove_app_and_data", device)
-        self.assertIn("DATA ownership is unknown", device)
+        # play_id=0 槽卸载守卫已移除:meta_carve_valid 硬拒 play_id=0 数据记录,
+        # 级联按 play_id 匹配时 0 号槽永远无账可误删,旧 409 反而永久锁死毒槽。
+        # 断言守卫不再回退 + 不变量注释作为回归锚。
+        self.assertNotIn("DATA ownership is unknown", device)
+        self.assertIn("拒绝任何 play_id=0 的 DATA 记录", device)
         # An unresolved durable uninstall intent must prevent the management
         # HTTP API from starting; otherwise another mutation could invalidate
         # the recovery target before the delete transaction is resumed.

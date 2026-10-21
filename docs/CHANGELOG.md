@@ -6,6 +6,14 @@
 
 ## Unreleased
 
+## v2.2.3 (2026-10-21)
+
+Patch release. Both fixes below were root-caused from live-device evidence during pass-radar dynslot compatibility testing; the legacy-slot uninstall path was exercised end-to-end on real hardware (interrupted uninstall → durable intent → boot-time recovery → slot removed, foreign DATA records preserved).
+
+- **Legacy-slot uninstall unblocked + `playId: 0` rejected at the protocol boundary (firmware, 2026-10-21)**: two coupled defects made every `play_id=0` slot permanently unremovable once any DATA record existed on the device. (1) The LAN prepare parser accepted an explicit `playId: 0` (`meta_install_model.c` range check), and such slots — minted historically by the v1→v2 migration seed and by the USB installer page for firmware without a DATA declaration — carry no identity, so the slot-remove guard refused to uninstall them whenever `carve->data_count > 0`. (2) The guard itself protected an impossible scenario: `meta_carve_valid` hard-rejects any DATA record with `play_id == 0`, so the uninstall cascade (which matches DATA by play_id) can never mis-attribute a record to a zero-id slot — the same redundant check had been copy-pasted into four layers (HTTP entry, intent writer, byte-erase commit, record remover), each of which alone could deadlock the uninstall. All four copies are deleted (slot removal only drops the slot record; DATA records are keyed by `(play_id, label)` and unaffected), and the offer parser now rejects `playId <= 0`. Existing poisoned slots become removable; the USB installer page fix (below) stops minting new ones.
+
+- **USB installer: APP slots always receive a local playId (installer page, 2026-10-21)**: previously `install-slot.html` only stamped a play identifier when the firmware declared a DATA partition, so APP-only firmware installed over USB got `play_id=0` slots. New rule: every locally installed APP slot gets a synthetic `0x80000000+` id (`nextDataPlayId`): new slots always, overwrites keep the existing non-zero id (upgrade semantics, DATA ownership stays intact), and overwriting a poisoned `play_id=0` slot re-stamps it, healing historical unremovable slots. DATA records now share the APP slot's id exactly (matching the LAN offer contract `offer.data[].playId == offer.playId`); before, re-deriving the id after the slot was inserted could have split ownership.
+
 ## v2.2.2 (2026-10-16)
 
 Patch release. Both firmware fixes below were root-caused from hardware evidence (serial logs + NVS post-mortem) and validated on a real device before tagging.

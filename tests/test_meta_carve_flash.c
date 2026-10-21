@@ -448,7 +448,7 @@ static void test_remove_app_and_data_atomically(void)
     assert(after.carve.count == 2 && after.carve.data_count == 0);
     printf("PASS remove APP + all DATA in one durable metadata commit\n");
 }
-static void test_remove_unknown_app_refuses_orphan_data(void)
+static void test_remove_unknown_app_preserves_unowned_data(void)
 {
     reset_all();
     load_fixture("tests/fixtures/legacy_table.bin", s_flash + META_PT_FLASH_OFFSET,
@@ -456,15 +456,17 @@ static void test_remove_unknown_app_refuses_orphan_data(void)
     assert(meta_carve_flash_ensure() == ESP_OK);
     meta_carve_rec_t rec;
     make_rec_with_data(&rec, 123, "save", 0x280000, 0x1000, META_DATA_DIRTY);
-    rec.carve.slot[0].play_id = 0; /* legacy identity cannot prove DATA ownership */
+    rec.carve.slot[0].play_id = 0; /* legacy 身份不明槽 */
     assert(meta_carve_flash_commit(&rec.carve, true) == ESP_OK);
-    meta_carve_rec_t before, after;
-    assert(read_best(&before));
-    assert(meta_carve_flash_remove_app_and_data(0) == ESP_ERR_INVALID_STATE);
+    /* 新契约:0 号槽可卸载,级联按 play_id 匹配天然清空——数据记录属于
+     * play_id 123,必须原样保留(旧守卫 409 曾把这类槽永久锁死)。 */
+    assert(meta_carve_flash_remove_app_and_data(0) == ESP_OK);
+    meta_carve_rec_t after;
     assert(read_best(&after));
-    assert(after.seq == before.seq);
-    assert(after.carve.count == 1 && after.carve.data_count == 1);
-    printf("PASS unknown APP identity refuses cascade delete\n");
+    assert(after.carve.count == 0 && after.carve.data_count == 1);
+    assert(after.carve.data[0].play_id == 123 &&
+           after.carve.data[0].state == META_DATA_DIRTY);
+    printf("PASS unknown APP identity: slot removed, unowned DATA preserved\n");
 }
 
 static void test_set_dirty(void)
@@ -755,7 +757,7 @@ int main(void)
     test_sync_states();
     test_remove_slot();
     test_remove_app_and_data_atomically();
-    test_remove_unknown_app_refuses_orphan_data();
+    test_remove_unknown_app_preserves_unowned_data();
     test_set_dirty();
     test_archive_slot_and_data();
     test_erase_data();

@@ -110,6 +110,8 @@ static void test_parse_rejects(void)
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 版本不符
     assert(mutated_offer(&mu, "\"playId\": 563,", ""));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 缺 playId
+    assert(mutated_offer(&mu, "\"playId\": 563,", "\"playId\": 0,"));
+    assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // playId=0 身份不明,永不许进槽记录
     assert(mutated_offer(&mu, "\"revisionId\": 1499,", ""));
     assert(!meta_install_model_parse(mu.buf, mu.len, &m));        // 缺 revisionId
     assert(mutated_offer(&mu, "\"imageLen\": 1892032,", ""));

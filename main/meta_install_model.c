@@ -33,8 +33,10 @@ bool meta_install_model_parse(const char *json, size_t len,
     out->protocol = (uint8_t)v;
 
     // playId / revisionId 仅作记录/展示(设备不做 WAN 请求)。
+    // playId=0 = 身份不明:槽记录一旦写入 play_id=0,删槽守卫的 legacy 分支
+    // 会把它永久锁死(设备上存在任何 DATA 记录即拒卸)。0 号永远不许进槽记录。
     if (!meta_store_json_get_int(json, len, "playId", &v)) return false;
-    if (v < 0 || v > UINT32_MAX) return false;
+    if (v <= 0 || v > UINT32_MAX) return false;
     out->play_id = (uint32_t)v;
 
     if (!meta_store_json_get_int(json, len, "revisionId", &v)) return false;

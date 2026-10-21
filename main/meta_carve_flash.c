@@ -412,8 +412,9 @@ esp_err_t meta_carve_flash_remove_app_and_data(int slot)
     }
     const uint32_t play_id = s_carve.slot[slot].play_id;
     s_work = s_carve;
-    /* A legacy APP without play_id cannot be safely associated with DATA. */
-    if (play_id == 0 && s_work.data_count > 0) return ESP_ERR_INVALID_STATE;
+    /* play_id==0(legacy)槽:data 清除循环只在 play_id!=0 时执行,0 号天然
+     * 不级联(play_id=0 数据记录在合法 carve 中不存在,meta_carve_valid
+     * 硬拒)。旧守卫同款冗余,曾把 0 号槽的删除提交永久挡死。 */
     if (play_id != 0) {
         uint8_t i = 0;
         while (i < s_work.data_count) {
