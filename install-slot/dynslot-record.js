@@ -618,7 +618,7 @@ export function removeSlot(carve, index) {
 }
 
 /** 在插入下标处放入新槽(= meta_carve_place 的插入语义)。 */
-export function insertSlot(carve, index, { offset, size }) {
+export function insertSlot(carve, index, { offset, size, playId = 0 }) {
   const slots = carve.slots.slice();
   slots.splice(index, 0, {
     kind: SLOT_KIND.APP,
@@ -626,7 +626,7 @@ export function insertSlot(carve, index, { offset, size }) {
     offset,
     size,
     imageLen: 0,
-    playId: 0,
+    playId: playId >>> 0,
     sha: new Uint8Array(32),
     name: "",
   });

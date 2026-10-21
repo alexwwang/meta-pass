@@ -3088,6 +3088,7 @@ $("btn-install").addEventListener("click", async () => {
     let slotLimit;
     let carveForInstall = null;
     let dataPlayId = 0;
+    let appPlayId = 0;
     if (dynMode) {
       await loadSlotModel();   // 记录可能已过期:重读后再规划(设计 §6 step 1)
       plan = planInstall(slotModel.carve, image.length, target);
@@ -3095,8 +3096,17 @@ $("btn-install").addEventListener("click", async () => {
       s = { offset: plan.offset, size: plan.size };
       slot = plan.index;
       slotLimit = plan.limit;
+      // 本地安装一律给 APP 槽分配自定义编号(0x80000000+ 命名空间)。过去只有
+      // 带 DATA 声明的固件才盖章,无 DATA 固件装出 playId=0 槽位,被启动器当
+      // 身份不明——设备上一旦出现任何 DATA 记录,该槽即被 legacy 守卫永久拒卸。
+      // 覆盖安装保留槽位现有非 0 编号(升级语义,数据归属不断链);对 playId=0
+      // 的旧槽重盖章,顺带治愈 USB 页历史造出的不可卸载槽。
+      const keptPlayId = plan.action === PLAN.REUSE
+        ? Number(slotModel.carve.slots[plan.index]?.playId) >>> 0 : 0;
+      appPlayId = keptPlayId > 0 ? keptPlayId : nextDataPlayId(slotModel.carve);
+      if (!appPlayId) throw new Error("no free local APP/DATA installation identifier remains");
       carveForInstall = plan.action === PLAN.CREATE
-        ? insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size })
+        ? insertSlot(slotModel.carve, plan.index, { offset: plan.offset, size: plan.size, playId: appPlayId })
         : slotModel.carve;
     } else {
       if (dataImages.length) {
@@ -3126,8 +3136,10 @@ $("btn-install").addEventListener("click", async () => {
       }
       const sizes = await chooseUsbDataSizes(dataImages, carveForInstall);
       if (!sizes) { log(t("msg_install_cancelled"), "warn"); return; }
-      dataPlayId = nextDataPlayId(carveForInstall);
-      if (!dataPlayId) throw new Error("no free local APP/DATA installation identifier remains");
+      // DATA 记录与 APP 槽同属一个玩法:共用 appPlayId(与 LAN offer 契约一致,
+      // offer.data[].playId == offer.playId)。carveForInstall 此时已含新槽的
+      // appPlayId,再取 nextDataPlayId 会得到下一个空闲号,把数据划给另一个"玩法"。
+      dataPlayId = appPlayId;
       const dataPlan = planDataReservations(carveForInstall, dataImages, sizes, dataPlayId);
       if (!dataPlan.ok) {
         throw new Error(`DATA allocation failed (${dataPlan.reason})${dataPlan.index == null ? "" : ` at partition ${dataPlan.index + 1}`}`);
@@ -3227,7 +3239,7 @@ $("btn-install").addEventListener("click", async () => {
         imageLen: image.length,
         sha,
         name: dispName,
-        playId: deferredDataInstall ? dataPlayId : slots[plan.index].playId,
+        playId: appPlayId,
       };
       const nextCarve = {
         slots,
