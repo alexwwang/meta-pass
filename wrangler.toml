@@ -19,6 +19,14 @@ pages_build_output_dir = "./install-slot"
 bucket_name = "meta-pass-extracted"
 binding = "meta_pass_extracted"
 
+# 采集数据上行(pass-radar 校正采集,方案 A):手机页从设备拉 capture DATA
+# 记录原始字节(RCB1)经本 Worker 校验后写入;键 = capture/<cardid>/<batch>.bin
+# + 同名 .meta.json(cardid/batch/条数/字节/sha256/入桶时间)。cardid 由操作员
+# 手填(固件契约:cardid 永不可经安装 API 读取)。
+[[r2_buckets]]
+bucket_name = "meta-pass-capture"
+binding = "meta_pass_capture"
+
 # r10.20-H1: 限速计数(每 IP+id 每分钟窗口)。审计发现仅声明未绑定 → 生产
 # 限速从未生效(rateLimit 静默放行)。绑定后 429 由 r2check 的 rateLimited 诊断验证。
 [[kv_namespaces]]

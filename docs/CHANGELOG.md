@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- **Capture-data uplink for calibration datasets (cloud service + phone page, 2026-10-22)**: pass-radar batch-capture bytes can now go from device to the collection server with zero firmware changes (plan A: phone-proxy pull). New `POST /api/capture/ingest` on the Pages worker (metapass.chuanxilu.net) validates the RCB1 batch magic + batch id against the query, rate-limits per (IP, cardid) via RATE_KV, answers CORS preflight, and writes the raw record plus a `.meta.json` sidecar (cardid / batch / expected / committed / byte count / SHA-256 / ingest time) into the new `meta-pass-capture` R2 bucket. The phone module's storage-management panel gains a capture-data upload section: it lists `capture` DATA records, pulls them from the device in 4096-byte chunks (same contract as `data-byte-archive.js`), verifies SHA-256, parses the batch id from the RCB1 header, and uploads. `cardid` identifies the capture device and is entered by the operator once (localStorage) — the firmware contract deliberately keeps cardid unreadable through the install API, and this endpoint does not bypass that.
+
 ## v2.2.3 (2026-10-21)
 
 Patch release. Both fixes below were root-caused from live-device evidence during pass-radar dynslot compatibility testing; the legacy-slot uninstall path was exercised end-to-end on real hardware (interrupted uninstall → durable intent → boot-time recovery → slot removed, foreign DATA records preserved).

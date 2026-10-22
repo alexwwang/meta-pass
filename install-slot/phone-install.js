@@ -379,6 +379,32 @@ export async function validateStorageSnapshotArchiveForDevice(bridge, input) {
 // GET /api/install/slots 响应形状校验(设备是事实源;任何偏差 → null,
 // UI 走“读取失败”而不是渲染半截坏数据)。count 必须与数组长度一致,
 // 下标/状态/种类/数值字段逐项门禁;返回按 slot 升序的副本。
+// ── 采集数据上行(pass-radar 校正采集,方案 A:手机代理拉取) ─────────
+// 设备 DATA 记录(label="capture")的原始字节是 pass-radar 批采集区(RCB1)
+// 的整区镜像,头部 128B(packed LE)自描述批次(radar_capture_batch.h
+// radar_capture_batch_header_t):magic@0="RCB1" · batch_id@8 · expected@12
+// · committed@16 · next_offset@20。上传契约见 _worker.js /api/capture/ingest:
+// query cardid(操作员手填一次,本机 localStorage 记忆;固件契约为 cardid
+// 永不可经安装 API 读取)+ batch(必须与头部一致),body = 原始字节。
+export const CAPTURE_INGEST_URL = METAPASS + "/api/capture/ingest";
+export const CAPTURE_CARDID_KEY = "mp_capture_cardid";
+export const CAPTURE_CARDID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+// 解析 RCB1 批次头部;字节不足或非 RCB1(空数据区/未采集/非批采集玩法)→ null。
+export function parseCaptureBatchHeader(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength < 128 ||
+      bytes[0] !== 0x52 || bytes[1] !== 0x43 || bytes[2] !== 0x42 || bytes[3] !== 0x31) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return {
+    batch: view.getUint32(8, true),
+    expected: view.getUint32(12, true),
+    committed: view.getUint32(16, true),
+    nextOffset: view.getUint32(20, true),
+  };
+}
+
 export function parseSlots(text) {
   let d = null;
   try { d = JSON.parse(text); } catch { return null; }
@@ -1441,6 +1467,71 @@ export function boot(opts = {}) {
   let archiveBusy = false;
   let archiveMessage = "";
   let archiveDownload = null;
+  let captureBusy = false;
+  let captureMessage = "";
+
+  // ── 采集数据上传(方案 A):分块拉 DATA 记录 → SHA-256 → POST Worker ──
+  // 读取循环与 data-byte-archive.js readDataReservation 同契约(4096B 分块、
+  // 相对偏移、字节数断言);本模块零依赖约定下内联,不跨文件 import。
+  async function doCaptureUpload(record) {
+    if (captureBusy || !record) return;
+    const cardid = ($("mp-cap-cardid")?.value ?? "").trim();
+    const say = (m) => {
+      captureMessage = m;
+      const n = $("mp-cap-status");
+      if (n) n.textContent = m;
+    };
+    if (!CAPTURE_CARDID_RE.test(cardid)) {
+      say("请先填写采集设备 cardid(1-64 位字母、数字、- 或 _,填一次本机记忆)。");
+      return;
+    }
+    try { localStorage.setItem(CAPTURE_CARDID_KEY, cardid); } catch { /* 隐私模式忽略 */ }
+    captureBusy = true;
+    try {
+      const size = record.size;
+      const bytes = new Uint8Array(size);
+      for (let offset = 0; offset < size; offset += 4096) {
+        const length = Math.min(4096, size - offset);
+        const r = await bridge.dataRead(record.play_id, record.label, offset, length);
+        if (!r || !r.ok || !(r.bytes instanceof Uint8Array) || r.bytes.byteLength !== length) {
+          throw new Error("设备读取失败 @0x" + offset.toString(16) +
+            (r && r.status ? "(HTTP " + r.status + ")" : ""));
+        }
+        bytes.set(r.bytes, offset);
+        say("正在拉取采集数据 " + Math.floor((offset + length) * 100 / size) + "%");
+      }
+      const head = parseCaptureBatchHeader(bytes);
+      if (!head) throw new Error("数据区头部不是 RCB1 批次(玩法未采集或数据区为空)");
+      const sha256 = await sha256Hex(bytes);
+      say("SHA-256 校验通过,批次 " + head.batch + "(" + head.committed + "/" +
+          head.expected + " 条),正在上传…");
+      const url = CAPTURE_INGEST_URL + "?cardid=" + encodeURIComponent(cardid) +
+        "&batch=" + head.batch;
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: bytes,
+      });
+      const text = await resp.text();
+      let payload = null;
+      try { payload = JSON.parse(text); } catch { /* 非 JSON 错误体 */ }
+      if (!resp.ok || !payload || !payload.ok) {
+        throw new Error("服务端拒绝 HTTP " + resp.status + ":" +
+          (payload && payload.error ? payload.error : text.slice(0, 120)));
+      }
+      say("已上传批次 " + head.batch + ":" + payload.bytes + " 字节,sha256 " +
+          payload.sha256.slice(0, 12) + "…," + payload.ingestedAt);
+      log(captureMessage, "ok");
+    } catch (e) {
+      say("采集数据上传失败:" + (e && e.message ? e.message : String(e)));
+      log(captureMessage, "error");
+    } finally {
+      captureBusy = false;
+      await showMgmt();
+      const n = $("mp-cap-status");
+      if (n) n.textContent = captureMessage;
+    }
+  }
 
   async function doBackup() {
     if (archiveBusy) return;
@@ -1540,7 +1631,23 @@ export function boot(opts = {}) {
       <h4 style="margin-top:14px">设备存储快照</h4>
       <p class=mp-sub>快照包含当前设备除正在运行的 MetaPass 宿主固件、cardid 和未分配 Flash 间隙以外的所有已分配分区原始字节；系统 NVS 也会纳入。ZIP 未加密，可能含 Wi-Fi 凭证、安装会话状态及玩法数据。备份前请停止运行中的玩法；跨分区读取不是硬件原子快照。恢复会覆盖归档纳入范围内的目标存储。恢复采用逐分区擦除与写入，不提供自动回滚；写入中断或重启后无法正常启动时，请刷回归档记录的 MetaPass 版本后重试。</p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button id=mp-snapshot-backup class="mp-btn" type=button>备份设备快照</button><button id=mp-restore-pick class="mp-btn ghost" type=button>选择快照归档并恢复</button><input id=mp-restore-input type=file accept=".zip,application/zip" hidden></div>
-      ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份：${esc(archiveDownload.filename)}</a></p>` : ""}`;
+      ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份:${esc(archiveDownload.filename)}</a></p>` : ""}`;
+    // 采集数据上传(方案 A):列出 label="capture" 的 DATA 记录,逐条拉取上传。
+    const savedCardid = (() => {
+      try { return localStorage.getItem(CAPTURE_CARDID_KEY) ?? ""; } catch { return ""; }
+    })();
+    const captureRecords = (info.data || []).filter(
+      (d) => d.label === "capture" && d.play_id > 0 && d.state !== 2 /* ARCHIVED */);
+    const captureSection = `
+      <h4 style="margin-top:14px">采集数据上传</h4>
+      <p class=mp-sub>把 pass-radar 批采集数据区(RCB1 原始字节)上传到采集服务端,用于离线建模与核对。批次号取自数据区头部;cardid 标识采集设备 —— 固件契约为 cardid 永不经安装 API 读取,故由操作员手填,本机记忆。</p>
+      <p><input id=mp-cap-cardid placeholder="采集设备 cardid" value="${esc(savedCardid)}" style="max-width:260px;width:100%"></p>
+      ${captureRecords.length ? captureRecords.map((d, i) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line)">
+          <span style="flex:1;font-size:13px;overflow-wrap:anywhere">capture · ${fmtMB(d.size)} · play_id ${d.play_id}</span>
+          <button class="mp-btn ghost" data-cap="${i}" style="padding:6px 12px;font-size:13px">拉取并上传</button>
+        </div>`).join("") : `<p class=mp-sub>设备上没有可用的 capture 数据区(需安装 pass-radar 并完成至少一次批采集)。</p>`}
+      <p id=mp-cap-status class=mp-sub>${esc(captureMessage)}</p>`;
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
@@ -1559,6 +1666,7 @@ export function boot(opts = {}) {
       ${rows}
       ${backupSection}
       <p id=mp-backup-status class=mp-sub>${esc(archiveMessage)}</p>
+      ${captureSection}
       <div class=mp-actions>
         <button id=mp-mgmt-re class=mp-btn>刷新</button>
         <button id=mp-mgmt-x class="mp-btn ghost">关闭</button>
@@ -1582,6 +1690,11 @@ export function boot(opts = {}) {
       snapshotBackup.disabled = busy || archiveBusy;
       snapshotBackup.onclick = () => doBackup();
     }
+    root.querySelectorAll("[data-cap]").forEach((b) => {
+      const rec = captureRecords[Number(b.dataset.cap)];
+      b.disabled = busy || captureBusy || !rec;
+      b.onclick = () => doCaptureUpload(rec);
+    });
     root.querySelectorAll("[data-rm]").forEach((b) => {
       if (busy) { b.disabled = true; return; }
       b.onclick = () => {

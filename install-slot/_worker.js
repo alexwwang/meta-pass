@@ -7,6 +7,7 @@
 //   GET /api/analyze?id=N    设备 P2 详情页唯一信息源(业务结果一律 200 + 契约 JSON)
 //   GET /api/extracted?id=N  已验证 factory 镜像流(x-image-len / x-image-sha256)
 //   GET /api/plays|play|firmware 既有浏览器代理路由,保持不变。
+//   POST /api/capture/ingest     采集数据上行(pass-radar RCB1 原始字节 → R2)。
 // sha256 用 WebCrypto subtle.digest(Workers 原生,毫秒级);合并镜像按 play id
 // + revisionId 进程内缓存(隔离实例各自回源,正确性不受影响)。
 
@@ -198,12 +199,75 @@ async function rateLimit(env, req, idStr) {
   return cur <= RATE_LIMIT_PER_MIN;
 }
 
+// ── 采集数据上行(pass-radar 校正采集,方案 A:手机代理拉取) ─────────
+// POST /api/capture/ingest?cardid=<id>&batch=<u32>,body = capture DATA 记录
+// 原始字节(RCB1 批区整区镜像,含尾部擦除区)。手机页经设备 /api/install/data/read
+// 拉字节后直传此处,服务端入 R2(meta_pass_capture):
+//   capture/<cardid>/<batch>.bin + .meta.json(cardid/batch/条数/字节/sha256/入桶时间)
+// 开放端点(无票据):写方向、尺寸 ≤2MiB、RCB1 magic + 批次一致性校验,叠加每
+// (IP,cardid) 限速(复用 RATE_KV),滥用成本有界。cardid 由操作员手填——固件
+// 契约为 cardid 永不可经安装 API 读取(meta_store_install.c),本端点不绕过它。
+const CAPTURE_MAX_BYTES = 2 * 1024 * 1024;
+
+async function handleCaptureIngest(req, env, url) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  if (req.method !== "POST") return err(405, "method not allowed");
+  if (!env.meta_pass_capture) return err(503, "capture storage not bound");
+
+  const cardid = url.searchParams.get("cardid") ?? "";
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(cardid)) return err(400, "invalid cardid");
+  const batch = url.searchParams.get("batch") ?? "";
+  if (!/^\d{1,10}$/.test(batch)) return err(400, "invalid batch");
+
+  const bytes = new Uint8Array(await req.arrayBuffer());
+  if (bytes.byteLength < 128 || bytes.byteLength > CAPTURE_MAX_BYTES) {
+    return err(400, "bad size");
+  }
+  // RCB1 batch header(packed LE):magic@0="RCB1" · batch_id@8 · expected@12
+  // · committed@16 · next_offset@20(header_size 128B,见 pass-radar
+  // radar_capture_batch.h radar_capture_batch_header_t)。
+  if (bytes[0] !== 0x52 || bytes[1] !== 0x43 || bytes[2] !== 0x42 || bytes[3] !== 0x31) {
+    return err(400, "bad magic");
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const batchHeader = view.getUint32(8, true);
+  if (String(batchHeader) !== batch) return err(400, "batch mismatch");
+  const expected = view.getUint32(12, true);
+  const committed = view.getUint32(16, true);
+
+  if (!(await rateLimit(env, req, `cap:${cardid}`))) {
+    return err(429, "rate limited");
+  }
+
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const ingestedAt = new Date().toISOString();
+  const key = `capture/${cardid}/${batch}`;
+  await env.meta_pass_capture.put(`${key}.bin`, bytes, {
+    httpMetadata: { contentType: "application/octet-stream" },
+  });
+  await env.meta_pass_capture.put(`${key}.meta.json`, JSON.stringify({
+    cardid, batch: batchHeader, expected, committed,
+    bytes: bytes.byteLength, sha256, ingestedAt,
+  }), { httpMetadata: { contentType: "application/json" } });
+  return new Response(
+    JSON.stringify({ ok: true, key, sha256, bytes: bytes.byteLength, ingestedAt }),
+    { headers: { ...cors, "content-type": "application/json", "cache-control": "no-store" } });
+}
+
 export default {
   async fetch(req, env, ctx) {
+    const url = new URL(req.url);
+    // 采集数据上行是唯一写端点:须在 GET/HEAD 守卫之前分发(含 OPTIONS 预检)。
+    if (url.pathname === "/api/capture/ingest") return handleCaptureIngest(req, env, url);
     if (req.method !== "GET" && req.method !== "HEAD") {
       return err(405, "method not allowed");
     }
-    const url = new URL(req.url);
     const path = url.pathname;
 
     // ── API 反向代理(浏览器安装页用) ─────────────────────────────────

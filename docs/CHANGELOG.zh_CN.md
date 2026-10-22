@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **校正采集数据上行（云端服务 + 手机页,2026-10-22）**：pass-radar 批采集字节零固件改动即可上采集服务端（方案 A：手机代理拉取）。Pages Worker（metapass.chuanxilu.net）新增 `POST /api/capture/ingest`：校验 RCB1 批次 magic + 批次号与 query 一致、按 (IP, cardid) 经 RATE_KV 限速、应答 CORS 预检，把原始字节与 `.meta.json` 侧车（cardid / batch / expected / committed / 字节数 / SHA-256 / 入桶时间）写入新建的 `meta-pass-capture` R2 桶。手机模块「空间管理」面板新增「采集数据上传」区：列出 `capture` DATA 记录，按 4096B 分块从设备拉取（契约同 `data-byte-archive.js`），SHA-256 校验后解析头部批次号上传。cardid 标识采集设备，由操作员手填一次（本机 localStorage 记忆）——固件契约刻意使 cardid 永不可经安装 API 读取，本端点不绕过该边界。
+
 ## v2.2.3 (2026-10-21)
 
 Patch 发布。以下两项修复均在 pass-radar dynslot 兼容性实测中由真机证据定位；legacy 槽卸载路径已在真机完整走通（卸载中断 → intent 持久化 → 开机恢复 → 槽位删除、他人数据记录原样保留）。

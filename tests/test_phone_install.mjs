@@ -1343,4 +1343,28 @@ const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
   console.log("PASS DATA done: completed device entry is skipped without rewriting existing bytes");
 }
 
+// ── 采集数据上传(方案 A):RCB1 头部解析 + 上传契约常量 ─────────────
+{
+  const { parseCaptureBatchHeader, CAPTURE_INGEST_URL, CAPTURE_CARDID_RE, CAPTURE_CARDID_KEY } = phone;
+  assert.equal(CAPTURE_INGEST_URL, "https://metapass.chuanxilu.net/api/capture/ingest");
+  assert.equal(CAPTURE_CARDID_KEY, "mp_capture_cardid");
+  assert.ok(CAPTURE_CARDID_RE.test("dev-01_X") && !CAPTURE_CARDID_RE.test("bad id!") &&
+            !CAPTURE_CARDID_RE.test("包含中文") && !CAPTURE_CARDID_RE.test(""));
+
+  const buf = new Uint8Array(256).fill(0xFF);
+  assert.equal(parseCaptureBatchHeader(buf), null, "全擦除页不得解析出批次");
+  buf.set([0x52, 0x43, 0x42, 0x31]);   // "RCB1"
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(8, 3903859984, true);   // batch_id(与真机 2026-10-21 批次同值)
+  dv.setUint32(12, 79, true);          // expected_captures
+  dv.setUint32(16, 1, true);           // committed_captures
+  dv.setUint32(20, 0x1000, true);      // next_offset
+  assert.deepEqual(parseCaptureBatchHeader(buf),
+    { batch: 3903859984, expected: 79, committed: 1, nextOffset: 0x1000 });
+  assert.equal(parseCaptureBatchHeader(buf.slice(0, 64)), null, "不足 128B 头部拒绝");
+  buf[0] = 0x00;
+  assert.equal(parseCaptureBatchHeader(buf), null, "magic 损坏拒绝");
+}
+console.log("PASS CAPTURE: RCB1 header parse + ingest contract constants");
+
 console.log("ALL phone-install TESTS PASSED");
