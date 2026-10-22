@@ -23,6 +23,10 @@ binding = "meta_pass_extracted"
 # 记录原始字节(RCB1)经本 Worker 校验后写入;键 = capture/<cardid>/<batch>.bin
 # + 同名 .meta.json(cardid/batch/条数/字节/sha256/入桶时间)。cardid 由操作员
 # 手填(固件契约:cardid 永不可经安装 API 读取)。
+# 注意:本文件对 Pages 部署是文档性配置 —— 部署走 tools/pages-deploy.py(REST
+# 上传),绑定实际管理在 Pages 项目设置(2026-10-22 经 REST PATCH 挂载
+# meta_pass_capture);改此处不会自动应用/触发部署(workers.yml 触发路径不含
+# 本文件)。
 [[r2_buckets]]
 bucket_name = "meta-pass-capture"
 binding = "meta_pass_capture"
