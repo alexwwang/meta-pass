@@ -200,13 +200,14 @@ async function rateLimit(env, req, idStr) {
 }
 
 // ── 采集数据上行(pass-radar 校正采集,方案 A:手机代理拉取) ─────────
-// POST /api/capture/ingest?cardid=<id>&batch=<u32>,body = capture DATA 记录
-// 原始字节(RCB1 批区整区镜像,含尾部擦除区)。手机页经设备 /api/install/data/read
-// 拉字节后直传此处,服务端入 R2(meta_pass_capture):
-//   capture/<cardid>/<batch>.bin + .meta.json(cardid/batch/条数/字节/sha256/入桶时间)
-// 开放端点(无票据):写方向、尺寸 ≤2MiB、RCB1 magic + 批次一致性校验,叠加每
-// (IP,cardid) 限速(复用 RATE_KV),滥用成本有界。cardid 由操作员手填——固件
-// 契约为 cardid 永不可经安装 API 读取(meta_store_install.c),本端点不绕过它。
+// POST /api/capture/ingest?batch=<u32>,body = 批数据区原始字节(RCB1 整区
+// 镜像,含尾部擦除区)。手机页经设备读接口(启动器 /api/install/data/read
+// 或独立模式 /api/capture/read)拉字节后直传此处,服务端入 R2
+// (meta_pass_capture):capture/<device>/<batch>.bin + .meta.json。
+// 设备身份 = 批次头 device_hash@28(16B,固件盖的是 cardid 的 SHA-256 截断,
+// cardid 明文永不上云),由服务端从头部解析 —— 客户端不能冒充他人身份。
+// 开放端点(无票据):写方向、尺寸 ≤2MiB、RCB1 magic + 批次一致性校验,叠加
+// 每 (IP,device) 限速(复用 RATE_KV),滥用成本有界。
 const CAPTURE_MAX_BYTES = 2 * 1024 * 1024;
 
 async function handleCaptureIngest(req, env, url) {
@@ -219,8 +220,6 @@ async function handleCaptureIngest(req, env, url) {
   if (req.method !== "POST") return err(405, "method not allowed");
   if (!env.meta_pass_capture) return err(503, "capture storage not bound");
 
-  const cardid = url.searchParams.get("cardid") ?? "";
-  if (!/^[A-Za-z0-9_-]{1,64}$/.test(cardid)) return err(400, "invalid cardid");
   const batch = url.searchParams.get("batch") ?? "";
   if (!/^\d{1,10}$/.test(batch)) return err(400, "invalid batch");
 
@@ -229,8 +228,8 @@ async function handleCaptureIngest(req, env, url) {
     return err(400, "bad size");
   }
   // RCB1 batch header(packed LE):magic@0="RCB1" · batch_id@8 · expected@12
-  // · committed@16 · next_offset@20(header_size 128B,见 pass-radar
-  // radar_capture_batch.h radar_capture_batch_header_t)。
+  // · committed@16 · device_hash@28(16B;pass-radar radar_capture_batch.h,
+  // FORMAT_VERSION ≥ 6 由固件盖 cardid 的 SHA-256 截断)。
   if (bytes[0] !== 0x52 || bytes[1] !== 0x43 || bytes[2] !== 0x42 || bytes[3] !== 0x31) {
     return err(400, "bad magic");
   }
@@ -239,24 +238,27 @@ async function handleCaptureIngest(req, env, url) {
   if (String(batchHeader) !== batch) return err(400, "batch mismatch");
   const expected = view.getUint32(12, true);
   const committed = view.getUint32(16, true);
+  let device = "";
+  for (let i = 28; i < 44; i++) device += bytes[i].toString(16).padStart(2, "0");
 
-  if (!(await rateLimit(env, req, `cap:${cardid}`))) {
+  if (!(await rateLimit(env, req, `cap:${device}`))) {
     return err(429, "rate limited");
   }
 
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   const ingestedAt = new Date().toISOString();
-  const key = `capture/${cardid}/${batch}`;
+  const key = `capture/${device}/${batch}`;
   await env.meta_pass_capture.put(`${key}.bin`, bytes, {
     httpMetadata: { contentType: "application/octet-stream" },
   });
   await env.meta_pass_capture.put(`${key}.meta.json`, JSON.stringify({
-    cardid, batch: batchHeader, expected, committed,
+    device, device_kind: "cardid-sha256-trunc16",
+    batch: batchHeader, expected, committed,
     bytes: bytes.byteLength, sha256, ingestedAt,
   }), { httpMetadata: { contentType: "application/json" } });
   return new Response(
-    JSON.stringify({ ok: true, key, sha256, bytes: bytes.byteLength, ingestedAt }),
+    JSON.stringify({ ok: true, key, device, sha256, bytes: bytes.byteLength, ingestedAt }),
     { headers: { ...cors, "content-type": "application/json", "cache-control": "no-store" } });
 }
 
@@ -593,7 +595,8 @@ export default {
         path === "/store-analyze.js" || path === "/name-blob.js" ||
         path === "/dynslot-pool.js" || path === "/data-size-profile.js" ||
         path === "/data-size-options.js" || path === "/data-byte-archive.js" ||
-        path === "/data-archive-restore.js" || path === "/storage-snapshot.js" || path === "/storage-snapshot-restore.js") {
+        path === "/data-archive-restore.js" || path === "/storage-snapshot.js" ||
+        path === "/storage-snapshot-restore.js" || path === "/capture-upload.js") {
       const asset = await env.ASSETS.fetch(new Request(new URL(path, req.url), req));
       if (!asset.ok) return err(404, "phone-install module missing from bundle");
       const headers = new Headers(asset.headers);

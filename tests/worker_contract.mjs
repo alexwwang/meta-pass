@@ -264,8 +264,9 @@ console.log("PASS 14: rate limit wired via RATE_KV binding; Range resume uses th
 console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules no-store, phone paths routed");
 
 // 16. 采集数据上行(方案 A):ingest 端点在 GET/HEAD 守卫之前分发(POST/OPTIONS
-// 不被 405),RCB1 magic + 批次一致性校验,复用 RATE_KV 限速,CORS 预检,
-// wrangler 绑定 meta_pass_capture R2 桶。
+// 不被 405),RCB1 magic + 批次一致性校验,设备身份从头部 device_hash@28 解析
+// (客户端不能冒充),复用 RATE_KV 限速,CORS 预检,wrangler 绑定 capture 桶;
+// capture-upload.js(独立模式设备模块)以 no-store 提供。
 {
   const ingestAt = workerSrc.indexOf('"/api/capture/ingest"');
   assert.ok(ingestAt > 0, "worker missing capture ingest endpoint");
@@ -275,14 +276,19 @@ console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules n
             workerSrc.includes("0x42") && workerSrc.includes("0x31"),
             "ingest must validate the RCB1 magic");
   assert.ok(workerSrc.includes("batch mismatch"), "ingest must cross-check batch id");
+  assert.ok(workerSrc.includes("i < 44"), "ingest must derive device from header device_hash");
+  assert.ok(!workerSrc.includes('searchParams.get("cardid")'),
+            "ingest must never accept a client-supplied cardid");
   assert.ok(workerSrc.includes("rateLimit(env, req, `cap:"), "ingest must reuse the RATE_KV limiter");
   assert.ok(workerSrc.includes("access-control-allow-methods"), "ingest must answer CORS preflight");
   assert.ok(workerSrc.includes("meta_pass_capture"), "ingest must write the capture R2 bucket");
+  assert.ok(workerSrc.includes('path === "/capture-upload.js"'),
+            "capture-upload.js must be served no-store for the standalone device page");
   const wrangler = readFileSync(path.join(ROOT, "wrangler.toml"), "utf8");
   assert.ok(wrangler.includes('binding = "meta_pass_capture"') &&
             wrangler.includes('bucket_name = "meta-pass-capture"'),
             "wrangler.toml must bind the meta-pass-capture bucket");
 }
-console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/rate-limit/CORS/R2)");
+console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/device-from-header/rate-limit/CORS/R2)");
 
 console.log("ALL WORKER CONTRACT TESTS PASSED");

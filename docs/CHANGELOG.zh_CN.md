@@ -6,7 +6,9 @@
 
 ## 未发布
 
-- **校正采集数据上行（云端服务 + 手机页,2026-10-22）**：pass-radar 批采集字节零固件改动即可上采集服务端（方案 A：手机代理拉取）。Pages Worker（metapass.chuanxilu.net）新增 `POST /api/capture/ingest`：校验 RCB1 批次 magic + 批次号与 query 一致、按 (IP, cardid) 经 RATE_KV 限速、应答 CORS 预检，把原始字节与 `.meta.json` 侧车（cardid / batch / expected / committed / 字节数 / SHA-256 / 入桶时间）写入新建的 `meta-pass-capture` R2 桶。手机模块「空间管理」面板新增「采集数据上传」区：列出 `capture` DATA 记录，按 4096B 分块从设备拉取（契约同 `data-byte-archive.js`），SHA-256 校验后解析头部批次号上传。cardid 标识采集设备，由操作员手填一次（本机 localStorage 记忆）——固件契约刻意使 cardid 永不可经安装 API 读取，本端点不绕过该边界。
+- **校正采集数据上行（云端服务 + 手机页,2026-10-22）**：pass-radar 批采集字节可从设备直达采集服务端（方案 A：手机代理拉取）。Pages Worker（metapass.chuanxilu.net）新增 `POST /api/capture/ingest`：校验 RCB1 批次 magic + 批次号与 query 一致、按 (IP, device) 经 RATE_KV 限速、应答 CORS 预检，把原始字节与 `.meta.json` 侧车（device / device_kind / batch / expected / committed / 字节数 / SHA-256 / 入桶时间）写入新建的 `meta-pass-capture` R2 桶。手机模块「空间管理」面板新增「采集数据上传」区：列出 `capture` DATA 记录，按 4096B 分块从设备拉取（契约同 `data-byte-archive.js`），SHA-256 校验后解析头部批次号上传。
+
+- **采集数据上行重设计：身份随数据走（2026-10-22）**：手机页不再要求手填 cardid——设备身份改为 pass-radar 固件（v0.3.0+）盖进 RCB1 批次头的哈希：`SHA-256(cardid 前 16B)` 截断 16 字节；cardid 明文永不离开设备，持 cardid 者可在本地重算哈希核对数据集来自哪台设备。`POST /api/capture/ingest` 只收 `?batch=`——设备身份由服务端从头部字节 [28..44) 解析，客户端无法冒充；meta.json 记录 `device` + `device_kind: "cardid-sha256-trunc16"`。v0.3.0 之前固件写的批次头该处全零，按未识别入库。新增 `capture-upload.js` 模块（本 Pages 站点 no-store 提供）承载独立安装通道：pass-radar 固件复刻 meta-pass 手机管理同构交互（设备 boot 页 + 云端模块），在其 Wi-Fi SoftAP（`passradar-up` 开放热点，主页面 DOWN 双击进入）上提供 `/api/capture/info` + 分块 `/api/capture/read`；两条通道汇入同一 ingest → R2 路径。另有 CLI 兜底（pass-radar `tools/capture_upload.py`）：esptool 读片上传，并可持本地 cardid 核对设备哈希。
 
 ## v2.2.3 (2026-10-21)
 

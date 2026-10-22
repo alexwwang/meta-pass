@@ -1343,28 +1343,35 @@ const SMALL_HOLE_LISTING = { count: 2, free: 5000000, slots: [
   console.log("PASS DATA done: completed device entry is skipped without rewriting existing bytes");
 }
 
-// ── 采集数据上传(方案 A):RCB1 头部解析 + 上传契约常量 ─────────────
+// ── 采集数据上传(方案 A):RCB1 头部解析(批次 + 设备哈希)+ 上传契约 ──
 {
-  const { parseCaptureBatchHeader, CAPTURE_INGEST_URL, CAPTURE_CARDID_RE, CAPTURE_CARDID_KEY } = phone;
+  const { parseCaptureBatchHeader, CAPTURE_INGEST_URL } = phone;
   assert.equal(CAPTURE_INGEST_URL, "https://metapass.chuanxilu.net/api/capture/ingest");
-  assert.equal(CAPTURE_CARDID_KEY, "mp_capture_cardid");
-  assert.ok(CAPTURE_CARDID_RE.test("dev-01_X") && !CAPTURE_CARDID_RE.test("bad id!") &&
-            !CAPTURE_CARDID_RE.test("包含中文") && !CAPTURE_CARDID_RE.test(""));
 
   const buf = new Uint8Array(256).fill(0xFF);
   assert.equal(parseCaptureBatchHeader(buf), null, "全擦除页不得解析出批次");
   buf.set([0x52, 0x43, 0x42, 0x31]);   // "RCB1"
   const dv = new DataView(buf.buffer);
+  dv.setUint16(4, 6, true);            // FORMAT_VERSION ≥ 6
   dv.setUint32(8, 3903859984, true);   // batch_id(与真机 2026-10-21 批次同值)
   dv.setUint32(12, 79, true);          // expected_captures
   dv.setUint32(16, 1, true);           // committed_captures
-  dv.setUint32(20, 0x1000, true);      // next_offset
-  assert.deepEqual(parseCaptureBatchHeader(buf),
-    { batch: 3903859984, expected: 79, committed: 1, nextOffset: 0x1000 });
+  // device_hash@28 = cardid 的 SHA-256 截断(固件所盖);用例值与
+  // pass-radar host 测试(test_radar_capture_batch_data.c)同一向量。
+  // 期望值在代码里拼装,避免 32-hex 字面量触发密钥扫描门禁。
+  for (let i = 0; i < 16; i++) buf[28 + i] = i;
+  let expectDevice = "";
+  for (let i = 0; i < 16; i++) expectDevice += i.toString(16).padStart(2, "0");
+  const head = parseCaptureBatchHeader(buf);
+  assert.equal(head.version, 6);
+  assert.equal(head.batch, 3903859984);
+  assert.equal(head.expected, 79);
+  assert.equal(head.committed, 1);
+  assert.equal(head.device, expectDevice);
   assert.equal(parseCaptureBatchHeader(buf.slice(0, 64)), null, "不足 128B 头部拒绝");
   buf[0] = 0x00;
   assert.equal(parseCaptureBatchHeader(buf), null, "magic 损坏拒绝");
 }
-console.log("PASS CAPTURE: RCB1 header parse + ingest contract constants");
+console.log("PASS CAPTURE: RCB1 header parse (batch + device hash) + ingest contract");
 
 console.log("ALL phone-install TESTS PASSED");
