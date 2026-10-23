@@ -207,8 +207,11 @@ async function rateLimit(env, req, idStr) {
 // 设备身份 = 批次头 device_hash@28(16B,固件盖的是 cardid 的 SHA-256 截断,
 // cardid 明文永不上云),由服务端从头部解析 —— 客户端不能冒充他人身份。
 // 开放端点(无票据):写方向、尺寸 ≤2MiB、RCB1 magic + 批次一致性校验,叠加
-// 每 (IP,device) 限速(复用 RATE_KV),滥用成本有界。
+// 每 (IP,device) 限速(复用 RATE_KV)+ 每 device 日行配额,滥用成本有界。
+// 退化身份(全 0/全 F 的 device_hash)直接拒:真机盖的是 SHA-256 摘要,
+// 全 0/全 F 只能是手搓包头,零成本伪造身份刷库。
 const CAPTURE_MAX_BYTES = 2 * 1024 * 1024;
+const CAPTURE_MAX_PER_DAY = 24;
 
 async function handleCaptureIngest(req, env, url) {
   const cors = {
@@ -240,6 +243,19 @@ async function handleCaptureIngest(req, env, url) {
   const committed = view.getUint32(16, true);
   let device = "";
   for (let i = 28; i < 44; i++) device += bytes[i].toString(16).padStart(2, "0");
+
+  // 退化身份拒绝(全 0 = 零填充伪造,全 F = 擦除态伪造;真机永远是摘要)。
+  if (/^0{32}$/.test(device) || /^f{32}$/.test(device)) {
+    return err(400, "bad device identity");
+  }
+  // 每 device 日行配额(防换 IP 持续刷库;TTL 48h 覆盖时区日界)。
+  if (env.RATE_KV) {
+    const day = new Date().toISOString().slice(0, 10);
+    const dkey = `capd:${device}:${day}`;
+    const dcur = Number((await env.RATE_KV.get(dkey)) ?? "0") + 1;
+    await env.RATE_KV.put(dkey, String(dcur), { expirationTtl: 172800 });
+    if (dcur > CAPTURE_MAX_PER_DAY) return err(429, "daily quota exceeded");
+  }
 
   if (!(await rateLimit(env, req, `cap:${device}`))) {
     return err(429, "rate limited");

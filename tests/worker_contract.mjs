@@ -280,6 +280,10 @@ console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules n
   assert.ok(!workerSrc.includes('searchParams.get("cardid")'),
             "ingest must never accept a client-supplied cardid");
   assert.ok(workerSrc.includes("rateLimit(env, req, `cap:"), "ingest must reuse the RATE_KV limiter");
+  assert.ok(workerSrc.includes("CAPTURE_MAX_PER_DAY") && workerSrc.includes("capd:"),
+            "ingest must enforce a per-device daily quota via RATE_KV");
+  assert.ok(workerSrc.includes("bad device identity"),
+            "ingest must reject degenerate all-0/all-F device hashes");
   assert.ok(workerSrc.includes("access-control-allow-methods"), "ingest must answer CORS preflight");
   assert.ok(workerSrc.includes("meta_pass_capture"), "ingest must write the capture R2 bucket");
   assert.ok(workerSrc.includes('path === "/capture-upload.js"'),
@@ -289,6 +293,6 @@ console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules n
             wrangler.includes('bucket_name = "meta-pass-capture"'),
             "wrangler.toml must bind the meta-pass-capture bucket");
 }
-console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/device-from-header/rate-limit/CORS/R2)");
+console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/device-from-header/rate-limit/daily-quota/identity/CORS/R2)");
 
 console.log("ALL WORKER CONTRACT TESTS PASSED");
