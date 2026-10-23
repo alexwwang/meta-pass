@@ -36,3 +36,12 @@ binding = "meta_pass_capture"
 [[kv_namespaces]]
 binding = "RATE_KV"
 id = "fbbc09c5cd724eecae12ca5ba7c0e75e"
+
+# capture 身份签名(2026-10-23 契约 v1):Ed25519 设备公钥注册表。
+# 键 = capkey:<device_hash hex64>(first-wins,已存在 → 409);值 = pubkey hex64。
+# ingest 端点对已注册设备执行 v7 trailer 验签;未注册 → verified:false 接受。
+# 注:与 RATE_KV 一样,实际绑定经 Pages 项目设置管理(2026-10-23 REST PATCH
+# 挂载 production);本文件为文档性配置。
+[[kv_namespaces]]
+binding = "CAPKEY_KV"
+id = "9db1e47e5aa2477793c77a065e44785a"

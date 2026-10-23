@@ -154,11 +154,26 @@ async function hmacHex16(secret, msg) {
   return [...new Uint8Array(mac)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+async function sha256Hex(bytes) {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function timingSafeEq(a, b) {
   if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+// Ed25519 验签(pubkey 为 64 位小写 hex;sig/message 为字节)。契约 v1
+// (2026-10-23):固件身份源已从 cardid 改为 MAC 派生,ingest 用注册的公钥
+// 校验批次区 trailer 上的设备签名,抗伪造。
+async function ed25519VerifyHex(pubkeyHex, sigBytes, messageBytes) {
+  const pub = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) pub[i] = parseInt(pubkeyHex.slice(i * 2, i * 2 + 2), 16);
+  const key = await crypto.subtle.importKey("raw", pub, "Ed25519", false, ["verify"]);
+  return crypto.subtle.verify("Ed25519", key, sigBytes, messageBytes);
 }
 
 // 票据校验:只回答"能不能吃 R2 快路径",绝不做准入拒绝(r10.18 定稿语义)。
@@ -212,6 +227,89 @@ async function rateLimit(env, req, idStr) {
 // 全 0/全 F 只能是手搓包头,零成本伪造身份刷库。
 const CAPTURE_MAX_BYTES = 2 * 1024 * 1024;
 const CAPTURE_MAX_PER_DAY = 24;
+// 契约 v1(2026-10-23):身份源从 cardid 改为 MAC 派生
+// (device_hash = SHA-256("mpr-id-v1"||wifi_mac||ble_mac)[:16]),v7 批次区最后一
+// 扇区为 SGN1 trailer;enroll 注册 Ed25519 公钥(first-wins),ingest 对注册
+// 设备强制验签,抗伪造。固件侧:radar_identity_get(永缓存)+
+// radar_capture_batch_sign_if_needed(上传前幂等补签)。
+const CAPTURE_ENROLL_MAX_PER_MIN = 10;
+const CAPTURE_SIG_MAGIC = 0x314E4753;     // "SGN1" u32le
+const CAPTURE_TRAILER_SIZE = 128;         // packed LE trailer 字节数
+const CAPTURE_SIG_PREIMAGE_MAGIC = "MPRCAP-SIG-v1";
+
+// POST /api/capture/enroll —— 设备 Ed25519 公钥注册(first-wins)。
+// JSON {"device": <hex64 或 hex32>, "pubkey": <hex64>};device 给全量 SHA-256
+// (64 hex)时截前 32 hex 与 RCB1 头内 device_hash(16B)对齐;退化身份(全0/全F)
+// → 400;每 IP 10 次/分;已注册 → 409;CORS 同 ingest。
+async function handleCaptureEnroll(req, env, url) {
+  const cors = {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-headers": "content-type",
+  };
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  if (req.method !== "POST") return err(405, "method not allowed");
+  if (!env.CAPKEY_KV) return err(503, "key registry not bound");
+
+  let body = null;
+  try { body = await req.json(); } catch { /* 非 JSON 体 */ }
+  let device = String(body?.device ?? "").toLowerCase();
+  const pubkey = String(body?.pubkey ?? "").toLowerCase();
+  if (/^[0-9a-f]{64}$/.test(device)) device = device.slice(0, 32);
+  if (!/^[0-9a-f]{32}$/.test(device)) return err(400, "invalid device");
+  if (!/^[0-9a-f]{64}$/.test(pubkey)) return err(400, "invalid pubkey");
+  if (/^0{32}$/.test(device) || /^f{32}$/.test(device)) {
+    return err(400, "bad device identity");
+  }
+  // 每 IP 10 次/分(契约 v1),与 ingest 的 (IP,device) 限频相互独立。
+  if (env.RATE_KV) {
+    const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
+    const window = Math.floor(Date.now() / 60000);
+    const ekey = `capenroll:${ip}:${window}`;
+    const ecur = Number((await env.RATE_KV.get(ekey)) ?? "0") + 1;
+    await env.RATE_KV.put(ekey, String(ecur), { expirationTtl: 120 });
+    if (ecur > CAPTURE_ENROLL_MAX_PER_MIN) return err(429, "rate limited");
+  }
+  const kvKey = `capkey:${device}`;
+  if (await env.CAPKEY_KV.get(kvKey) !== null) return err(409, "device already enrolled");
+  await env.CAPKEY_KV.put(kvKey, pubkey);
+  return new Response(JSON.stringify({ ok: true, device, pubkey }),
+    { headers: { ...cors, "content-type": "application/json", "cache-control": "no-store" } });
+}
+
+// 解析批次区最后一扇区起始的 SGN1 trailer(契约 v1 字节布局)。任一结构字段
+// 不符即返回 null —— trailer 整体不可信,ingest 按"无 trailer"走 unidentified
+// 路径(v6/无 trailer 现状不变)。
+function parseCaptureTrailer(bytes, view, batchHeader, device) {
+  if (bytes.byteLength < 128 + 4096) return null;
+  const off = bytes.byteLength - 4096;
+  if (view.getUint32(off, true) !== CAPTURE_SIG_MAGIC) return null;
+  if (view.getUint16(off + 4, true) !== 1) return null;                  // trailer.version
+  if (view.getUint16(off + 6, true) !== CAPTURE_TRAILER_SIZE) return null;
+  if (view.getUint32(off + 8, true) !== batchHeader) return null;        // batch 一致性
+  let tdev = "";
+  for (let i = 0; i < 16; i++) tdev += bytes[off + 12 + i].toString(16).padStart(2, "0");
+  if (tdev !== device) return null;
+  return {
+    version: 1,
+    batchId: batchHeader,
+    payloadSha: new Uint8Array(bytes.subarray(off + 28, off + 60)),  // 32B
+    sig: new Uint8Array(bytes.subarray(off + 60, off + 124)),        // 64B
+  };
+}
+
+// 签名 preimage(67B):"MPRCAP-SIG-v1"(13B) || version u16le || batch_id u32le
+// || device_hash[16] || payload_sha256[32]。
+function captureSigPreimage(trailer, deviceBytes) {
+  const pre = new Uint8Array(67);
+  new TextEncoder().encodeInto(CAPTURE_SIG_PREIMAGE_MAGIC, pre);
+  const v = new DataView(pre.buffer);
+  v.setUint16(13, trailer.version, true);
+  v.setUint32(15, trailer.batchId, true);
+  pre.set(deviceBytes, 19);
+  pre.set(trailer.payloadSha, 35);
+  return pre;
+}
 
 async function handleCaptureIngest(req, env, url) {
   const cors = {
@@ -230,13 +328,14 @@ async function handleCaptureIngest(req, env, url) {
   if (bytes.byteLength < 128 || bytes.byteLength > CAPTURE_MAX_BYTES) {
     return err(400, "bad size");
   }
-  // RCB1 batch header(packed LE):magic@0="RCB1" · batch_id@8 · expected@12
-  // · committed@16 · device_hash@28(16B;pass-radar radar_capture_batch.h,
-  // FORMAT_VERSION ≥ 6 由固件盖 cardid 的 SHA-256 截断)。
+  // RCB1 batch header(packed LE):magic@0="RCB1" · version@4 u16 · batch_id@8
+  // · expected@12 · committed@16 · device_hash@28(16B;v7 起为
+  // SHA-256("mpr-id-v1"||wifi_mac||ble_mac)[:16],cardid 已弃用)。
   if (bytes[0] !== 0x52 || bytes[1] !== 0x43 || bytes[2] !== 0x42 || bytes[3] !== 0x31) {
     return err(400, "bad magic");
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint16(4, true);
   const batchHeader = view.getUint32(8, true);
   if (String(batchHeader) !== batch) return err(400, "batch mismatch");
   const expected = view.getUint32(12, true);
@@ -248,6 +347,36 @@ async function handleCaptureIngest(req, env, url) {
   if (/^0{32}$/.test(device) || /^f{32}$/.test(device)) {
     return err(400, "bad device identity");
   }
+
+  // ── v7 签名 trailer 验签(契约 v1)────────────────────────────────
+  // v7 且 trailer 可解析时:device 已注册(KV capkey:<device>)→ 必须
+  // ① 重算 payload sha256 == trailer.payload_sha256 ② Ed25519 验签 preimage,
+  // 任一失败 403 不落库;未注册 → 接受、verified:false;v6/无 trailer 走现状。
+  // trailer 位于批次区最后一扇区起始,header_size=128,payload 止于 len-4096。
+  let verified = false;
+  let pubkey = null;
+  if (version >= 7 && env.CAPKEY_KV) {
+    const trailer = parseCaptureTrailer(bytes, view, batchHeader, device);
+    if (trailer) {
+      pubkey = await env.CAPKEY_KV.get(`capkey:${device}`);
+      if (pubkey !== null) {
+        const payloadDigest = await crypto.subtle.digest("SHA-256",
+          bytes.subarray(128, bytes.byteLength - 4096));
+        const payloadSha = [...new Uint8Array(payloadDigest)]
+          .map((b) => b.toString(16).padStart(2, "0")).join("");
+        const trailerSha = [...trailer.payloadSha]
+          .map((b) => b.toString(16).padStart(2, "0")).join("");
+        if (!timingSafeEq(payloadSha, trailerSha)) {
+          return err(403, "payload sha mismatch");
+        }
+        const preimage = captureSigPreimage(trailer, bytes.subarray(28, 44));
+        const sigOk = await ed25519VerifyHex(pubkey, trailer.sig, preimage);
+        if (!sigOk) return err(403, "bad signature");
+        verified = true;
+      }
+    }
+  }
+
   // 每 device 日行配额(防换 IP 持续刷库;TTL 48h 覆盖时区日界)。
   if (env.RATE_KV) {
     const day = new Date().toISOString().slice(0, 10);
@@ -261,20 +390,24 @@ async function handleCaptureIngest(req, env, url) {
     return err(429, "rate limited");
   }
 
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const sha256 = await sha256Hex(bytes);
   const ingestedAt = new Date().toISOString();
   const key = `capture/${device}/${batch}`;
   await env.meta_pass_capture.put(`${key}.bin`, bytes, {
     httpMetadata: { contentType: "application/octet-stream" },
   });
-  await env.meta_pass_capture.put(`${key}.meta.json`, JSON.stringify({
-    device, device_kind: "cardid-sha256-trunc16",
+  const meta = {
+    device, device_kind: "mac-sha256-trunc16",
     batch: batchHeader, expected, committed,
     bytes: bytes.byteLength, sha256, ingestedAt,
-  }), { httpMetadata: { contentType: "application/json" } });
+    verified,
+  };
+  if (pubkey !== null) meta.pubkey = pubkey;
+  await env.meta_pass_capture.put(`${key}.meta.json`, JSON.stringify(meta),
+    { httpMetadata: { contentType: "application/json" } });
   return new Response(
-    JSON.stringify({ ok: true, key, device, sha256, bytes: bytes.byteLength, ingestedAt }),
+    JSON.stringify({ ok: true, key, device, sha256, bytes: bytes.byteLength,
+      ingestedAt, verified }),
     { headers: { ...cors, "content-type": "application/json", "cache-control": "no-store" } });
 }
 
@@ -283,6 +416,7 @@ export default {
     const url = new URL(req.url);
     // 采集数据上行是唯一写端点:须在 GET/HEAD 守卫之前分发(含 OPTIONS 预检)。
     if (url.pathname === "/api/capture/ingest") return handleCaptureIngest(req, env, url);
+    if (url.pathname === "/api/capture/enroll") return handleCaptureEnroll(req, env, url);
     if (req.method !== "GET" && req.method !== "HEAD") {
       return err(405, "method not allowed");
     }

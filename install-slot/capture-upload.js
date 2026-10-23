@@ -72,6 +72,37 @@ export async function uploadCaptureBytes(bytes, batch) {
   return payload;
 }
 
+// ── 设备身份(契约 v1:MAC 派生 Ed25519)────────────────────────────
+// 固件 GET /api/identity → {"device":hex64, "pubkey":hex64, "kind":"mac-ed25519"}
+// (radar_identity_get,MAC 派生永缓存)。注册 = POST 云端 /api/capture/enroll
+// (first-wins:重复注册 409 视为"已注册"成功语义)。
+export async function fetchDeviceIdentity(base) {
+  const res = await fetch(base + "/api/identity");
+  if (!res.ok) throw new Error("identity HTTP " + res.status);
+  const id = await res.json();
+  if (!id || typeof id.device !== "string" || typeof id.pubkey !== "string") {
+    throw new Error("identity 响应缺 device/pubkey");
+  }
+  return id;
+}
+
+export async function enrollDeviceIdentity(device, pubkey) {
+  const res = await fetch(INGEST_BASE + "/api/capture/enroll", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device, pubkey }),
+  });
+  const text = await res.text();
+  let payload = null;
+  try { payload = JSON.parse(text); } catch { /* 非 JSON 错误体 */ }
+  if (res.status === 409) return { enrolled: true, duplicate: true, payload };
+  if (!res.ok || !payload || !payload.ok) {
+    throw new Error("enroll HTTP " + res.status + ":" +
+      (payload && payload.error ? payload.error : text.slice(0, 120)));
+  }
+  return { enrolled: true, duplicate: false, payload };
+}
+
 // ── UI ─────────────────────────────────────────────────────────────
 function mount() {
   const host = document.getElementById("cu-root");
@@ -94,6 +125,8 @@ function mount() {
     ${onDevice ? "" : `<div class=row><input id=cu-dev placeholder="设备地址,如 http://192.168.4.1"><button id=cu-go>连接</button></div>`}
     <div id=cu-msg class=info>正在读取批次信息…</div>
     <div id=cu-detail hidden></div>
+    <div id=cu-ident class=info hidden></div>
+    <div class=row><button id=cu-reg hidden>注册设备身份</button></div>
     <div class=row><button id=cu-up hidden>拉取并上传</button></div>
     <div class=bar id=cu-bar hidden><i></i></div>`;
   const $ = (id) => host.querySelector("#" + id);
@@ -121,8 +154,35 @@ function mount() {
       $("cu-up").hidden = false;
       $("cu-up").onclick = () => upload(b);
       msg("就绪:点「拉取并上传」。", "");
+      loadIdentity(b);
     } catch (e) {
       msg("连接失败:" + (e && e.message ? e.message : e), "err");
+    }
+  }
+
+  // 契约 v1 身份区:读固件 /api/identity,显示 device/pubkey + 注册按钮。
+  // 固件无该端点(v6 及更早)时隐藏身份区,不影响既有上传流程。
+  async function loadIdentity(b) {
+    try {
+      const id = await fetchDeviceIdentity(b);
+      $("cu-ident").hidden = false;
+      $("cu-ident").textContent =
+        `设备身份(${id.kind || "mac-ed25519"})\n` +
+        `device ${id.device}\npubkey ${id.pubkey.slice(0, 40)}…`;
+      $("cu-reg").hidden = false;
+      $("cu-reg").onclick = () => registerIdentity(id);
+    } catch { /* 旧固件无 /api/identity:身份区保持隐藏 */ }
+  }
+
+  async function registerIdentity(id) {
+    $("cu-reg").disabled = true;
+    try {
+      const r = await enrollDeviceIdentity(id.device, id.pubkey);
+      msg(r.duplicate ? "设备身份已注册过(409 first-wins)。" : "设备身份注册成功。", "ok");
+    } catch (e) {
+      msg("注册失败:" + (e && e.message ? e.message : e), "err");
+    } finally {
+      $("cu-reg").disabled = false;
     }
   }
 
@@ -142,7 +202,8 @@ function mount() {
       msg("拉取完成,批次 " + head.batch + ",正在上传…");
       const payload = await uploadCaptureBytes(bytes, head.batch);
       msg("已上传:" + payload.bytes + " 字节,sha256 " + payload.sha256.slice(0, 16) +
-          "…," + payload.ingestedAt, "ok");
+          "…," + payload.ingestedAt +
+          (payload.verified ? ",签名已验证 ✓" : ",未验证设备"), "ok");
     } catch (e) {
       msg("上传失败:" + (e && e.message ? e.message : e), "err");
     } finally {

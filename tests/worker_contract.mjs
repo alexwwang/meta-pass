@@ -284,6 +284,14 @@ console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules n
             "ingest must enforce a per-device daily quota via RATE_KV");
   assert.ok(workerSrc.includes("bad device identity"),
             "ingest must reject degenerate all-0/all-F device hashes");
+  assert.ok(workerSrc.includes("getUint16(4, true)"),
+            "ingest must parse the RCB1 header version field");
+  assert.ok(workerSrc.includes('"mac-sha256-trunc16"'),
+            "meta.json device_kind must be mac-sha256-trunc16 (cardid retired)");
+  assert.ok(workerSrc.includes("verified"), "meta.json must carry the verified flag");
+  const enrollAt = workerSrc.indexOf('"/api/capture/enroll"');
+  assert.ok(enrollAt > 0, "worker missing capture enroll endpoint");
+  assert.ok(enrollAt < guardAt, "enroll dispatch must precede the GET/HEAD 405 guard");
   assert.ok(workerSrc.includes("access-control-allow-methods"), "ingest must answer CORS preflight");
   assert.ok(workerSrc.includes("meta_pass_capture"), "ingest must write the capture R2 bucket");
   assert.ok(workerSrc.includes('path === "/capture-upload.js"'),
@@ -293,6 +301,191 @@ console.log("PASS 15: /api/plays query forwarded, proxy streams, phone modules n
             wrangler.includes('bucket_name = "meta-pass-capture"'),
             "wrangler.toml must bind the meta-pass-capture bucket");
 }
-console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/device-from-header/rate-limit/daily-quota/identity/CORS/R2)");
+console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/device-from-header/device-kind/rate-limit/daily-quota/identity/CORS/R2/enroll)");
+
+// 17. capture 身份签名(契约 v1)运行时断言:真驱动 _worker.js 的 enroll/ingest
+//    handler(mock env),Ed25519 密钥对与 device_hash 全部运行时生成(仓库
+//    密钥扫描禁 32-hex 字面量)。覆盖:enroll 成功/重复 409/退化 400/限频 429;
+//    已注册+合法 trailer → 200 verified;已注册+坏 sig → 403;已注册+payload
+//    sha 不符 → 403;未注册 v7 → 200 verified:false;v6 无 trailer → 现状路径。
+{
+  const worker = await import(path.join(ROOT, "install-slot", "_worker.js"));
+  const handle = worker.default.fetch;
+  const hex = (u8) => [...u8].map((b) => b.toString(16).padStart(2, "0")).join("");
+  // 身份派生同固件契约:device_hash = SHA-256("mpr-id-v1"||wifi_mac||ble_mac)[:16]。
+  const macBytes = (n) => Uint8Array.from({ length: 6 }, (_, i) => (n * 37 + i * 11 + 2) & 0xff);
+  async function makeIdentity(n) {
+    const wifi = macBytes(n), ble = macBytes(n + 100);
+    const enc = new TextEncoder();
+    const idFull = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new Uint8Array([...enc.encode("mpr-id-v1"), ...wifi, ...ble])));
+    const seed = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      new Uint8Array([...enc.encode("mpr-ed25519-seed-v1"), ...wifi, ...ble])));
+    const kp = await crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+    void seed; // 固件侧用 seed 派生密钥;worker 侧只验签,测试直接用生成的密钥对
+    return { deviceBytes: idFull.slice(0, 16), device: hex(idFull.slice(0, 16)),
+      pubkey: hex(new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey))),
+      sign: (m) => crypto.subtle.sign("Ed25519", kp.privateKey, m) };
+  }
+  // 组一帧 v7 批次区:128B 头 + payload + 4096B trailer 扇区(128B SGN1 @扇区头)。
+  async function makeBatch(id, { version = 7, batch = 1, payloadLen = 256,
+      corruptSig = false, corruptPayload = false } = {}) {
+    const body = new Uint8Array(128 + payloadLen + 4096);
+    body.set([0x52, 0x43, 0x42, 0x31], 0);            // "RCB1"
+    const v = new DataView(body.buffer);
+    v.setUint16(4, version, true);
+    v.setUint32(8, batch, true);
+    v.setUint32(12, 4, true);                          // expected
+    v.setUint32(16, 2, true);                          // committed
+    body.set(id.deviceBytes, 28);
+    for (let i = 0; i < payloadLen; i++) body[128 + i] = (i * 7 + 3) & 0xff;
+    const payloadSha = new Uint8Array(await crypto.subtle.digest("SHA-256",
+      body.subarray(128, 128 + payloadLen)));
+    // corrupt 必须在签名之后:trailer 记的是原始 payload 的 sha,体被篡改即不符。
+    if (corruptPayload) body[128] ^= 0xff;
+    const tOff = body.byteLength - 4096;
+    v.setUint32(tOff, 0x314E4753, true);               // "SGN1"
+    v.setUint16(tOff + 4, 1, true);                    // trailer.version
+    v.setUint16(tOff + 6, 128, true);                  // trailer.size
+    v.setUint32(tOff + 8, batch, true);
+    body.set(id.deviceBytes, tOff + 12);
+    body.set(payloadSha, tOff + 28);
+    const pre = new Uint8Array(67);
+    new TextEncoder().encodeInto("MPRCAP-SIG-v1", pre);
+    const pv = new DataView(pre.buffer);
+    pv.setUint16(13, 1, true);
+    pv.setUint32(15, batch, true);
+    pre.set(id.deviceBytes, 19);
+    pre.set(payloadSha, 35);
+    let sig = new Uint8Array(await id.sign(pre));
+    if (corruptSig) sig = sig.map((b, i) => (i === 0 ? b ^ 0xff : b));
+    body.set(sig, tOff + 60);
+    return body;
+  }
+  function mockEnv() {
+    const kv = new Map();
+    const r2 = new Map();
+    return {
+      RATE_KV: { get: async (k) => (kv.has(k) ? kv.get(k) : null),
+                 put: async (k, val) => { kv.set(k, String(val)); } },
+      CAPKEY_KV: { get: async (k) => (kv.has(k) ? kv.get(k) : null),
+                   put: async (k, val) => { kv.set(k, String(val)); } },
+      meta_pass_capture: { put: async (k, val) => { r2.set(k, val); } },
+      _kv: kv, _r2: r2,
+    };
+  }
+  const post = (path, bodyObj, ip, rawBody) => new Request("https://metapass.chuanxilu.net" + path, {
+    method: "POST",
+    headers: { "content-type": bodyObj ? "application/json" : "application/octet-stream",
+               "cf-connecting-ip": ip },
+    body: bodyObj ? JSON.stringify(bodyObj) : rawBody,
+  });
+  const base = "/api/capture/enroll";
+
+  // enroll 成功(200 + KV 落键)
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(1);
+    const r = await handle(post(base, { device: id.device, pubkey: id.pubkey }), env, {});
+    assert.equal(r.status, 200);
+    assert.equal(env._kv.get(`capkey:${id.device}`), id.pubkey);
+  }
+  // enroll 重复 → 409 first-wins
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(2);
+    await handle(post(base, { device: id.device, pubkey: id.pubkey }), env, {});
+    const r = await handle(post(base, { device: id.device, pubkey: id.pubkey }), env, {});
+    assert.equal(r.status, 409, "duplicate enroll must be 409");
+  }
+  // enroll 退化 device(全0 / 全F)→ 400
+  for (const dev of ["0".repeat(32), "f".repeat(32), "0".repeat(64)]) {
+    const env = mockEnv();
+    const id = await makeIdentity(3);
+    const r = await handle(post(base, { device: dev, pubkey: id.pubkey }), env, {});
+    assert.equal(r.status, 400, `degenerate device ${dev.slice(0, 4)}… must be 400`);
+  }
+  // enroll 每 IP 10/min:第 11 个不同 device → 429
+  {
+    const env = mockEnv();
+    let lastStatus = 0;
+    for (let i = 0; i < 11; i++) {
+      const id = await makeIdentity(10 + i);
+      const r = await handle(post(base, { device: id.device, pubkey: id.pubkey },
+        "203.0.113.99"), env, {});
+      lastStatus = r.status;
+      if (i < 10) assert.equal(r.status, 200, `enroll #${i + 1} must succeed`);
+    }
+    assert.equal(lastStatus, 429, "11th enroll from same IP must be rate limited");
+  }
+  // ingest:已注册 + 合法 trailer → 200 verified:true + meta.pubkey
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(30);
+    await handle(post(base, { device: id.device, pubkey: id.pubkey }), env, {});
+    const r = await handle(post("/api/capture/ingest?batch=1", null, "203.0.113.1",
+      await makeBatch(id)), env, {});
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.verified, true, "registered valid trailer must verify");
+    const meta = JSON.parse(env._r2.get(`capture/${id.device}/1.meta.json`));
+    assert.equal(meta.verified, true);
+    assert.equal(meta.pubkey, id.pubkey);
+    assert.equal(meta.device_kind, "mac-sha256-trunc16");
+  }
+  // ingest:已注册 + 坏 sig → 403 且不落库
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(31);
+    await handle(post(base, { device: id.device, pubkey: id.pubkey }), env, {});
+    const r = await handle(post("/api/capture/ingest?batch=1", null, "203.0.113.2",
+      await makeBatch(id, { corruptSig: true })), env, {});
+    assert.equal(r.status, 403, "registered bad sig must be 403");
+    assert.ok(![...env._r2.keys()].some((k) => k.startsWith(`capture/${id.device}/`)),
+              "403 ingest must not write R2");
+  }
+  // ingest:已注册 + payload sha 不符 → 403 且不落库
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(32);
+    await handle(post(base, { device: id.device, pubkey: id.pubkey }), env, {});
+    const r = await handle(post("/api/capture/ingest?batch=1", null, "203.0.113.3",
+      await makeBatch(id, { corruptPayload: true })), env, {});
+    assert.equal(r.status, 403, "payload sha mismatch must be 403");
+    assert.equal(env._r2.size, 0, "sha-mismatch ingest must not write R2");
+  }
+  // ingest:未注册 v7(合法 trailer)→ 200 verified:false
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(33);
+    const r = await handle(post("/api/capture/ingest?batch=1", null, "203.0.113.4",
+      await makeBatch(id)), env, {});
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.verified, false, "unregistered v7 must be accepted unverified");
+    const meta = JSON.parse(env._r2.get(`capture/${id.device}/1.meta.json`));
+    assert.equal(meta.verified, false);
+    assert.ok(!("pubkey" in meta), "unverified meta must not carry pubkey");
+  }
+  // ingest:v6 无 trailer → 200 走现状(unidentified,verified:false)
+  {
+    const env = mockEnv();
+    const id = await makeIdentity(34);
+    const r = await handle(post("/api/capture/ingest?batch=7", null, "203.0.113.5",
+      await makeBatch(id, { version: 6, batch: 7 }).then((b) => b.slice(0, 128 + 256))), env, {});
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(j.verified, false, "v6 no-trailer must stay on the legacy path");
+  }
+  // enroll CORS 预检(OPTIONS → 204)
+  {
+    const env = mockEnv();
+    const r = await handle(new Request("https://metapass.chuanxilu.net" + base,
+      { method: "OPTIONS" }), env, {});
+    assert.equal(r.status, 204);
+    assert.equal(r.headers.get("access-control-allow-origin"), "*");
+  }
+}
+console.log("PASS 17: capture identity runtime (enroll 200/409/400/429 + verify chain 200-true/403-sig/403-sha/unregistered-false/v6-legacy/CORS)");
 
 console.log("ALL WORKER CONTRACT TESTS PASSED");
