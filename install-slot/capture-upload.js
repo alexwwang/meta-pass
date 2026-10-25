@@ -137,23 +137,11 @@ function mount() {
     <div id=cu-msg class=info>正在读取批次信息…</div>
     <div id=cu-detail hidden></div>
 
-    <div class=step id=cu-step-id hidden>
-      <b>1</b>
-      <div>
-        <h3>注册设备身份<span class=muted>(建议,不是上传的前置条件)</span></h3>
-        <div class=muted>注册后云端能验证数据确实来自这台设备(Ed25519 签名,防伪造),
-        数据标记「已验证」。跳过也能正常上传,只是数据标记「未验证」。
-        每台设备只需注册一次。</div>
-        <div id=cu-ident class=info mono hidden></div>
-        <div class=row><button id=cu-reg class=secondary hidden>注册设备身份</button></div>
-      </div>
-    </div>
-
     <div class=step>
-      <b>2</b>
+      <b>⤒</b>
       <div>
         <h3>拉取并上传</h3>
-        <div class=muted>从设备读完整批次,带签名一起传到云端。</div>
+        <div class=muted>从设备读完整批次(带设备签名),传到云端。无需任何注册或配置。</div>
         <div class=row><button id=cu-up hidden>拉取并上传</button></div>
         <div class=bar id=cu-bar hidden><i></i></div>
       </div>
@@ -184,38 +172,8 @@ function mount() {
       $("cu-up").hidden = false;
       $("cu-up").onclick = () => upload(b);
       msg("就绪:点「拉取并上传」。", "");
-      loadIdentity(b);
     } catch (e) {
       msg("连接失败:" + (e && e.message ? e.message : e), "err");
-    }
-  }
-
-  // 契约 v1 身份区:读固件 /api/identity,显示 device/pubkey + 注册按钮。
-  // 固件无该端点(v6 及更早)时隐藏第 1 步,不影响既有上传流程。
-  async function loadIdentity(b) {
-    try {
-      const id = await fetchDeviceIdentity(b);
-      $("cu-step-id").hidden = false;
-      $("cu-ident").hidden = false;
-      $("cu-ident").textContent =
-        `device  ${id.device}\npubkey  ${id.pubkey}`;
-      $("cu-reg").hidden = false;
-      $("cu-reg").onclick = () => registerIdentity(id);
-    } catch { /* 旧固件无 /api/identity:身份区保持隐藏 */ }
-  }
-
-  async function registerIdentity(id) {
-    $("cu-reg").disabled = true;
-    try {
-      const r = await enrollDeviceIdentity(id.device, id.pubkey);
-      const t = r.duplicate ? "设备身份此前已注册(无需重复)。" : "设备身份注册成功。";
-      msg(t + "本设备的数据将带「已验证」标记。", "ok");
-      $("cu-reg").textContent = "已注册 ✓";
-      $("cu-reg").disabled = true;
-      $("cu-ident").classList.add("verified");
-    } catch (e) {
-      msg("注册失败:" + (e && e.message ? e.message : e), "err");
-      $("cu-reg").disabled = false;
     }
   }
 
@@ -236,9 +194,7 @@ function mount() {
       const payload = await uploadCaptureBytes(bytes, head.batch);
       msg("已上传:" + payload.bytes + " 字节,sha256 " + payload.sha256.slice(0, 16) +
           "…," + payload.ingestedAt +
-          (payload.verified
-            ? ",签名已验证 ✓ 数据标记「已验证」"
-            : ",设备未注册,数据标记「未验证」(第 1 步注册后重传即变已验证)"), "ok");
+          (payload.verified ? ",签名已验证 ✓" : ""), "ok");
     } catch (e) {
       msg("上传失败:" + (e && e.message ? e.message : e), "err");
     } finally {
