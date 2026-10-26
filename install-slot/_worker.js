@@ -352,7 +352,9 @@ async function handleCaptureIngest(req, env, url) {
   // v7 且 trailer 可解析时:device 已注册(KV capkey:<device>)→ 必须
   // ① 重算 payload sha256 == trailer.payload_sha256 ② Ed25519 验签 preimage,
   // 任一失败 403 不落库;未注册 → 接受、verified:false;v6/无 trailer 走现状。
-  // trailer 位于批次区最后一扇区起始,header_size=128,payload 止于 len-4096。
+  // trailer 位于批次区最后一扇区起始;payload = [4096, len-4096)
+  // (data_offset = align(头部128B) = 一个扇区;与固件 payload_digest()
+  // 及 LAN 链路契约一致——曾误用 128,真机 2×120 条上传 403)。
   let verified = false;
   let pubkey = null;
   if (version >= 7 && env.CAPKEY_KV) {
@@ -361,7 +363,7 @@ async function handleCaptureIngest(req, env, url) {
       pubkey = await env.CAPKEY_KV.get(`capkey:${device}`);
       if (pubkey !== null) {
         const payloadDigest = await crypto.subtle.digest("SHA-256",
-          bytes.subarray(128, bytes.byteLength - 4096));
+          bytes.subarray(4096, bytes.byteLength - 4096));
         const payloadSha = [...new Uint8Array(payloadDigest)]
           .map((b) => b.toString(16).padStart(2, "0")).join("");
         const trailerSha = [...trailer.payloadSha]
