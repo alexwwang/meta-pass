@@ -164,10 +164,12 @@ function mount() {
         msg("数据区没有 RCB1 批次(尚未采集或固件版本旧)。", "err");
         return;
       }
+      const records = Number.isFinite(info.records) ? info.records : null;
       $("cu-detail").hidden = false;
       $("cu-detail").className = "info";
       $("cu-detail").textContent =
-        `批次 ${info.batch}(v${info.version})  ${info.committed}/${info.expected} 条\n` +
+        `批次 ${info.batch}(v${info.version})  ${info.committed} 次采集` +
+        (records != null ? ` · ${records} 条记录` : "") + `\n` +
         `数据区 ${(info.size / 1024).toFixed(0)} KiB  设备 ${info.device.slice(0, 16)}…`;
       $("cu-up").hidden = false;
       $("cu-up").onclick = () => upload(b);
