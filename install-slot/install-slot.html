@@ -259,7 +259,7 @@
 <script type="module">
 // 镜像解包逻辑在独立 ES 模块中(Node 可测),此处仅保留页面侧槽位表
 import { extractAppImage, extractDataImages, isFullImage, hex } from "./extract-app-image.js";
-import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize } from "./name-blob.js";
+import { packNameBlobTail, sanitizeDisplayName, maxAppImageSize, TAIL_SECTOR } from "./name-blob.js";
 import {
   sliceSlotBackup, buildManifest, parseManifest, manifestFilesForSlot,
   checkRestoreFit, restoreOrder, isAllFF, probeOffsets, buildRawMirror, rawMirrorFileName,
@@ -299,7 +299,7 @@ import {
 } from "./dynslot-record.js";
 // mock 设备(?mock=1):内存 flash 模拟真机读写语义,供无硬件的浏览器走查(设计 §10)。
 import { createMockDevice, mockProfileFromLocation } from "./mock-device.js";
-import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP } from "./dynslot-pool.js";
+import { dataSizeBounds, dataPartitionMinimum, normalizeDataSize, DATA_SIZE_GRANULE, DATA_SIZE_STEP, POOL_TOTAL } from "./dynslot-pool.js";
 import { nextDataPlayId, planDataReservations } from "./data-install-plan.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { readDataArchiveZip, buildDataArchiveZip } from "./data-byte-archive.js";
@@ -316,6 +316,11 @@ const LEGACY_SLOTS = [
   { offset: 0x360000, size: 0x200000 },  // ota_1
   { offset: 0x560000, size: 0x29E000 },  // ota_2 (dual-use)
 ];
+// 解包上限 = 两池总字节数 − 尾 sector(与 store-analyze.js 的 UNPACK_MAX 同一约定)。
+// extractAppImage 的默认上限是硬编码 2MB 槽(0x1FF000)——dynslot 世界里它不是
+// 任何真实槽位上限,>2MB 的应用在剩余空间充足时会被误拒。此处只放开解析天花板;
+// 逐槽 fit 的权威判定在安装规划(planInstall)与安装前 slotLimit 校验完成。
+const UNPACK_MAX = POOL_TOTAL - TAIL_SECTOR;
 // 当前设备槽位几何:连接探测(loadSlotModel)与每次提交后由 renderSlotView() 重建;初始 = legacy 占位。
 let deviceSlots = LEGACY_SLOTS.map((s) => ({ ...s }));
 
@@ -1926,7 +1931,7 @@ $("file-input").addEventListener("change", async (ev) => {
   try {
     const buf = new Uint8Array(await file.arrayBuffer());
     log(t("msg_read_file", { name: file.name, size: fmtBytes(buf.length) }));
-    const img = extractAppImage(buf);
+    const img = extractAppImage(buf, UNPACK_MAX);
     const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];
     localImage = { ...img, dataImages, name: file.name };
     const dataSummary = dataImages.length
@@ -3047,7 +3052,7 @@ async function prepareCommunityImage() {
   }
   log(t("msg_sha256_verified"), "ok");
   // 社区固件为 Full Flash 合并镜像；APP 与 DATA 声明走同一解析入口。
-  const img = extractAppImage(buf);
+  const img = extractAppImage(buf, UNPACK_MAX);
   const dataImages = isFullImage(buf) ? extractDataImages(buf) : [];
   log(t("msg_extracted", { size: img.length, source: img.source }));
   if (dataImages.length) log(`Firmware declares ${dataImages.length} DATA partition(s): ${dataImages.map((d) => d.label).join(", ")}`);
