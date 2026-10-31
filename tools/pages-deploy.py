@@ -23,8 +23,10 @@
   python3 tools/pages-deploy.py --dry-run      # 只构建 manifest,不部署
   python3 tools/pages-deploy.py --dir <path>   # 部署指定目录(需已打好版本戳)
 
-注意:生产 Worker 与 main 分支的偏差见 docs/assets/mota-implementation-audit.md
-部署说明 —— push main 前先把 feat/mota 合并,否则 CI 会用旧代码覆盖本部署。
+注意:feat/mota 已于 2026-10-02 合入 main 并删除分支;此后 push main
+(install-slot/** 变更)由 workers.yml 经本脚本直署生产,生产内容与 main 一致。
+feat/mota 时代"先合并再 push"的警告仅对 10-02 之前的窗口有效,见
+docs/assets/mota-implementation-audit.md。
 """
 import argparse
 import base64
