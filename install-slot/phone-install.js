@@ -1907,8 +1907,17 @@ export function boot(opts = {}) {
     try {
       let lr = await bridge.slots();
       if (lr.status === 401) {
-        failSheet("会话已过期",
-          "安装会话超过 30 分钟已失效。\n在下方配对区输入设备屏幕上的 6 位配对码，或退出商店（长按 OK）后重新扫码。");
+        // 2026-11-02 固件按原因细分 401:过期 → 续期指引;凭证类失败 → 重新
+        // 配对指引。此前一切 401 都报"会话已过期",key mismatch(绑过别的
+        // 手机/浏览器凭证被清)被错误引导,用户无从自救。
+        const why = lr.text || "";
+        if (why.includes("expired")) {
+          failSheet("会话已过期",
+            "安装会话超过 30 分钟未活动已失效。\n在下方配对区输入设备屏幕上的 6 位配对码，或退出商店（长按 OK）后重新扫码。");
+        } else {
+          failSheet("需要重新配对",
+            "设备未认可本机凭证（" + (why || "未知原因") + "）。\n在下方配对区输入设备屏幕上的 6 位配对码，重新绑定后即可安装。");
+        }
         return;
       }
       if (lr.status === 409) {
@@ -2203,7 +2212,7 @@ export function boot(opts = {}) {
       log(`✗ 安装失败 [${r.stage}]: ${r.reason}`, "err");
       let msg = `[${r.stage}] ${r.reason}`;
       if (r.stage === "confirm") msg += "\n设备在等待确认 —— 旧固件需在设备屏选槽按 OK;刷 v62+ 后手机上即可完成全部操作";
-      if (r.status === 401) msg += "\n会话 token 已过期(30 分钟)—— 重新扫码或输入设备屏幕上的配对码后再试";
+      if (r.status === 401) msg += "\n设备未认可本机会话/凭证(401)—— 在配对区输入设备屏幕上的配对码重新绑定后再试";
       if (r.stage === "token") msg += "\n重新扫码或重新配对(token 每店一次性)";
       failSheet("安装失败", `${pre.offer.name}\n${msg}`);
     }

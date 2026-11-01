@@ -954,6 +954,12 @@ void meta_install_token_stop(void)
     session_unlock();
 }
 
+/* 401 原因细分(2026-11-02):token 过期与"手机凭证不匹配"是两种完全不同的
+ * 恢复动作(前者等效重续、后者必须重新配对),页面按文本分流给正确指引。
+ * req_token_ok / meta_install_token_from_hex 每个失败分支写入,18 个 handler
+ * 统一经 reply_token_fail 出口。 */
+static const char *s_auth_fail_reason = "bad session token";
+
 bool meta_install_token_from_hex(const char *hex, size_t hex_len)
 {
     if (!hex || hex_len != META_INSTALL_TOKEN_HEX_LEN) return false;
@@ -964,9 +970,11 @@ bool meta_install_token_from_hex(const char *hex, size_t hex_len)
     }
     if (!s_token.token_valid ||
         memcmp(hex, s_token.token_hex, META_INSTALL_TOKEN_HEX_LEN) != 0) {
+        s_auth_fail_reason = "bad session token";
         return false;
     }
     if (token_deadline_passed(s_token.token_deadline_ms)) {
+        s_auth_fail_reason = "session token expired";
         // 2026-11 真机(进店>30min 后全端点 401 且页内无解):过期 token 仍
         // 在被使用,给一条页内出路 —— 配对态下补发新配对码 + 状态行提示,
         // 用户输屏上新码即轮转换发(见 h_install_pair)。传输中(有在途
@@ -1683,8 +1691,14 @@ done:
     return ok;
 }
 
+static esp_err_t reply_token_fail(httpd_req_t *req)
+{
+    return reply(req, "401 Unauthorized", s_auth_fail_reason);
+}
+
 static bool req_token_ok(httpd_req_t *req)
 {
+    s_auth_fail_reason = "bad session token";
     char val[META_INSTALL_TOKEN_HEX_LEN + 2];
     if (httpd_req_get_hdr_value_str(req, META_INSTALL_SESSION_HDR, val,
                                     sizeof(val)) != ESP_OK) {
@@ -1710,7 +1724,8 @@ static bool req_token_ok(httpd_req_t *req)
         httpd_req_get_hdr_value_str(req, "X-Meta-Sig", sig_hex, sizeof(sig_hex)) != ESP_OK ||
         httpd_req_get_hdr_value_str(req, "X-Meta-Ctr", ctr_s, sizeof(ctr_s)) != ESP_OK ||
         httpd_req_get_hdr_value_str(req, "X-Meta-Ts", ts_s, sizeof(ts_s)) != ESP_OK) {
-        return false;   // 旧手机页(2026-11 前缓存):页面 no-store,强刷即带钥匙
+        s_auth_fail_reason = "phone key required";   // 旧手机页:no-store 强刷即带钥匙
+        return false;
     }
     uint8_t pub[META_PHONE_PUB_LEN];
     uint8_t sig[META_PHONE_SIG_LEN];
@@ -1719,21 +1734,35 @@ static bool req_token_ok(httpd_req_t *req)
         !hex_to_bytes(sig_hex, strlen(sig_hex), sig, sizeof(sig)) ||
         !parse_u64_strict(ctr_s, &ctr) ||
         !parse_u64_strict(ts_s, &ts)) {
+        s_auth_fail_reason = "bad phone auth format";
         return false;
     }
     const char *mstr = method_str_of(req->method);
-    if (!mstr) return false;
+    if (!mstr) {
+        s_auth_fail_reason = "bad phone auth format";
+        return false;
+    }
     uint8_t kh[32];
     sha256_once(pub, sizeof(pub), kh);
-    if (s_token.key_bound && memcmp(kh, s_token.key_hash, 32) != 0) return false;
-    if (ctr <= s_token.last_ctr) return false;   // 计数器重放
-    if (ts <= s_token.last_ts || ts == 0) return false;   // 时间戳重放
+    if (s_token.key_bound && memcmp(kh, s_token.key_hash, 32) != 0) {
+        s_auth_fail_reason = "phone key mismatch";   // 绑过别的手机/浏览器凭证被清:须重新配对
+        return false;
+    }
+    if (ctr <= s_token.last_ctr) {
+        s_auth_fail_reason = "ctr replay";
+        return false;   // 计数器重放
+    }
+    if (ts <= s_token.last_ts || ts == 0) {
+        s_auth_fail_reason = "ts replay";
+        return false;   // 时间戳重放
+    }
     {
         // 绝对窗口:仅设备墙钟可信(SNTP 校时后)时启用;容忍手机快慢偏差
         bool sane = false;
         const int64_t wall = wall_now_ms(&sane);
         if (sane && ((int64_t)ts > wall + (int64_t)META_PHONE_TS_FUTURE_MS ||
                      (int64_t)ts < wall - (int64_t)META_PHONE_TS_PAST_MS)) {
+            s_auth_fail_reason = "ts skew";
             return false;
         }
     }
@@ -1747,7 +1776,10 @@ static bool req_token_ok(httpd_req_t *req)
         if (n <= 0 || (size_t)n >= sizeof(expect)) return false;
         sha256_once((const uint8_t *)expect, (size_t)n, md);
     }
-    if (!phone_sig_verify(pub, md, sig)) return false;
+    if (!phone_sig_verify(pub, md, sig)) {
+        s_auth_fail_reason = "bad phone signature";
+        return false;
+    }
     // 四关全过:首用完成绑定,推进 ctr/ts(节流落盘),滑动续期。
     if (!s_token.key_bound) {
         memcpy(s_token.key_hash, kh, 32);
@@ -1950,7 +1982,7 @@ static esp_err_t h_favicon(httpd_req_t *req)
 static esp_err_t h_install_status(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
 
     char name_esc[META_NAME_LEN * 2 + 1];
     json_escape(s_session.name, name_esc, sizeof(name_esc));
@@ -1997,7 +2029,7 @@ static esp_err_t h_install_status(httpd_req_t *req)
 static esp_err_t h_install_prepare(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     bool recovered_remove = false;
     const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
     if (remove_recovery != ESP_OK) {
@@ -2253,7 +2285,7 @@ new_group_checked:
 static esp_err_t h_install_session(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     if (!s_session.confirmed) return reply(req, "409 Conflict", "not confirmed");
     if (s_session.session_opened) return reply(req, "409 Conflict", "session already open");
 
@@ -2298,7 +2330,7 @@ static esp_err_t h_install_session(httpd_req_t *req)
 static esp_err_t h_install_chunk(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     if (!s_session.confirmed || !s_session.session_opened) {
         return reply(req, "409 Conflict", "not confirmed");
     }
@@ -2358,7 +2390,7 @@ static esp_err_t h_install_chunk(httpd_req_t *req)
 static esp_err_t h_install_data(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     if (!s_session.confirmed || !s_session.session_opened) {
         return reply(req, "409 Conflict", "not confirmed");
     }
@@ -2405,7 +2437,7 @@ static esp_err_t h_install_data(httpd_req_t *req)
 static esp_err_t h_install_data_read(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
 
     bool recovered_remove = false;
     const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
@@ -2472,7 +2504,7 @@ static esp_err_t h_install_data_read(httpd_req_t *req)
 static esp_err_t h_install_slot_read(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
 
     bool recovered_remove = false;
     const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
@@ -2537,7 +2569,7 @@ static const esp_partition_t *install_nvs_partition(void)
 static esp_err_t h_install_nvs_info(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2555,7 +2587,7 @@ static esp_err_t h_install_nvs_info(httpd_req_t *req)
 static esp_err_t h_install_nvs_read(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2599,7 +2631,7 @@ static bool install_partition_same(const esp_partition_t *a, const esp_partition
 static esp_err_t h_install_storage_info(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2691,7 +2723,7 @@ static esp_err_t h_install_storage_info(httpd_req_t *req)
 static esp_err_t h_install_storage_read(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2904,7 +2936,7 @@ static const char *label_of_target(const install_snapshot_target_t *t)
 static esp_err_t h_install_storage_erase(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2932,7 +2964,7 @@ static esp_err_t h_install_storage_erase(httpd_req_t *req)
 static esp_err_t h_install_storage_write(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -2968,7 +3000,7 @@ static esp_err_t h_install_storage_write(httpd_req_t *req)
 static esp_err_t h_install_finalize(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     if (!s_session.confirmed || !s_session.session_opened) {
         return reply(req, "409 Conflict", "not confirmed");
     }
@@ -2982,7 +3014,7 @@ static esp_err_t h_install_finalize(httpd_req_t *req)
 static esp_err_t h_install_cancel(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     meta_install_cancel();
     return reply(req, "200 OK", "ok");
 }
@@ -2994,7 +3026,7 @@ static esp_err_t h_install_cancel(httpd_req_t *req)
 static esp_err_t h_install_slots(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     bool recovered_remove = false;
     const esp_err_t remove_recovery = remove_recovery_gate(&recovered_remove);
     if (remove_recovery != ESP_OK) {
@@ -3354,7 +3386,7 @@ static esp_err_t remove_recover_pending(bool *did_recover)
 static esp_err_t h_install_remove(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     session_lock();
     const bool install_busy = s_session.confirmed || s_session.session_opened;
     session_unlock();
@@ -3504,7 +3536,7 @@ void meta_install_net_stop(void)
 static esp_err_t h_backup_import(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    if (!req_token_ok(req)) return reply(req, "401 Unauthorized", "bad session token");
+    if (!req_token_ok(req)) return reply_token_fail(req);
     return reply(req, "501 Not Implemented",
                  "byte-level backup restore is not implemented; metadata-only import is disabled");
 }
