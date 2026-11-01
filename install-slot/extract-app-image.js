@@ -2,6 +2,9 @@
 // install-slot.html 以 <script type="module"> import;test-extract.mjs 直接用 node 跑测试。
 // 常量与 main/meta_image.c 及分区表布局同一约定。
 import { maxAppImageSize } from "./name-blob.js";
+// SHA-256 用于镜像 appended-hash 布局判别(见 espImageLength);浏览器 http origin
+// 无 crypto.subtle,必须用 vendored noble 实现(与 P-256 签名同一 bundle)。
+import { sha256 } from "./vendor/p256.js";
 
 export const ESP_IMAGE_MAGIC = 0xE9;   // esp_image_header_t 魔数
 export const ESP_CHIP_ID_ESP32C3 = 5;  // chip_id 的 ESP32-C3 取值
@@ -23,7 +26,8 @@ function u32le(buf, off) {
 // ESP 镜像格式:头 24B(magic@0、segment_count@1、chip_id 小端@12、hash_appended@23),
 // 随后每 segment 8B 头(load_addr 4B + data_len 4B)+ 数据;全部 segment 后填充到
 // (相对镜像起点)%16==15,再 1B 校验和;hash_appended=1 时再 +32B。
-// 按给定扩展头长度走 segment 表,返回镜像精确总长度;结构不合法时抛错。
+// 按给定扩展头长度走 segment 表,返回镜像精确总长度(含校验和字节,含
+// appended hash 时的 32B);结构不合法时抛错。调用方负责布局判别。
 function walkSegments(buf, start, extHdrLen) {
   const segCount = buf[start + 1];
   const hashAppended = (buf[start + 23] & 1) === 1;
@@ -51,7 +55,13 @@ function walkSegments(buf, start, extHdrLen) {
 }
 
 // 校验镜像头并计算精确总长度;任何校验失败抛出具体英文错误。
-// 部分工具链在 24B 头后插入 16B 扩展头,这里对两种布局做自动探测。
+// 部分工具链在 24B 头后插入 16B 扩展头,部分没有 —— 两种布局只靠"哪条
+// segment 链能在缓冲区内走完"无法区分(错误布局常能"走通"并给出荒谬的
+// 小长度,2026-11-02 真机事故:无扩展头镜像被按带扩展头解析出 176B,
+// 截断上传后设备 esp_ota_end 校验失败 "finalize verify failed")。
+// hash_appended=1(现代 IDF 默认)时用 appended SHA-256 做权威判别:对
+// [start, end) 计算哈希与镜像尾部 32B 比对,选中匹配的布局;无一匹配即
+// 拒绝,绝不静默采用可疑解析。无 hash 的旧镜像保持原探测顺序。
 export function espImageLength(buf, start) {
   if (start + ESP_HEADER_LEN > buf.length) {
     throw new Error(`Truncated image: header at ${hex(start)} needs 24 bytes, only ${buf.length - start} available.`);
@@ -68,16 +78,29 @@ export function espImageLength(buf, start) {
   if (chipId !== ESP_CHIP_ID_ESP32C3) {
     throw new Error(`Wrong chip id ${hex(chipId)} — expected ${hex(ESP_CHIP_ID_ESP32C3)} (ESP32-C3).`);
   }
-  // 先按带 16B 扩展头解析(契约默认),失败则回退无扩展头布局
-  let lastErr = null;
+  const hashAppended = (buf[start + 23] & 1) === 1;
+  const candidates = [];
   for (const extHdrLen of [ESP_EXT_HEADER_LEN, 0]) {
     try {
-      return walkSegments(buf, start, extHdrLen);
-    } catch (err) {
-      lastErr = err;
-    }
+      candidates.push({ extHdrLen, len: walkSegments(buf, start, extHdrLen) });
+    } catch { /* 该布局走不通,不是候选 */ }
   }
-  throw lastErr;
+  if (candidates.length === 0) {
+    throw new Error("Truncated image: no valid segment layout walks within the data.");
+  }
+  if (hashAppended) {
+    for (const c of candidates) {
+      const end = start + c.len - 32;   // 校验和字节之后即 hash 起点
+      const digest = sha256(buf.subarray(start, end));
+      let match = true;
+      for (let i = 0; i < 32; i++) {
+        if (digest[i] !== buf[end + i]) { match = false; break; }
+      }
+      if (match) return c.len;
+    }
+    throw new Error("image hash mismatch: neither extended-header nor plain layout validates.");
+  }
+  return candidates[0].len;   // 无 appended hash:保持 legacy 优先扩展头
 }
 
 // Full Flash 合并镜像识别:0x8000 处分区表 magic(0x50 0xAA 小端)

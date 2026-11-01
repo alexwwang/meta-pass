@@ -2406,5 +2406,6 @@ var p256_CURVE = /* @__PURE__ */ (() => ({
 var p256_Point = /* @__PURE__ */ weierstrass(p256_CURVE);
 var p256 = /* @__PURE__ */ ecdsa(p256_Point, sha256);
 export {
+  sha256,
   p256
 };

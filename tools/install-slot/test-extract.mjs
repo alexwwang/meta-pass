@@ -10,6 +10,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { extractAppImage, espImageLength, isFullImage, parseFirmwareManifest, extractDataImages, parseDataPartitions } from "../../install-slot/extract-app-image.js";
 import {
   NAME_MAX, NAME_OFFSET, NAME_RESERVE,
@@ -38,6 +39,9 @@ function buildAppImage() {
   off += 8 + seg0;
   // segment 1:load_addr=0x42000020,data_len=seg1
   buf.set([0x20, 0x00, 0x00, 0x42, seg1, 0x00, 0x00, 0x00], off);
+  // appended hash 必须是 [0, total-32) 的真实 SHA-256(espImageLength 现在
+  // 用它做布局权威判别, fixtures 也一样要合法)。
+  buf.set(createHash("sha256").update(buf.subarray(0, total - 32)).digest(), total - 32);
   return buf;
 }
 
@@ -131,6 +135,8 @@ function buildManifestImage(app, dataOff, dataSize, subtype, label) {
     buf[23] = 1;              // hash_appended
     buf.set([0x00, 0x00, 0xc8, 0x3f, 100, 0, 0, 0], seg0Off);        // seg0 @0x3fc80000, len 100
     buf.set([0x20, 0x00, 0x00, 0x42, 64, 0, 0, 0], seg0Off + 108);  // seg1 @0x42000020, len 64
+    // appended hash 用真实 SHA-256(布局判别是哈希权威,fixture 必须合法)
+    buf.set(createHash("sha256").update(buf.subarray(0, total - 32)).digest(), total - 32);
     return buf;
   }
   const plain = buildLayout(false);
@@ -411,6 +417,7 @@ function hexToBytes(hex) {
     const buf = new Uint8Array(target).fill(0xab);
     buf[0] = 0xe9; buf[1] = 1; buf[12] = 5; buf[13] = 0; buf[23] = 1;
     buf.set([0x00, 0x00, 0xc8, 0x3f, s0 & 0xff, (s0 >> 8) & 0xff, (s0 >> 16) & 0xff, (s0 >> 24) & 0xff], 40);
+    buf.set(createHash("sha256").update(buf.subarray(0, target - 32)).digest(), target - 32);
     return buf;
   };
   const okImg = buildSized(limit);
