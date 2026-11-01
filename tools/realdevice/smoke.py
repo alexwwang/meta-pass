@@ -486,16 +486,18 @@ def main():
         m = mon.wait_for(r"pair ready: code=(\d{6}) token=([0-9a-f]{32})", 600)
         if not m:
             die("600s 内未见 pair ready —— 需要人工进一次商店页(见文件头说明)", mon)
-        pair_code, token0 = m.group(1), m.group(2)
+        pair_code, _uart_token = m.group(1), m.group(2)
         ok(f"配对码 {pair_code}(串口捕获)")
         st, body = api.post("/api/install/pair", json.dumps({"code": pair_code, "key": api.pub_key_hex()}).encode())
         if st != 200:
             die(f"pair {st} {body[:200]!r}", mon)
         token1 = json.loads(body)["token"]
-        if token1 != token0:
-            die("pair 返回的 token 与串口不一致", mon)
+        # 2026-11 轮换语义:兑换成功即轮转换发新 token(旧 token/旧公钥当场
+        # 失效),响应里的新 token 才是活凭证 —— 与串口里的旧 token 必不一致。
+        if not re.fullmatch(r"[0-9a-f]{32}", token1):
+            die(f"pair 返回的 token 格式异常: {token1!r}", mon)
         api.token = token1
-        ok("pair → token(一次性)")
+        ok("pair → token(轮转换发,一次性)")
 
     # ── S1b 手机备份底层 NVS 只读 API 安全边界 ────────────────────────
     stage("S1b 系统 NVS 只读 API")
@@ -604,16 +606,17 @@ def main():
     stage("S4 删除闭环(DATA 归档 + 擦除删除)")
     st, _ = api.post("/api/install/remove", b'{"slot":0}')
     if st != 200:
-        die(f"remove(归档) {st}", mon)
+        die(f"remove(级联) {st}", mon)
     wait_done_reboot(mon, args.port, 1, "删槽0")
     s = slots()
     if s["count"] != 1:
         die(f"删槽0后 count={s['count']} != 1", mon)
-    archived = [d for d in s.get("data", [])
-                if d.get("play_id") == 1 and d.get("label") == "recordings"]
-    if len(archived) != 1 or int(archived[0].get("state", -1)) != 2:
-        die(f"删除槽0后 DATA 未进入 ARCHIVED: {archived}", mon)
-    ok("删除槽0:count=1, DATA recordings → ARCHIVED")
+    # 2026-11 协议现状(25aad4a 起,public v2.2.0+):remove 一律 APP 级联删除,
+    # eraseData 不再改变行为,DATA 记录随槽抹除而非 ARCHIVED。
+    leftover = [d for d in s.get("data", []) if d.get("play_id") == 1]
+    if leftover:
+        die(f"删除槽0后 DATA 应被级联抹除,残留: {leftover}", mon)
+    ok("删除槽0:count=1, DATA 级联抹除")
     # 删除后剩余槽会重新编号(紧凑化),取当前实际索引而非硬编码 1
     s = slots()
     rem = s["slots"][0]["slot"] if s.get("slots") else 0
@@ -636,6 +639,12 @@ def main():
     manifest["carveSize"] = proposal["carveSize"]
     manifest["playId"] = manifest["revisionId"] = 3
     manifest["name"] = "smoke-three"
+    # S3 为 smoke-two 清过 data(级联删除语义下 remove 会抹 DATA);续装要回读
+    # DATA 字节(S6 取证),必须把 DATA 条目装回 manifest,否则 prepare 不建
+    # DATA carve、session data entries=0。
+    manifest["data"] = [{"playId": 3, "label": "recordings", "size": 8192,
+                         "subtype": 0x82, "initialImageSize": len(data_bytes),
+                         "sha256": data_sha}]
     st, body = api.post("/api/install/prepare", json.dumps(manifest).encode())
     if st != 200:
         die(f"prepare#3 {st} {body[:300]!r}", mon)
@@ -679,7 +688,7 @@ def main():
     if st != 200:
         die(f"幂等重发 prepare {st} {body[:300]!r}", mon)
     ok("幂等重发 prepare 200(已 carve 槽复用)")
-    upload(api, app_bytes, app_len, "install#3(续)", slot=manifest["slot"], mon=mon, port=args.port, manifest=manifest)
+    upload(api, app_bytes, app_len, "install#3(续)", slot=manifest["slot"], mon=mon, port=args.port, manifest=manifest, data_images=data_images)
     wait_done_reboot(mon, args.port, 1, "续装")
     s = slots()
     ok(f"续连完成:slots={s['count']}")
@@ -688,12 +697,13 @@ def main():
     stage("S6 取证 + DATA 字节级回读")
     s = slots()
     rec = next((d for d in s.get("data", [])
-                if d.get("play_id") == 1 and d.get("label") == "recordings"), None)
+                if d.get("play_id") == 3 and d.get("label") == "recordings"), None)
     if rec is None:
-        die("找不到已归档 recordings DATA 记录", mon)
-    if int(rec.get("state", -1)) != 2:
-        die(f"recordings 状态异常: {rec}", mon)
-    ok(f"DATA record persisted: offset=0x{int(rec['offset']):x} size={int(rec['size'])} state=ARCHIVED")
+        die("找不到续装后的 recordings DATA 记录", mon)
+    # 级联删除语义下 remove 不再产生 ARCHIVED;S5 续装重建的 DATA 应为 PRISTINE。
+    if int(rec.get("state", -1)) != 0:
+        die(f"recordings 状态异常(应为 PRISTINE): {rec}", mon)
+    ok(f"DATA record persisted: offset=0x{int(rec['offset']):x} size={int(rec['size'])} state=PRISTINE")
     mon.stop()
     evid = os.path.join(logroot, "flash")
     os.makedirs(evid, exist_ok=True)

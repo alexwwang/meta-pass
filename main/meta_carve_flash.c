@@ -360,6 +360,22 @@ esp_err_t meta_carve_flash_commit(const meta_carve_t *carve, bool materialize)
         }
         const esp_err_t e = meta_carve_flash_table_write(launcher_table);
         if (e != ESP_OK) return e;
+        /* 表重写使一切在途"引导请求"(boot_sub 经 esp_ota_set_boot_partition
+         * 写入的 otadata NEW 副本)失效:seq 的槽号映射按新表重解,指向已
+         * 漂移/不存在的槽(2026-11-01 真机:装 2 删 1 后剩余槽紧凑化,残留
+         * NEW 副本把 bootloader 引向错误槽位 → 复位循环,擦 otadata 才恢复)。
+         * 冷启动 hook 只擦 VALID 副本、刻意保留 NEW(boot 请求),所以这里
+         * 必须由表变更方清账。合法子固件引导是 materialize_active 后紧接
+         * set_boot_partition —— 写在 commit 之后,此处先擦不冲突。 */
+        const esp_partition_t *od = esp_partition_find_first(
+            ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, NULL);
+        if (od) {
+            const esp_err_t oe = esp_partition_erase_range(od, 0, od->size);
+            if (oe != ESP_OK) {
+                ESP_LOGW(TAG, "otadata clear after materialize failed: %s",
+                         esp_err_to_name(oe));
+            }
+        }
         s_reboot_pending = true;
     }
 

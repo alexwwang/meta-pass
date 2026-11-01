@@ -2244,6 +2244,8 @@ new_group_checked:
     session_unlock();
     ESP_LOGI(TAG, "offer ready: %s (%u bytes, slot %s)", m.name, m.image_len,
              m.has_carve ? "carved" : (phone_picked ? "phone-picked" : "device-confirm"));
+    ESP_LOGI(TAG, "prepare: name=%s data_count=%u place_changed=%d place_idx=%d",
+             m.name, (unsigned)m.data_count, (int)place_changed, (int)place_idx);
     return reply(req, "200 OK", "ok");
 }
 
@@ -2286,6 +2288,8 @@ static esp_err_t h_install_session(httpd_req_t *req)
                          done ? "true" : "false");
     }
     snprintf(resp + roff, sizeof(resp) - (size_t)roff, "]}");
+    ESP_LOGI(TAG, "session: open name=%s data_count=%u", s_session.name,
+             (unsigned)s_session.manifest.data_count);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, resp);
 }
