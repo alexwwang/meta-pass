@@ -1707,8 +1707,11 @@ export function boot(opts = {}) {
       ${archiveDownload ? `<p><a class="mp-btn" style="display:inline-block;text-decoration:none" href="${esc(archiveDownload.url)}" download="${esc(archiveDownload.filename)}">下载最近一次备份:${esc(archiveDownload.filename)}</a></p>` : ""}`;
     // 采集数据上传(方案 A):列出 label="capture" 的 DATA 记录,逐条拉取上传。
     // 设备身份由批次头 device_hash 自动携带(cardid 哈希,固件所盖),零输入。
+    // 只列 DIRTY(有实际采集数据)的记录:PRISTINE 是刚擦除的空预留、ARCHIVED
+    // 是已卸载归档,两者都没有可上传的内容,给它们挂「拉取并上传」是误导
+    // (真机投诉:空间管理把空 capture 预留和真实批次无差别列出)。
     const captureRecords = (info.data || []).filter(
-      (d) => d.label === "capture" && d.play_id > 0 && d.state !== 2 /* ARCHIVED */);
+      (d) => d.label === "capture" && d.play_id > 0 && d.state === 1 /* DIRTY */);
     const captureSection = `
       <h4 style="margin-top:14px">采集数据上传</h4>
       <p class=mp-sub>把 pass-radar 批采集数据区(RCB1 原始字节)上传到采集服务端,用于离线建模与核对。批次号与设备身份(批次头 device_hash,不可逆)自动取自数据区,无需任何输入。</p>

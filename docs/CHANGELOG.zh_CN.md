@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **空间管理:采集数据上传只列有数据的批次(手机页,2026-11-02)**:此前 `state !== ARCHIVED` 的过滤把 PRISTINE(刚擦除的空预留)DATA 记录也挂上了「拉取并上传」——空分区无任何可上传内容,与真实采集批次无差别平铺,用户看到一堆假入口。现只列 `DIRTY`(finish 时由固件翻转,代表确有采集字节写入)的记录;PRISTINE/ARCHIVED 不再出现。
+
 - **安装失败浮层:too-large 带容量数字(手机页,2026-11-02)**:analyze 拒绝时 `preflightMeta` 此前只透传 reason 码,`storage.requiredSize`(app+DATA 分区预留之和)被丢弃,用户只能看到裸 `too-large`。而卡片上的「大小」只是商店下载字节,不含 DATA 分区预留(下载包 4.9M 的玩法可藏 2.9M 空 DATA 预留,总需求 7.8M),"下载大小 vs 剩余空间"必然误判。现 too-large 浮层显示 `本玩法共需 X(app+DATA 分区预留),本设备池上限 Y`。根因澄清:池上限是 8MB flash 扣掉 meta-pass 本体/cardid/otadata 后的 6.45MB 物理边界,与单槽尺寸无关——dynslot 按镜像 carve 定槽,不存在 2MB 单槽上限(2MB 仅是 `extractAppImage` 未传参时的遗留默认值,正式路径均传池级上限)。
 
 - **鉴权:401 携带机器可读原因,手机页按原因指引(固件 + 手机页,2026-11-02)**:`req_token_ok` 每个失败分支返回具体原因(`session token expired`/`phone key required`/`phone key mismatch`/`ctr replay`/`ts replay`/`ts skew`/`bad phone auth format`/`bad phone signature`),安装浮层按原因分流:过期 → 续期指引;凭证类失败 → "输屏上配对码重新绑定"。此前一切 401 都显示"会话已过期",把 key mismatch(设备绑着别的手机钥匙——测试残留、浏览器数据被清、换手机)错误引导成时间问题,而 token 明明是新鲜的。真机逐一验证三种最常见原因返回各自独立文案。
