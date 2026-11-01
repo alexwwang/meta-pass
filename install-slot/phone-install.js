@@ -1884,7 +1884,7 @@ export function boot(opts = {}) {
     setPanel(`<section class=mp-panel>
       <h4>${esc(p.name)}</h4>
       <dl class=mp-meta>
-        <dt>大小</dt><dd>${fmtMB(p.size)}</dd>
+        <dt>大小</dt><dd id=mp-det-size>${fmtMB(p.size)}(下载)</dd>
         <dt>修订</dt><dd>${p.revisionId ?? "—"}</dd>
         <dt>更新</dt><dd>${esc(updated)}</dd>
       </dl>
@@ -1892,6 +1892,20 @@ export function boot(opts = {}) {
       <p class=mp-status style="margin-top:8px">安装前会校验设备兼容性并选择槽位</p>
     </section>`);
     $("mp-install").onclick = () => install(p);
+    // 「大小」只是商店下载字节,不含 DATA 分区预留(4.9M 下载可藏 2.9M 预留),
+    // 用户按下载体积 vs 剩余空间判断必然误判。analyze 异步补齐真实占用:
+    // app 镜像 + DATA 分区预留之和(与 too-large 判定同一数字)。
+    preflightMeta(p.id, {}).then((meta) => {
+      const dd = $("mp-det-size");
+      if (!dd) return; // 详情页已关闭/切换
+      if (meta.ok && meta.analyze?.storage?.requiredSize) {
+        dd.textContent = `${fmtMB(meta.analyze.storage.requiredSize)}(安装共需,含 DATA 预留)`
+          + ` · 下载 ${fmtMB(p.size)}`;
+      } else if (meta.stage === "analyze" && meta.requiredSize) {
+        dd.textContent = `${fmtMB(meta.requiredSize)}(安装共需,含 DATA 预留)`
+          + ` · 下载 ${fmtMB(p.size)}`;
+      }
+    }).catch(() => { /* analyze 不可达时保留下载体积,不打扰 */ });
   }
 
   // 交互 v2:analyze(轻)→ 手机选槽 → 确认后才下载/校验/剥离(重)。

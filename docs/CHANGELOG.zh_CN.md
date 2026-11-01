@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **玩法详情:「大小」显示安装共需体积(app+DATA 预留)(手机页,2026-11-02)**:此前卡片与详情的「大小」只有商店下载字节,DATA 分区预留不可见(摩尔斯电码练习器:下载 4.9M 但实际共需 7.8M),用户拿下载体积对剩余空间必然误判。详情页现异步 analyze 后显示 `X(安装共需,含 DATA 预留) · 下载 Y`,与 too-large 判定同源同数字;analyze 不可达时回退下载体积。商店列表页不变(逐玩法 analyze 需下载数 MB 固件,只能由服务端在上架时预计算 requiredSize,属商店后端能力)。
+
 - **空间管理:采集数据上传区块仅 pass-radar 已安装时渲染(手机页,2026-11-02)**:此前该区块无条件平铺,任何用户都看到 pass-radar 批采集上传这块开发向功能(及其 RCB1 说明文字),空设备也不例外。现以"存在占用中的 APP 槽、其 play_id 拥有 `capture` DATA 记录"为安装判据(不硬编码 play_id/MNAM),不满足时整块不渲染;块内仍只列 `DIRTY` 记录。
 
 - **安装失败浮层:too-large 带容量数字(手机页,2026-11-02)**:analyze 拒绝时 `preflightMeta` 此前只透传 reason 码,`storage.requiredSize`(app+DATA 分区预留之和)被丢弃,用户只能看到裸 `too-large`。而卡片上的「大小」只是商店下载字节,不含 DATA 分区预留(下载包 4.9M 的玩法可藏 2.9M 空 DATA 预留,总需求 7.8M),"下载大小 vs 剩余空间"必然误判。现 too-large 浮层显示 `本玩法共需 X(app+DATA 分区预留),本设备池上限 Y`。根因澄清:池上限是 8MB flash 扣掉 meta-pass 本体/cardid/otadata 后的 6.45MB 物理边界,与单槽尺寸无关——dynslot 按镜像 carve 定槽,不存在 2MB 单槽上限(2MB 仅是 `extractAppImage` 未传参时的遗留默认值,正式路径均传池级上限)。
