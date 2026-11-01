@@ -1533,7 +1533,7 @@ export function boot(opts = {}) {
   function failSheet(title, msg) {
     setPanel(`<section class=mp-panel>
       <h4>${esc(title)}</h4>
-      <p class=mp-sub style="margin-bottom:14px">${esc(msg)}</p>
+      <p class=mp-sub style="margin-bottom:14px;white-space:pre-line">${esc(msg)}</p>
       <button id=mp-fail-x class=mp-btn style="width:100%">知道了</button>
     </section>`);
     $("mp-fail-x").onclick = clearPanel;
@@ -1932,7 +1932,7 @@ export function boot(opts = {}) {
     if (!geom?.listing) {
       const msg = "设备未提供动态回收池能力，无法安全创建新的 APP 槽位。请更新设备固件后重试。";
       log(`✗ ${msg}`, "err");
-      failSheet("无法安装", `${p.name}\\n${msg}`);
+      failSheet("无法安装", `${p.name}\n${msg}`);
       return;
     }
     const opts = geom.proposal
