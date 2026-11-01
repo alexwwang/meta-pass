@@ -1825,9 +1825,21 @@ export function boot(opts = {}) {
     }
     // dynslot §4.5:设备动态 carve 清单是分配事实源。新安装必须创建新的 APP carve；
     // slots() 不可达或旧固件不支持动态池时 fail closed，不能退回固定/既有槽覆盖。
+    // 2026-11 真机:token 30 分钟 TTL(v2.2.2 起)中途过期时设备全端点 401,
+    // 旧逻辑不区分状态码,把 401 误报成"设备未提供动态回收池能力",用户被
+    // 引向"更新固件"这条永远失败的路。按 status 分流:401 → 重新配对/重扫。
     let geom = null;
     try {
-      const lr = await bridge.slots();
+      let lr = await bridge.slots();
+      if (lr.status === 401) {
+        failSheet("会话已过期",
+          "安装会话超过 30 分钟已失效。\n在下方配对区输入设备屏幕上的 6 位配对码，或退出商店（长按 OK）后重新扫码。");
+        return;
+      }
+      if (lr.status === 409) {
+        // 设备刚恢复上一次中断的卸载(每次上电至多一次),刷新一次即恢复。
+        lr = await bridge.slots();
+      }
       if (lr.ok) {
         const listing = parseSlots(lr.text);
         if (listing) geom = geomFromListing(listing, meta.analyze?.extracted?.imageLen);
@@ -2116,6 +2128,7 @@ export function boot(opts = {}) {
       log(`✗ 安装失败 [${r.stage}]: ${r.reason}`, "err");
       let msg = `[${r.stage}] ${r.reason}`;
       if (r.stage === "confirm") msg += "\n设备在等待确认 —— 旧固件需在设备屏选槽按 OK;刷 v62+ 后手机上即可完成全部操作";
+      if (r.status === 401) msg += "\n会话 token 已过期(30 分钟)—— 重新扫码或输入设备屏幕上的配对码后再试";
       if (r.stage === "token") msg += "\n重新扫码或重新配对(token 每店一次性)";
       failSheet("安装失败", `${pre.offer.name}\n${msg}`);
     }

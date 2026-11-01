@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **手机安装页：会话 token 过期不再伪装成"设备缺动态回收池"（手机页,2026-11-01）**：v2.2.2/v2.2.3 固件对每个 API 调用执行 30 分钟会话 token TTL；中途过期后在店内没有任何续期通道（配对兑换返回的还是同一个死 token，只有退出商店重进才签发新 token）。旧 `install()` 不区分状态码，把 `bridge.slots()` 的一切失败都报成"设备未提供动态回收池能力，请更新固件"，把用户引向不可能成功的修复路径（真机报告：进店超 30 分钟后哪个应用都装不了）。现按 HTTP 状态分流：401 → 「会话已过期，输入设备屏幕上的配对码或重新扫码」；409（上电一次性卸载恢复）→ 自动重试一次；其余才保留原 fail-closed 文案。安装失败浮层在 `status === 401` 时也追加重新配对提示。
+
 - **USB 安装页：解包上限改用池总量（安装页,2026-10-23）**：`install-slot.html` 两处 `extractAppImage` 调用点（本地选文件、社区玩法下载）此前都未传尺寸参数，回落到硬编码 2MB 槽默认值（`0x1FF000` = 2093056）——dynslot 时代它不代表任何真实槽位上限，>2MB 的应用在剩余空间充足时于解析阶段被误拒（真机报告：剩余 4MB 装 3019152B 应用被拒）。两处现统一传 `UNPACK_MAX = POOL_TOTAL − 4KB`（与 `store-analyze.js` 同一约定）；逐槽 fit 的权威判定仍在 `planInstall` 与安装前 `slotLimit` 校验，语义不变。
 
 - **校正采集数据上行（云端服务 + 手机页,2026-10-22）**：pass-radar 批采集字节可从设备直达采集服务端（方案 A：手机代理拉取）。Pages Worker（metapass.chuanxilu.net）新增 `POST /api/capture/ingest`：校验 RCB1 批次 magic + 批次号与 query 一致、按 (IP, device) 经 RATE_KV 限速、应答 CORS 预检，把原始字节与 `.meta.json` 侧车（device / device_kind / batch / expected / committed / 字节数 / SHA-256 / 入桶时间）写入新建的 `meta-pass-capture` R2 桶。手机模块「空间管理」面板新增「采集数据上传」区：列出 `capture` DATA 记录，按 4096B 分块从设备拉取（契约同 `data-byte-archive.js`），SHA-256 校验后解析头部批次号上传。
