@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **修复商店决策页竞态:confirmed 后屏停过期 offer 页(固件,2026-11-02,严重)**:`PAGE_STORE_INFO`/`PAGE_STORE_SLOT` 的 tick 此前无任何迁移——prepare 在 `offer_ready=true → confirmed=true` 之间要跑 DATA 迁移 + carve 提交 + 分区表重写 + otadata 擦除(数百 ms),UI 轮询(250ms)极可能在这个窗口内把决策页顶到屏幕上;confirmed 落定后页面无出口,用户看到的 CONFIRM/BACK 是已翻篇 offer 的过期决策屏,按键作用在错误会话状态上(真机事故:安装口袋雷达时设备停在 "Install: xxx CONFIRM/BACK",手机已在传固件,最终所有槽位消失)。现两页均补竞态出口:confirmed → 上传进度页;offer 消失(失败/取消/被覆盖)→ 扫码页。决定权收拢手机(交互 v2)后,设备决策页只剩旧固件兼容意义,本不该滞留。
+
 - **修复无扩展头 ESP 镜像被解析成截断垃圾的安装事故(解包器,2026-11-02,严重)**:`espImageLength` 对"24B 头后是否带 16B 扩展头"的探测此前只看哪条 segment 链能走通——错误布局常能"走通"并给出荒谬小长度(真机事故:口袋雷达固件被解出 **176B**,真值 2,321,984B)。截断镜像 SHA-256 与页侧一致(只含被截的前缀),设备端一路放行,直到 `esp_ota_end` 权威校验才炸 `finalize verify failed`;每次失败回滚 carve,用户重试 4 次后设备上所有槽位消失。现改为权威判别:`hash_appended=1`(现代 IDF 默认)时对两种布局候选各算 SHA-256 与镜像尾部 32B 比对,选中匹配布局,无一匹配即拒绝;无 hash 旧镜像保持原探测顺序。vendor/p256.js 增加 `sha256` 导出(浏览器 http origin 无 crypto.subtle,与 P-256 同走 noble)。真实事故镜像 + esptool image_info 三方对拍通过。
 
 - **玩法详情:「大小」显示安装共需体积(app+DATA 预留)(手机页,2026-11-02)**:此前卡片与详情的「大小」只有商店下载字节,DATA 分区预留不可见(摩尔斯电码练习器:下载 4.9M 但实际共需 7.8M),用户拿下载体积对剩余空间必然误判。详情页现异步 analyze 后显示 `X(安装共需,含 DATA 预留) · 下载 Y`,与 too-large 判定同源同数字;analyze 不可达时回退下载体积。商店列表页不变(逐玩法 analyze 需下载数 MB 固件,只能由服务端在上架时预计算 requiredSize,属商店后端能力)。

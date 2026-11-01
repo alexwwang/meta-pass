@@ -987,11 +987,28 @@ static void store_tick(lv_timer_t *t)
     }
 
     case PAGE_STORE_INFO:
-        // 纯决策页:offer 在进入时已填充,无轮询迁移。
+        // 2026-11-02 真机事故:prepare 在 offer_ready=true → confirmed=true
+        // 之间要跑 DATA 迁移 + carve 提交 + 表重写 + otadata 擦除,窗口数百
+        // ms;轮询可能在此窗口内把本页顶到屏幕上,而本页此前"无轮询迁移"——
+        // confirmed 落定后屏停在过期决策页,用户按键(CONFIRM/BACK)全部作用
+        // 在已翻篇的 offer 上(真机:用户看到"Install: xxx CONFIRM/BACK"时
+        // 手机已在传固件)。confirmed 落定必须前进;offer 消失(失败/取消/
+        // 被新 prepare 覆盖)必须回扫码页。
+        if (ist.offer_ready && ist.confirmed) {
+            store_goto(PAGE_STORE_DL);
+        } else if (!ist.offer_ready) {
+            store_goto(PAGE_STORE_QR);
+        }
         break;
 
     case PAGE_STORE_SLOT:
-        // 同上:选槽是纯决策;确认动作在 on_key。
+        // 同上竞态出口:决定已全部收拢到手机(交互 v2),设备确认页只在
+        // offer 未定时的窗口内合法;confirmed/offer 消失都不该滞留本页。
+        if (ist.offer_ready && ist.confirmed) {
+            store_goto(PAGE_STORE_DL);
+        } else if (!ist.offer_ready) {
+            store_goto(PAGE_STORE_QR);
+        }
         break;
 
     case PAGE_STORE_DL: {
