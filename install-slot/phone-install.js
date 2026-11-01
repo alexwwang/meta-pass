@@ -1712,7 +1712,13 @@ export function boot(opts = {}) {
     // (真机投诉:空间管理把空 capture 预留和真实批次无差别列出)。
     const captureRecords = (info.data || []).filter(
       (d) => d.label === "capture" && d.play_id > 0 && d.state === 1 /* DIRTY */);
-    const captureSection = `
+    // 整块区块仅在 pass-radar 已安装时出现:以"存在占用中的 APP 槽,其 play_id
+    // 拥有 capture 数据记录"为判据(不硬编码 play_id/MNAM——MNAM 可缺省,
+    // play_id 由商店分配)。未安装 pass-radar 的用户不该看到这块开发向功能。
+    const captureInstalled = (info.slots || []).some((s) =>
+      s.state !== "empty" && s.play_id > 0 &&
+      (info.data || []).some((d) => d.label === "capture" && d.play_id === s.play_id));
+    const captureSection = captureInstalled ? `
       <h4 style="margin-top:14px">采集数据上传</h4>
       <p class=mp-sub>把 pass-radar 批采集数据区(RCB1 原始字节)上传到采集服务端,用于离线建模与核对。批次号与设备身份(批次头 device_hash,不可逆)自动取自数据区,无需任何输入。</p>
       ${captureRecords.length ? captureRecords.map((d, i) => `
@@ -1720,7 +1726,7 @@ export function boot(opts = {}) {
           <span style="flex:1;font-size:13px;overflow-wrap:anywhere">capture · ${fmtMB(d.size)} · play_id ${d.play_id}</span>
           <button class="mp-btn ghost" data-cap="${i}" style="padding:6px 12px;font-size:13px">拉取并上传</button>
         </div>`).join("") : `<p class=mp-sub>设备上没有可用的 capture 数据区(需安装 pass-radar 并完成至少一次批采集)。</p>`}
-      <p id=mp-cap-status class=mp-sub>${esc(captureMessage)}</p>`;
+      <p id=mp-cap-status class=mp-sub>${esc(captureMessage)}</p>` : "";
     const rows = info.slots.length
       ? info.slots.map((s) => `
         <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
