@@ -31,7 +31,7 @@ import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
 import { sanitizeDisplayName } from "./name-blob.js";
-import { POOL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
+import { POOL, POOL_TOTAL, META_SLOT_COUNT, geomFromListing, carveNeed, dataSizeBounds, normalizeDataSize, dataPartitionMinimum, DATA_SIZE_STEP, DATA_SIZE_GRANULE } from "./dynslot-pool.js";
 import { captureStorageSnapshot, buildStorageSnapshotZip, readStorageSnapshotZip, buildStorageSnapshotRestorePlan, assertSnapshotVersionCompatible } from "./storage-snapshot.js";
 import { restoreStorageSnapshotArchive } from "./storage-snapshot-restore.js";
 
@@ -634,7 +634,8 @@ export async function preflightMeta(id, hooks = {}) {
   ]);
   const a = aRes;
   if (!a || a.supported !== true) {
-    return { ok: false, stage: "analyze", reason: a?.reason ?? "unsupported", detail: a?.detail ?? null };
+    return { ok: false, stage: "analyze", reason: a?.reason ?? "unsupported", detail: a?.detail ?? null,
+      requiredSize: a?.storage?.requiredSize ?? null };
   }
   if (!play) return { ok: false, stage: "market", reason: "play metadata missing firmware fields" };
   return { ok: true, analyze: a, play };
@@ -1891,9 +1892,16 @@ export function boot(opts = {}) {
     stage("检查兼容性");
     const meta = await preflightMeta(p.id, { stage });
     if (!meta.ok) {
-      const msg = meta.stage === "analyze"
+      let msg = meta.stage === "analyze"
         ? `该玩法不支持本设备: ${meta.reason}`
         : `预检失败: ${meta.reason}`;
+      // too-large 必须带数字:卡片上的"大小"只是下载体积,不含 DATA 分区预留,
+      // 用户按 下载大小 vs 剩余空间 判断会必然误判(真机:4.9M 包内藏 2.9M
+      // anim 预留,需求 7.8M 而池总量只有 6.45M)。
+      if (meta.stage === "analyze" && meta.reason === "too-large" && meta.requiredSize) {
+        msg += `\n本玩法共需 ${fmtMB(meta.requiredSize)}（app+DATA 分区预留）`
+          + `,本设备池上限 ${fmtMB(POOL_TOTAL - 4096)}`;
+      }
       log(`✗ ${msg}`, "err");
       failSheet("无法安装", `${p.name}\n${msg}`);
       return;

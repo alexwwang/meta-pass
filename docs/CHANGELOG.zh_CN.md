@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **安装失败浮层:too-large 带容量数字(手机页,2026-11-02)**:analyze 拒绝时 `preflightMeta` 此前只透传 reason 码,`storage.requiredSize`(app+DATA 分区预留之和)被丢弃,用户只能看到裸 `too-large`。而卡片上的「大小」只是商店下载字节,不含 DATA 分区预留(下载包 4.9M 的玩法可藏 2.9M 空 DATA 预留,总需求 7.8M),"下载大小 vs 剩余空间"必然误判。现 too-large 浮层显示 `本玩法共需 X(app+DATA 分区预留),本设备池上限 Y`。根因澄清:池上限是 8MB flash 扣掉 meta-pass 本体/cardid/otadata 后的 6.45MB 物理边界,与单槽尺寸无关——dynslot 按镜像 carve 定槽,不存在 2MB 单槽上限(2MB 仅是 `extractAppImage` 未传参时的遗留默认值,正式路径均传池级上限)。
+
 - **鉴权:401 携带机器可读原因,手机页按原因指引(固件 + 手机页,2026-11-02)**:`req_token_ok` 每个失败分支返回具体原因(`session token expired`/`phone key required`/`phone key mismatch`/`ctr replay`/`ts replay`/`ts skew`/`bad phone auth format`/`bad phone signature`),安装浮层按原因分流:过期 → 续期指引;凭证类失败 → "输屏上配对码重新绑定"。此前一切 401 都显示"会话已过期",把 key mismatch(设备绑着别的手机钥匙——测试残留、浏览器数据被清、换手机)错误引导成时间问题,而 token 明明是新鲜的。真机逐一验证三种最常见原因返回各自独立文案。
 
 - **开机:carve 表重写即刻作废过期的 bootloader 引导请求(固件,2026-11-01)**:启动器引导子固件会向 otadata 写入"引导请求"(state NEW),冷启动 hook 刻意保留它,seq 按当时的分区表映射槽位。若之后 carve 表被重写(安装/删除触发再物化),同一 seq 会重映射到已漂移/无关的槽位——真机案例:装 2 个应用、删 1 个、退出商店 → bootloader 按过期映射引导剩余镜像,反复复位循环,只能靠 esptool 擦 otadata 救回。`meta_carve_flash_commit(materialize=true)` 现在在写表后立即擦除 otadata 分区,表变更不再继承过期引导请求(合法子固件引导在物化之后才写 otadata,不受影响)。修复后真机冒烟 S1–S6 全绿。
