@@ -953,6 +953,18 @@ static void store_tick(lv_timer_t *t)
         // "time out 导致手机页面失效")。常驻期间由用户按键退出收尾;
         // 安装中的停滞判定仍在(upload_idle_ms)不受影响。
         store_touch();
+        // 2026-11:会话中途 token 过期会补发新配对码、配对兑换后轮转发新
+        // token,而 QR 画布与码面板是构建时静态快照 —— 靠 pair epoch 跳变
+        // 重建本页,屏上码/QR 才跟得上。epoch 不变的常态重建为零开销。
+        {
+            static uint32_t s_qr_page_epoch;
+            const uint32_t epoch = meta_install_pair_epoch();
+            if (epoch != s_qr_page_epoch) {
+                s_qr_page_epoch = epoch;
+                store_goto(PAGE_STORE_QR);
+                break;
+            }
+        }
         // 手机 prepare 到货:取一次快照进 P2。confirmed 时不迁(防御:
         // 正常路径 confirmed 只发生在 P3 之后)。
         if (ist.offer_ready && !ist.confirmed && !s_offer_valid

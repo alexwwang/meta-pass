@@ -22,9 +22,11 @@
 //
 // crypto.subtle 在 http:// 非 localhost 源(设备 IP 直开)不可用 —— §4.2 要求
 // 纯 JS SHA-256:内置实现(与 FIPS 180-4 / 固件 mbedtls 同算法),注入实现
-// (setSha256,测试用 node:crypto)优先。
+// (setSha256,测试用 node:crypto)优先。同理,手机硬件凭证签名(2026-11)
+// 也走 vendored @noble/curves P-256(./vendor/p256.js),不能用 WebCrypto。
 
 import { extractAppImage, isFullImage, extractDataImages } from "./extract-app-image.js";
+import { p256 } from "./vendor/p256.js";
 import { SLOT_GEOMETRY } from "./store-analyze.js";
 import { applyDataSizeProfile } from "./data-size-profile.js";
 import { buildDataSizeOptions } from "./data-size-options.js";
@@ -159,9 +161,74 @@ function storagePartitionHeaders(partition) {
     "X-Meta-Partition-Size": String(partition.size),
   };
 }
+// ---- 手机硬件凭证(2026-11 用户决策:token 滑动续期只认同一部手机)----
+// P-256 ECDSA:vendored @noble/curves(install-slot/vendor/p256.js,由
+// vendor/p256.src.mjs `bun build` 生成)。crypto.subtle 在 http://设备IP
+// 非安全上下文不可用(模块头 §4.2),无法走系统密钥库;私钥 32B 存
+// localStorage(同源隔离,仅本机该 origin 的 JS 可读),公钥 65B 未压缩点。
+// 每请求带四头:X-Meta-Key(公钥 hex)/X-Meta-Ctr(递增)/X-Meta-Ts(毫秒)/
+// X-Meta-Sig(ECDSA-SHA256("token\nMETHOD path\nctr ts") r||s hex)。
+// 设备绑定 (token, 公钥哈希) 后才放行滑动续期;换手机/重配对时设备轮转
+// token + 原子重绑定,旧 token 与旧公钥当场失效;ctr/ts 单调挡重放。
+const PHONE_PRIV_LS = "metapass-phone-priv";
+const PHONE_PUB_LS  = "metapass-phone-pub";
+const PHONE_CTR_LS  = "metapass-phone-ctr";
+
+function hexOf(bytes) {
+  let s = "";
+  for (const b of bytes) s += b.toString(16).padStart(2, "0");
+  return s;
+}
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+let s_phone_key_promise = null;
+function phoneKey() {
+  if (s_phone_key_promise) return s_phone_key_promise;
+  s_phone_key_promise = (async () => {
+    let privHex = "";
+    try { privHex = localStorage.getItem(PHONE_PRIV_LS) || ""; } catch { }
+    if (!/^[0-9a-f]{64}$/.test(privHex)) {
+      privHex = hexOf(p256.utils.randomSecretKey());
+      try { localStorage.setItem(PHONE_PRIV_LS, privHex); }
+      catch { /* 隐私模式:内存钥,关页失效,走重新配对,可接受退化 */ }
+    }
+    const priv = hexToBytes(privHex);
+    const pubHex = hexOf(p256.getPublicKey(priv, false));
+    try { localStorage.setItem(PHONE_PUB_LS, pubHex); } catch { }
+    return { priv, pubHex };
+  })();
+  return s_phone_key_promise;
+}
+
+async function phoneAuthHeaders(token, method, path) {
+  const id = await phoneKey();
+  const ctr = (parseInt(localStorage.getItem(PHONE_CTR_LS) || "0", 10) || 0) + 1;
+  try { localStorage.setItem(PHONE_CTR_LS, String(ctr)); } catch { }
+  // 时间戳(2026-11):设备侧 last_ts 单调校验 + 校时后绝对窗口——"同一部
+  // 手机、不同时间"的重放双保险,与 ctr 独立。
+  const ts = Date.now();
+  const msg = `${token}\n${method} ${path}\n${ctr} ${ts}`;
+  // 注意:noble 内部做单次 SHA-256(z=SHA256(msg))——与固件 mbedtls
+  // ecdsa_verify(sha256_once(同一字面量)) 逐字节一致,勿预哈希(会变双哈希)。
+  const sig = p256.sign(new TextEncoder().encode(msg), id.priv);   // 64B raw r||s,RFC6979 确定性
+  return { "X-Meta-Key": id.pubHex, "X-Meta-Ctr": String(ctr), "X-Meta-Ts": String(ts), "X-Meta-Sig": hexOf(sig) };
+}
+
 export function createBridge(deviceOrigin, token) {
   const base = (deviceOrigin || "").replace(/\/$/, "");
-  async function call(path, opt = {}) {
+  // 设备要求 ctr 单调递增;并行请求乱序到达会被拒。bridge 内串行化
+  // (上传本就顺序;mgmt 的 status+slots 并行降级为串行,无感)。
+  let chain = Promise.resolve();
+  const enqueue = (fn) => {
+    const out = chain.then(fn, fn);
+    chain = out.then(() => {}, () => {});
+    return out;
+  };
+  async function callRaw(path, opt = {}) {
     const headers = { ...(opt.headers || {}) };
     if (token) headers["X-Meta-Session"] = token;
     if (opt.json !== undefined) {
@@ -179,6 +246,9 @@ export function createBridge(deviceOrigin, token) {
     let resp;
     for (let attempt = 0; ; attempt++) {
       try {
+        if (token) {
+          Object.assign(headers, await phoneAuthHeaders(token, rest.method || "GET", path));
+        }
         resp = await fetch(base + path, { ...rest, headers, signal: ctl });
         break;
       } catch (e) {
@@ -195,9 +265,12 @@ export function createBridge(deviceOrigin, token) {
   // Binary read path: do not pass DATA bytes through Response.text(), which can
   // corrupt arbitrary byte values. The device endpoint enforces the same 4 KiB
   // bound and resolves (play_id, label) to a validated carve reservation.
-  async function callBytes(path, opt = {}) {
+  async function callBytesRaw(path, opt = {}) {
     const headers = { ...(opt.headers || {}) };
     if (token) headers["X-Meta-Session"] = token;
+    if (token) {
+      Object.assign(headers, await phoneAuthHeaders(token, opt.method || "GET", path));
+    }
     let resp;
     try {
       resp = await fetch(base + path, {
@@ -218,6 +291,8 @@ export function createBridge(deviceOrigin, token) {
       return { ok: false, status: resp.status, text: `binary response read failed: ${e && e.message ? e.message : e}`, bytes: null };
     }
   }
+  const call = (path, opt) => enqueue(() => callRaw(path, opt));
+  const callBytes = (path, opt) => enqueue(() => callBytesRaw(path, opt));
   return {
     token: () => token || "",
     status: () => call("/api/install/status"),

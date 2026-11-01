@@ -42,6 +42,10 @@ import time
 import urllib.request
 import urllib.error
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IDF = os.environ.get("IDF_PATH", os.path.expanduser("~/esp/esp-idf-v5.5.3"))
 # Node 路径由 NODE_BIN 注入(全仓约定);缺失时探测常见安装位置,失败即报错。
@@ -134,18 +138,43 @@ class Monitor:
 
 
 class Api:
+    """LAN install API client。
+
+    2026-11 固件手机硬件绑定:每个带 token 的请求须携带 X-Meta-Key/Ctr/Sig
+    (P-256 ECDSA 对 "token\\nMETHOD path\\nctr" 签名,raw r||s hex),ctr 单调。
+    配对兑换提交本机公钥,设备轮转换发 token 并原子绑定 —— 与手机页同一协议。
+    """
+
     def __init__(self, ip, token=None):
         self.base = f"http://{ip}"
         self.token = token
+        self._priv = ec.generate_private_key(ec.SECP256R1())
+        self._pub_hex = self._priv.public_key().public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint).hex()
+        self._ctr = 0
 
-    def _hdr(self, extra=None):
+    def _hdr(self, extra=None, method="GET", path="/"):
         h = {"Content-Type": "application/json"}
         if self.token:
             h["X-Meta-Session"] = self.token
+            self._ctr += 1
+            ts = int(time.time() * 1000)
+            msg = f"{self.token}\n{method} {path}\n{self._ctr} {ts}".encode()
+            der = self._priv.sign(msg, ec.ECDSA(hashes.SHA256()))
+            r, s = decode_dss_signature(der)
+            sig = r.to_bytes(32, "big") + s.to_bytes(32, "big")
+            h["X-Meta-Key"] = self._pub_hex
+            h["X-Meta-Ctr"] = str(self._ctr)
+            h["X-Meta-Ts"] = str(ts)
+            h["X-Meta-Sig"] = sig.hex()
         return h | (extra or {})
 
+    def pub_key_hex(self):
+        return self._pub_hex
+
     def get_response(self, path, extra=None):
-        req = urllib.request.Request(self.base + path, headers=self._hdr(extra))
+        req = urllib.request.Request(self.base + path, headers=self._hdr(extra, "GET", path))
         try:
             with urllib.request.urlopen(req, timeout=10) as r:
                 return r.status, r.read(), {k.lower(): v for k, v in r.headers.items()}
@@ -164,7 +193,7 @@ class Api:
 
     def post(self, path, body=b"", ctype="application/json"):
         req = urllib.request.Request(self.base + path, data=body,
-                                     headers=self._hdr({"Content-Type": ctype}))
+                                     headers=self._hdr({"Content-Type": ctype}, "POST", path))
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read()
@@ -175,7 +204,8 @@ class Api:
         req = urllib.request.Request(self.base + "/api/install/chunk", data=data,
                                      headers=self._hdr({
                                          "Content-Type": "application/octet-stream",
-                                         "X-Meta-Offset": str(offset)}))
+                                         "X-Meta-Offset": str(offset)},
+                                         "POST", "/api/install/chunk"))
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read()
@@ -187,7 +217,8 @@ class Api:
                                      headers=self._hdr({
                                          "Content-Type": "application/octet-stream",
                                          "X-Meta-Data-Index": str(index),
-                                         "X-Meta-Offset": str(offset)}))
+                                         "X-Meta-Offset": str(offset)},
+                                         "POST", "/api/install/data"))
         try:
             with urllib.request.urlopen(req, timeout=30) as r:
                 return r.status, r.read()
@@ -457,7 +488,7 @@ def main():
             die("600s 内未见 pair ready —— 需要人工进一次商店页(见文件头说明)", mon)
         pair_code, token0 = m.group(1), m.group(2)
         ok(f"配对码 {pair_code}(串口捕获)")
-        st, body = api.post("/api/install/pair", json.dumps({"code": pair_code}).encode())
+        st, body = api.post("/api/install/pair", json.dumps({"code": pair_code, "key": api.pub_key_hex()}).encode())
         if st != 200:
             die(f"pair {st} {body[:200]!r}", mon)
         token1 = json.loads(body)["token"]
@@ -641,7 +672,7 @@ def main():
         if not m:
             die("续连后 token 失效且未见新 pair ready", mon)
         api.token = None
-        st, body = api.post("/api/install/pair", json.dumps({"code": m.group(1)}).encode())
+        st, body = api.post("/api/install/pair", json.dumps({"code": m.group(1), "key": api.pub_key_hex()}).encode())
         api.token = json.loads(body)["token"]
         ok("新 token 获取(免重扫 QR,串口直取)")
     st, body = api.post("/api/install/prepare", json.dumps(manifest).encode())

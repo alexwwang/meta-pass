@@ -31,6 +31,7 @@
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_timer.h>
+#include <sys/time.h>
 #include <esp_http_server.h>
 #include <esp_ota_ops.h>
 #include <esp_app_desc.h>
@@ -39,6 +40,9 @@
 #include <esp_flash.h>
 #include <esp_netif.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/ecdsa.h>
+#include <mbedtls/ecp.h>
+#include <mbedtls/bignum.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -74,16 +78,32 @@ typedef struct {
     bool     pair_used;          // 已被成功兑换(一次性)
     int64_t  pair_created_ms;    // 生成时刻(esp_timer 单调毫秒)
     int      pair_tries;         // 已累计错误次数
-    // 2026-10-16 双槽(用户决策:签发不顶替、消费才顶替,30 分钟 TTL):
-    // current 被消费(首个成功鉴权/兑换)时吊销 prev;prev 也可因自身 TTL
-    // 到期或正常离店清场而失效。prev 不持久化 —— 跨重启续连只靠 current
-    // (重启续连是本职场景;TTL 边界场景旧 token 本就临近死亡)。
-    int64_t  token_issued_ms;    // current 签发时刻
-    bool     token_consumed;     // current 已被消费(顶替触发,只触发一次)
-    bool     prev_valid;
-    char     prev_hex[META_INSTALL_TOKEN_HEX_LEN + 1];
-    int64_t  prev_issued_ms;
+    // 2026-11 滑动 TTL(用户决策):每次成功鉴权把 deadline 顺延整个 TTL,
+    // 手机持续在用手机 token 永续、受控重启不掉;旧 token 只在新手机配对
+    // 兑换(轮转)或扫码拿到新 token(签发)时失效。2026-10-16 双槽 prev
+    // 宽限("签发不顶替,消费才顶替")随新口径移除。设备无 RTC:跨重启
+    // 由 token_restore 给满新窗口(只宽不严,见 restore 注释)。
+    int64_t  token_deadline_ms;  // current 有效截止(esp_timer 单调毫秒)
+    // 手机硬件绑定(2026-11 用户决策):滑动续期只对"同一部手机 + 同一
+    // token"放行,防近场其他设备拿 QR token 蹭续期。key_hash = SHA-256
+    // (65B P-256 未压缩公钥);last_ctr/last_ts = 已接受的最高请求计数/
+    // 时间戳(重放防护,双单调 + 墙钟窗口,配对兑换/首用绑定时归零)。
+    // 请求须带 X-Meta-Key/Ctr/Ts/Sig 并通过 ECDSA 验签,见 req_token_ok。
+    bool      key_bound;
+    uint8_t   key_hash[32];
+    uint64_t  last_ctr;
+    uint64_t  last_ts;           // 手机端 Date.now() 毫秒(单调 + 墙钟窗口)
 } session_token_t;
+
+// 手机凭证尺寸(hex 头长度 = 字节数×2;公钥 65B、签名 raw r||s 64B)
+#define META_PHONE_PUB_LEN   65u
+#define META_PHONE_PUB_HEX   (META_PHONE_PUB_LEN * 2u)
+#define META_PHONE_SIG_LEN   64u
+#define META_PHONE_SIG_HEX   (META_PHONE_SIG_LEN * 2u)
+// 时间戳绝对窗口(仅设备墙钟可信时启用):容忍手机快/慢的量级
+#define META_PHONE_TS_FUTURE_MS  (5ull  * 60ull * 1000ull)
+#define META_PHONE_TS_PAST_MS    (15ull * 60ull * 1000ull)
+#define META_PHONE_TS_EPOCH_MIN  1735689600000ll   // 2025-01-01:低于此值视为未校时垃圾
 
 typedef struct {
     uint32_t old_offset;
@@ -142,6 +162,7 @@ static meta_slot_info_t *s_slots;           // 启动器槽位注册表(由 init
 static httpd_handle_t    s_httpd;            // 本地 install httpd(端口 80,STA 模式)
 static bool              s_init;             // init 完成
 static session_token_t   s_token;
+static uint32_t          s_pair_epoch;       // 配对码签发代际(store_tick 重建 QR 页用)
 static install_session_t s_session;
 // 会话互斥锁(审计 B4):httpd 任务(chunk/finalize/session/prepare)与 UI 任务
 // (confirm/reject/cancel/teardown)跨任务碰 s_session;esp_ota_abort/sha256_free
@@ -615,28 +636,51 @@ static void lan_url_into(char *out, size_t out_sz, const char *token_hex)
              b[0], b[1], b[2], b[3], token_hex);
 }
 
-// token TTL(2026-10-16 用户决策:30 分钟;见头文件 META_INSTALL_TOKEN_TTL_MS)。
-static bool token_ttl_expired(int64_t issued_ms)
+// token 滑动 TTL(2026-11 用户决策,替代 2026-10-16 固定 30 分钟 + 双槽
+// prev;见头文件 META_INSTALL_TOKEN_TTL_MS)。deadline 为单调毫秒绝对截止。
+static int64_t token_now_ms(void) { return esp_timer_get_time() / 1000; }
+static bool token_deadline_passed(int64_t deadline_ms)
 {
-    return esp_timer_get_time() / 1000 - issued_ms > (int64_t)META_INSTALL_TOKEN_TTL_MS;
+    return token_now_ms() >= deadline_ms;
 }
 
-// current 被消费(首个成功鉴权请求 / 配对码兑换):此刻才吊销历史 token。
-// 签发本身不顶替 —— 已持有旧 token 的手机在新 token 签发后保持不断连。
-static void token_mark_consumed(void)
+// 滑动续期:调用前提 = token 匹配未过期 + 手机绑定三关已过(见
+// req_token_ok)。只改 RAM —— 设备无 RTC,跨重启窗口由 token_restore
+// 重新给满;persist 只跟签发走,避免每次 API 调用都写 NVS(磨损)。
+static void token_sliding_extend(void)
 {
-    if (!s_token.token_consumed) {
-        s_token.token_consumed = true;
-        if (s_token.prev_valid) {
-            ESP_LOGI(TAG, "new token consumed; revoking previous token");
-        }
+    s_token.token_deadline_ms = token_now_ms() + META_INSTALL_TOKEN_TTL_MS;
+}
+
+// 设备墙钟(仅 SNTP 校时后可信):返回毫秒,"sane" 为 false 表示未校时,
+// 此时手机 ts 只做单调校验,不做绝对窗口校验。
+static int64_t wall_now_ms(bool *sane)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    const int64_t ms = (int64_t)tv.tv_sec * 1000ll + tv.tv_usec / 1000;
+    const bool ok = ms >= META_PHONE_TS_EPOCH_MIN;
+    if (sane) *sane = ok;
+    return ms;
+}
+
+// http_parser 方法号 → 签名用方法字符串(与手机侧字面量逐字节一致)。
+static const char *method_str_of(int method)
+{
+    switch (method) {
+    case HTTP_GET:    return "GET";
+    case HTTP_POST:   return "POST";
+    case HTTP_DELETE: return "DELETE";
+    case HTTP_PUT:    return "PUT";
+    default:          return NULL;   // 本 API 只有 GET/POST,其余直接拒
     }
-    s_token.prev_valid = false;
 }
 
-// 配对码签发(与当前 token 绑定;兑换结果还是同一个 token)。token_start
-// 在配对态(无在途 offer/上传)一律调用 —— 恢复出来的旧会话也补发,屏上
-// pair code 永不为 "-" (2026-10-16 真机;QR 已公开 token,补发不扩大暴露面)。
+// 配对码签发(绑定当前 token;兑换成功由 h_install_pair 轮转换发新 token)。
+// token_start 在配对态(无在途 offer/上传)一律调用 —— 恢复出来的旧会话
+// 也补发,屏上 pair code 永不为 "-" (2026-10-16 真机;QR 已公开 token,
+// 补发不扩大暴露面)。epoch 供 store_tick 检测并重建 QR 页(码面板是
+// 构建时静态快照,2026-11 过期续期场景必须靠它刷新屏上码)。
 static void pair_code_issue(void)
 {
     snprintf(s_token.pair_code, sizeof(s_token.pair_code), "%06u",
@@ -645,7 +689,8 @@ static void pair_code_issue(void)
     s_token.pair_valid = true;
     s_token.pair_used = false;
     s_token.pair_tries = 0;
-    s_token.pair_created_ms = esp_timer_get_time() / 1000;
+    s_token.pair_created_ms = token_now_ms();
+    s_pair_epoch++;
     // 打 UART:真机自动化冒烟(tools/realdevice/smoke.py)从串口日志取
     // 配对码换 token,免读屏。token 本就印在设备 QR 上给近场任何人看,
     // 串口(持有者物理接触)不扩大暴露面。
@@ -657,21 +702,20 @@ static esp_err_t token_generate(void)
 {
     // 128 bit 随机(esp_random 每次 32 bit,拼 4 次;文档 §8 下限)。
     // token 只以 hex 形态驻留(比较也走 hex),不单独存字节副本。
-    // 旧 current 降一级为 prev:保持有效直到被消费顶替 / 自身 TTL 到期 /
-    // 正常离店。签发不顶替(2026-10-16 用户决策)。
-    if (s_token.token_valid) {
-        memcpy(s_token.prev_hex, s_token.token_hex, sizeof(s_token.prev_hex));
-        s_token.prev_issued_ms = s_token.token_issued_ms;
-        s_token.prev_valid = true;
-    }
+    // 签发即顶替旧 token(2026-11 用户决策:扫码拿到新 token,旧的立即
+    // 失效;滑动 TTL 下旧 token 本就只能活到 30 分钟无活动)。
     uint8_t raw[META_INSTALL_TOKEN_BYTES];
     for (int i = 0; i < META_INSTALL_TOKEN_BYTES; i++) {
         raw[i] = (uint8_t)esp_random();
     }
     token_to_hex(raw, s_token.token_hex);
     s_token.token_valid = true;
-    s_token.token_issued_ms = esp_timer_get_time() / 1000;
-    s_token.token_consumed = false;
+    s_token.token_deadline_ms = token_now_ms() + META_INSTALL_TOKEN_TTL_MS;
+    // 签发 = 换手机/新会话起点:手机绑定当场清零(旧公钥随旧 token 死)。
+    s_token.key_bound = false;
+    memset(s_token.key_hash, 0, sizeof(s_token.key_hash));
+    s_token.last_ctr = 0;
+    s_token.last_ts = 0;
     pair_code_issue();
     token_persist();   // 受控重启后 token_start 原样恢复,手机连接不断
     return ESP_OK;
@@ -692,6 +736,11 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
     }
 }
 
+uint32_t meta_install_pair_epoch(void)
+{
+    return s_pair_epoch;
+}
+
 // ---- 中断续连持久标志(用户决策①,NVS "metapass"/"inst_active") ----
 // token_start 置位、token_stop 清除;复位后 app_main 读它决定是否自动恢复
 // STA + install 服务,手机凭持久化 token 重发 prepare 免重扫 QR。
@@ -707,6 +756,9 @@ void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out
 static const char k_nvs_ns_install[] = "metapass";
 static const char k_nvs_key_active[] = "inst_active";
 static const char k_nvs_key_token[]  = "inst_tok";
+static const char k_nvs_key_pbind[]  = "inst_pbind";  // 32B 手机公钥哈希
+static const char k_nvs_key_pctr[]   = "inst_pctr";   // 8B 已接受最高 ctr
+static const char k_nvs_key_pts[]    = "inst_pts";    // 8B 已接受最高 ts
 
 // 受控重启保留会话的 RAM 旗标:由 meta_install_arm_session_preserve() 在
 // page_teardown 之前置位;token_stop 见到它即跳过 token/标志擦除
@@ -754,6 +806,32 @@ static void token_persist(void)
     nvs_handle_t h;
     if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_str(h, k_nvs_key_token, s_token.token_hex);
+    // token 轮转 ⇒ 手机绑定随之清零:连旧绑定一起抹掉,防恢复出"新 token
+    // 配旧公钥"的错位状态(配对/首用绑定时由 token_persist_binding 重写)。
+    nvs_erase_key(h, k_nvs_key_pbind);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// 绑定(key_hash + ctr + ts)落盘:配对原子绑定与首用绑定各一次;ctr 另有
+// 节流落盘(token_persist_ctr,每 64 个请求)防意外断电回退过大。
+static void token_persist_binding(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, k_nvs_key_pbind, s_token.key_hash, sizeof(s_token.key_hash));
+    nvs_set_blob(h, k_nvs_key_pctr, &s_token.last_ctr, sizeof(s_token.last_ctr));
+    nvs_set_blob(h, k_nvs_key_pts, &s_token.last_ts, sizeof(s_token.last_ts));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void token_persist_ctr(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, k_nvs_key_pctr, &s_token.last_ctr, sizeof(s_token.last_ctr));
+    nvs_set_blob(h, k_nvs_key_pts, &s_token.last_ts, sizeof(s_token.last_ts));
     nvs_commit(h);
     nvs_close(h);
 }
@@ -763,6 +841,9 @@ static void token_persist_erase(void)
     nvs_handle_t h;
     if (nvs_open(k_nvs_ns_install, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_erase_key(h, k_nvs_key_token);
+    nvs_erase_key(h, k_nvs_key_pbind);
+    nvs_erase_key(h, k_nvs_key_pctr);
+    nvs_erase_key(h, k_nvs_key_pts);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -782,34 +863,51 @@ static bool token_restore(void)
     }
     memcpy(s_token.token_hex, hex, sizeof(s_token.token_hex));
     s_token.token_valid = true;
-    // 设备无 RTC,跨重启的 TTL 窗口从本次启动起算(手机须在开机后 30 分钟内
-    // 回连;这是重启续连场景的本来要求)。prev 不持久化,跨重启清空。
-    s_token.token_issued_ms = esp_timer_get_time() / 1000;
-    s_token.token_consumed = false;
-    s_token.prev_valid = false;
+    // 设备无 RTC:单调毫秒不能跨重启比较。滑动 TTL 的跨重启语义 = 恢复即
+    // 给满新窗口(只宽不严)——重启续连是本职场景,活跃手机不应被误杀;
+    // 30 分钟无活动后的重启同样拿到新窗口,是无 RTC 下可接受的最宽近似。
+    // (旧版"issued 从启动起算"在新口径下等价于 deadline 从启动起算。)
+    s_token.token_deadline_ms = token_now_ms() + META_INSTALL_TOKEN_TTL_MS;
     s_token.pair_valid  = false;
     s_token.pair_used   = true;
     s_token.pair_tries  = 0;
-    ESP_LOGI(TAG, "session token restored across reboot");
+    // 手机绑定随 token 一起恢复(防重启后 ctr/ts 回退 0 造成已捕获请求
+    // 重放;旧固件会话无 pbind 键 → 未绑定,首用/重新配对时重建)。
+    size_t kh_len = sizeof(s_token.key_hash);
+    size_t ctr_len = sizeof(s_token.last_ctr);
+    size_t ts_len = sizeof(s_token.last_ts);
+    nvs_handle_t hn;
+    s_token.key_bound = false;
+    s_token.last_ctr = 0;
+    s_token.last_ts = 0;
+    if (nvs_open(k_nvs_ns_install, NVS_READONLY, &hn) == ESP_OK) {
+        if (nvs_get_blob(hn, k_nvs_key_pbind, s_token.key_hash, &kh_len) == ESP_OK &&
+            kh_len == sizeof(s_token.key_hash) &&
+            nvs_get_blob(hn, k_nvs_key_pctr, &s_token.last_ctr, &ctr_len) == ESP_OK &&
+            ctr_len == sizeof(s_token.last_ctr) &&
+            nvs_get_blob(hn, k_nvs_key_pts, &s_token.last_ts, &ts_len) == ESP_OK &&
+            ts_len == sizeof(s_token.last_ts)) {
+            s_token.key_bound = true;
+        } else {
+            memset(s_token.key_hash, 0, sizeof(s_token.key_hash));
+            s_token.last_ctr = 0;
+            s_token.last_ts = 0;
+        }
+        nvs_close(hn);
+    }
+    ESP_LOGI(TAG, "session token restored across reboot (bound=%d)", (int)s_token.key_bound);
     return true;
 }
 
 esp_err_t meta_install_token_start(void)
 {
     if (!s_init) return ESP_ERR_INVALID_STATE;
-    // 30 分钟 TTL(用户决策):current 过期 → prev 仍在期内则提级续用(并重
-    //  persist,防重启后恢复回已死的 current);prev 也过期才全新签发。
-    if (s_token.token_valid && token_ttl_expired(s_token.token_issued_ms)) {
-        ESP_LOGW(TAG, "token expired (>30 min)");
+    // 滑动 TTL:token 过期只可能是"30 分钟无活动"(成功鉴权会顺延,见
+    // meta_install_token_from_hex)。过期即作废,走恢复/重签;无 RTC,恢复
+    // 由 token_restore 给满新窗口(见该函数注释)。
+    if (s_token.token_valid && token_deadline_passed(s_token.token_deadline_ms)) {
+        ESP_LOGW(TAG, "token expired (>30 min idle)");
         s_token.token_valid = false;
-        if (s_token.prev_valid && !token_ttl_expired(s_token.prev_issued_ms)) {
-            memcpy(s_token.token_hex, s_token.prev_hex, sizeof(s_token.token_hex));
-            s_token.token_issued_ms = s_token.prev_issued_ms;
-            s_token.token_valid = true;
-            s_token.token_consumed = false;
-            token_persist();
-        }
-        s_token.prev_valid = false;
     }
     if (!s_token.token_valid) {
         if (!token_restore()) token_generate();
@@ -864,18 +962,28 @@ bool meta_install_token_from_hex(const char *hex, size_t hex_len)
         const char c = hex[i];
         if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
     }
-    // current:期内且匹配 → 消费,吊销历史 token。
-    if (s_token.token_valid && !token_ttl_expired(s_token.token_issued_ms)
-        && memcmp(hex, s_token.token_hex, META_INSTALL_TOKEN_HEX_LEN) == 0) {
-        token_mark_consumed();
-        return true;
+    if (!s_token.token_valid ||
+        memcmp(hex, s_token.token_hex, META_INSTALL_TOKEN_HEX_LEN) != 0) {
+        return false;
     }
-    // prev:期内且匹配 → 放行,不触发任何顶替(它已是被顶替后仍有效的旧 token)。
-    if (s_token.prev_valid && !token_ttl_expired(s_token.prev_issued_ms)
-        && memcmp(hex, s_token.prev_hex, META_INSTALL_TOKEN_HEX_LEN) == 0) {
-        return true;
+    if (token_deadline_passed(s_token.token_deadline_ms)) {
+        // 2026-11 真机(进店>30min 后全端点 401 且页内无解):过期 token 仍
+        // 在被使用,给一条页内出路 —— 配对态下补发新配对码 + 状态行提示,
+        // 用户输屏上新码即轮转换发(见 h_install_pair)。传输中(有在途
+        // offer/confirmed/session)不补发,避免屏上码与在途会话竞争。
+        const bool pair_alive = s_token.pair_valid && !s_token.pair_used &&
+            !token_deadline_passed(s_token.pair_created_ms +
+                                   (int64_t)META_INSTALL_PAIR_TTL_MS);
+        if (!s_session.offer_ready && !s_session.confirmed &&
+            !s_session.session_opened && !pair_alive) {
+            pair_code_issue();
+            status_set("pairing", "session expired — re-pair with the code on screen");
+        }
+        return false;
     }
-    return false;
+    // 注意:滑动续期不在此处 —— 必须先过手机绑定三关(公钥哈希/ctr/签名,
+    // 见 req_token_ok)才顺延,否则近场其他设备拿 QR token 即可蹭续期。
+    return true;
 }
 
 // 配对码兑换(§8:短 TTL + 尝试上限 + 一次性)。
@@ -898,7 +1006,8 @@ static bool pair_redeem(const char *code, size_t code_len)
         return false;
     }
     s_token.pair_used = true;
-    token_mark_consumed();   // 配对码兑换成功 = 新手机已接入,吊销历史 token
+    // 兑换成功后的 token 轮转换发由 h_install_pair 执行(2026-11 用户决策:
+    // 配对 = 新手机接入,旧 token 当场失效;此处只作一次性标记)。
     return true;
 }
 
@@ -1506,6 +1615,74 @@ static esp_err_t reply(httpd_req_t *req, const char *status, const char *msg)
     return httpd_resp_sendstr(req, msg);
 }
 
+// ---- 手机硬件凭证验签(2026-11 用户决策:滑动续期只认同一部手机)----
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static bool hex_to_bytes(const char *hex, size_t hex_len, uint8_t *out, size_t out_len)
+{
+    if (hex_len != out_len * 2) return false;
+    for (size_t i = 0; i < out_len; i++) {
+        const int hi = hex_nibble(hex[i * 2]);
+        const int lo = hex_nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static void sha256_once(const uint8_t *data, size_t len, uint8_t out[32])
+{
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    mbedtls_sha256_starts(&sha, 0);   // 0 = SHA-256(非 SHA-224)
+    mbedtls_sha256_update(&sha, data, len);
+    mbedtls_sha256_finish(&sha, out);
+    mbedtls_sha256_free(&sha);
+}
+
+// 十进制 u64 解析(X-Meta-Ctr):拒绝空串、负号、尾随垃圾。
+static bool parse_u64_strict(const char *s, uint64_t *out)
+{
+    if (!s || *s == '\0' || *s == '-') return false;
+    char *end = NULL;
+    const unsigned long long v = strtoull(s, &end, 10);
+    if (end == s || *end != '\0') return false;
+    *out = (uint64_t)v;
+    return true;
+}
+
+// P-256 ECDSA 验签(WebCrypto 的 raw r||s 64B 形态;公钥 65B 未压缩点)。
+// mbedtls ecp 大数运算走堆,httpd 任务栈 8192 足够。
+static bool phone_sig_verify(const uint8_t pub[META_PHONE_PUB_LEN],
+                             const uint8_t md[32],
+                             const uint8_t sig[META_PHONE_SIG_LEN])
+{
+    bool ok = false;
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point q;
+    mbedtls_mpi r, s;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&q);
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&s);
+    if (mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1) != 0) goto done;
+    if (mbedtls_ecp_point_read_binary(&grp, &q, pub, META_PHONE_PUB_LEN) != 0) goto done;
+    if (mbedtls_mpi_read_binary(&r, sig, 32) != 0) goto done;
+    if (mbedtls_mpi_read_binary(&s, sig + 32, 32) != 0) goto done;
+    ok = mbedtls_ecdsa_verify(&grp, md, 32, &q, &r, &s) == 0;
+done:
+    mbedtls_mpi_free(&s);
+    mbedtls_mpi_free(&r);
+    mbedtls_ecp_point_free(&q);
+    mbedtls_ecp_group_free(&grp);
+    return ok;
+}
+
 static bool req_token_ok(httpd_req_t *req)
 {
     char val[META_INSTALL_TOKEN_HEX_LEN + 2];
@@ -1513,7 +1690,75 @@ static bool req_token_ok(httpd_req_t *req)
                                     sizeof(val)) != ESP_OK) {
         return false;   // 缺头 / 超长都不算合法 token
     }
-    return meta_install_token_from_hex(val, strlen(val));
+    if (!meta_install_token_from_hex(val, strlen(val))) return false;
+
+    // ---- 手机硬件绑定四关(2026-11 用户决策:滑动续期只认同一部手机、
+    // 不同时间)----
+    // 近场其他设备能拿到 QR 里的 token,但拿不到手机私钥;滑动续期只在
+    // (token, 手机公钥) 绑定后且四关全过时顺延。请求头(hex/十进制):
+    //   X-Meta-Key  65B P-256 未压缩公钥(130 hex)
+    //   X-Meta-Ctr  单调递增十进制(防重放;设备记 last_ctr)
+    //   X-Meta-Ts   手机 wall 毫秒(单调 + 设备校时后绝对窗口;记 last_ts)
+    //   X-Meta-Sig  ECDSA-SHA256("token\nMETHOD URI\nctr ts") r||s(128 hex)
+    // 未绑定 token 由首个四关全过的请求完成绑定(first-use-wins,token 仍
+    // 须未过期);已绑定则公钥哈希/ctr/ts 必须各自推进、签名必须验过。
+    char key_hex[META_PHONE_PUB_HEX + 2];
+    char sig_hex[META_PHONE_SIG_HEX + 2];
+    char ctr_s[24];
+    char ts_s[24];
+    if (httpd_req_get_hdr_value_str(req, "X-Meta-Key", key_hex, sizeof(key_hex)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Sig", sig_hex, sizeof(sig_hex)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Ctr", ctr_s, sizeof(ctr_s)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "X-Meta-Ts", ts_s, sizeof(ts_s)) != ESP_OK) {
+        return false;   // 旧手机页(2026-11 前缓存):页面 no-store,强刷即带钥匙
+    }
+    uint8_t pub[META_PHONE_PUB_LEN];
+    uint8_t sig[META_PHONE_SIG_LEN];
+    uint64_t ctr = 0, ts = 0;
+    if (!hex_to_bytes(key_hex, strlen(key_hex), pub, sizeof(pub)) ||
+        !hex_to_bytes(sig_hex, strlen(sig_hex), sig, sizeof(sig)) ||
+        !parse_u64_strict(ctr_s, &ctr) ||
+        !parse_u64_strict(ts_s, &ts)) {
+        return false;
+    }
+    const char *mstr = method_str_of(req->method);
+    if (!mstr) return false;
+    uint8_t kh[32];
+    sha256_once(pub, sizeof(pub), kh);
+    if (s_token.key_bound && memcmp(kh, s_token.key_hash, 32) != 0) return false;
+    if (ctr <= s_token.last_ctr) return false;   // 计数器重放
+    if (ts <= s_token.last_ts || ts == 0) return false;   // 时间戳重放
+    {
+        // 绝对窗口:仅设备墙钟可信(SNTP 校时后)时启用;容忍手机快慢偏差
+        bool sane = false;
+        const int64_t wall = wall_now_ms(&sane);
+        if (sane && ((int64_t)ts > wall + (int64_t)META_PHONE_TS_FUTURE_MS ||
+                     (int64_t)ts < wall - (int64_t)META_PHONE_TS_PAST_MS)) {
+            return false;
+        }
+    }
+    uint8_t md[32];
+    {
+        // 签名字面量与手机侧逐字节一致
+        char expect[META_INSTALL_TOKEN_HEX_LEN + 8 + 160 + 24 + 24];
+        const int n = snprintf(expect, sizeof(expect), "%s\n%s %s\n%llu %llu",
+                               val, mstr, req->uri,
+                               (unsigned long long)ctr, (unsigned long long)ts);
+        if (n <= 0 || (size_t)n >= sizeof(expect)) return false;
+        sha256_once((const uint8_t *)expect, (size_t)n, md);
+    }
+    if (!phone_sig_verify(pub, md, sig)) return false;
+    // 四关全过:首用完成绑定,推进 ctr/ts(节流落盘),滑动续期。
+    if (!s_token.key_bound) {
+        memcpy(s_token.key_hash, kh, 32);
+        s_token.key_bound = true;
+        token_persist_binding();
+    }
+    s_token.last_ctr = ctr;
+    s_token.last_ts = ts;
+    if ((ctr & 0x3Full) == 0) token_persist_ctr();
+    token_sliding_extend();
+    return true;
 }
 
 // 读满请求体进调用方静态缓冲(httpd 任务内串行,静态缓冲安全)。
@@ -1613,8 +1858,13 @@ static const char SHELL_HTML[] =
 "nvsRead:function(offset,length){return bridgeBytes('/api/install/nvs/read',{headers:{'X-Meta-Offset':String(offset),'X-Meta-Length':String(length)}});},"
 "cancel:function(){return bridge('/api/install/cancel',{method:'POST'});}};"
 "function doPair(){ps.textContent='...';"
+// 手机硬件凭证(2026-11):模块把本机 P-256 公钥 hex 写在 localStorage,
+// 配对兑换时一并提交 —— 设备轮转换发新 token 并原子绑定该公钥(换手机
+// ⇒ 旧 token/旧公钥当场失效)。模块未加载(或旧缓存)时 key 为空串,
+// 设备按未绑定处理,首个带钥匙的请求完成首用绑定。
+"var pk=localStorage.getItem('metapass-phone-pub')||'';"
 "fetch('/api/install/pair',{method:'POST',headers:{'Content-Type':'application/json'},"
-"body:JSON.stringify({code:pc.value})})"
+"body:JSON.stringify({code:pc.value,key:pk})})"
 ".then(function(r){return r.text().then(function(t){return [r.ok,t];});})"
 ".then(function(a){if(a[0]){T=JSON.parse(a[1]).token;location.hash='s='+T;"
 "ps.textContent='paired';"
@@ -1649,10 +1899,13 @@ static esp_err_t h_boot_index(httpd_req_t *req)
 // ---- 本地 HTTP:install API(文档 §6.5) ----
 
 // POST /api/install/pair —— 配对码换 token(§8 文本兜底;一次性)。
+// body: {"code":"123456","key":"<130hex P-256 公钥>"} —— key 可选但强推荐
+// (手机页 2026-11 起总是携带):兑换成功轮转换发新 token 时原子绑定该公钥,
+// 新手机即刻全通、旧手机公钥随旧 token 当场失效(用户决策的失效口径)。
 static esp_err_t h_install_pair(httpd_req_t *req)
 {
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
-    static char body[96];
+    static char body[224];
     size_t len = 0;
     if (req_body(req, body, sizeof(body), &len) != ESP_OK) {
         return reply(req, "400 Bad Request", "bad body");
@@ -1661,6 +1914,21 @@ static esp_err_t h_install_pair(httpd_req_t *req)
     if (!meta_store_json_get_string(body, len, "code", code, sizeof(code)) ||
         !pair_redeem(code, strlen(code))) {
         return reply(req, "403 Forbidden", "pair rejected");
+    }
+    char key_hex[META_PHONE_PUB_HEX + 2] = {0};
+    const bool has_key = meta_store_json_get_string(body, len, "key", key_hex, sizeof(key_hex));
+    // 2026-11 用户决策:配对码兑换成功 = (可能)新手机接入 —— 立即轮转换发
+    // 新 token,旧 token 当场失效。滑动 TTL 下旧持有者若仍在活跃使用,应走
+    // 滑动续期而不是靠宽限;过期持有者则拿屏上新码走这条 Renewal 路。
+    // 手机 shell 拿到新 token 写 hash 并 reload,连接无感。
+    token_generate();
+    if (has_key) {
+        uint8_t pub[META_PHONE_PUB_LEN];
+        if (hex_to_bytes(key_hex, strlen(key_hex), pub, sizeof(pub))) {
+            sha256_once(pub, sizeof(pub), s_token.key_hash);
+            s_token.key_bound = true;
+            token_persist_binding();
+        }
     }
     char out[META_INSTALL_TOKEN_HEX_LEN + 32];
     snprintf(out, sizeof(out), "{\"token\":\"%s\"}", s_token.token_hex);

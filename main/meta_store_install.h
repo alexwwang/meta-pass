@@ -79,12 +79,18 @@ uint32_t meta_install_lan_ip(void);   // 网络字节序 IPv4(0 = 未知)
 void meta_install_qr_info(const char **token_hex_out, const char **pair_code_out,
                           char url_buf[256]);
 
-// ---- token 门控 ----
+// ---- token 门控(2026-11 滑动 TTL 口径)----
 // token_start:生成(或从 NVS 复用上次未离店的,重启续连)本店 token,配对码
 // 一律重发;无 offer 在途时把状态归位 pairing。stop:全部作废并清 NVS。
+// 滑动 TTL:成功鉴权顺延整个 TTL(手机持续在用则永续,受控/意外重启由
+// token_restore 给满新窗口,设备无 RTC);旧 token 只在新手机配对兑换
+// (h_install_pair 轮转换发)或扫码拿到新 token(签发)时失效。
 esp_err_t meta_install_token_start(void);
 void      meta_install_token_stop(void);
 bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
+// 配对码签发代际(pair_code_issue 递增):store_tick 据此检测会话中途的
+// 补发/轮转并重建 QR 页(码面板与 QR 画布是构建时静态快照,不重建不刷新)。
+uint32_t  meta_install_pair_epoch(void);
 // 中断续连(用户决策①):上次 install 会话未正常离店(token_start 后未
 // token_stop,如上传中途断电)→ true。复位后 app_main 据此自动恢复 STA +
 // install 服务,手机用持久化 token 重发 prepare 免重扫 QR。NVS 标志,

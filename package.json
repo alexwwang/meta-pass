@@ -1,0 +1,6 @@
+{
+  "dependencies": {},
+  "devDependencies": {
+    "@noble/curves": "^2.4.0"
+  }
+}
