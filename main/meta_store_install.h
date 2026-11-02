@@ -91,6 +91,9 @@ bool      meta_install_token_from_hex(const char *hex, size_t hex_len);
 // 配对码签发代际(pair_code_issue 递增):store_tick 据此检测会话中途的
 // 补发/轮转并重建 QR 页(码面板与 QR 画布是构建时静态快照,不重建不刷新)。
 uint32_t  meta_install_pair_epoch(void);
+// QR 页闲置自愈:token/配对码过期即自动轮换(true = 已轮换,页面按
+// pair epoch 重建)。有在途会话时不动作。
+bool      meta_install_qr_refresh_if_stale(void);
 // 中断续连(用户决策①):上次 install 会话未正常离店(token_start 后未
 // token_stop,如上传中途断电)→ true。复位后 app_main 据此自动恢复 STA +
 // install 服务,手机用持久化 token 重发 prepare 免重扫 QR。NVS 标志,

@@ -953,6 +953,10 @@ static void store_tick(lv_timer_t *t)
         // "time out 导致手机页面失效")。常驻期间由用户按键退出收尾;
         // 安装中的停滞判定仍在(upload_idle_ms)不受影响。
         store_touch();
+        // 2026-11-02 闲置自愈:token/配对码过期即自动轮换(轮换 bump pair
+        // epoch,下一条 epoch 检查即重建本页);此前屏上码过期只能等手机撞
+        // 401 被动补发,纯闲置时屏上一直是死码。
+        meta_install_qr_refresh_if_stale();
         // 2026-11:会话中途 token 过期会补发新配对码、配对兑换后轮转发新
         // token,而 QR 画布与码面板是构建时静态快照 —— 靠 pair epoch 跳变
         // 重建本页,屏上码/QR 才跟得上。epoch 不变的常态重建为零开销。

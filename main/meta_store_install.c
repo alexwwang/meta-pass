@@ -748,6 +748,37 @@ uint32_t meta_install_pair_epoch(void)
     return s_pair_epoch;
 }
 
+// QR 页闲置自愈(2026-11-02 用户质询:过期码屏上不自刷,只能等手机撞 401
+// 才被动补发):store_tick 周期调用;token 过期 → 整轮重签(新 QR token +
+// 新配对码);仅配对码过期/已用 → 只补发配对码(QR token 不变 —— 扫了码
+// 但 >5 分钟才首次连接的手机不受牵连)。两条路都 bump pair epoch,QR 页
+// 靠 epoch 跳变重建(见 main.c PAGE_STORE_QR)。滑动 TTL 保证 token 过期
+// 只可能是 30 分钟真无活动,轮换不会打断在途会话;有在途会话时再防御性
+// 不动作。返回 true = 发生了轮换。
+bool meta_install_qr_refresh_if_stale(void)
+{
+    if (s_session.offer_ready || s_session.confirmed || s_session.session_opened) {
+        return false;
+    }
+    if (!s_token.token_valid || token_deadline_passed(s_token.token_deadline_ms)) {
+        ESP_LOGI(TAG, "qr auto-refresh: token expired, reissuing");
+        token_generate();
+        return true;
+    }
+    // pair_used 不属此管:兑换成功的 token 轮转由 h_install_pair 紧跟执行,
+    // tick 抢跑会先把 pair_used 清回 false,一次性语义晃荡。
+    const bool pair_dead = !s_token.pair_valid ||
+        (!s_token.pair_used &&
+         token_deadline_passed(s_token.pair_created_ms +
+                               (int64_t)META_INSTALL_PAIR_TTL_MS));
+    if (pair_dead) {
+        ESP_LOGI(TAG, "qr auto-refresh: pair code stale, reissuing");
+        pair_code_issue();
+        return true;
+    }
+    return false;
+}
+
 // ---- 中断续连持久标志(用户决策①,NVS "metapass"/"inst_active") ----
 // token_start 置位、token_stop 清除;复位后 app_main 读它决定是否自动恢复
 // STA + install 服务,手机凭持久化 token 重发 prepare 免重扫 QR。
