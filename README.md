@@ -66,10 +66,14 @@ switch. No custom bootloader changes.
     hotspot (`192.168.4.1`, random WPA2 password on screen) → once online the screen
     shows a QR code plus the device URL and a 6-digit pair code → scan it with a
     phone: the metapass web module runs market search, analyze, download and
-    app-image extraction, then submits an install offer to the device; confirm the
-    slot on the device (the physical OK unlocks the upload) and the phone streams
-    the image over LAN HTTP while the device verifies length, SHA-256 and image
-    structure. Analysis and unpacking never happen on-device.
+    app-image extraction, then submits an install offer; the phone picks the slot
+    from live device geometry (the device auto-confirms and the upload starts; a
+    fallback device-side CONFIRM/BACK page exists only for legacy offers) while the
+    phone streams the image over LAN HTTP and the device verifies length, SHA-256
+    and image structure. On-screen codes self-refresh: the pair code (5 min)
+    reissues in place, and the token (sliding 30-min TTL, renewed by every
+    authenticated request) rotates automatically once truly idle, so a screen left
+    open never shows dead codes. Analysis and unpacking never happen on-device.
 - **Integrity checks**: magic, chip id, size and segment structure, with
   `esp_ota_end()` as the authoritative recheck; the SHA-256 is shown on the detail
   page for comparison with the store's value.
@@ -298,4 +302,4 @@ This is an unofficial project, not affiliated with FoloToy.
 | Child firmware ignores buttons / no OK LONG return | Un-adapted firmware has no return hook; power-cycle to return (rollback). By design |
 | Rebooting a child lands back in the launcher | By design (single-session model): every power-on returns to the launcher list page; crash recovery uses the same rollback |
 | Slot shows "AI-Passport" instead of the play name | The firmware was installed without a display-name blob (merged image / old channel); reinstall via the USB page with a Display name |
-| Image rejected | Over the slot's limit (`partition_size − 4KB`, the last 4KB sector is reserved for the name blob), or not an ESP32-C3 image |
+| Image rejected | Over the dynamic pool's remaining capacity (app image + declared DATA partitions vs. free carve space — the list shows the true total, not just the download size), or not an ESP32-C3 image |
