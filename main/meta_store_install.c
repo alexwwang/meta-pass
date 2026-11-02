@@ -3007,7 +3007,15 @@ static esp_err_t h_install_finalize(httpd_req_t *req)
     if (meta_install_finalize() != ESP_OK) {
         return reply(req, "500 Internal Server Error", "finalize failed");
     }
-    return reply(req, "200 OK", "ok");
+    // 2026-11-02 真机假阴性:done 此前只能在离店前靠手机轮询观测,而离店即
+    // 重启+作废 token,轮询必然哑火(后台标签页定时器还会被浏览器节流)。
+    // finalize 是同步置 done 后才走到这里 —— 200 响应体直接携带终态,手机
+    // 一个往返即可确认成功,不依赖任何时序窗口;旧手机页忽略此体,行为不变。
+    char body[96];
+    snprintf(body, sizeof(body), "{\"state\":\"done\",\"slot\":%d}",
+             (int)s_session.confirmed_slot);
+    httpd_resp_set_type(req, "application/json");
+    return reply(req, "200 OK", body);
 }
 
 // POST /api/install/cancel —— 手机侧取消(设备 UI 取消也走同一内部函数)。

@@ -1050,6 +1050,18 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
     });
   }
 
+  // finalize 200 的响应体即终态(固件同步置 done 后才回 200):一个往返确认
+  // 成功,不等 done 轮询 —— 轮询要赌"设备离店重启前手机恰好醒着",后台
+  // 标签页定时器被浏览器节流时必输(2026-11-02 真机假阴性)。旧固件回 "ok"
+  // 非 JSON,自然落到原有轮询兜底。
+  try {
+    const terminal = JSON.parse(fin.text || "");
+    if (terminal && terminal.state === "done" && Number.isInteger(terminal.slot)) {
+      hooks.status?.({ state: "done" });
+      return { ok: true, slot: terminal.slot };
+    }
+  } catch { /* 非 JSON(旧固件)走下方轮询 */ }
+
   hooks.stage?.("done");
   // 完成轮询超时/不可读 ≠ 成功(审计 M1):finalize 已被接受但设备未到 done
   // (或 status 失联)时如实报错,让用户去设备上核对,而不是报成功。

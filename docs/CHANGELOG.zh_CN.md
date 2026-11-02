@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **finalize 响应体携带终态,消除 done 确认对时序窗口的依赖(固件 + 手机页,2026-11-02)**:3 秒停留只是把竞态窗口拉大,不是正确措施——后台标签页的定时器会被移动浏览器节流(可达分钟级),轮询可能根本不醒。根正因势利导:finalize 本来就是**同步置 done 后才回 200**,故 200 响应体直接携带 `{"state":"done","slot":N}`,手机一个请求-响应往返即可确认成功,不赌任何时序;done 轮询降级为旧固件兼容兜底。剩余唯一不确定面是 finalize 响应本身在网络中丢失(此时如实报 commitUncertain,引导用户核对设备,而非谎报成功或失败)。
+
 - **修复安装成功后手机误报"安装失败"的假阴性(固件,2026-11-02)**:finalize 在设备端同步置 `done` 后,DL 页此前**立即**自动离店 → teardown 受控重启 + 作废 token;手机的 done 轮询(最长 30s)第一枪打在重启过程中,之后设备不在商店页且 token 已死,全程哑火,误报 "device did not reach done (finalize accepted but no confirmation)"——而槽位其实已 VALID 落盘(真机:Radar Hide & Seek 安装成功但手机显示失败;冒烟能过纯属轮询赢了竞态)。现 done 页停留 3 秒再离店,给手机确认窗口,也让用户看清 "installed"。
 
 - **修复商店决策页竞态:confirmed 后屏停过期 offer 页(固件,2026-11-02,严重)**:`PAGE_STORE_INFO`/`PAGE_STORE_SLOT` 的 tick 此前无任何迁移——prepare 在 `offer_ready=true → confirmed=true` 之间要跑 DATA 迁移 + carve 提交 + 分区表重写 + otadata 擦除(数百 ms),UI 轮询(250ms)极可能在这个窗口内把决策页顶到屏幕上;confirmed 落定后页面无出口,用户看到的 CONFIRM/BACK 是已翻篇 offer 的过期决策屏,按键作用在错误会话状态上(真机事故:安装口袋雷达时设备停在 "Install: xxx CONFIRM/BACK",手机已在传固件,最终所有槽位消失)。现两页均补竞态出口:confirmed → 上传进度页;offer 消失(失败/取消/被覆盖)→ 扫码页。决定权收拢手机(交互 v2)后,设备决策页只剩旧固件兼容意义,本不该滞留。
