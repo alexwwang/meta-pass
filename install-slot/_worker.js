@@ -37,40 +37,42 @@ function extractedEdgeKey(url) {
 }
 
 // analyze 摘要缓存(列表卡片"真实空间占用"数据源,2026-11-02):
-//   - 键 = 本 zone /api/analyze-cache?id=N&sha=<商店固件 sha256>(sha 入键:
-//     市场固件更新 → sha 变 → 自然 miss → 重算,与 R2 键约定同思路);
-//   - 值 = analyze 的 storage 摘要(requiredSize 等),不缓存字节;
+//   - 后端 = KV(env.ANALYZE_KV,未绑时回退 RATE_KV,键前缀 asum: 隔离;
+//     不用 Cache API —— 其命中随边缘 isolate 漂移,生产实测同键 2 命中→0 命中);
+//   - 键 = asum:<id>:<商店固件 sha256>(sha 入键:市场固件更新 → 自然 miss
+//     → 重算,与 R2 键约定同思路);TTL 24h;
+//   - 值 = {v:1, requiredSize|null(unsupported 确定性负缓存), supported,
+//     reason, poolTotal, analyzedAt};unavailable(上游瞬断)不落,可重试;
 //   - 写入路径:analyze 成功(详情页/安装预热)+ /api/plays 后台补算;
 //   - 消费路径:/api/plays 代理逐条富化 —— 冷缓存时列表先回退固件体积,
 //     页内最多 8 个后台补算(waitUntil),下一页/下一次浏览即全量准确。
 const ANALYZE_CACHE_TTL = 86400;
 const PLAYS_WARM_PER_PAGE = 8;
 
-function analyzeCacheKey(origin, id, storeSha256) {
-  return new Request(
-    `${origin}/api/analyze-cache?id=${encodeURIComponent(id)}&sha=${encodeURIComponent(storeSha256)}`,
-    { method: "GET" });
+function analyzeKV(env) { return env.ANALYZE_KV ?? env.RATE_KV ?? null; }
+
+function analyzeCacheKVKey(id, storeSha256) {
+  return `asum:${id}:${storeSha256}`;
 }
 
-async function readAnalyzeSummary(origin, id, storeSha256) {
+async function readAnalyzeSummary(env, id, storeSha256) {
   try {
-    const hit = await caches.default.match(analyzeCacheKey(origin, id, storeSha256));
-    if (!hit) return null;
-    const j = await hit.json();
+    const kv = analyzeKV(env);
+    if (!kv) return null;
+    const raw = await kv.get(analyzeCacheKVKey(id, storeSha256));
+    if (!raw) return null;
+    const j = JSON.parse(raw);
     // v=1 即命中;requiredSize 可能为 null(unsupported 的确定性负缓存)。
     return (j && j.v === 1) ? j : null;
   } catch { return null; }
 }
 
-async function writeAnalyzeSummary(origin, id, storeSha256, summary) {
+async function writeAnalyzeSummary(env, id, storeSha256, summary) {
   try {
-    await caches.default.put(analyzeCacheKey(origin, id, storeSha256),
-      new Response(JSON.stringify(summary), {
-        headers: {
-          "content-type": "application/json",
-          "cache-control": `public, max-age=${ANALYZE_CACHE_TTL}`,
-        },
-      }));
+    const kv = analyzeKV(env);
+    if (!kv) return;
+    await kv.put(analyzeCacheKVKey(id, storeSha256), JSON.stringify(summary),
+      { expirationTtl: ANALYZE_CACHE_TTL });
   } catch { /* 缓存是优化,失败不影响主链路 */ }
 }
 
@@ -488,7 +490,7 @@ export default {
       await Promise.all(plays.map(async (p) => {
         const id = p?.id, sha = p?.firmware?.sha256;
         if (!Number.isFinite(id) || typeof sha !== "string" || !/^[0-9a-fA-F]{64}$/.test(sha)) return;
-        const sum = await readAnalyzeSummary(url.origin, id, sha.toLowerCase());
+        const sum = await readAnalyzeSummary(env, id, sha.toLowerCase());
         if (sum) p.requiredSize = sum.requiredSize;
         else misses.push(id);
       }));
@@ -501,7 +503,7 @@ export default {
               const storeSha = out?.store?.sha256;
               // 确定性结论(含 unsupported)都落缓存;unavailable 不落,可重试。
               if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
-                await writeAnalyzeSummary(url.origin, id,
+                await writeAnalyzeSummary(env, id,
                   String(storeSha).toLowerCase(),
                   { v: 1,
                     requiredSize: out.storage?.requiredSize ?? null,
@@ -578,7 +580,7 @@ export default {
           const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
           if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
             ctx.waitUntil(writeAnalyzeSummary(
-              url.origin, Number(id), String(storeSha).toLowerCase(),
+              env, Number(id), String(storeSha).toLowerCase(),
               { v: 1,
                 requiredSize: out.storage?.requiredSize ?? null,
                 supported: out.supported === true,
