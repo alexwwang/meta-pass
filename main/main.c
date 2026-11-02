@@ -1012,13 +1012,26 @@ static void store_tick(lv_timer_t *t)
         break;
 
     case PAGE_STORE_DL: {
-        // 终态迁移:done → P5;cancelled(手机侧)→ 回扫码页等新 offer;
+        static uint32_t s_done_seen_ms;   // done 首次观测时刻;0 = 未观测
+        // 终态迁移:done → 停留数秒再离店;cancelled(手机侧)→ 回扫码页等新 offer;
         // failed 停留本页,状态行给出原因,OK 短按回扫码页(见 on_key)。
         if (strcmp(ist_state, "done") == 0) {
-            // 完成即离店:物化过则 teardown 后受控重启清账,否则直接回列表。
-            goto_page(PAGE_LIST);
+            // 2026-11-02 真机假阴性:done 此前即刻 goto PAGE_LIST → 离店 teardown
+            // 受控重启 + 作废 token,手机的 done 轮询(最长 30s)第一枪就打在
+            // 重启过程中,之后设备不在商店页且 token 已死,30 秒全哑火,误报
+            // "device did not reach done"(设备安装其实已成功落盘)。停留
+            // 给手机确认窗口,也让用户看清"installed"。
+            if (s_done_seen_ms == 0) {
+                s_done_seen_ms = (uint32_t)(esp_timer_get_time() / 1000);
+                if (s_status_line) lv_label_set_text(s_status_line, "installed");
+            }
+            if ((uint32_t)(esp_timer_get_time() / 1000) - s_done_seen_ms >= 3000) {
+                // 完成即离店:物化过则 teardown 后受控重启清账,否则直接回列表。
+                goto_page(PAGE_LIST);
+            }
             break;
         }
+        s_done_seen_ms = 0;
         if (strcmp(ist_state, "cancelled") == 0) {
             store_goto(PAGE_STORE_QR);
             break;
