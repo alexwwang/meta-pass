@@ -2,6 +2,16 @@
 import assert from "node:assert/strict";
 import { createBridge } from "../../install-slot/phone-install.js";
 
+// bridge 经 localStorage 读写 P-256 手机密钥(9a1c1ae);Node 无此 API,内存桩。
+if (typeof globalThis.localStorage === "undefined") {
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => { mem.set(k, String(v)); },
+    removeItem: (k) => { mem.delete(k); },
+  };
+}
+
 const originalFetch = globalThis.fetch;
 try {
   let calls = [];
