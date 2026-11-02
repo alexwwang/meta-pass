@@ -1022,16 +1022,27 @@ export async function runInstall(bridge, offer, appImage, hooks = {}) {
   }
 
   hooks.stage?.("finalize");
-  let fin;
-  try {
-    fin = await bridge.finalize();
-  } catch (error) {
-    // The request may have reached the device even when the transport rejects.
-    // Treat this as an uncertain commit outcome and never let the restore caller
-    // interpret it as a preflight failure eligible for cancellation.
+  // finalize 传输层重试:响应可能在网络中丢失,而设备可能已提交(固件对此
+  // 幂等 —— 已完成的会话重试会回同样的 done JSON)。仅传输异常(请求根本没
+  // 得到 HTTP 响应)才重试;拿到任何 HTTP 响应都说明设备已处理过,以响应为准。
+  // 3 次 × 3s 退避后仍不通:如实报不确定 + 引导用户核对设备,而不是谎报失败。
+  let fin = null;
+  let lastTransportErr = null;
+  for (let attempt = 0; attempt < 3 && !fin; attempt++) {
+    if (attempt > 0) {
+      hooks.stage?.(`finalize 重试(${attempt + 1}/3)`);
+      await sleep(3000);
+    }
+    try {
+      fin = await bridge.finalize();
+    } catch (error) {
+      lastTransportErr = error;
+    }
+  }
+  if (!fin) {
     return fail("finalize",
-      "finalize transport failed; commit state is uncertain: " +
-        (error?.message || String(error)),
+      "设备未应答 finalize(已重试 3 次)。安装可能已成功 —— 请在设备上查看玩法列表或空间管理核对;若未出现,重新安装即可。" +
+        (lastTransportErr ? `(最后错误: ${lastTransportErr?.message || String(lastTransportErr)})` : ""),
       { commitUncertain: true });
   }
   if (!fin.ok) {

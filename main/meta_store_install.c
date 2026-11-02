@@ -164,6 +164,11 @@ static bool              s_init;             // init 完成
 static session_token_t   s_token;
 static uint32_t          s_pair_epoch;       // 配对码签发代际(store_tick 重建 QR 页用)
 static install_session_t s_session;
+// finalize 幂等重试锚点:成功落盘后置位(含槽号),offer_and_upload_clear 复位。
+// 手机在"设备已提交但响应在网络中丢失"时重试 finalize,命中此锚点即回与
+// 成功路径同形的 done JSON,而不是 409/500 误导手机判失败(2026-11-02)。
+static bool    s_done_ack;
+static int8_t  s_done_slot = -1;
 // 会话互斥锁(审计 B4):httpd 任务(chunk/finalize/session/prepare)与 UI 任务
 // (confirm/reject/cancel/teardown)跨任务碰 s_session;esp_ota_abort/sha256_free
 // 与在途 esp_ota_write/sha256_update 无锁并发 = heap UAF(IDF esp_ota_ops.c:438-448
@@ -516,6 +521,8 @@ static void cleanup_new_data_extents(const data_new_extent_t extents[META_DATA_M
 // 清 offer 与上传残留(不改 state/message,由各终态自己给出文案)。
 static void offer_and_upload_clear(void)
 {
+    s_done_ack = false;                // 新会话开始,旧 finalize 应答失效
+    s_done_slot = -1;
     if (s_session.ota_open) {
         esp_ota_abort(s_session.ota);
         s_session.ota_open = false;
@@ -1556,6 +1563,8 @@ static esp_err_t finalize_locked(void)
     memcpy(s_session.name, name, sizeof(name));
     s_session.confirmed_slot = slot;
     status_set("done", "installed");
+    s_done_ack = true;          // finalize 幂等重试锚点(见 h_install_finalize)
+    s_done_slot = slot;
     ESP_LOGI(TAG, "LAN install slot %d done: %s (%u bytes)", slot, name,
              meta.image_len);
     // 表若在本会话物化过,复位推迟到退出商店页(见 meta_carve_flash_reboot_pending);
@@ -3002,6 +3011,15 @@ static esp_err_t h_install_finalize(httpd_req_t *req)
     if (!origin_allowed(req)) return reply(req, "403 Forbidden", "origin not allowed");
     if (!req_token_ok(req)) return reply_token_fail(req);
     if (!s_session.confirmed || !s_session.session_opened) {
+        // 幂等:本会话已完成的 finalize 重试(首次响应在网络中丢失,手机
+        // 按 3s×3 退避重发)直接回与成功路径同形的 done,而非 409/500。
+        if (s_done_ack) {
+            char body[96];
+            snprintf(body, sizeof(body), "{\"state\":\"done\",\"slot\":%d}",
+                     (int)s_done_slot);
+            httpd_resp_set_type(req, "application/json");
+            return reply(req, "200 OK", body);
+        }
         return reply(req, "409 Conflict", "not confirmed");
     }
     if (meta_install_finalize() != ESP_OK) {
