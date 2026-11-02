@@ -229,7 +229,10 @@ console.log("PASS 14: rate limit wired via RATE_KV binding; Range resume uses th
 //     M4 手机模块全部静态 import 与入口同走 no-store;B2 手机 getPlayDetail
 //     路径必须命中 Worker 真实路由(而不是只存在于 mock 里的路径)。
 {
-  assert.ok(workerSrc.includes('proxy("/api/plays" + url.search)'),
+  // B3 契约 = query 必须到达上游;实现可为透传代理或富化处理器(2026-11-02
+  // /api/plays 改为 JSON 富化 —— 缓冲的是 ~100KB 列表,固件镜像路径仍全
+  // 程流式,见下方 M3 断言不变)。
+  assert.ok(workerSrc.includes('"/api/plays" + url.search'),
             "/api/plays must forward the query string (audit B3)");
   const proxyBlock = workerSrc.slice(workerSrc.indexOf("async function proxy"),
                                      workerSrc.indexOf("// analyze/extracted 的 id 校验"));

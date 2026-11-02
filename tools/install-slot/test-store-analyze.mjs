@@ -36,6 +36,13 @@ function buildAppImage(segLens, { chipId = 5, hashAppended = 1 } = {}) {
       len & 0xff, (len >> 8) & 0xff, (len >> 16) & 0xff, (len >> 24) & 0xff], off);
     off += 8 + len;
   }
+  // appended hash 必须是 [0, total-32) 的真实 SHA-256(espImageLength 现在
+  // 用它做布局权威判别 —— 8bc062a 起 hash_appended=1 的 fixture 也一样要
+  // 合法,否则布局探测两候选均不匹配,analyze 被拒)。
+  if (hashAppended) {
+    buf.set(createHash("sha256").update(buf.subarray(0, total - 32)).digest(),
+            total - 32);
+  }
   return buf;
 }
 
