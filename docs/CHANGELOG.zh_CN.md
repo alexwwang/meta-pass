@@ -6,7 +6,7 @@
 
 ## 未发布
 
-- **商店列表卡片显示真实空间占用(worker 富化 + 手机页,2026-11-02)**:此前列表只有纯固件体积(`firmware.size`),带 DATA 分区预留的玩法(如摩尔斯电码练习器:4.9M 固件 + 2.9M 预留)被严重低估,用户点进详情还要等 analyze 现下载解包(秒级)才看到真实值。修法:worker 把 analyze 的 `storage.requiredSize` 写进 KV 摘要缓存(`env.ANALYZE_KV`,未绑时回退 `RATE_KV`,键 `asum:<id>:<固件sha256>`、TTL 24h;不用 Cache API —— 命中随边缘 isolate 漂移,生产实测同键 2 命中→0 命中);unsupported 的确定性结论(too-large 等,requiredSize 仍有效)同样落缓存,`unavailable` 瞬断不落可重试;`/api/plays` 代理逐条富化,缓存缺失的页内后台补算(每页限 8 个,防冷缓存并发下载打爆出口);手机列表卡片优先显示真实占用,无缓存条目回退固件体积,下一页/下次浏览即准确;详情页占位在已知 requiredSize 时立即渲染,不再等 analyze。
+- **商店列表卡片显示真实空间占用(worker 富化 + 手机页,2026-11-02)**:此前列表只有纯固件体积(`firmware.size`),带 DATA 分区预留的玩法(如摩尔斯电码练习器:4.9M 固件 + 2.9M 预留)被严重低估,用户点进详情还要等 analyze 现下载解包(秒级)才看到真实值。修法:worker 把 analyze 的 `storage.requiredSize` 写进 KV 摘要缓存(`env.ANALYZE_KV`,未绑时回退 `RATE_KV`,键 `asum:<id>:<固件sha256>`;sha256 即版本指纹,固件更新即换键、旧条目自然作废,故不设 TTL,固件不变时一直有效;不用 Cache API —— 命中随边缘 isolate 漂移,生产实测同键 2 命中→0 命中);unsupported 的确定性结论(too-large 等,requiredSize 仍有效)同样落缓存,`unavailable` 瞬断不落可重试;`/api/plays` 代理逐条富化,缓存缺失的页内后台补算(每页限 8 个,防冷缓存并发下载打爆出口);手机列表卡片优先显示真实占用,无缓存条目回退固件体积,下一页/下次浏览即准确;详情页占位在已知 requiredSize 时立即渲染,不再等 analyze。
 
 - **finalize 传输重试 3×3s + 设备幂等应答(固件 + 手机页,2026-11-02)**:finalize 响应在网络中丢失时,手机按 3 秒退避重试至多 3 次;设备端对已完成的会话直接回与成功路径同形的 `{"state":"done","slot":N}`(幂等锚点 `s_done_ack`,新会话即失效),重试不会把"已提交但响应丢失"误判成失败。仅传输异常(未得到任何 HTTP 响应)才重试——拿到响应即代表设备已处理过,以响应为准。3 次仍不通则如实报"状态不确定"并引导用户核对设备玩法列表/空间管理,而不是谎报失败。手机端仍保留旧固件的 done 轮询兜底。
 

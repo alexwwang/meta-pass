@@ -39,14 +39,14 @@ function extractedEdgeKey(url) {
 // analyze 摘要缓存(列表卡片"真实空间占用"数据源,2026-11-02):
 //   - 后端 = KV(env.ANALYZE_KV,未绑时回退 RATE_KV,键前缀 asum: 隔离;
 //     不用 Cache API —— 其命中随边缘 isolate 漂移,生产实测同键 2 命中→0 命中);
-//   - 键 = asum:<id>:<商店固件 sha256>(sha 入键:市场固件更新 → 自然 miss
-//     → 重算,与 R2 键约定同思路);TTL 24h;
+//   - 键 = asum:<id>:<商店固件 sha256>;sha256 即版本指纹:固件任何字节变化
+//     → 新键,旧条目立即不可达(等价作废)——故不设 TTL,条目在固件不变时
+//     一直有效;固件更新留下的孤儿键仅占 KV 存储(每条 ~150B),不读即无害;
 //   - 值 = {v:1, requiredSize|null(unsupported 确定性负缓存), supported,
 //     reason, poolTotal, analyzedAt};unavailable(上游瞬断)不落,可重试;
 //   - 写入路径:analyze 成功(详情页/安装预热)+ /api/plays 后台补算;
 //   - 消费路径:/api/plays 代理逐条富化 —— 冷缓存时列表先回退固件体积,
 //     页内最多 8 个后台补算(waitUntil),下一页/下一次浏览即全量准确。
-const ANALYZE_CACHE_TTL = 86400;
 const PLAYS_WARM_PER_PAGE = 8;
 
 function analyzeKV(env) { return env.ANALYZE_KV ?? env.RATE_KV ?? null; }
@@ -71,8 +71,9 @@ async function writeAnalyzeSummary(env, id, storeSha256, summary) {
   try {
     const kv = analyzeKV(env);
     if (!kv) return;
-    await kv.put(analyzeCacheKVKey(id, storeSha256), JSON.stringify(summary),
-      { expirationTtl: ANALYZE_CACHE_TTL });
+    await kv.put(analyzeCacheKVKey(id, storeSha256), JSON.stringify(summary));
+    // 不设 TTL:sha256 在键里,固件更新即换键,旧条目自然作废;固件不变则
+    // 分析结论(体积由分区表决定)不会随时间改变,理应一直有效。
   } catch { /* 缓存是优化,失败不影响主链路 */ }
 }
 
