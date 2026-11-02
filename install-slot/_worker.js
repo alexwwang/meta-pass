@@ -36,6 +36,43 @@ function extractedEdgeKey(url) {
   return new Request(keyUrl, { method: "GET" });
 }
 
+// analyze 摘要缓存(列表卡片"真实空间占用"数据源,2026-11-02):
+//   - 键 = 本 zone /api/analyze-cache?id=N&sha=<商店固件 sha256>(sha 入键:
+//     市场固件更新 → sha 变 → 自然 miss → 重算,与 R2 键约定同思路);
+//   - 值 = analyze 的 storage 摘要(requiredSize 等),不缓存字节;
+//   - 写入路径:analyze 成功(详情页/安装预热)+ /api/plays 后台补算;
+//   - 消费路径:/api/plays 代理逐条富化 —— 冷缓存时列表先回退固件体积,
+//     页内最多 8 个后台补算(waitUntil),下一页/下一次浏览即全量准确。
+const ANALYZE_CACHE_TTL = 86400;
+const PLAYS_WARM_PER_PAGE = 8;
+
+function analyzeCacheKey(origin, id, storeSha256) {
+  return new Request(
+    `${origin}/api/analyze-cache?id=${encodeURIComponent(id)}&sha=${encodeURIComponent(storeSha256)}`,
+    { method: "GET" });
+}
+
+async function readAnalyzeSummary(origin, id, storeSha256) {
+  try {
+    const hit = await caches.default.match(analyzeCacheKey(origin, id, storeSha256));
+    if (!hit) return null;
+    const j = await hit.json();
+    return (j && Number.isFinite(j.requiredSize) && j.requiredSize > 0) ? j : null;
+  } catch { return null; }
+}
+
+async function writeAnalyzeSummary(origin, id, storeSha256, summary) {
+  try {
+    await caches.default.put(analyzeCacheKey(origin, id, storeSha256),
+      new Response(JSON.stringify(summary), {
+        headers: {
+          "content-type": "application/json",
+          "cache-control": `public, max-age=${ANALYZE_CACHE_TTL}`,
+        },
+      }));
+  } catch { /* 缓存是优化,失败不影响主链路 */ }
+}
+
 function edgeHeaders(out, byteLen) {
   return {
     "content-type": "application/octet-stream",
@@ -427,7 +464,56 @@ export default {
     // ── API 反向代理(浏览器安装页用) ─────────────────────────────────
     // /api/plays 透传 query(设计 §4.3 item 1:q/multiDevice 必须到达上游,
     // 否则搜索退化为全量列表客户端切片 —— 审计 B3,生产实测已复现)。
-    if (path === "/api/plays") return proxy("/api/plays" + url.search);
+    // 富化(2026-11-02):逐条附 requiredSize(真实空间占用 = 槽位+DATA 预留)。
+    // 列表只给 firmware.size(纯固件),用户据此误判装得下 → 详情页才慢吞吞
+    // 算出真实值。富化只读本 zone 摘要缓存(同步),缺失的页内后台补算
+    // (waitUntil,每页限 PLAYS_WARM_PER_PAGE 个,防冷缓存并发下载打爆出口);
+    // 冷条目本轮仍回 firmware.size,下页/下次浏览即准确。
+    if (path === "/api/plays") {
+      const upstream = await fetch(BACKEND + "/api/plays" + url.search, { redirect: "follow" });
+      if (!upstream.ok) {
+        return err(502, `upstream ${upstream.status}: ${upstream.statusText}`);
+      }
+      let body;
+      try { body = await upstream.json(); } catch { body = null; }
+      const plays = Array.isArray(body?.plays) ? body.plays : null;
+      if (!plays) {
+        return new Response(JSON.stringify(body ?? {}), {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8",
+                     "access-control-allow-origin": "*" } });
+      }
+      const misses = [];
+      await Promise.all(plays.map(async (p) => {
+        const id = p?.id, sha = p?.firmware?.sha256;
+        if (!Number.isFinite(id) || typeof sha !== "string" || !/^[0-9a-fA-F]{64}$/.test(sha)) return;
+        const sum = await readAnalyzeSummary(url.origin, id, sha.toLowerCase());
+        if (sum) p.requiredSize = sum.requiredSize;
+        else misses.push(id);
+      }));
+      if (misses.length > 0) {
+        const warm = misses.slice(0, PLAYS_WARM_PER_PAGE);
+        ctx.waitUntil((async () => {
+          for (const id of warm) {
+            try {
+              const out = await storeAnalyzer.analyze(id, null);
+              const storeSha = out?.store?.sha256;
+              if (out?.supported && storeSha && out.storage) {
+                await writeAnalyzeSummary(url.origin, id,
+                  String(storeSha).toLowerCase(),
+                  { requiredSize: out.storage.requiredSize ?? null,
+                    poolTotal: out.storage.poolTotal ?? null,
+                    analyzedAt: Date.now() });
+              }
+            } catch { /* 补算是优化,失败不阻塞响应 */ }
+          }
+        })());
+      }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8",
+                   "access-control-allow-origin": "*" } });
+    }
 
     if (path === "/api/play") {
       const id = url.searchParams.get("id");
@@ -481,6 +567,15 @@ export default {
         // 边缘缓存已就绪,设备直接吃缓存字节,不再撞回源停顿/502。
         if (out && out.supported) {
           ctx.waitUntil(warmEdgeExtracted(req, Number(id)));
+          // 摘要缓存同写:详情页/安装预热过的玩法,列表卡片立即显示真实占用。
+          const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
+          if (storeSha && out.storage) {
+            ctx.waitUntil(writeAnalyzeSummary(
+              url.origin, Number(id), String(storeSha).toLowerCase(),
+              { requiredSize: out.storage.requiredSize ?? null,
+                poolTotal: out.storage.poolTotal ?? null,
+                analyzedAt: Date.now() }));
+          }
         }
         return new Response(JSON.stringify(out), {
           status: 200,

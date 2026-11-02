@@ -564,6 +564,10 @@ export function normalizePlay(p) {
     name: name.trim(),
     enName: (typeof t === "object" && typeof t.en === "string") ? t.en.trim() : "",
     size,
+    // 真实空间占用(APP 槽位 + DATA 预留),worker /api/plays 富化字段;
+    // 无缓存时为 null,UI 回退 size(纯固件体积)。
+    requiredSize: Number.isFinite(p.requiredSize) && p.requiredSize > 0
+      ? p.requiredSize : null,
     sha256: sha.toLowerCase(),
     downloadUrl: url,
     updatedAt: p.updatedAt ?? null,
@@ -1379,7 +1383,8 @@ export function boot(opts = {}) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.className = "mp-row";
-    btn.innerHTML = `<span class=nm>${esc(p.name)}</span><span class=sz>${fmtMB(p.size)}</span>${MP_CHEVRON}`;
+    // 优先显示真实占用(含 DATA 预留);worker 无缓存时回退纯固件体积。
+    btn.innerHTML = `<span class=nm>${esc(p.name)}</span><span class=sz>${fmtMB(p.requiredSize ?? p.size)}</span>${MP_CHEVRON}`;
     btn.onclick = () => showDetail(p);
     li.appendChild(btn);
     $("mp-list").appendChild(li);
@@ -1904,10 +1909,14 @@ export function boot(opts = {}) {
 
   function showDetail(p) {
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "—";
+    // 列表富化已带真实占用时立即渲染,不等 analyze(它要现下载解包,秒级)。
+    const sizeNow = p.requiredSize
+      ? `${fmtMB(p.requiredSize)}(安装共需,含 DATA 预留) · 下载 ${fmtMB(p.size)}`
+      : `${fmtMB(p.size)}(下载)`;
     setPanel(`<section class=mp-panel>
       <h4>${esc(p.name)}</h4>
       <dl class=mp-meta>
-        <dt>大小</dt><dd id=mp-det-size>${fmtMB(p.size)}(下载)</dd>
+        <dt>大小</dt><dd id=mp-det-size>${sizeNow}</dd>
         <dt>修订</dt><dd>${p.revisionId ?? "—"}</dd>
         <dt>更新</dt><dd>${esc(updated)}</dd>
       </dl>
