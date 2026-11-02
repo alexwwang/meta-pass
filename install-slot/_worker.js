@@ -57,7 +57,8 @@ async function readAnalyzeSummary(origin, id, storeSha256) {
     const hit = await caches.default.match(analyzeCacheKey(origin, id, storeSha256));
     if (!hit) return null;
     const j = await hit.json();
-    return (j && Number.isFinite(j.requiredSize) && j.requiredSize > 0) ? j : null;
+    // v=1 即命中;requiredSize 可能为 null(unsupported 的确定性负缓存)。
+    return (j && j.v === 1) ? j : null;
   } catch { return null; }
 }
 
@@ -498,11 +499,15 @@ export default {
             try {
               const out = await storeAnalyzer.analyze(id, null);
               const storeSha = out?.store?.sha256;
-              if (out?.supported && storeSha && out.storage) {
+              // 确定性结论(含 unsupported)都落缓存;unavailable 不落,可重试。
+              if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
                 await writeAnalyzeSummary(url.origin, id,
                   String(storeSha).toLowerCase(),
-                  { requiredSize: out.storage.requiredSize ?? null,
-                    poolTotal: out.storage.poolTotal ?? null,
+                  { v: 1,
+                    requiredSize: out.storage?.requiredSize ?? null,
+                    supported: out.supported === true,
+                    reason: out.reason ?? null,
+                    poolTotal: out.storage?.poolTotal ?? null,
                     analyzedAt: Date.now() });
               }
             } catch { /* 补算是优化,失败不阻塞响应 */ }
@@ -568,12 +573,17 @@ export default {
         if (out && out.supported) {
           ctx.waitUntil(warmEdgeExtracted(req, Number(id)));
           // 摘要缓存同写:详情页/安装预热过的玩法,列表卡片立即显示真实占用。
+          // unsupported 的确定性结论也缓存(v=1, requiredSize=null),否则不可
+          // 安装玩法每页都占补算名额。unavailable(上游瞬断)不缓存,下轮重试。
           const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
-          if (storeSha && out.storage) {
+          if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
             ctx.waitUntil(writeAnalyzeSummary(
               url.origin, Number(id), String(storeSha).toLowerCase(),
-              { requiredSize: out.storage.requiredSize ?? null,
-                poolTotal: out.storage.poolTotal ?? null,
+              { v: 1,
+                requiredSize: out.storage?.requiredSize ?? null,
+                supported: out.supported === true,
+                reason: out.reason ?? null,
+                poolTotal: out.storage?.poolTotal ?? null,
                 analyzedAt: Date.now() }));
           }
         }
