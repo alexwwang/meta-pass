@@ -24,6 +24,16 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// P-256 手机绑定(9a1c1ae)后 bridge 经 localStorage 读写手机密钥;Node 无此
+// API。内存桩即可 —— 签名在客户端用 WebCrypto 完成,测试 mock 不验签。
+if (typeof globalThis.localStorage === "undefined") {
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => { mem.set(k, String(v)); },
+    removeItem: (k) => { mem.delete(k); },
+  };
+}
 const phone = await import(path.join(ROOT, "install-slot", "phone-install.js"));
 assert.equal(phone.assertPhoneArchiveVersion({
   manifest_version: 2, kind: "meta-pass-storage-snapshot",

@@ -331,9 +331,11 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
       sign: (m) => crypto.subtle.sign("Ed25519", kp.privateKey, m) };
   }
   // 组一帧 v7 批次区:128B 头 + payload + 4096B trailer 扇区(128B SGN1 @扇区头)。
+  // payload 区间 = [4096, len-4096)(data_offset = align(头部128B) = 一个扇区;
+  // 契约 a43bcdc 起固件/服务端统一,曾误用 128 起点 → 真机 2×120 条上传 403)。
   async function makeBatch(id, { version = 7, batch = 1, payloadLen = 256,
       corruptSig = false, corruptPayload = false } = {}) {
-    const body = new Uint8Array(128 + payloadLen + 4096);
+    const body = new Uint8Array(4096 + payloadLen + 4096);
     body.set([0x52, 0x43, 0x42, 0x31], 0);            // "RCB1"
     const v = new DataView(body.buffer);
     v.setUint16(4, version, true);
@@ -341,11 +343,11 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
     v.setUint32(12, 4, true);                          // expected
     v.setUint32(16, 2, true);                          // committed
     body.set(id.deviceBytes, 28);
-    for (let i = 0; i < payloadLen; i++) body[128 + i] = (i * 7 + 3) & 0xff;
+    for (let i = 0; i < payloadLen; i++) body[4096 + i] = (i * 7 + 3) & 0xff;
     const payloadSha = new Uint8Array(await crypto.subtle.digest("SHA-256",
-      body.subarray(128, 128 + payloadLen)));
+      body.subarray(4096, 4096 + payloadLen)));
     // corrupt 必须在签名之后:trailer 记的是原始 payload 的 sha,体被篡改即不符。
-    if (corruptPayload) body[128] ^= 0xff;
+    if (corruptPayload) body[4096] ^= 0xff;
     const tOff = body.byteLength - 4096;
     v.setUint32(tOff, 0x314E4753, true);               // "SGN1"
     v.setUint16(tOff + 4, 1, true);                    // trailer.version
