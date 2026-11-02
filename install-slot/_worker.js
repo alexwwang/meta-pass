@@ -574,20 +574,21 @@ export default {
         // 边缘缓存已就绪,设备直接吃缓存字节,不再撞回源停顿/502。
         if (out && out.supported) {
           ctx.waitUntil(warmEdgeExtracted(req, Number(id)));
-          // 摘要缓存同写:详情页/安装预热过的玩法,列表卡片立即显示真实占用。
-          // unsupported 的确定性结论也缓存(v=1, requiredSize=null),否则不可
-          // 安装玩法每页都占补算名额。unavailable(上游瞬断)不缓存,下轮重试。
-          const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
-          if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
-            ctx.waitUntil(writeAnalyzeSummary(
-              env, Number(id), String(storeSha).toLowerCase(),
-              { v: 1,
-                requiredSize: out.storage?.requiredSize ?? null,
-                supported: out.supported === true,
-                reason: out.reason ?? null,
-                poolTotal: out.storage?.poolTotal ?? null,
-                analyzedAt: Date.now() }));
-          }
+        }
+        // 摘要缓存同写(独立于 supported 门):详情页/安装预热过的玩法,列表
+        // 卡片立即显示真实占用。unsupported 的确定性结论也缓存(v=1,
+        // requiredSize=null/或 too-large 时仍有 requiredSize),否则不可安装
+        // 玩法每页都占补算名额。unavailable(上游瞬断)不缓存,下轮重试。
+        const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
+        if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
+          ctx.waitUntil(writeAnalyzeSummary(
+            env, Number(id), String(storeSha).toLowerCase(),
+            { v: 1,
+              requiredSize: out.storage?.requiredSize ?? null,
+              supported: out.supported === true,
+              reason: out.reason ?? null,
+              poolTotal: out.storage?.poolTotal ?? null,
+              analyzedAt: Date.now() }));
         }
         return new Response(JSON.stringify(out), {
           status: 200,
