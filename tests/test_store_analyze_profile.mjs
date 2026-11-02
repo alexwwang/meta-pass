@@ -16,6 +16,9 @@ function appImage() {
   dv.setUint32(24 + 16, 0x3fc80000, true); dv.setUint32(24 + 20, firstLen, true);
   dv.setUint32(24 + 16 + 8 + firstLen, 0x42000020, true);
   dv.setUint32(24 + 16 + 8 + firstLen + 4, secondLen, true);
+  // appended hash 必须是 [0, total-32) 的真实 SHA-256(8bc062a 起布局权威
+  // 判别要求,fixture 不合法会被判 format 而非 too-large)。
+  b.set(createHash("sha256").update(b.subarray(0, total - 32)).digest(), total - 32);
   return b;
 }
 function entry(label, type, subtype, offset, size) {
