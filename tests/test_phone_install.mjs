@@ -183,6 +183,9 @@ function buildAppImage(seg0len = 100, seg1len = 64) {
   off += 8 + seg0len;
   dvv.setUint32(off, 0x42000020, true);      // segment 1 load addr
   dvv.setUint32(off + 4, seg1len, true);
+  // appended hash 用真实 SHA-256(8bc062a 起布局权威判别要求,fixture 必须合法)
+  const tail = createHash("sha256").update(buf.subarray(0, total - 32)).digest();
+  buf.set(tail, total - 32);
   return buf;
 }
 const APP = buildAppImage();

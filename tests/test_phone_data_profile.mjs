@@ -16,6 +16,8 @@ function appImage() {
   const dv=new DataView(b.buffer);
   dv.setUint32(40,0x3fc80000,true); dv.setUint32(44,firstLen,true);
   dv.setUint32(48+firstLen,0x42000020,true); dv.setUint32(52+firstLen,secondLen,true);
+  // appended hash 用真实 SHA-256(8bc062a 起布局权威判别要求,fixture 必须合法)
+  b.set(createHash("sha256").update(b.subarray(0, total - 32)).digest(), total - 32);
   return b;
 }
 function part(label,type,subtype,offset,size) {

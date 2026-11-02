@@ -3,6 +3,7 @@
 // 覆盖:切片(固件/尾扇区/额外数据/空槽/坏镜像)、manifest 构建与解析、
 //       恢复空间自检(自适应核心)、恢复顺序契约、dd 兜底(raw 镜像备份/恢复)。
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   probeOffsets,
 } from "../../install-slot/slot-backup.js";
@@ -24,6 +25,8 @@ function buildApp() {
   b[0] = 0xe9; b[1] = 2; b[12] = 5; b[13] = 0; b[23] = 1;
   b.set([0x00, 0x00, 0xc8, 0x3f, 100, 0, 0, 0], 40);   // seg0 @0x3fc80000 len 100
   b.set([0x20, 0x00, 0x00, 0x42, 64, 0, 0, 0], 148);   // seg1 @0x42000020 len 64
+  // appended hash 用真实 SHA-256(8bc062a 起布局权威判别要求,fixture 必须合法)
+  b.set(createHash("sha256").update(b.subarray(0, total - 32)).digest(), total - 32);
   return b;
 }
 
