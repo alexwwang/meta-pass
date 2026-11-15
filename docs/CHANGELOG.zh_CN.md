@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **修复 analyze 准入按 DATA 声明尺寸判定，误杀可缩容玩法（分析器，2026-11-16，严重）**：自 0617d8a 起，池准入预检把 `required_size`（app + *声明的* DATA 预留）与池总量比较。28 号玩法（录音机）声明 6.4 MiB blank-FAT `recordings`，声明占用超出 6.45 MB 池上限，analyze 直接返回 `too-large`——但安装流程的 DATA 容量选择界面可以把 blank FAT 缩到 1 MiB / flash-FS 缩到 64 KiB，且设备在 `/api/install/slots` + prepare 时按真实 carve 状态复验。准入改为按最小可行占用判定（`app + Σ dataPartitionMinimum()`，与手机容量下拉里咨询的同一事实源），可缩容玩法恢复通过预检；仅带初始 payload 的 DATA 锁死声明值（payload 不可缩），声明值本身不合法（未对齐/小于粒度/payload 超声明）按与安装时相同的标准拒为 `format`。声明值 `requiredSize` 不变——仍是安装时默认值与列表卡片展示值。analyze JSON 的 `storage` 块新增 `minRequiredSize`，客户端可区分"声明超池但可缩小安装"与真正 too-large。28 号 test-only 4M/3M DATA profiles 保留：对准入不再必要，仅用于受控 E2E 固定默认安装尺寸。
+
 ## v2.3.0 (2026-11-02)
 
 次版本发布。一条主线：把"装得上吗、装成了吗、还连得上吗"三件用户每天都要赌的事变成协议级确定。安装成功确认从"轮询赌时序"改为"finalize 响应体携带终态 + 设备幂等重试"；商店列表/详情的大小从"纯固件下载体积"改为"真实空间占用（app + DATA 预留）"，由 worker 摘要缓存供数；token 从"固定 30 分钟过期即死"改为"滑动 TTL + 过期自愈"。全部经真机证据定位与验证（截断镜像、槽位消失、假阴性安装失败、过期死码均为真机事故）。

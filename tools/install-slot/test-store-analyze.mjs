@@ -165,15 +165,17 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   assert.equal(out.storage.requiredSize,
     Math.ceil(app.length / 0x1000) * 0x1000 + 0x80000);
   assert.equal(out.storage.supported, true);
-  console.log("PASS 1b: analyze exposes APP+DATA storage manifest without changing admission behavior");
+  console.log("PASS 1b: analyze exposes APP+DATA storage manifest alongside admission");
 }
 
-// ---- 1c. DATA capacity participates in admission, not just APP size ----
+// ---- 1c. 声明尺寸超池但 DATA 可缩 → admission 按最小可行尺寸放行 ----
+// blank DATA 的缩容下限(FAT 1 MiB / flash-FS 64 KiB)才是 admission 基准;
+// 声明值只是安装时默认值,真实落点由 /api/install/slots 设备 carve 状态裁决。
 {
   const app = buildAppImage([64]);
   const poolLimit = POOL_TOTAL - 0x1000;
   const appNeed = Math.ceil(app.length / 0x1000) * 0x1000;
-  const dataSize = poolLimit - appNeed + 0x1000;
+  const dataSize = poolLimit - appNeed + 0x1000; // 声明值恰好超池上限
   const dataOffset = 0x200000;
   const parts = [
     ...META_PARTS,
@@ -184,9 +186,45 @@ function makeAnalyzer(fetchImpl, cache = new Map()) {
   assert.equal(out.storage.supported, true);
   assert.equal(out.storage.requiredSize, appNeed + dataSize);
   assert.ok(out.storage.requiredSize > poolLimit);
+  assert.equal(out.storage.minRequiredSize, appNeed + 0x10000, "blank SPIFFS 缩容下限 64 KiB");
+  assert.equal(out.supported, true);
+  assert.equal(out.reason, "ok");
+  console.log("PASS 1c: declared oversize but shrinkable DATA admitted on minimum size");
+}
+
+// ---- 1d. DATA 带初始 payload → 缩容下限锁死声明值,超池仍 too-large ----
+{
+  const app = buildAppImage([64]);
+  const poolLimit = POOL_TOTAL - 0x1000;
+  const appNeed = Math.ceil(app.length / 0x1000) * 0x1000;
+  const dataSize = poolLimit - appNeed + 0x1000;
+  const dataOffset = 0x200000;
+  const parts = [
+    ...META_PARTS,
+    ["storage", 1, 0x82, dataOffset, dataSize],
+  ];
+  // 镜像必须覆盖 DATA 区,否则 initialDataImageSize 因 buf 截断恒为 0。
+  const short = buildFullImage(app, { parts });
+  const merged = new Uint8Array(dataOffset + dataSize).fill(0xff);
+  merged.set(short);
+  merged.fill(0x00, dataOffset, dataOffset + 4096); // 非 0xFF 初始 payload
+  const digest = sha256Sync(merged);
+  const play = { play: {
+    id: 563, revisionId: 1281, slug: "ai-passport-9",
+    firmwareSize: merged.length, firmwareSha256: digest,
+    firmware: { available: true, size: merged.length, sha256: digest,
+                url: "/api/download/community/ai-passport-9" },
+  } };
+  const fetchImpl = mockFetch(new Map([
+    ["/api/plays/id/563", { json: play }],
+    ["/api/download/community/ai-passport-9", { bytes: merged }],
+  ]));
+  const out = await makeAnalyzer(fetchImpl).analyze(563);
   assert.equal(out.supported, false);
   assert.equal(out.reason, "too-large");
-  console.log("PASS 1c: APP+DATA required capacity gates pool admission");
+  assert.equal(out.storage.minRequiredSize, appNeed + dataSize,
+    "payload-carrying DATA 锁死声明值,最小可行尺寸超池");
+  console.log("PASS 1d: payload-locked DATA still too-large when declared exceeds pool");
 }
 
 // ---- 2. 无 MNAM → 名退回 slug;extracted 字节与镜像一致 ----

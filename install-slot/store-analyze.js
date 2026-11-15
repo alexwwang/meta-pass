@@ -35,7 +35,7 @@ import { applyDataSizeProfile, firmwareDataRequiredSize } from "./data-size-prof
 // 动态分区(§4.1):解包器上限按两池总量算,避免解包器误杀超大镜像(目前
 // 最大的合法应用 1.84MB < 6.45MiB,足够兜底)。实际装不装得下由
 // /api/install/slots 设备 carve 状态决定,这里只做预检。
-import { POOL_TOTAL } from "./dynslot-pool.js";
+import { POOL_TOTAL, dataPartitionMinimum } from "./dynslot-pool.js";
 const UNPACK_MAX = POOL_TOTAL - TAIL_SECTOR;
 
 // DATA admission is owned by parseFirmwareManifest(): only global NVS/PHY and
@@ -208,8 +208,25 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
     // 状态 + phone-install.js 的 geomFromListing 决定。
     const poolLimit = POOL_TOTAL - TAIL_SECTOR;
     const storageSupported = firmwareManifest.supported === true;
-    const requiredSize = firmwareManifest.required_size;
-    const poolFit = storageSupported && Number.isInteger(requiredSize) && requiredSize <= poolLimit;
+    // Admission answers "can this image EVER fit the pool", not "does the
+    // declared reservation fit": DATA is user-adjustable at install time
+    // (blank FAT min 1 MiB, flash-FS min 64 KiB — dataPartitionMinimum() in
+    // dynslot-pool.js, the same source phone-install.js consults for the
+    // sizing dropdown). Only payload-carrying DATA is locked to its declared
+    // size. The declared reservation (manifest.required_size) stays the
+    // install-time default and the list-card display value; the device
+    // re-runs fit against its real carve state at /api/install/slots and
+    // prepare. Gating on declared size here regressed shrinkable plays
+    // (e.g. play 28's 6.4 MiB blank FAT recordings, 0617d8a).
+    const align4k = (n) => Math.ceil(n / 0x1000) * 0x1000;
+    const dataMinimums = dataPartitions.map((d) => dataPartitionMinimum(d));
+    const dataMinInvalid = !dataMinimums.every((n) => Number.isSafeInteger(n) && n > 0);
+    const minRequiredSize = storageSupported && !dataMinInvalid &&
+        Number.isInteger(firmwareManifest.app?.image_size)
+      ? align4k(firmwareManifest.app.image_size) +
+        dataMinimums.reduce((sum, n) => sum + align4k(n), 0)
+      : null;
+    const poolFit = minRequiredSize !== null && minRequiredSize <= poolLimit;
     const slots = poolFit
       ? [{ slot: 0, limit: poolLimit, fit: true }]
       : [];
@@ -230,7 +247,12 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       // must never be asked to carve or mutate storage for an image it cannot map.
       reason: !storageSupported
         ? (firmwareManifest.reason || "unsupported-partition")
-        : (supported ? "ok" : REASON_TOO_LARGE),
+        : dataMinInvalid
+          ? REASON_FORMAT
+          : (supported ? "ok" : REASON_TOO_LARGE),
+      // 声明值非法(未对齐/小于粒度/payload 超声明)与安装时校验同标准,拒收。
+      ...(dataMinInvalid ? { detail: "invalid DATA partition size declaration" } : {}),
+      minRequiredSize, // 最小可行尺寸(app + Σ DATA 缩容下限)
       extractedSha256: null, // 惰性:首次需要时对已验证的 ext.data 计算
       dataPartitions, // M5: 数据分区声明
       manifest: firmwareManifest, // storage MVP: APP+DATA capacity model
@@ -257,6 +279,7 @@ export function createStoreAnalyzer({ fetchImpl, backend, sha256, cache } = {}) 
       })) ?? [],
       storage: entry.manifest ? {
         requiredSize: entry.manifest.required_size,
+        minRequiredSize: entry.minRequiredSize,
         supported: entry.manifest.supported,
         reason: entry.manifest.reason,
       } : null,

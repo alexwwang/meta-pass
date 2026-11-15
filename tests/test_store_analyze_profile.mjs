@@ -48,9 +48,14 @@ const fetchImpl=async (url)=>{
   return new Response("not found",{status:404});
 };
 const analyzer=createStoreAnalyzer({fetchImpl,backend:"https://example.test",sha256:async b=>sha256(b)});
+const appAligned=Math.ceil(app.length/4096)*4096;
 const normal=await analyzer.analyze(28);
-assert.equal(normal.supported,false,"declared 6.4 MiB DATA must not fit by default");
-assert.equal(normal.reason,"too-large");
+// blank FAT 安装时可缩到 1 MiB 下限,admission 按最小可行尺寸放行;
+// 声明尺寸仍作为安装默认值透出(回归:0617d8a 起按声明值判定误杀)。
+assert.equal(normal.supported,true,"blank FAT DATA is shrinkable at install; declared oversize must not block admission");
+assert.equal(normal.reason,"ok");
+assert.equal(normal.storage.requiredSize,appAligned+originalDataSize);
+assert.equal(normal.storage.minRequiredSize,appAligned+1024*1024);
 const profiled=await analyzer.analyze(28,PLAY28_RECORDINGS_4M_PROFILE);
 assert.equal(profiled.supported,true,"explicit test profile should fit in the pool");
 assert.equal(profiled.data.length,1);
@@ -59,4 +64,23 @@ assert.equal(profiled.data[0].subtype,0x81);
 assert.equal(profiled.data[0].requiredSize,PLAY28_RECORDINGS_4M_SIZE);
 assert.equal(profiled.data[0].initialImageSize,0);
 assert.equal(profiled.storage.requiredSize,Math.ceil(app.length/4096)*4096+PLAY28_RECORDINGS_4M_SIZE);
-console.log("Play 28 analyzer integration: PASS (default reject; explicit blank-FAT profile accepted)");
+
+// DATA 带初始 payload 时锁死声明值(缩容下限 = declared):
+// 最小可行尺寸 = app + 6.4 MiB 超池 → 必须 too-large。
+{
+  const locked=merged.slice();
+  locked.fill(0x00,0x180000,0x180000+4096); // 非 0xFF payload
+  const lockedPlay={play:{id:28,revisionId:2,slug:"recorder",firmware:{available:true,size:locked.length,sha256:sha256(locked),url:"/api/download/recorder"}}};
+  const lockedFetch=async (url)=>{
+    const u=new URL(url);
+    if(u.pathname==="/api/plays/id/28") return new Response(JSON.stringify(lockedPlay));
+    if(u.pathname==="/api/download/recorder") return new Response(locked);
+    return new Response("not found",{status:404});
+  };
+  const lockedAnalyzer=createStoreAnalyzer({fetchImpl:lockedFetch,backend:"https://example.test",sha256:async b=>sha256(b)});
+  const out=await lockedAnalyzer.analyze(28);
+  assert.equal(out.supported,false,"payload-carrying DATA is locked to declared size; oversize min must not fit");
+  assert.equal(out.reason,"too-large");
+  assert.equal(out.storage.minRequiredSize,appAligned+originalDataSize);
+}
+console.log("Play 28 analyzer integration: PASS (shrinkable blank-FAT admitted on minimum size; payload-locked DATA still too-large; explicit profile accepted)");

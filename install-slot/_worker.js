@@ -42,11 +42,15 @@ function extractedEdgeKey(url) {
 //   - 键 = asum:<id>:<商店固件 sha256>;sha256 即版本指纹:固件任何字节变化
 //     → 新键,旧条目立即不可达(等价作废)——故不设 TTL,条目在固件不变时
 //     一直有效;固件更新留下的孤儿键仅占 KV 存储(每条 ~150B),不读即无害;
-//   - 值 = {v:1, requiredSize|null(unsupported 确定性负缓存), supported,
+//   - 值 = {v:2, requiredSize|null(unsupported 确定性负缓存), supported,
 //     reason, poolTotal, analyzedAt};unavailable(上游瞬断)不落,可重试;
+//     v 是缓存结构版本:admission 语义变更(2026-11-16 起按最小可行尺寸判定)
+//     后 bump 1→2,旧 v=1 条目(含 28 号 too-large 负缓存)读路径失配自然失效;
 //   - 写入路径:analyze 成功(详情页/安装预热)+ /api/plays 后台补算;
 //   - 消费路径:/api/plays 代理逐条富化 —— 冷缓存时列表先回退固件体积,
 //     页内最多 8 个后台补算(waitUntil),下一页/下一次浏览即全量准确。
+// v 非产品 semver:只是缓存条目结构标记,失配即作废。
+const ANALYZE_SUMMARY_V = 2;
 const PLAYS_WARM_PER_PAGE = 8;
 
 function analyzeKV(env) { return env.ANALYZE_KV ?? env.RATE_KV ?? null; }
@@ -62,8 +66,8 @@ async function readAnalyzeSummary(env, id, storeSha256) {
     const raw = await kv.get(analyzeCacheKVKey(id, storeSha256));
     if (!raw) return null;
     const j = JSON.parse(raw);
-    // v=1 即命中;requiredSize 可能为 null(unsupported 的确定性负缓存)。
-    return (j && j.v === 1) ? j : null;
+    // v=2 即命中(v=1 已作废:admission 语义变更);requiredSize 可能为 null(unsupported 的确定性负缓存)。
+    return (j && j.v === ANALYZE_SUMMARY_V) ? j : null;
   } catch { return null; }
 }
 
@@ -506,7 +510,7 @@ export default {
               if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
                 await writeAnalyzeSummary(env, id,
                   String(storeSha).toLowerCase(),
-                  { v: 1,
+                  { v: ANALYZE_SUMMARY_V,
                     requiredSize: out.storage?.requiredSize ?? null,
                     supported: out.supported === true,
                     reason: out.reason ?? null,
@@ -577,14 +581,14 @@ export default {
           ctx.waitUntil(warmEdgeExtracted(req, Number(id)));
         }
         // 摘要缓存同写(独立于 supported 门):详情页/安装预热过的玩法,列表
-        // 卡片立即显示真实占用。unsupported 的确定性结论也缓存(v=1,
+        // 卡片立即显示真实占用。unsupported 的确定性结论也缓存(当前 v=2,
         // requiredSize=null/或 too-large 时仍有 requiredSize),否则不可安装
         // 玩法每页都占补算名额。unavailable(上游瞬断)不缓存,下轮重试。
         const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
         if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
           ctx.waitUntil(writeAnalyzeSummary(
             env, Number(id), String(storeSha).toLowerCase(),
-            { v: 1,
+            { v: ANALYZE_SUMMARY_V,
               requiredSize: out.storage?.requiredSize ?? null,
               supported: out.supported === true,
               reason: out.reason ?? null,

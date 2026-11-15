@@ -3,8 +3,12 @@
 //
 // 2026-10-11 真机实测:动态池被 cardid(0x356000)/store(0x35A000) 固定条目
 // 分为 1.88MB + 4.61MB 两段,单段连续 carve 上限 ~4.6MB。Play 28 声明的
-// 6.4MB recordings 永远装不进单段;4MB 变体仅当 APP 落在前段时成立,而与
+// 6.4MB recordings 按声明值放不进单段;4MB 变体仅当 APP 落在前段时成立,而与
 // 第二个 APP 共存时 APP 会被挤到后段,只有 3MB 变体同时满足共存。
+//
+// 2026-11-16:analyze admission 已改为按最小可行尺寸判定(store-analyze.js:
+// app + Σ dataPartitionMinimum),声明尺寸超池不再拦截。本 profiles 对
+// admission 不再必要,仅用于 E2E 显式固定安装时的默认 DATA 尺寸。
 export const PLAY28_RECORDINGS_4M_PROFILE = "play28-recordings-4m";
 export const PLAY28_RECORDINGS_4M_SIZE = 4 * 1024 * 1024;
 export const PLAY28_RECORDINGS_3M_PROFILE = "play28-recordings-3m";
