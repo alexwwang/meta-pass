@@ -205,16 +205,25 @@ console.log("PASS 12: edge key normalized to id; hits re-checked against current
 }
 console.log("PASS 13: cold-path persistence (edge/R2/meta) runs in ctx.waitUntil, response returns first");
 
-// 14. r10.20-H1/H5: 限速真实接线(KV namespace 绑定进 wrangler.toml,审计发现
-//     此前仅声明未绑定 → 生产 429 从未生效);Range 续传用长票据窗口。
+// 14. r10.20-H1/H5: 限速真实接线。2026-11-18 计数器迁入 RateLimiter
+//     Durable Object:rlCheck 必须 DO 优先(KV 本地 dev 回退),两侧异常均
+//     fail-open(记日志放行,绝不能反过来把 /api/extracted 打成 500);
+//     wrangler.toml 文档性保留 RATE_KV(asum 回退)+ RATE_LIMITER DO 绑定。
+//     Range 续传用长票据窗口。
 {
-  const rl = workerSrc.slice(workerSrc.indexOf("async function rateLimit"),
-                             workerSrc.indexOf("export default"));
+  const rl = workerSrc.slice(workerSrc.indexOf("function rateLimiterStub"),
+                             workerSrc.indexOf("async function rateLimit"));
+  assert.ok(rl.includes("env.RATE_LIMITER") && rl.includes("stub.fetch"),
+            "rlCheck must count via the RATE_LIMITER Durable Object first");
   assert.ok(rl.includes("env.RATE_KV.get") && rl.includes("env.RATE_KV.put"),
-            "rateLimit must count via RATE_KV");
+            "rlCheck must keep the RATE_KV fallback for unbound-DO environments");
+  assert.ok((rl.match(/catch/g) ?? []).length >= 2 && rl.includes("return true"),
+            "rlCheck must fail-open (allow) on both DO and KV errors");
   const toml = readFileSync(path.join(ROOT, "wrangler.toml"), "utf8");
   assert.ok(/\[\[kv_namespaces\]\][^\[]*binding = "RATE_KV"/.test(toml),
-            "wrangler.toml must bind the RATE_KV namespace");
+            "wrangler.toml must keep the RATE_KV namespace (asum/dev fallback)");
+  assert.ok(/durable_object_namespaces"\s*[:：]?\s*\{?\s*"RATE_LIMITER"|RATE_LIMITER.*namespace_id/s.test(toml),
+            "wrangler.toml must document the RATE_LIMITER Durable Object binding");
   assert.ok(/DL_RANGE_TICKET_MAX_AGE_S = 3600/.test(workerSrc),
             "resume ticket window is 3600s");
   assert.ok(workerSrc.includes("rangeStart !== null ? DL_RANGE_TICKET_MAX_AGE_S : undefined"),
@@ -222,7 +231,7 @@ console.log("PASS 13: cold-path persistence (edge/R2/meta) runs in ctx.waitUntil
   assert.ok(workerSrc.includes('url.searchParams.get("range") === "1" ? DL_RANGE_TICKET_MAX_AGE_S : undefined'),
             "r2check exposes the long-window ticket diagnosis");
 }
-console.log("PASS 14: rate limit wired via RATE_KV binding; Range resume uses the 3600s ticket window");
+console.log("PASS 14: rate limit wired DO-first (KV fallback, fail-open); RATE_KV kept for asum/dev; Range resume uses the 3600s ticket window");
 
 // 15. 审计修复契约(docs/assets/mota-implementation-audit.md):
 //     B3 /api/plays 必须透传 query;M3 proxy 流式(无 arrayBuffer 全量缓冲);
@@ -309,8 +318,10 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
 // 17. capture 身份签名(契约 v1)运行时断言:真驱动 _worker.js 的 enroll/ingest
 //    handler(mock env),Ed25519 密钥对与 device_hash 全部运行时生成(仓库
 //    密钥扫描禁 32-hex 字面量)。覆盖:enroll 成功/重复 409/退化 400/限频 429;
-//    已注册+合法 trailer → 200 verified;已注册+坏 sig → 403;已注册+payload
-//    sha 不符 → 403;未注册 v7 → 200 verified:false;v6 无 trailer → 现状路径。
+//    2026-11-18 增 DO 接线:RATE_LIMITER 绑定时 RATE_KV 零写入 + DO 异常
+//    fail-open;已注册+合法 trailer → 200 verified;已注册+坏 sig → 403;
+//    已注册+payload sha 不符 → 403;未注册 v7 → 200 verified:false;
+//    v6 无 trailer → 现状路径。
 {
   const worker = await import(path.join(ROOT, "install-slot", "_worker.js"));
   const handle = worker.default.fetch;
@@ -423,6 +434,55 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
     }
     assert.equal(lastStatus, 429, "11th enroll from same IP must be rate limited");
   }
+  // 2026-11-18 DO 接线运行时断言:RATE_LIMITER 绑定时计数全部走 DO,
+  // RATE_KV 零写入(Free plan KV write 限额 1000/天的根因修复)。
+  function mockRateLimiter(behavior = "ok") {
+    const counters = new Map();
+    const stub = {
+      fetch: async (req) => {
+        if (behavior === "throw") throw new Error("do unavailable");
+        const a = await req.json();
+        const n = (counters.get(a.key) ?? 0) + 1;
+        counters.set(a.key, n);
+        return Response.json({ allowed: n <= a.limit, count: n });
+      },
+    };
+    return { idFromName: () => "global", get: () => stub };
+  }
+  function mockDoBoundEnv(behavior) {
+    const rateKv = new Map(); const capkeyKv = new Map(); const r2 = new Map();
+    return {
+      RATE_LIMITER: mockRateLimiter(behavior),
+      RATE_KV: { get: async (k) => (rateKv.has(k) ? rateKv.get(k) : null),
+                 put: async (k, val) => { rateKv.set(k, String(val)); } },
+      CAPKEY_KV: { get: async (k) => (capkeyKv.has(k) ? capkeyKv.get(k) : null),
+                   put: async (k, val) => { capkeyKv.set(k, String(val)); } },
+      meta_pass_capture: { put: async (k, val) => { r2.set(k, val); } },
+      _rateKv: rateKv, _r2: r2,
+    };
+  }
+  {
+    const env = mockDoBoundEnv("ok");
+    let lastStatus = 0;
+    for (let i = 0; i < 11; i++) {
+      const id = await makeIdentity(50 + i);
+      const r = await handle(post(base, { device: id.device, pubkey: id.pubkey },
+        "203.0.113.199"), env, {});
+      lastStatus = r.status;
+      if (i < 10) assert.equal(r.status, 200, `DO-bound enroll #${i + 1} must succeed`);
+    }
+    assert.equal(lastStatus, 429, "11th enroll from same IP must be rate limited (via DO)");
+    assert.equal(env._rateKv.size, 0,
+      "DO-bound rate limiting must not write RATE_KV at all");
+  }
+  // DO 异常必须 fail-open(放行),不能 500 —— 限速是保护带,不是可用性单点。
+  {
+    const env = mockDoBoundEnv("throw");
+    const id = await makeIdentity(70);
+    const r = await handle(post(base, { device: id.device, pubkey: id.pubkey }),
+      env, {});
+    assert.equal(r.status, 200, "DO failure must fail-open (allow, not 500)");
+  }
   // ingest:已注册 + 合法 trailer → 200 verified:true + meta.pubkey
   {
     const env = mockEnv();
@@ -491,6 +551,6 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
     assert.equal(r.headers.get("access-control-allow-origin"), "*");
   }
 }
-console.log("PASS 17: capture identity runtime (enroll 200/409/400/429 + verify chain 200-true/403-sig/403-sha/unregistered-false/v6-legacy/CORS)");
+console.log("PASS 17: capture identity runtime (enroll 200/409/400/429 + DO wiring: zero RATE_KV writes + fail-open + verify chain 200-true/403-sig/403-sha/unregistered-false/v6-legacy/CORS)");
 
 console.log("ALL WORKER CONTRACT TESTS PASSED");

@@ -6,6 +6,7 @@ on:
     paths:
       - "install-slot/**"
       - "tools/pages-deploy.py"
+      - "ratelimit-do/**"
       - ".github/workflows/workers.yml"
   workflow_dispatch:
 
@@ -29,3 +30,23 @@ jobs:
           # 需要一次性配置:Settings → Secrets and variables → Actions → CF_ACCOUNT_ID。
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: python3 tools/pages-deploy.py
+
+  # RateLimiter Durable Object 载体 Worker(限速计数,2026-11-18 迁入)。
+  # Pages 不支持 migrations,DO class 只能由独立 Worker 上传;Pages 经
+  # durable_object_namespaces 绑定(见 ratelimit-do/worker.js 头注释)。
+  # 部署用 wrangler(非 REST):需要 CF_API_TOKEN 具备 Workers Scripts:Edit
+  # 权限 —— 若 job 403,到 Dashboard → My Profile → API Tokens 给该 token
+  # 补 Workers Scripts(Edit)即可(Pages:Edit 不覆盖 Worker 脚本上传)。
+  deploy-ratelimit-do:
+    if: github.event_name == 'workflow_dispatch' ||
+        contains(github.event.head_commit.modified, 'ratelimit-do/') ||
+        contains(github.event.head_commit.modified, '.github/workflows/workers.yml')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Deploy ratelimit-do worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: bunx wrangler deploy --config ratelimit-do/wrangler.toml

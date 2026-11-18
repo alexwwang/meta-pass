@@ -176,7 +176,8 @@ const PLAY_ID_RE = /^\d{1,7}$/;
 //       威胁模型:sig 抓包可重放至过期 —— 危害仅是快路径带宽/R2 读配额;
 //       HMAC 单向,算法开源也伪造不了(安全性只依赖 secret);R2 写键由服务端
 //       在市场 sha 校验后构造,外部不可注入。
-//   P2. 限速:每 (IP,id) 每分钟 N 次,KV 计数,超限 429 —— 两条链路都生效。
+//   P2. 限速:每 (IP,id) 每分钟 N 次,RateLimiter DO 计数(KV 回退,
+//       异常 fail-open),超限 429 —— 两条链路都生效。
 //   P3. R2 读/写仅在有票且市场 sha 校验通过后发生(信任链内),键由 id+sha 构造。
 //   兜底:DL_SECRET 未配置时所有请求都走老链路(R2 永不启用,功能不受损)。
 const DL_TICKET_MAX_AGE_S = 600;        // analyze 签发票据有效期(dl.max_age 同值)
@@ -249,14 +250,55 @@ function parseSuffixRange(req) {
   return m ? Number(m[1]) : null;
 }
 
+// ── 限速计数(Durable Object;KV 回退;两侧异常均 fail-open) ────────
+// 2026-11-18:计数器从 RATE_KV 迁入 RateLimiter DO。原因:KV put 每请求
+// 计费一次,生产基线 ~530 write/day 已达 Free plan 日限额(1000)的 53%,
+// 且写耗尽后 put 抛异常会让 /api/extracted 500(设备 OTA 失败)。DO 版计数
+// 只存内存,每 60s 批量落盘,storage 写入 ≤1440/天,与请求量解耦。
+//   - 优先 env.RATE_LIMITER(Pages 生产绑定,见 wrangler.toml 注释);
+//   - 未绑 DO(本地 dev/旧环境)回退 RATE_KV 原实现;
+//   - 任一侧异常都 fail-open(记日志放行):限速是保护带,绝不能反过来
+//     成为可用性单点 —— 计数器挂了可以无限流服务,不能没服务。
+function rateLimiterStub(env) {
+  try {
+    if (!env.RATE_LIMITER) return null;
+    return env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName("global"));
+  } catch { return null; }
+}
+
+async function rlCheck(env, key, limit, windowSec) {
+  const stub = rateLimiterStub(env);
+  if (stub) {
+    try {
+      const r = await stub.fetch(new Request("https://ratelimit/check", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, limit, windowSec }),
+      }));
+      const j = await r.json();
+      return j.allowed !== false;
+    } catch (e) {
+      console.error("ratelimit-do unavailable, fail-open:", String(e && e.message ? e.message : e));
+      return true;
+    }
+  }
+  if (env.RATE_KV) {
+    try {
+      const cur = Number((await env.RATE_KV.get(key)) ?? "0") + 1;
+      await env.RATE_KV.put(key, String(cur), { expirationTtl: windowSec });
+      return cur <= limit;
+    } catch (e) {
+      console.error("RATE_KV unavailable, fail-open:", String(e && e.message ? e.message : e));
+      return true;
+    }
+  }
+  return true; // 两侧都没绑(纯本地 dev):不设限
+}
+
 async function rateLimit(env, req, idStr) {
-  if (!env.RATE_KV) return true; // 未绑 KV(本地 dev):不设限;生产环境绑定后生效
   const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
   const window = Math.floor(Date.now() / 60000);
-  const key = `rl:${ip}:${idStr}:${window}`;
-  const cur = Number((await env.RATE_KV.get(key)) ?? "0") + 1;
-  await env.RATE_KV.put(key, String(cur), { expirationTtl: 120 });
-  return cur <= RATE_LIMIT_PER_MIN;
+  return rlCheck(env, `rl:${ip}:${idStr}:${window}`, RATE_LIMIT_PER_MIN, 120);
 }
 
 // ── 采集数据上行(pass-radar 校正采集,方案 A:手机代理拉取) ─────────
@@ -267,7 +309,7 @@ async function rateLimit(env, req, idStr) {
 // 设备身份 = 批次头 device_hash@28(16B,固件盖的是 cardid 的 SHA-256 截断,
 // cardid 明文永不上云),由服务端从头部解析 —— 客户端不能冒充他人身份。
 // 开放端点(无票据):写方向、尺寸 ≤2MiB、RCB1 magic + 批次一致性校验,叠加
-// 每 (IP,device) 限速(复用 RATE_KV)+ 每 device 日行配额,滥用成本有界。
+//   每 (IP,device) 限速(复用 RateLimiter DO)+ 每 device 日行配额,滥用成本有界。
 // 退化身份(全 0/全 F 的 device_hash)直接拒:真机盖的是 SHA-256 摘要,
 // 全 0/全 F 只能是手搓包头,零成本伪造身份刷库。
 const CAPTURE_MAX_BYTES = 2 * 1024 * 1024;
@@ -307,13 +349,14 @@ async function handleCaptureEnroll(req, env, url) {
     return err(400, "bad device identity");
   }
   // 每 IP 10 次/分(契约 v1),与 ingest 的 (IP,device) 限频相互独立。
-  if (env.RATE_KV) {
+  // 计数走 RateLimiter DO(KV 回退),fail-open —— 见 rlCheck。
+  {
     const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
     const window = Math.floor(Date.now() / 60000);
-    const ekey = `capenroll:${ip}:${window}`;
-    const ecur = Number((await env.RATE_KV.get(ekey)) ?? "0") + 1;
-    await env.RATE_KV.put(ekey, String(ecur), { expirationTtl: 120 });
-    if (ecur > CAPTURE_ENROLL_MAX_PER_MIN) return err(429, "rate limited");
+    if (!(await rlCheck(env, `capenroll:${ip}:${window}`,
+                         CAPTURE_ENROLL_MAX_PER_MIN, 120))) {
+      return err(429, "rate limited");
+    }
   }
   const kvKey = `capkey:${device}`;
   if (await env.CAPKEY_KV.get(kvKey) !== null) return err(409, "device already enrolled");
@@ -424,13 +467,14 @@ async function handleCaptureIngest(req, env, url) {
     }
   }
 
-  // 每 device 日行配额(防换 IP 持续刷库;TTL 48h 覆盖时区日界)。
-  if (env.RATE_KV) {
+  // 每 device 日行配额(防换 IP 持续刷库;48h 窗口覆盖时区日界)。
+  // 计数走 RateLimiter DO(KV 回退),fail-open —— 见 rlCheck。
+  {
     const day = new Date().toISOString().slice(0, 10);
-    const dkey = `capd:${device}:${day}`;
-    const dcur = Number((await env.RATE_KV.get(dkey)) ?? "0") + 1;
-    await env.RATE_KV.put(dkey, String(dcur), { expirationTtl: 172800 });
-    if (dcur > CAPTURE_MAX_PER_DAY) return err(429, "daily quota exceeded");
+    if (!(await rlCheck(env, `capd:${device}:${day}`,
+                         CAPTURE_MAX_PER_DAY, 172800))) {
+      return err(429, "daily quota exceeded");
+    }
   }
 
   if (!(await rateLimit(env, req, `cap:${device}`))) {

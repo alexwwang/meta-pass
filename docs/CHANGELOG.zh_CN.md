@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **限速计数迁入 Durable Object,解除 KV 日写限额紧箍(worker,2026-11-18)**:Free plan KV 日限额 1000 write,生产基线 ~530/day(Dashboard 53% 告警);每请求 1 GET+1 PUT 的计数方式下任何流量尖峰都会触顶,且写耗尽后 `put` 抛异常会让 `/api/extracted` 直接 500(设备 OTA 失败)。`rl:`/`capd:`/`capenroll:` 三组计数器迁入新的 `RateLimiter` Durable Object(独立 Worker `ratelimit-do/` 上传 class,Pages 经 `durable_object_namespaces` 绑定;计数只存内存,alarm 每 60s 批量落盘,storage 写入 ≤1440/天与请求量解耦);未绑 DO 的环境回退 RATE_KV,两侧异常均 fail-open(记日志放行)——限速是保护带,不再是可用性单点。RATE_KV 保留:analyze 摘要缓存(asum:)回退与本地 dev 仍用它。契约测试 PASS 14/17 增 DO 优先、KV 零写入、fail-open 运行时断言。
+
 - **修复 analyze 准入按 DATA 声明尺寸判定，误杀可缩容玩法（分析器，2026-11-16，严重）**：自 0617d8a 起，池准入预检把 `required_size`（app + *声明的* DATA 预留）与池总量比较。28 号玩法（录音机）声明 6.4 MiB blank-FAT `recordings`，声明占用超出 6.45 MB 池上限，analyze 直接返回 `too-large`——但安装流程的 DATA 容量选择界面可以把 blank FAT 缩到 1 MiB / flash-FS 缩到 64 KiB，且设备在 `/api/install/slots` + prepare 时按真实 carve 状态复验。准入改为按最小可行占用判定（`app + Σ dataPartitionMinimum()`，与手机容量下拉里咨询的同一事实源），可缩容玩法恢复通过预检；仅带初始 payload 的 DATA 锁死声明值（payload 不可缩），声明值本身不合法（未对齐/小于粒度/payload 超声明）按与安装时相同的标准拒为 `format`。声明值 `requiredSize` 不变——仍是安装时默认值与列表卡片展示值。analyze JSON 的 `storage` 块新增 `minRequiredSize`，客户端可区分"声明超池但可缩小安装"与真正 too-large。28 号 test-only 4M/3M DATA profiles 保留：对准入不再必要，仅用于受控 E2E 固定默认安装尺寸。
 
 ## v2.3.0 (2026-11-02)
