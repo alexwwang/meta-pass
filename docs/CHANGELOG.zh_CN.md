@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **DATA 分区准入:裸数据 subtype 不再误拒,系统 subtype 改为跳过(分析器,2026-11-19,严重)**:manifest 白名单原本只认 FAT(0x81)/SPIFFS(0x82)/LittleFS(0x83),其余 DATA subtype 一律 fail-closed 硬拒为 `unsupported-partition`。258 款抽样显示 20 款(7.7%,如留声/ECHO、留声玩具)用 ESP-IDF "undefined/any"(0x06)或厂商自定义段(0x40–0xFE)声明裸数据区——录音类玩法存原始字节、不需要文件系统的事实标准写法——结果固件不到 1MB 却无法安装。准入现按子固件 DATA 接受 0x06 与 0x40–0xFE(分配生命周期相同;下游尺寸计算/数据提取对 subtype 本就泛型,含此前不可达的 `"raw"` 分支),系统分区声明 coredump(0x03)/nvs_keys(0x04)/efuse(0x05) 改为跳过而非拒绝,未知 subtype(如 0x10)保持 fail-closed。生产实测:2007、141 两款从 `unsupported-partition` 翻转为 `supported:true`。另观察到未修复:非 "nvs" label 的 NVS subtype 分区(0x02,如天天带的 `keep`,9/258 ≈ 3.5%)仍被拒;约 10/258 镜像根本没有 factory app 分区。
+
 - **重建 RateLimiter Durable Object 并修 warm 并发/超时(worker + DO,2026-11-19)**:旧 RateLimiter 对象在当日多次 redeploy 后进入病态——kvset 返回 `written:true` 但计数不积累、读悬挂(Pages→DO 全部操作 ~1.2s 起且部分挂死),`renamed_classes` 迁移重建为 RateLimiter2 后计数立即恢复(生产实测 count 逐请求递增、429 命中)。同批修复:`/api/plays` 后台补算由串行改并发 + 单玩法 10s 超时(病态 no-factory 条目单条拖 47s,串行 8 条曾把页面拖死);保留 `?debug=1` 时 analyze 响应携带 asumWrite 状态便于日后定位。
 
 - **商店列表/详情显示 app 与 DATA 体积拆分(手机页,2026-11-19)**:摘要缓存与 `/api/plays` 富化新增 `appSize`(=extracted.imageLen)/`dataSize`(=requiredSize − appSize)字段,手机页列表卡片与详情页在有拆分数据时显示 "X app + Y DATA",旧缓存条目无此字段自动回退合并显示(不升 v、无回填悬崖)。纯 APP 玩法与 unsupported 负缓存保持原样。

@@ -190,6 +190,9 @@ export function parseFirmwareManifest(buf) {
       subtype === 0x00 || // OTA metadata is owned by MetaPass
       subtype === 0x01 || // PHY calibration is a shared system resource
       subtype === 0x02 || // NVS is a shared MVP resource in the first-phase contract
+      subtype === 0x03 || // coredump region: system-owned, declaring it is harmless
+      subtype === 0x04 || // NVS key partition: system-owned
+      subtype === 0x05 || // efuse emulation: system-owned
       label === "cardid" ||
       label === "nvs"; // reserved shared NVS label
     if (metaOwned) continue;
@@ -198,6 +201,8 @@ export function parseFirmwareManifest(buf) {
       subtype === 0x81 || // FAT
       subtype === 0x82 || // SPIFFS
       subtype === 0x83 || // LittleFS
+      subtype === 0x06 || // ESP-IDF "undefined/any": 合法裸数据区(录音等原始字节存储)
+      (subtype >= 0x40 && subtype <= 0xfe) || // ESP-IDF 厂商自定义段:同样按裸区准入
       // Dedicated E2E fixture is explicitly registered by its reserved label.
       // Keep this test-only escape hatch independent of the synthetic subtype:
       // automation fixtures may use different DATA subtypes while exercising
@@ -316,8 +321,14 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      if (subtype === 0x00 || subtype === 0x01 || subtype === 0x02 || label === "cardid" || label === "nvs") continue;
+      // 与 parseFirmwareManifest 的 metaOwned 保持一致:系统分区声明(OTA 元
+      // 数据/PHY/NVS/coredump/NVS keys/efuse)与 meta-pass 自有(cardid、共享
+      // nvs label)不进子固件 DATA 清单。
+      if (subtype === 0x00 || subtype === 0x01 || subtype === 0x02 ||
+          subtype === 0x03 || subtype === 0x04 || subtype === 0x05 ||
+          label === "cardid" || label === "nvs") continue;
       const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 ||
+        subtype === 0x06 || (subtype >= 0x40 && subtype <= 0xfe) ||
         label === "e2edata";
       if (!supported) continue;
       const typeName = subtype === 0x81 ? "fat"
