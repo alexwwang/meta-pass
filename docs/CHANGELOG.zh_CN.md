@@ -6,6 +6,8 @@
 
 ## 未发布
 
+## v2.4.0 (2026-11-19)
+
 - **私有 NVS 分区按子固件 DATA 准入,设备侧闸门同步(分析器 + 固件,2026-11-19,严重)**:承接 subtype 修复 —— 固件自建的 NVS 分区(subtype 0x02,label 不是主机共享的 `nvs`,如天天带的 `keep`,258 款抽样 9 款 ≈ 3.5%)本是玩法自己的键值区,却被当共享 NVS 从不分配:运行时 `nvs_flash_init_partition("keep")` 找不到分区(今天的实际故障),即便硬映射共享也会让两款玩法互相覆盖数据。现纳入子固件 DATA 契约:每款已安装玩法独占一条 carve 记录,启动时物化的分区表只投影当前玩法自己的条目(`meta_pt_from_carve_active`),跨玩法同名分区永不共享物理字节。设备侧(必需):`meta_carve_valid` 与 `meta_install_model` 统一改用 `meta_carve_data_subtype_admitted()`(文件系统 + 0x06/0x40–0xFE 裸区 + 私有 0x02),替换原先两处各自复制的仅 FS 白名单;保留 label(store/nvs/phy_init/factory/otadata/cardid)双层拒绝。服务端对保留 label 新增提前 fail-closed 的 `reserved-label` 理由(1613 的 `store` 分区从"设备安装时才拒"变为"分析时给出明确结论")。生产实测:1169 supported,`data`(0x06)与 `keep`(0x02)双双准入;固件 host 测试 + idf 构建通过。老固件设备在 prepare 阶段安全拒绝这些安装("carve proposal rejected"),升级 launcher 后解锁。
 
 - **DATA 分区准入:裸数据 subtype 不再误拒,系统 subtype 改为跳过(分析器,2026-11-19,严重)**:manifest 白名单原本只认 FAT(0x81)/SPIFFS(0x82)/LittleFS(0x83),其余 DATA subtype 一律 fail-closed 硬拒为 `unsupported-partition`。258 款抽样显示 20 款(7.7%,如留声/ECHO、留声玩具)用 ESP-IDF "undefined/any"(0x06)或厂商自定义段(0x40–0xFE)声明裸数据区——录音类玩法存原始字节、不需要文件系统的事实标准写法——结果固件不到 1MB 却无法安装。准入现按子固件 DATA 接受 0x06 与 0x40–0xFE(分配生命周期相同;下游尺寸计算/数据提取对 subtype 本就泛型,含此前不可达的 `"raw"` 分支),系统分区声明 coredump(0x03)/nvs_keys(0x04)/efuse(0x05) 改为跳过而非拒绝,未知 subtype(如 0x10)保持 fail-closed。生产实测:2007、141 两款从 `unsupported-partition` 翻转为 `supported:true`。另观察到未修复:约 10/258 镜像根本没有 factory app 分区。
