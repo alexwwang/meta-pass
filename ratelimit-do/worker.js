@@ -25,19 +25,31 @@ import { DurableObject } from "cloudflare:workers";
 const FLUSH_INTERVAL_MS = 60_000;
 // 内存键数硬上限:异常流量下防止 Map 无界增长(正常量级 ~数百键)。
 const MAX_KEYS = 10_000;
+// asum 摘要缓存(create-only):键 = asum:<id>:<固件sha256>,sha256 即内容指纹,
+// 同键值永不改变(仅 analyzedAt 刷新,而 analyzedAt 无任何消费方),故键已存在
+// 即跳过 —— 去重不为配额(DO 内存写不计费,落盘按 alarm 批量),为语义卫生。
 
 export class RateLimiter extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.counters = new Map();  // key -> { n, exp } (exp = 窗口截止 epoch ms)
+    this.cache = new Map();     // asum 摘要:create-only,键存在即不覆盖
     this.dirty = false;
-    // 恢复上次落盘的未过期计数(驱逐/重部署后限速窗口延续)。
+    // 恢复上次落盘的未过期计数与摘要缓存(驱逐/重部署后窗口与缓存延续)。
     ctx.blockConcurrencyWhile(async () => {
-      const saved = await ctx.storage.get("counters").catch(() => null);
-      if (!saved) return;
+      const saved = await ctx.storage.get(["counters", "cache"]).catch(() => null);
       const now = Date.now();
-      for (const [k, v] of Object.entries(saved)) {
-        if (v && typeof v.n === "number" && v.exp > now) this.counters.set(k, v);
+      const counters = saved?.counters ?? saved?.get?.("counters");
+      if (counters) {
+        for (const [k, v] of Object.entries(counters)) {
+          if (v && typeof v.n === "number" && v.exp > now) this.counters.set(k, v);
+        }
+      }
+      const cache = saved?.cache ?? saved?.get?.("cache");
+      if (cache) {
+        for (const [k, v] of Object.entries(cache)) {
+          if (typeof v === "string") this.cache.set(k, v);
+        }
       }
     });
   }
@@ -45,6 +57,41 @@ export class RateLimiter extends DurableObject {
   async fetch(request) {
     let args;
     try { args = await request.json(); } catch { /* 非 JSON */ }
+    const op = String(args?.op ?? "check");
+
+    if (op === "kvmget") {
+      // 批量读:一次 subrequest 取全部键。/api/plays 富化必须走这里 —— 逐键读
+      // 在 2000+ 款目录下会打爆 Free plan 每请求 50 次 subrequest 上限(2026-11-19
+      // 生产定位:富化恒 0、exceededResources 告警)。上限 5000 键,响应 ~1MB 内。
+      const keys = Array.isArray(args?.keys) ? args.keys.map(String) : [];
+      if (keys.length === 0 || keys.length > 5000) {
+        return Response.json({ error: "bad args" }, { status: 400 });
+      }
+      const entries = {};
+      for (const k of keys) {
+        if (this.cache.has(k)) entries[k] = this.cache.get(k);
+      }
+      return Response.json({ entries });
+    }
+
+    if (op === "kvget" || op === "kvset") {
+      const key = String(args?.key ?? "");
+      if (!key) return Response.json({ error: "bad args" }, { status: 400 });
+      if (op === "kvget") {
+        return Response.json(this.cache.has(key)
+          ? { found: true, value: this.cache.get(key) }
+          : { found: false });
+      }
+      // kvset:create-only。键存在即视为成功但不覆盖(值由固件字节决定,不变)。
+      if (this.cache.has(key)) return Response.json({ written: false });
+      this.cache.set(key, String(args?.value ?? ""));
+      this.dirty = true;
+      if ((await this.ctx.storage.getAlarm()) == null) {
+        this.ctx.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
+      }
+      return Response.json({ written: true });
+    }
+
     const key = String(args?.key ?? "");
     const limit = Number(args?.limit);
     const windowSec = Number(args?.windowSec);
@@ -81,11 +128,14 @@ export class RateLimiter extends DurableObject {
   async alarm() {
     const now = Date.now();
     if (this.dirty) {
-      const out = {};
+      const countersOut = {};
       for (const [k, v] of this.counters) {
-        if (v.exp > now) out[k] = v;   // 过期键不落盘,加载侧也再校一次
+        if (v.exp > now) countersOut[k] = v;   // 过期键不落盘,加载侧也再校一次
       }
-      await this.ctx.storage.put("counters", out);
+      await this.ctx.storage.put("counters", countersOut);
+      // cache 是 create-only,只增不减;全量重写即增量落盘。两个键各一次写,
+      // 合计 ≤2880 次/天,DO storage 无 KV 式日限额。
+      await this.ctx.storage.put("cache", Object.fromEntries(this.cache));
       this.dirty = false;
     }
     for (const [k, v] of this.counters) {

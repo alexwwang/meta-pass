@@ -37,8 +37,10 @@ function extractedEdgeKey(url) {
 }
 
 // analyze 摘要缓存(列表卡片"真实空间占用"数据源,2026-11-02):
-//   - 后端 = KV(env.ANALYZE_KV,未绑时回退 RATE_KV,键前缀 asum: 隔离;
-//     不用 Cache API —— 其命中随边缘 isolate 漂移,生产实测同键 2 命中→0 命中);
+//   - 后端 = RateLimiter DO(kvget/kvset,create-only;2026-11-18 自 KV 迁入,
+//     原因:无条件覆盖写 ~500/day 独占 Free plan KV 日写限额 50% 告警线),
+//     KV(env.ANALYZE_KV,未绑时回退 RATE_KV)仅作未绑 DO 环境的最终回退;
+//     不用 Cache API —— 其命中随边缘 isolate 漂移,生产实测同键 2 命中→0 命中;
 //   - 键 = asum:<id>:<商店固件 sha256>;sha256 即版本指纹:固件任何字节变化
 //     → 新键,旧条目立即不可达(等价作废)——故不设 TTL,条目在固件不变时
 //     一直有效;固件更新留下的孤儿键仅占 KV 存储(每条 ~150B),不读即无害;
@@ -59,25 +61,80 @@ function analyzeCacheKVKey(id, storeSha256) {
   return `asum:${id}:${storeSha256}`;
 }
 
-async function readAnalyzeSummary(env, id, storeSha256) {
+// asum 摘要存储:2026-11-18 起 Durable Object 优先(RateLimiter 的 kvget/kvset,
+// create-only —— 键 = 固件 sha256 指纹,同键值永不改变,已存在即跳过),KV
+// (ANALYZE_KV ?? RATE_KV) 为未绑 DO 环境的回退。背景:摘要写入此前无条件
+// 覆盖同键,~500 write/day 独占 Free plan KV 日写限额(1000)的 50% 告警线。
+// 批量读 analyze 摘要:DO kvmget 一次 subrequest 取全部键;未绑 DO 时回退
+// KV array get(单次调用)。绝不逐键读:/api/plays 目录 2000+ 款时,逐键读 =
+// 数千次 subrequest,Free plan 每请求上限 50 次,超预算的读全部抛错被吞,
+// 富化恒 0(2026-11-19 生产实测定位)。返回 Map<key, 解析后的摘要|null>。
+async function readAnalyzeSummaries(env, keys) {
+  const out = new Map();
+  if (!keys.length) return out;
+  const stub = rateLimiterStub(env);
+  let pending = keys;   // DO 未覆盖的键继续走 KV(兼容期存量条目)
+  if (stub) {
+    try {
+      const r = await stub.fetch(new Request("https://ratelimit/cache", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "kvmget", keys }),
+      }));
+      const j = await r.json();
+      const hit = new Set();
+      for (const [k, v] of Object.entries(j.entries ?? {})) {
+        hit.add(k);
+        try { out.set(k, JSON.parse(v)); } catch { /* 坏条目按 miss 处理 */ }
+      }
+      pending = keys.filter((k) => !hit.has(k));
+    } catch { /* DO 异常:全部键落 KV 批量回退 */ }
+  }
+  if (!pending.length) return out;
   try {
     const kv = analyzeKV(env);
-    if (!kv) return null;
-    const raw = await kv.get(analyzeCacheKVKey(id, storeSha256));
-    if (!raw) return null;
-    const j = JSON.parse(raw);
-    // v=2 即命中(v=1 已作废:admission 语义变更);requiredSize 可能为 null(unsupported 的确定性负缓存)。
-    return (j && j.v === ANALYZE_SUMMARY_V) ? j : null;
-  } catch { return null; }
+    if (!kv) return out;
+    // KV array get:单次 ≤100 键(生产实测超了报 400 GET_BULK),返回值是
+    // Map<key,value>(生产实测,不是数组!)—— 按 entries 展开,勿当下标数组。
+    const chunks = [];
+    for (let i = 0; i < pending.length; i += 100) chunks.push(pending.slice(i, i + 100));
+    const allVals = await Promise.all(chunks.map((c) => kv.get(c)));
+    chunks.forEach((chunk, ci) => {
+      const vals = allVals[ci];
+      if (vals instanceof Map) {
+        for (const [k2, v2] of vals) {
+          try { out.set(k2, JSON.parse(v2)); } catch { }
+        }
+      } else if (Array.isArray(vals)) {
+        chunk.forEach((k, n) => {
+          const val = vals[n];
+          if (val) { try { out.set(k, JSON.parse(val)); } catch { } }
+        });
+      }
+    });
+  } catch { /* 缓存是优化,失败不影响主链路 */ }
+  return out;
 }
 
 async function writeAnalyzeSummary(env, id, storeSha256, summary) {
+  const key = analyzeCacheKVKey(id, storeSha256);
+  const value = JSON.stringify(summary);
+  const stub = rateLimiterStub(env);
+  if (stub) {
+    try {
+      await stub.fetch(new Request("https://ratelimit/cache", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ op: "kvset", key, value }),
+      }));
+      return; // create-only 去重在 DO 内;成败不阻塞主链路
+    } catch { /* DO 异常:落 KV 路径 */ }
+  }
   try {
     const kv = analyzeKV(env);
     if (!kv) return;
-    await kv.put(analyzeCacheKVKey(id, storeSha256), JSON.stringify(summary));
-    // 不设 TTL:sha256 在键里,固件更新即换键,旧条目自然作废;固件不变则
-    // 分析结论(体积由分区表决定)不会随时间改变,理应一直有效。
+    await kv.put(key, value);
+    // KV 回退(本地 dev)保持原无条件覆盖;生产 DO 路径已 create-only。
   } catch { /* 缓存是优化,失败不影响主链路 */ }
 }
 
@@ -535,14 +592,23 @@ export default {
           headers: { "content-type": "application/json; charset=utf-8",
                      "access-control-allow-origin": "*" } });
       }
-      const misses = [];
-      await Promise.all(plays.map(async (p) => {
+      // 批量富化(2026-11-19 修):单次 kvmget 拿全页摘要(1 次 subrequest)。
+      // 此前逐键读 = 2065 款 × 2 次 ≈ 4,130 次 subrequest,Free plan 每请求
+      // 上限 50,超预算即抛错被吞 → 富化恒 0、exceededResources 告警。冷条目
+      // 本轮仍回 firmware.size,下页/下次浏览即准确(后台补算不变)。
+      const wants = [];
+      for (const p of plays) {
         const id = p?.id, sha = p?.firmware?.sha256;
-        if (!Number.isFinite(id) || typeof sha !== "string" || !/^[0-9a-fA-F]{64}$/.test(sha)) return;
-        const sum = await readAnalyzeSummary(env, id, sha.toLowerCase());
-        if (sum) p.requiredSize = sum.requiredSize;
-        else misses.push(id);
-      }));
+        if (!Number.isFinite(id) || typeof sha !== "string" || !/^[0-9a-fA-F]{64}$/.test(sha)) continue;
+        wants.push({ p, id, key: analyzeCacheKVKey(id, sha.toLowerCase()) });
+      }
+      const found = await readAnalyzeSummaries(env, wants.map((w) => w.key));
+      const misses = [];
+      for (const w of wants) {
+        const j = found.get(w.key);
+        if (j && j.v === ANALYZE_SUMMARY_V) w.p.requiredSize = j.requiredSize;
+        else misses.push(w.id);   // miss 与 v 失配(v=1 旧条目)都补算重写
+      }
       if (misses.length > 0) {
         const warm = misses.slice(0, PLAYS_WARM_PER_PAGE);
         ctx.waitUntil((async () => {

@@ -553,4 +553,31 @@ console.log("PASS 16: capture ingest endpoint contract (dispatch/magic/version/d
 }
 console.log("PASS 17: capture identity runtime (enroll 200/409/400/429 + DO wiring: zero RATE_KV writes + fail-open + verify chain 200-true/403-sig/403-sha/unregistered-false/v6-legacy/CORS)");
 
+// 18. asum 摘要缓存迁入 DO(2026-11-18 二步) + 批量读(2026-11-19 三步,修生产
+//     富化恒 0):/api/plays 富化必须单次 kvmget 批量读(2065 款 × 逐键 2 读
+//     ≈ 4,130 次 subrequest,Free plan 每请求上限 50,超预算抛错被吞);写入
+//     create-only(键 = 固件 sha256 指纹,同键值不变);KV 为未绑 DO 的回退。
+{
+  const doSrc = readFileSync(path.join(ROOT, "ratelimit-do", "worker.js"), "utf8");
+  assert.ok(workerSrc.includes('op: "kvmget"') && workerSrc.includes("readAnalyzeSummaries"),
+            "/api/plays enrichment must batch-read via DO kvmget (one subrequest)");
+  assert.ok(workerSrc.includes('op: "kvset"'),
+            "analyze summary write must use the DO kvset op");
+  assert.ok(workerSrc.includes("env.ANALYZE_KV ?? env.RATE_KV"),
+            "KV fallback (ANALYZE_KV ?? RATE_KV) must be preserved");
+  assert.ok(!workerSrc.includes("await readAnalyzeSummary("),
+            "per-key readAnalyzeSummary loop is gone (it blew the 50-subrequest budget)");
+  assert.ok(doSrc.includes('"kvmget"') && doSrc.includes("entries"),
+            "DO must implement kvmget returning an entries map");
+  assert.ok(/if \(this\.cache\.has\(key\)\) return Response\.json\(\{ written: false \}\)/.test(doSrc),
+            "DO kvset must be create-only (skip overwrite when key exists)");
+  assert.ok(doSrc.includes('storage.put("cache"'),
+            "DO alarm must flush the cache map");
+  assert.ok(workerSrc.includes("vals instanceof Map"),
+            "KV array-get returns a Map in production (verified 2026-11-19) — must iterate entries, not array indexes");
+  assert.ok(workerSrc.includes("i += 100"),
+            "KV array-get is capped at 100 keys per call (400 GET_BULK verified) — must chunk");
+}
+console.log("PASS 18: asum on DO (batch kvmget read, create-only write, KV fallback)");
+
 console.log("ALL WORKER CONTRACT TESTS PASSED");
