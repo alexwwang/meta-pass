@@ -159,4 +159,35 @@ for (const [sub, label] of [[0x81, "fat"], [0x82, "spiffs"], [0x83, "littlefs"]]
   console.log("PASS required_size accounting unchanged for raw partitions");
 }
 
+// ── 0x02 非 "nvs" label:固件私有 NVS 区按子固件 DATA 准入(2026-11-19) ──
+{
+  const m = parseFirmwareManifest(withData(0x02, "keep"));
+  assert.equal(m.supported, true, "private NVS (0x02 non-nvs label) must be admitted as child DATA");
+  assert.equal(m.data[0].label, "keep");
+  assert.equal(m.data[0].subtype, 0x02);
+  console.log("PASS subtype 0x02 non-nvs label admitted as child-private DATA");
+}
+
+// ── 0x02 但 label 恰为 "nvs":仍是主机共享区,不进子固件清单(回归) ──
+{
+  const m = parseFirmwareManifest(withData(0x02, "nvs"));
+  assert.equal(m.supported, true);
+  assert.equal(m.data.length, 0, "label 'nvs' stays host-shared, not child DATA");
+  console.log("PASS label 'nvs' remains host-shared (regression)");
+}
+
+// ── 保留 label(store/phy_init/factory/otadata):fail-closed reserved-label ──
+{
+  const m = parseFirmwareManifest(withData(0x40, "store"));
+  assert.equal(m.supported, false);
+  assert.equal(m.reason, "reserved-label", "reserved label must fail closed with its own reason");
+  assert.equal(m.unsupported[0].reserved, true);
+  for (const lbl of ["phy_init", "factory", "otadata"]) {
+    const r = parseFirmwareManifest(withData(0x06, lbl));
+    assert.equal(r.supported, false, `${lbl} must be rejected`);
+    assert.equal(r.reason, "reserved-label");
+  }
+  console.log("PASS reserved labels (store/phy_init/factory/otadata) fail closed as reserved-label");
+}
+
 console.log("\nAll partition subtype gate tests passed.");

@@ -183,13 +183,16 @@ export function parseFirmwareManifest(buf) {
     // Data partition ownership:
     // - subtype 0x00 (OTA metadata) is meta-pass-owned;
     // - cardid is a legacy meta-pass-owned data partition;
-    // - NVS/PHY are global MVP resources and are not child DATA;
+    // - NVS/PHY are global MVP resources and are not child DATA —— 契约细化:
+    //   只有 label 恰为 "nvs" 的才是主机共享区;固件自建的其它 NVS 分区
+    //   (subtype 0x02,如天天带的 keep)是子固件私有键值区,按 DATA 准入,
+    //   每款独占一份,杜绝跨玩法串数据(2026-11-19);
     // - filesystem DATA is allocated per child;
+    // - raw/undefined/custom subtypes are allocated per child (bare byte areas);
     // - custom DATA is rejected unless its label is the reserved E2E fixture label.
     const metaOwned =
       subtype === 0x00 || // OTA metadata is owned by MetaPass
       subtype === 0x01 || // PHY calibration is a shared system resource
-      subtype === 0x02 || // NVS is a shared MVP resource in the first-phase contract
       subtype === 0x03 || // coredump region: system-owned, declaring it is harmless
       subtype === 0x04 || // NVS key partition: system-owned
       subtype === 0x05 || // efuse emulation: system-owned
@@ -197,11 +200,23 @@ export function parseFirmwareManifest(buf) {
       label === "nvs"; // reserved shared NVS label
     if (metaOwned) continue;
 
+    // 保留 label(与设备端 meta_carve_data_label_reserved 同源的固定表条目
+    // 名):固件拿系统分区名声明 DATA 一律 fail-closed —— carve 出同名条目轻率
+    // 者会把系统区暴露给子固件(store 一擦就把 carve 记录抹掉)。nvs/cardid
+    // 上文按既有契约静默跳过,nvs_keys 已被系统 subtype 覆盖,这里只剩:
+    if (label === "phy_init" || label === "factory" ||
+        label === "store" || label === "otadata") {
+      unsupported.push({ kind: "data", label, type: "data", subtype, offset, size,
+                         required_size: size, reserved: true });
+      continue;
+    }
+
     const supported =
       subtype === 0x81 || // FAT
       subtype === 0x82 || // SPIFFS
       subtype === 0x83 || // LittleFS
       subtype === 0x06 || // ESP-IDF "undefined/any": 合法裸数据区(录音等原始字节存储)
+      subtype === 0x02 || // 固件私有 NVS 区(label=="nvs" 的共享区上文已跳过)
       (subtype >= 0x40 && subtype <= 0xfe) || // ESP-IDF 厂商自定义段:同样按裸区准入
       // Dedicated E2E fixture is explicitly registered by its reserved label.
       // Keep this test-only escape hatch independent of the synthetic subtype:
@@ -247,6 +262,17 @@ export function parseFirmwareManifest(buf) {
   const data = partitions.filter(p => p.kind === "data");
   if (!apps.some(p => p.subtype === 0x00)) {
     throw new Error("no factory app partition");
+  }
+  const reserved = unsupported.filter((p) => p.reserved);
+  if (reserved.length) {
+    return {
+      app: apps.find(p => p.subtype === 0x00),
+      data,
+      unsupported: reserved,
+      required_size: null,
+      supported: false,
+      reason: "reserved-label",
+    };
   }
   if (unsupported.length) {
     return {
@@ -321,14 +347,18 @@ export function parseDataPartitions(buf) {
       for (let i = 12; i < 28 && buf[off + i] !== 0; i++) {
         label += String.fromCharCode(buf[off + i]);
       }
-      // 与 parseFirmwareManifest 的 metaOwned 保持一致:系统分区声明(OTA 元
-      // 数据/PHY/NVS/coredump/NVS keys/efuse)与 meta-pass 自有(cardid、共享
-      // nvs label)不进子固件 DATA 清单。
-      if (subtype === 0x00 || subtype === 0x01 || subtype === 0x02 ||
+      // 与 parseFirmwareManifest 的 metaOwned/保留名单保持一致:系统分区
+      // (OTA 元数据/PHY/coredump/NVS keys/efuse)、meta-pass 自有(cardid、
+      // 共享 nvs label)与固定表条目名(phy_init/factory/store/otadata)不进
+      // 子固件 DATA 清单。固件私有 NVS(0x02 非保留 label)与裸区
+      // (0x06/0x40–0xFE)按子固件 DATA 输出。
+      if (subtype === 0x00 || subtype === 0x01 ||
           subtype === 0x03 || subtype === 0x04 || subtype === 0x05 ||
-          label === "cardid" || label === "nvs") continue;
+          label === "cardid" || label === "nvs" ||
+          label === "phy_init" || label === "factory" ||
+          label === "store" || label === "otadata") continue;
       const supported = subtype === 0x81 || subtype === 0x82 || subtype === 0x83 ||
-        subtype === 0x06 || (subtype >= 0x40 && subtype <= 0xfe) ||
+        subtype === 0x06 || subtype === 0x02 || (subtype >= 0x40 && subtype <= 0xfe) ||
         label === "e2edata";
       if (!supported) continue;
       const typeName = subtype === 0x81 ? "fat"

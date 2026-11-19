@@ -674,14 +674,32 @@ static void test_place_offer(void)
     assert(next.count == 1 && next.data_count == 1);
     assert(next.data[0].play_id == 1 && strcmp(next.data[0].label, "rec") == 0);
 
-    // ── unsupported data subtype → REJECTED ──
+    // ── unsupported data subtype(0x10,未知)→ REJECTED ──
+    // 注:0x40/0x06/0x02 自 2026-11-19 起已准入(裸区/私有 NVS,与 JS 闸门
+    // 同契约),未知 subtype 用 0x10 钉拒。
     assert(build_carve_offer(js, sizeof(js), 0x1F000,
         "\"carveOffset\":1703936,\"carveSize\":131072,"
-        "\"data\":[{\"playId\":1,\"size\":4096,\"subtype\":64,\"label\":\"custom\"}],", 1));
+        "\"data\":[{\"playId\":1,\"size\":4096,\"subtype\":16,\"label\":\"mystery\"}],", 1));
     assert(meta_install_model_parse(js, strlen(js), &m));
     assert(meta_install_model_place_offer(&m, &cur, &next, &idx, &changed,
                                           label, &nf) == META_PLACE_REJECTED);
-    assert(strcmp(label, "custom") == 0);
+    assert(strcmp(label, "mystery") == 0);
+
+    // ── 裸区 subtype(0x40 custom / 0x06 undefined / 0x02 私有 NVS)→ accepted ──
+    for (int sub = 0; sub < 3; sub++) {
+        const int subtype = sub == 0 ? 64 : sub == 1 ? 6 : 2;
+        const char *lbl = sub == 0 ? "custom" : sub == 1 ? "raw" : "keep";
+        char data_js[128];
+        snprintf(data_js, sizeof(data_js),
+                 "\"carveOffset\":1703936,\"carveSize\":131072,"
+                 "\"data\":[{\"playId\":1,\"size\":4096,\"subtype\":%d,\"label\":\"%s\"}],",
+                 subtype, lbl);
+        assert(build_carve_offer(js, sizeof(js), 0x1F000, data_js, 1));
+        assert(meta_install_model_parse(js, strlen(js), &m));
+        assert(meta_install_model_place_offer(&m, &cur, &next, &idx,
+                                              &changed, label, &nf) == META_PLACE_OK);
+        assert(next.data[meta_carve_find_data(&next, 1, lbl)].subtype == (uint8_t)subtype);
+    }
 
     // ── LittleFS subtype 0x83 → accepted ──
     assert(build_carve_offer(js, sizeof(js), 0x1F000,

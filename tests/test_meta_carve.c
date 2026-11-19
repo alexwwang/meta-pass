@@ -206,6 +206,62 @@ static void test_valid_rules(void)
     printf("PASS valid rules\n");
 }
 
+// ---- 1b. DATA subtype 准入(2026-11-19,与 JS parseFirmwareManifest 同契约) ──
+
+static void test_data_subtype_gate(void)
+{
+    // helper 真值表:FS + 裸区(0x06/0x40–0xFE)+ 私有 NVS(0x02)。
+    assert(meta_carve_data_subtype_admitted(0x81));
+    assert(meta_carve_data_subtype_admitted(0x82));
+    assert(meta_carve_data_subtype_admitted(0x83));
+    assert(meta_carve_data_subtype_admitted(0x06));
+    assert(meta_carve_data_subtype_admitted(0x02));
+    assert(meta_carve_data_subtype_admitted(0x40));
+    assert(meta_carve_data_subtype_admitted(0x99));
+    assert(meta_carve_data_subtype_admitted(0xfe));
+    // 系统 subtype(0x03/0x04/0x05)与未知 subtype 仍拒;0xff 不在自定义段内。
+    assert(!meta_carve_data_subtype_admitted(0x00));
+    assert(!meta_carve_data_subtype_admitted(0x01));
+    assert(!meta_carve_data_subtype_admitted(0x03));
+    assert(!meta_carve_data_subtype_admitted(0x04));
+    assert(!meta_carve_data_subtype_admitted(0x05));
+    assert(!meta_carve_data_subtype_admitted(0x10));
+    assert(!meta_carve_data_subtype_admitted(0x3f));
+    assert(!meta_carve_data_subtype_admitted(0xff));
+
+    // carve 行级:合法 app 槽 + 一条 data 行,逐种子类型/label 翻转断言。
+    meta_carve_t c = empty_carve();
+    meta_carve_t out;
+    meta_carve_place(&c, 0x20000, META_CARVE_KIND_APP, &out);
+    const uint32_t data_off = 0x1A0000;  // app(0x180000+0x20000)之后,64KB 对齐、池内
+    meta_carve_data_t d = {
+        .play_id = 2007, .offset = data_off, .size = 0x10000,
+        .state = META_DATA_PRISTINE, .subtype = 0x40, .type = 1,
+    };
+    strcpy(d.label, "echo_voice");
+    assert(meta_carve_data_append(&out, &d));
+    assert(meta_carve_valid(&out));
+
+    meta_carve_t bad = out;
+    bad.data[0].subtype = 0x10;   // 未知 subtype
+    assert(!meta_carve_valid(&bad));
+    bad = out;
+    bad.data[0].subtype = 0x02;   // 私有 NVS:准入
+    strcpy(bad.data[0].label, "keep");
+    assert(meta_carve_valid(&bad));
+    bad = out;
+    bad.data[0].subtype = 0x06;   // undefined/any:准入
+    assert(meta_carve_valid(&bad));
+    bad = out;
+    strcpy(bad.data[0].label, "store");    // 保留 label:拒(双闸门之一)
+    assert(!meta_carve_valid(&bad));
+    strcpy(bad.data[0].label, "nvs");      // 共享 NVS label 同样是保留名
+    assert(!meta_carve_valid(&bad));
+    strcpy(bad.data[0].label, "phy_init");
+    assert(!meta_carve_valid(&bad));
+    printf("PASS data subtype gate (raw/custom/child-NVS admitted, system+unknown rejected)\n");
+}
+
 // ---- 2. carve↔分区表物化(黄金字节对拍) -----------------------------------
 
 static void test_materialize_golden(void)
@@ -499,6 +555,7 @@ int main(void)
     test_place_limits();
     test_fit_reuse_remove();
     test_valid_rules();
+    test_data_subtype_gate();
     test_materialize_golden();
     test_codec_roundtrip();
     test_seed_legacy();

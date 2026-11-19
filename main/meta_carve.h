@@ -201,6 +201,19 @@ void meta_carve_reclaimable_split(const meta_carve_t *c,
 // analyze 跳过、设备端硬拒(双层门禁)。
 bool meta_carve_data_label_reserved(const char *label);
 
+// 子固件 DATA subtype 准入 —— 与 install-slot/extract-app-image.js
+// parseFirmwareManifest 的白名单同一契约,JS/C 必须同语义(2026-11-12 真机
+// e2edata 教训:两侧不一致表现为 prepare 被 "carve proposal rejected")。
+//   0x81 FAT / 0x82 SPIFFS / 0x83 LittleFS
+//   0x06 ESP-IDF "undefined/any" 裸数据区;0x40–0xFE 厂商自定义段 —— 录音类
+//        玩法存原始字节的事实标准写法(2026-11-19 修复:此前被误拒为
+//        unsupported-partition,258 款抽样占 7.7%)
+//   0x02 固件私有 NVS 区(label=="nvs" 的共享区由 metaOwned/保留名单另管,
+//        不经过本判定)
+// label 层的保留名单/字符集/重复约束由 meta_carve_valid 与 install model
+// 另行强制执行,本函数只看 subtype。
+bool meta_carve_data_subtype_admitted(uint8_t subtype);
+
 // 结构不变量:数量/顺序/对齐/粒度/池内/不重叠/kind/state 合法。
 bool meta_carve_valid(const meta_carve_t *c);
 

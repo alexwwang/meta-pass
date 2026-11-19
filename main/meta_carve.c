@@ -378,6 +378,13 @@ bool meta_carve_data_label_reserved(const char *label)
     return false;
 }
 
+bool meta_carve_data_subtype_admitted(uint8_t subtype)
+{
+    return subtype == 0x81 || subtype == 0x82 || subtype == 0x83 ||
+           subtype == 0x06 || subtype == 0x02 ||
+           (subtype >= 0x40 && subtype <= 0xfe);
+}
+
 bool meta_carve_valid(const meta_carve_t *c)
 {
     if (!c || c->count > META_CARVE_MAX_SLOTS) {
@@ -420,14 +427,11 @@ bool meta_carve_valid(const meta_carve_t *c)
         if (d->play_id == 0 || d->type != 1 || d->state > META_DATA_ARCHIVED) {
             return false;
         }
-        // 与 install-slot/extract-app-image.js parseFirmwareManifest 同一白名单:
-        // 文件系统 0x81/0x82/0x83 + 仅测试 fixture e2edata(0x40)。
-        const bool fixture_e2edata =
-            d->subtype == 0x40 &&
-            strncmp(d->label, "e2edata", META_DATA_LABEL_MAX) == 0;
-        if (d->subtype != 0x81 && d->subtype != 0x82 &&
-            d->subtype != 0x83 && !fixture_e2edata) {
-            return false;   // only child filesystem DATA + named E2E fixture
+        // 与 install-slot/extract-app-image.js parseFirmwareManifest 同一白名单
+        // (meta_carve_data_subtype_admitted);e2edata fixture 的 0x40 已落在
+        // 厂商自定义段内,不再单独判 label。
+        if (!meta_carve_data_subtype_admitted(d->subtype)) {
+            return false;   // only admitted child DATA subtypes
         }
         if (d->size < META_CARVE_MIN_DATA || d->size % POOL.size_granule != 0) {
             return false;
