@@ -6,6 +6,8 @@
 
 ## 未发布
 
+- **analyze 缓存键引入分析器版本号;安装交互:即时等待反馈 + 设备错误按真实原因分流(worker + 手机页,2026-11-19)**:摘要缓存键原为 `asum:<id>:<sha>` 且写入 create-only —— 但 sha 只指纹固件字节,不指纹分析器行为:subtype 白名单修复前写入的负缓存,会把同 sha 修复后的正结论永久挡住(留声/天天带的列表富化在修复后仍恒为空,直到本条上线)。键改为 `asum:<id>:<sha>:av<N>`,判定语义变化时 +1 `ANALYZER_VERSION` 即可。同批(真机安装流程投诉):点「安装」立即显示"正在计算玩法大小,请稍等…"(analyze 要现下载解包、秒级,此前页面完全无响应);"设备未提供动态回收池能力,请更新固件"弹层此前对**任何** slots() 失败都甩锅固件 —— 网络错误、设备忙碌 409(升级重启后几乎必中)、解析失败全算在固件头上;现按真实原因分流为 无法连接设备 / 设备正在恢复上次操作(409 改为 3 次 ×1.5s 重试) / 仅当设备确实应答但无动态池时才保留原升级指引。warm 回填 8→24 款/页,列表页尺寸拆分更快可见。
+
 ## v2.4.0 (2026-11-19)
 
 - **私有 NVS 分区按子固件 DATA 准入,设备侧闸门同步(分析器 + 固件,2026-11-19,严重)**:承接 subtype 修复 —— 固件自建的 NVS 分区(subtype 0x02,label 不是主机共享的 `nvs`,如天天带的 `keep`,258 款抽样 9 款 ≈ 3.5%)本是玩法自己的键值区,却被当共享 NVS 从不分配:运行时 `nvs_flash_init_partition("keep")` 找不到分区(今天的实际故障),即便硬映射共享也会让两款玩法互相覆盖数据。现纳入子固件 DATA 契约:每款已安装玩法独占一条 carve 记录,启动时物化的分区表只投影当前玩法自己的条目(`meta_pt_from_carve_active`),跨玩法同名分区永不共享物理字节。设备侧(必需):`meta_carve_valid` 与 `meta_install_model` 统一改用 `meta_carve_data_subtype_admitted()`(文件系统 + 0x06/0x40–0xFE 裸区 + 私有 0x02),替换原先两处各自复制的仅 FS 白名单;保留 label(store/nvs/phy_init/factory/otadata/cardid)双层拒绝。服务端对保留 label 新增提前 fail-closed 的 `reserved-label` 理由(1613 的 `store` 分区从"设备安装时才拒"变为"分析时给出明确结论")。生产实测:1169 supported,`data`(0x06)与 `keep`(0x02)双双准入;固件 host 测试 + idf 构建通过。老固件设备在 prepare 阶段安全拒绝这些安装("carve proposal rejected"),升级 launcher 后解锁。

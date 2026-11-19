@@ -53,12 +53,18 @@ function extractedEdgeKey(url) {
 //     页内最多 8 个后台补算(waitUntil),下一页/下一次浏览即全量准确。
 // v 非产品 semver:只是缓存条目结构标记,失配即作废。
 const ANALYZE_SUMMARY_V = 2;
-const PLAYS_WARM_PER_PAGE = 8;
+const PLAYS_WARM_PER_PAGE = 24;
 
 function analyzeKV(env) { return env.ANALYZE_KV ?? env.RATE_KV ?? null; }
 
+// 分析器版本号:判定语义(白名单/准入规则)变化时必须 +1,否则同 sha 的
+// 旧结论会被 create-only 缓存永久钉死(2026-11-19 事故:subtype 白名单放宽后,
+// 修复前写入的 unsupported 负缓存挡住了修复后的 supported 正结论,留声/天天带
+// 等列表富化恒为空;sha 只指纹固件字节,不指纹分析器行为)。
+const ANALYZER_VERSION = 2;
+
 function analyzeCacheKVKey(id, storeSha256) {
-  return `asum:${id}:${storeSha256}`;
+  return `asum:${id}:${storeSha256}:av${ANALYZER_VERSION}`;
 }
 
 // asum 摘要存储:2026-11-18 起 Durable Object 优先(RateLimiter 的 kvget/kvset,

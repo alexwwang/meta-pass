@@ -1960,6 +1960,13 @@ export function boot(opts = {}) {
 
   // 交互 v2:analyze(轻)→ 手机选槽 → 确认后才下载/校验/剥离(重)。
   async function install(p) {
+    // 立即反馈,零死时间:analyze 要现下载解包(秒级),期间用户必须看到
+    // 明确等待态,而不是"点了没反应"(真机投诉 2026-11-19)。槽位抽屉出来
+    // 后此面板被自然替换。
+    setPanel(`<section class=mp-panel>
+      <h4>${esc(p.name)}</h4>
+      <p class=mp-status>正在计算玩法大小，请稍等…</p>
+    </section>`);
     const t0 = Date.now();
     const stage = (s) => log(`${s}… (+${((Date.now() - t0) / 1000).toFixed(1)}s)`);
     stage("检查兼容性");
@@ -1985,6 +1992,7 @@ export function boot(opts = {}) {
     // 旧逻辑不区分状态码,把 401 误报成"设备未提供动态回收池能力",用户被
     // 引向"更新固件"这条永远失败的路。按 status 分流:401 → 重新配对/重扫。
     let geom = null;
+    let slotsErr = null;   // {kind:"network"|"busy"|"parse", detail?}
     try {
       let lr = await bridge.slots();
       if (lr.status === 401) {
@@ -2001,15 +2009,38 @@ export function boot(opts = {}) {
         }
         return;
       }
-      if (lr.status === 409) {
-        // 设备刚恢复上一次中断的卸载(每次上电至多一次),刷新一次即恢复。
+      // 409 = 设备有待恢复的上一次中断卸载(每次上电至多一次):升级/重启后
+      // 立刻安装几乎必然命中。给恢复留出时间,重试 3 次 ×1.5s;只重试一次
+      // 会把忙误报成"固件旧"(真机投诉 2026-11-19:v2.4.0 设备被误指升级)。
+      for (let attempt = 0; lr.status === 409 && attempt < 3; attempt++) {
+        await new Promise((r) => setTimeout(r, 1500));
         lr = await bridge.slots();
       }
-      if (lr.ok) {
+      if (lr.status === 409) slotsErr = { kind: "busy" };
+      else if (!lr.ok) slotsErr = { kind: "network", detail: lr.text || `HTTP ${lr.status}` };
+      else {
         const listing = parseSlots(lr.text);
-        if (listing) geom = geomFromListing(listing, meta.analyze?.extracted?.imageLen);
+        if (!listing) slotsErr = { kind: "parse" };
+        else geom = geomFromListing(listing, meta.analyze?.extracted?.imageLen);
       }
-    } catch { /* 回退 legacy 几何 */ }
+    } catch (e) {
+      slotsErr = { kind: "network", detail: String(e && e.message ? e.message : e) };
+    }
+    if (!geom?.listing) {
+      // 按真实原因分流 —— 只有"设备确实应答了但不支持动态池"(旧固件/解析
+      // 不了清单)才允许指向固件升级;网络问题与设备忙碌各有其因,各归各的
+      // 指引(此前一切失败都误指"更新固件",已升级用户被堵死)。
+      if (slotsErr?.kind === "network") {
+        log(`✗ 读取设备槽位失败: ${slotsErr.detail}`, "err");
+        failSheet("无法连接设备", `${p.name}\n读取设备槽位失败（${slotsErr.detail}）。\n请确认设备在线、商店页（SCAN ME）已打开，然后重试。`);
+        return;
+      }
+      if (slotsErr?.kind === "busy") {
+        log("✗ 设备仍在恢复上一次中断的操作", "err");
+        failSheet("设备正在恢复上次操作", `${p.name}\n设备仍在恢复上一次中断的安装/卸载，请稍候几秒后重试。`);
+        return;
+      }
+    }
     showSlotPicker(meta, p, geom);
   }
 
