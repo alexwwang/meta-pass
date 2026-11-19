@@ -73,6 +73,16 @@ Unverified: remaining board, instrument, or user checks
 
 Create commits and push only when the user requests them or the active workflow explicitly requires them. Record user-visible changes in `docs/CHANGELOG.md`; internal refactors, CI maintenance, typo fixes, and generated-file refreshes do not require a changelog entry.
 
+## Release process
+
+A release is not done when the GitHub release is created — the following must happen in one flow, before reporting completion:
+
+1. Finalize `docs/CHANGELOG.md` + `docs/CHANGELOG.zh_CN.md`: move the entries from `Unreleased` into a `## vX.Y.Z (YYYY-MM-DD)` section (both files, same entries).
+2. Tag `vX.Y.Z` on the finalized HEAD and push the tag.
+3. Build + sign the single release asset `meta-pass_vX.Y.Z.bin` (signed small firmware only — never the 8MB full bin unless the user explicitly asks).
+4. Create the GitHub release with bilingual notes (Chinese first, English after a `---` divider; carry the `⚠️` launcher-upgrade note when firmware behavior gates device-side features).
+5. Push `main`. Leaving the changelog in `Unreleased` past the release tag is a known past miss — do not split this across turns.
+
 Never stage with `git add -A`/`-u`/`.`: stage explicit paths only. A blanket add once
 swept an unrelated in-flight fix into the wrong commit (r10.14 landed inside r10.15);
 explicit paths keep each commit's diff equal to its message.
