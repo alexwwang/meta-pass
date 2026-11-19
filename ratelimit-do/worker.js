@@ -85,7 +85,11 @@ export class RateLimiter2 extends DurableObject {
       // kvset:create-only。键存在即视为成功但不覆盖(值由固件字节决定,不变)。
       if (this.cache.has(key)) return Response.json({ written: false });
       this.cache.set(key, String(args?.value ?? ""));
-      this.dirty = true;
+      // 立即落盘:DO 请求间隔随时可能被驱逐,alarm 批量 flush 来不及
+      // (2026-11-19 生产实测:written:true 后数秒读丢失,即驱逐丢未落盘内存)。
+      // cache 全量重写仅 ~KB 级,单次延迟代价可忽略;计数器(counters)是
+      // 软状态,丢一分钟无妨,仍走 alarm 批量。
+      await this.ctx.storage.put("cache", Object.fromEntries(this.cache));
       if ((await this.ctx.storage.getAlarm()) == null) {
         this.ctx.storage.setAlarm(Date.now() + FLUSH_INTERVAL_MS);
       }
@@ -132,10 +136,8 @@ export class RateLimiter2 extends DurableObject {
       for (const [k, v] of this.counters) {
         if (v.exp > now) countersOut[k] = v;   // 过期键不落盘,加载侧也再校一次
       }
+      // 只落计数器:cache 已在每次 kvset 同步落盘(alarm 批量会丢驱逐窗口)。
       await this.ctx.storage.put("counters", countersOut);
-      // cache 是 create-only,只增不减;全量重写即增量落盘。两个键各一次写,
-      // 合计 ≤2880 次/天,DO storage 无 KV 式日限额。
-      await this.ctx.storage.put("cache", Object.fromEntries(this.cache));
       this.dirty = false;
     }
     for (const [k, v] of this.counters) {
