@@ -122,20 +122,26 @@ async function writeAnalyzeSummary(env, id, storeSha256, summary) {
   const stub = rateLimiterStub(env);
   if (stub) {
     try {
-      await stub.fetch(new Request("https://ratelimit/cache", {
+      const r = await stub.fetch(new Request("https://ratelimit/cache", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ op: "kvset", key, value }),
       }));
-      return; // create-only 去重在 DO 内;成败不阻塞主链路
-    } catch { /* DO 异常:落 KV 路径 */ }
+      // 临时诊断(定位后改为只读 status):把 DO 响应暴露给 debug 调用方。
+      return `do:${r.status}:${(await r.text()).slice(0, 60)}`;
+    } catch (e) {
+      return `do-throw:${String(e && e.message || e).slice(0, 60)}`;
+    }
   }
   try {
     const kv = analyzeKV(env);
-    if (!kv) return;
+    if (!kv) return "kv:unbound";
     await kv.put(key, value);
     // KV 回退(本地 dev)保持原无条件覆盖;生产 DO 路径已 create-only。
-  } catch { /* 缓存是优化,失败不影响主链路 */ }
+    return "kv:ok";
+  } catch (e) {
+    return `kv-throw:${String(e && e.message || e).slice(0, 60)}`;
+  }
 }
 
 function edgeHeaders(out, byteLen) {
@@ -606,29 +612,45 @@ export default {
       const misses = [];
       for (const w of wants) {
         const j = found.get(w.key);
-        if (j && j.v === ANALYZE_SUMMARY_V) w.p.requiredSize = j.requiredSize;
+        if (j && j.v === ANALYZE_SUMMARY_V) {
+          w.p.requiredSize = j.requiredSize;
+          // 拆分展示(2026-11-19 起):旧缓存条目无此字段,缺则不下发,UI 回退合并显示。
+          if (j.appSize != null && j.dataSize != null) {
+            w.p.appSize = j.appSize;
+            w.p.dataSize = j.dataSize;
+          }
+        }
         else misses.push(w.id);   // miss 与 v 失配(v=1 旧条目)都补算重写
       }
       if (misses.length > 0) {
         const warm = misses.slice(0, PLAYS_WARM_PER_PAGE);
+        // 并发补算(2026-11-19):串行 × 单玩法 10s 超时 = 页面最差 80s(实测 54.7s);
+        // 并发后墙钟 = max(单玩法),上限 10s。每个补算独立 try/catch,互不等候。
         ctx.waitUntil((async () => {
-          for (const id of warm) {
+          await Promise.all(warm.map(async (id) => {
             try {
-              const out = await storeAnalyzer.analyze(id, null);
+              const out = await Promise.race([
+                storeAnalyzer.analyze(id, null),
+                new Promise((_, rej) => setTimeout(() => rej(new Error("warm-timeout")), 10000)),
+              ]);
               const storeSha = out?.store?.sha256;
               // 确定性结论(含 unsupported)都落缓存;unavailable 不落,可重试。
               if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
+                const rs2 = out.storage?.requiredSize ?? null;
+                const appLen2 = out.extracted?.imageLen ?? null;
                 await writeAnalyzeSummary(env, id,
                   String(storeSha).toLowerCase(),
                   { v: ANALYZE_SUMMARY_V,
-                    requiredSize: out.storage?.requiredSize ?? null,
+                    requiredSize: rs2,
+                    appSize: appLen2,
+                    dataSize: rs2 != null && appLen2 != null ? rs2 - appLen2 : null,
                     supported: out.supported === true,
                     reason: out.reason ?? null,
                     poolTotal: out.storage?.poolTotal ?? null,
                     analyzedAt: Date.now() });
               }
             } catch { /* 补算是优化,失败不阻塞响应 */ }
-          }
+          }));
         })());
       }
       return new Response(JSON.stringify(body), {
@@ -696,14 +718,24 @@ export default {
         // 玩法每页都占补算名额。unavailable(上游瞬断)不缓存,下轮重试。
         const storeSha = out.store?.sha256 ?? out.store?.sha ?? null;
         if (storeSha && (out.supported || (out.reason && out.reason !== "unavailable"))) {
-          ctx.waitUntil(writeAnalyzeSummary(
+          const rs = out.storage?.requiredSize ?? null;
+          const appLen = out.extracted?.imageLen ?? null;
+          const summaryArgs = [
             env, Number(id), String(storeSha).toLowerCase(),
             { v: ANALYZE_SUMMARY_V,
-              requiredSize: out.storage?.requiredSize ?? null,
+              requiredSize: rs,
+              appSize: appLen,
+              dataSize: rs != null && appLen != null ? rs - appLen : null,
               supported: out.supported === true,
               reason: out.reason ?? null,
               poolTotal: out.storage?.poolTotal ?? null,
-              analyzedAt: Date.now() }));
+              analyzedAt: Date.now() }];
+          // 临时诊断(定位后删除):?debug=1 时同步写并把结果暴露在响应里。
+          if (url.searchParams.has("debug")) {
+            out.asumWrite = await writeAnalyzeSummary(...summaryArgs);
+          } else {
+            ctx.waitUntil(writeAnalyzeSummary(...summaryArgs));
+          }
         }
         return new Response(JSON.stringify(out), {
           status: 200,

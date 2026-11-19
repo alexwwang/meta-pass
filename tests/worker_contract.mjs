@@ -580,4 +580,24 @@ console.log("PASS 17: capture identity runtime (enroll 200/409/400/429 + DO wiri
 }
 console.log("PASS 18: asum on DO (batch kvmget read, create-only write, KV fallback)");
 
+// 19. app/DATA 拆分展示(2026-11-19):摘要写路径必须携带 appSize(=extracted.
+//     imageLen)与 dataSize(=requiredSize - appSize);富化必须透传;UI(phone-
+//     install.js)必须 normalize + 列表/详情双路径消费,缺字段回退合并显示。
+{
+  const phoneSrc = readFileSync(path.join(ROOT, "install-slot", "phone-install.js"), "utf8");
+  assert.ok((workerSrc.match(/appSize:/g) ?? []).length >= 2,
+            "both summary write paths (analyze handler + plays warm) must carry appSize");
+  assert.ok((workerSrc.match(/dataSize:/g) ?? []).length >= 2,
+            "both summary write paths must carry dataSize");
+  assert.ok(workerSrc.includes("appSize: appLen") && workerSrc.includes("appSize: appLen2"),
+            "appSize must come from extracted.imageLen on both write paths");
+  assert.ok(workerSrc.includes("w.p.appSize = j.appSize") && workerSrc.includes("w.p.dataSize = j.dataSize"),
+            "enrichment must pass appSize/dataSize through to plays JSON");
+  assert.ok(phoneSrc.includes("fmtSplit") && phoneSrc.includes("appSize") && phoneSrc.includes("dataSize"),
+            "phone UI must normalize and consume the split fields");
+  assert.ok(phoneSrc.includes("fmtMB(appA) + \" app + \"") || phoneSrc.includes("app + "),
+            "detail async refresh must render the split from extracted.imageLen too");
+}
+console.log("PASS 19: app/DATA split display (write paths, enrichment passthrough, UI dual path)");
+
 console.log("ALL WORKER CONTRACT TESTS PASSED");

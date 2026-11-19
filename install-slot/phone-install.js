@@ -568,6 +568,8 @@ export function normalizePlay(p) {
     // 无缓存时为 null,UI 回退 size(纯固件体积)。
     requiredSize: Number.isFinite(p.requiredSize) && p.requiredSize > 0
       ? p.requiredSize : null,
+    appSize: Number.isFinite(p.appSize) && p.appSize > 0 ? p.appSize : null,
+    dataSize: Number.isFinite(p.dataSize) && p.dataSize > 0 ? p.dataSize : null,
     sha256: sha.toLowerCase(),
     downloadUrl: url,
     updatedAt: p.updatedAt ?? null,
@@ -1206,6 +1208,12 @@ const MP_CHEVRON = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtMB = (n) => `${(n / 1048576).toFixed(1)} MB`;
+// app/DATA 拆分展示(2026-11-19,worker /api/plays 富化字段):有拆分数据时
+// "X app + Y DATA",无(旧缓存条目/纯 APP 玩法)返回 null,调用方回退合并显示。
+// DATA 阈值 = 64 KiB(dataPartitionMinimum 的 flash-FS 粒度):低于它的差值是
+// 分区对齐 padding(实测纯 APP 玩法也有 ~2.3 KB 差值),不是真实 DATA 分区。
+const fmtSplit = (p) => (p.appSize && p.dataSize >= 65536)
+  ? `${fmtMB(p.appSize)} app + ${fmtMB(p.dataSize)} DATA` : null;
 
 export function boot(opts = {}) {
   if (typeof document === "undefined") throw new Error("boot() requires a browser document");
@@ -1383,8 +1391,10 @@ export function boot(opts = {}) {
     const li = document.createElement("li");
     const btn = document.createElement("button");
     btn.className = "mp-row";
-    // 优先显示真实占用(含 DATA 预留);worker 无缓存时回退纯固件体积。
-    btn.innerHTML = `<span class=nm>${esc(p.name)}</span><span class=sz>${fmtMB(p.requiredSize ?? p.size)}</span>${MP_CHEVRON}`;
+    // 优先显示真实占用(含 DATA 预留);有拆分数据时 "app + DATA" 分列;
+    // worker 无缓存时回退纯固件体积。
+    const sz = fmtSplit(p) ?? fmtMB(p.requiredSize ?? p.size);
+    btn.innerHTML = `<span class=nm>${esc(p.name)}</span><span class=sz>${sz}</span>${MP_CHEVRON}`;
     btn.onclick = () => showDetail(p);
     li.appendChild(btn);
     $("mp-list").appendChild(li);
@@ -1910,9 +1920,12 @@ export function boot(opts = {}) {
   function showDetail(p) {
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleString() : "—";
     // 列表富化已带真实占用时立即渲染,不等 analyze(它要现下载解包,秒级)。
-    const sizeNow = p.requiredSize
-      ? `${fmtMB(p.requiredSize)}(安装共需,含 DATA 预留) · 下载 ${fmtMB(p.size)}`
-      : `${fmtMB(p.size)}(下载)`;
+    const splitNow = fmtSplit(p);
+    const sizeNow = splitNow
+      ? `${splitNow}(共需) · 下载 ${fmtMB(p.size)}`
+      : p.requiredSize
+        ? `${fmtMB(p.requiredSize)}(安装共需,含 DATA 预留) · 下载 ${fmtMB(p.size)}`
+        : `${fmtMB(p.size)}(下载)`;
     setPanel(`<section class=mp-panel>
       <h4>${esc(p.name)}</h4>
       <dl class=mp-meta>
@@ -1930,9 +1943,14 @@ export function boot(opts = {}) {
     preflightMeta(p.id, {}).then((meta) => {
       const dd = $("mp-det-size");
       if (!dd) return; // 详情页已关闭/切换
-      if (meta.ok && meta.analyze?.storage?.requiredSize) {
-        dd.textContent = `${fmtMB(meta.analyze.storage.requiredSize)}(安装共需,含 DATA 预留)`
-          + ` · 下载 ${fmtMB(p.size)}`;
+      const a = meta.analyze;
+      const rsA = a?.storage?.requiredSize;
+      const appA = a?.extracted?.imageLen;
+      if (meta.ok && rsA) {
+        // analyze 现算带 extracted.imageLen:能拆就拆(与 /api/plays 富化同形)。
+        dd.textContent = (appA && rsA - appA >= 65536)
+          ? `${fmtMB(appA)} app + ${fmtMB(rsA - appA)} DATA(共需) · 下载 ${fmtMB(p.size)}`
+          : `${fmtMB(rsA)}(安装共需,含 DATA 预留) · 下载 ${fmtMB(p.size)}`;
       } else if (meta.stage === "analyze" && meta.requiredSize) {
         dd.textContent = `${fmtMB(meta.requiredSize)}(安装共需,含 DATA 预留)`
           + ` · 下载 ${fmtMB(p.size)}`;

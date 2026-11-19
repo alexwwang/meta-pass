@@ -6,6 +6,10 @@
 
 ## 未发布
 
+- **重建 RateLimiter Durable Object 并修 warm 并发/超时(worker + DO,2026-11-19)**:旧 RateLimiter 对象在当日多次 redeploy 后进入病态——kvset 返回 `written:true` 但计数不积累、读悬挂(Pages→DO 全部操作 ~1.2s 起且部分挂死),`renamed_classes` 迁移重建为 RateLimiter2 后计数立即恢复(生产实测 count 逐请求递增、429 命中)。同批修复:`/api/plays` 后台补算由串行改并发 + 单玩法 10s 超时(病态 no-factory 条目单条拖 47s,串行 8 条曾把页面拖死);保留 `?debug=1` 时 analyze 响应携带 asumWrite 状态便于日后定位。
+
+- **商店列表/详情显示 app 与 DATA 体积拆分(手机页,2026-11-19)**:摘要缓存与 `/api/plays` 富化新增 `appSize`(=extracted.imageLen)/`dataSize`(=requiredSize − appSize)字段,手机页列表卡片与详情页在有拆分数据时显示 "X app + Y DATA",旧缓存条目无此字段自动回退合并显示(不升 v、无回填悬崖)。纯 APP 玩法与 unsupported 负缓存保持原样。
+
 - **修复商店列表"真实空间占用"生产恒为回退值(worker,2026-11-19,严重)**:目录涨到 2,065 款后,`/api/plays` 富化逐键读摘要 = 每请求 ~4,130 次 subrequest,Free plan 每请求上限 50,超预算即抛错被吞 → `withRequiredSize` 恒 0(功能自目录 >25 款起就没在生产真正工作过),也是 `exceededResources` 告警的来源。修法:DO 新增 `kvmget` 批量读(1 次 subrequest 取全页),KV 回退按 100 键/批分块(array get 单次上限,生产实测 400 GET_BULK)且返回值按 **Map** 处理(生产实测非数组)。修复后实测 2,065 款中 569 款立即命中,其余按原设计后台补算回填。
 
 - **analyze 摘要缓存迁入 Durable Object(worker,2026-11-18 二步)**:asum 此前无条件覆盖同键,~500 write/day 独占 Free plan KV 日写限额(1,000)的 50% 告警线(11-18 告警复现的根因,与限速无关)。迁入 RateLimiter DO(kvset create-only:键 = 固件 sha256 指纹,同键值永不改变,已存在即跳过),KV 降为未绑 DO 环境的最终回退。
