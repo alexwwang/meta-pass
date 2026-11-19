@@ -73,32 +73,39 @@ async function readAnalyzeSummaries(env, keys) {
   const out = new Map();
   if (!keys.length) return out;
   const stub = rateLimiterStub(env);
-  let pending = keys;   // DO 未覆盖的键继续走 KV(兼容期存量条目)
   if (stub) {
     try {
-      const r = await stub.fetch(new Request("https://ratelimit/cache", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ op: "kvmget", keys }),
-      }));
+      // 5s 超时防悬挂(病态 DO 曾把页面拖到 60s 被杀);DO 是权威 —— 200 即
+      // 返回(空 entries 也是有效答案),不再落 KV 批量回退(21 块 GET_BULK
+      // 疑似触发 KV 突发限流,把页面拖到 37-60s;2026-11-19)。仅 DO 未绑/
+      // 超时/异常时才走 KV(KV 存量条目仅作冷启动过渡,自然轮换)。
+      const r = await Promise.race([
+        stub.fetch(new Request("https://ratelimit/cache", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ op: "kvmget", keys }),
+        })),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("kvmget-timeout")), 5000)),
+      ]);
       const j = await r.json();
-      const hit = new Set();
       for (const [k, v] of Object.entries(j.entries ?? {})) {
-        hit.add(k);
         try { out.set(k, JSON.parse(v)); } catch { /* 坏条目按 miss 处理 */ }
       }
-      pending = keys.filter((k) => !hit.has(k));
-    } catch { /* DO 异常:全部键落 KV 批量回退 */ }
+      return out;
+    } catch { /* DO 不可达:落 KV 批量回退 */ }
   }
-  if (!pending.length) return out;
   try {
     const kv = analyzeKV(env);
     if (!kv) return out;
     // KV array get:单次 ≤100 键(生产实测超了报 400 GET_BULK),返回值是
     // Map<key,value>(生产实测,不是数组!)—— 按 entries 展开,勿当下标数组。
+    // 8s 总预算:KV 突发限流时整段跳过(缓存是优化,不是正确性)。
     const chunks = [];
-    for (let i = 0; i < pending.length; i += 100) chunks.push(pending.slice(i, i + 100));
-    const allVals = await Promise.all(chunks.map((c) => kv.get(c)));
+    for (let i = 0; i < keys.length; i += 100) chunks.push(keys.slice(i, i + 100));
+    const allVals = await Promise.race([
+      Promise.all(chunks.map((c) => kv.get(c))),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("kv-chunks-timeout")), 8000)),
+    ]);
     chunks.forEach((chunk, ci) => {
       const vals = allVals[ci];
       if (vals instanceof Map) {
