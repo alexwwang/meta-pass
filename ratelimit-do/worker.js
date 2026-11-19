@@ -29,7 +29,7 @@ const MAX_KEYS = 10_000;
 // 同键值永不改变(仅 analyzedAt 刷新,而 analyzedAt 无任何消费方),故键已存在
 // 即跳过 —— 去重不为配额(DO 内存写不计费,落盘按 alarm 批量),为语义卫生。
 
-export class RateLimiter extends DurableObject {
+export class RateLimiter2 extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.counters = new Map();  // key -> { n, exp } (exp = 窗口截止 epoch ms)

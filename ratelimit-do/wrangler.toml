@@ -7,7 +7,7 @@ compatibility_date = "2024-04-03"
 # 本服务不对外提供任何路由。
 
 [[migrations]]
-tag = "v1"
-# Free plan 强制要求 SQLite-backed Durable Objects(API 10097)。
-# 存储 API(ctx.storage.get/put/alarm)与经典 DO 一致。
-new_sqlite_classes = ["RateLimiter"]
+tag = "v2"
+# 重建干净对象(2026-11-19:旧 RateLimiter 对象在当日多次 redeploy 后
+# 状态不可见——写返回 written:true 但跨请求丢失/读悬挂;重命名即新对象新存储)。
+renamed_classes = [{ from = "RateLimiter", to = "RateLimiter2" }]
